@@ -1,0 +1,41 @@
+# breakdown: jaffle-shop Bayesian Metric Tree
+# This example maps to the standard jaffle-shop semantic layer metrics
+
+provider:
+  type: mock # options: mock, local, cloud
+  # project_path: "/path/to/jaffle-shop" # only for type: local
+
+metrics:
+  - name: daily_sessions
+    description: "Total count of website sessions per day"
+    source: jaffle_shop.metrics.sessions
+
+  - name: order_count
+    description: "Total number of orders placed"
+    source: jaffle_shop.metrics.order_count
+    parents:
+      - daily_sessions
+    priors:
+      coefficient:
+        distribution: "Normal"
+        params: { mu: 0.1, sigma: 0.02 } # Expecting ~10% conversion from session to order
+
+  - name: average_order_value
+    description: "Average revenue per order"
+    source: jaffle_shop.metrics.average_order_value
+
+  - name: revenue
+    description: "Total revenue"
+    source: jaffle_shop.metrics.revenue
+    parents:
+      - order_count
+      - average_order_value
+    priors:
+      coefficient:
+        distribution: "Normal"
+        params: { mu: 1.0, sigma: 0.01 } # Revenue is deterministic in jaffle-shop, but we model it probabilistically
+    seasonality:
+      - period: 7
+        name: "weekly"
+      - period: 365
+        name: "annual"
