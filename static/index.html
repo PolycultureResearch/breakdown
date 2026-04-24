@@ -4,51 +4,113 @@
     <title>breakdown: Bayesian Metric Trees</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
     <style>
-        #cy {
-            width: 100%;
-            height: 800px;
-            display: block;
-            border: 1px solid #ccc;
+        body { font-family: sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; }
+        h1 { margin: 12px 16px 0; font-size: 1.2rem; }
+        #status { margin: 4px 16px; font-size: 0.85rem; color: #666; }
+        #status.error { color: #c0392b; }
+        #main { display: flex; flex: 1; overflow: hidden; }
+        #cy { flex: 1; border-right: 1px solid #ddd; }
+        #metric-info {
+            width: 300px;
+            padding: 16px;
+            overflow-y: auto;
+            background: #fafafa;
+            font-size: 0.9rem;
         }
-        body { font-family: sans-serif; }
+        #metric-info h2 { margin: 0 0 8px; font-size: 1rem; }
+        #metric-info table { border-collapse: collapse; width: 100%; }
+        #metric-info td { padding: 4px 0; vertical-align: top; }
+        #metric-info td:first-child { font-weight: bold; padding-right: 8px; color: #555; }
+        #metric-info pre { background: #eee; padding: 8px; border-radius: 4px; font-size: 0.75rem; overflow-x: auto; }
+        .placeholder { color: #aaa; font-style: italic; }
     </style>
 </head>
 <body>
     <h1>breakdown: Metric Tree Visualization</h1>
-    <div id="cy"></div>
+    <p id="status">Loading DAG...</p>
+    <div id="main">
+        <div id="cy"></div>
+        <div id="metric-info">
+            <p class="placeholder">Click a node to see metric details.</p>
+        </div>
+    </div>
     <script>
+        const statusEl = document.getElementById('status');
+        const infoEl = document.getElementById('metric-info');
+
+        function setStatus(msg, isError = false) {
+            statusEl.textContent = msg;
+            statusEl.className = isError ? 'error' : '';
+        }
+
+        function renderMetric(name, data) {
+            const def = data.definition || {};
+            const summary = data.summary;
+
+            let summaryHtml = '<p class="placeholder">No analysis run yet. POST /analyze/' + name + ' to sample.</p>';
+            if (summary && summary.mean) {
+                const rows = Object.entries(summary.mean)
+                    .map(([k, v]) => `<tr><td>${k}</td><td>${typeof v === 'number' ? v.toFixed(4) : v}</td></tr>`)
+                    .join('');
+                summaryHtml = `<table>${rows}</table>`;
+            }
+
+            infoEl.innerHTML = `
+                <h2>${name}</h2>
+                <table>
+                    <tr><td>Source</td><td>${def.source || '—'}</td></tr>
+                    <tr><td>Description</td><td>${def.description || '—'}</td></tr>
+                    <tr><td>Parents</td><td>${(def.parents || []).join(', ') || 'none'}</td></tr>
+                </table>
+                <h2 style="margin-top:12px">Posterior Summary</h2>
+                ${summaryHtml}
+            `;
+        }
+
         async function loadDag() {
-            const response = await fetch('/dag');
-            const data = await response.json();
-            
+            let dagData;
+            try {
+                const response = await fetch('/dag');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                dagData = await response.json();
+            } catch (err) {
+                setStatus('Failed to load DAG: ' + err.message, true);
+                return;
+            }
+
             const elements = [];
-            data.nodes.forEach(node => {
+            dagData.nodes.forEach(node => {
                 elements.push({ data: { id: node[0], label: node[0] } });
             });
-            data.edges.forEach(edge => {
+            dagData.edges.forEach(edge => {
                 elements.push({ data: { source: edge[0], target: edge[1] } });
             });
 
-            var cy = cytoscape({
+            const cy = cytoscape({
                 container: document.getElementById('cy'),
                 elements: elements,
                 style: [
                     {
                         selector: 'node',
                         style: {
-                            'background-color': '#666',
+                            'background-color': '#4a90d9',
                             'label': 'data(label)',
                             'color': '#fff',
                             'text-valign': 'center',
                             'text-halign': 'center',
-                            'width': 60,
-                            'height': 60
+                            'width': 80,
+                            'height': 80,
+                            'font-size': 11
                         }
+                    },
+                    {
+                        selector: 'node:selected',
+                        style: { 'background-color': '#2c6fad' }
                     },
                     {
                         selector: 'edge',
                         style: {
-                            'width': 3,
+                            'width': 2,
                             'line-color': '#ccc',
                             'target-arrow-color': '#ccc',
                             'target-arrow-shape': 'triangle',
@@ -56,21 +118,27 @@
                         }
                     }
                 ],
-                layout: {
-                    name: 'breadthfirst',
-                    directed: true,
-                    padding: 10
-                }
+                layout: { name: 'breadthfirst', directed: true, padding: 20 }
             });
 
-            cy.on('tap', 'node', async function(evt){
-                const node = evt.target;
-                const response = await fetch('/metrics/' + node.id());
-                const metricData = await response.json();
-                console.log(metricData);
-                alert('Metric: ' + node.id() + '\nSource: ' + metricData.definition.source);
+            setStatus('DAG loaded. Click a node for details.');
+
+            cy.on('tap', 'node', async function(evt) {
+                const name = evt.target.id();
+                setStatus(`Loading ${name}...`);
+                try {
+                    const response = await fetch('/metrics/' + name);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    const metricData = await response.json();
+                    renderMetric(name, metricData);
+                    setStatus(`Showing: ${name}`);
+                } catch (err) {
+                    setStatus('Failed to load metric: ' + err.message, true);
+                    console.error(err);
+                }
             });
         }
+
         loadDag();
     </script>
 </body>
