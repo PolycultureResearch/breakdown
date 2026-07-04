@@ -59,6 +59,7 @@ A list of metric definitions. Each defines a node in the DAG.
 | `parents` | list[string] | no | Names of metrics that causally influence this one. All names must exist in the `metrics` list. |
 | `formula` | string | no | Arithmetic expression over parent names. Enables Shapley attribution. See below. |
 | `priors` | dict | no | Bayesian priors for causal coefficients when the relationship is probabilistic (no formula). |
+| `lags` | dict | no | Per-parent time lag in grain units (days) for probabilistic nodes. Mutually exclusive with `formula`. See below. |
 | `seasonality` | list | no | Periodic components for the BSTS model. |
 | `trend` | string | no | Trend type. Currently unused — trend defaults to a Gaussian random walk. |
 
@@ -109,7 +110,38 @@ priors:
     params: { mu: 0.1, sigma: 0.02 }
 ```
 
-Supported distributions and params: `Normal` (`mu`, `sigma`), `HalfNormal` (`sigma`), `Exponential` (`lam`), `LogNormal` (`mu`, `sigma`). With multiple parents, the same prior applies to every parent, scaled per parent. Unknown distributions are rejected at parse time and again by the engine.
+Supported distributions and params: `Normal` (`mu`, `sigma`), `HalfNormal` (`sigma`), `Exponential` (`lam`), `LogNormal` (`mu`, `sigma`). Unknown distributions are rejected at parse time and again by the engine.
+
+### Per-parent priors
+
+`coefficient` is the default prior applied to every parent. To give a specific parent a different prior, add that parent's name as a key:
+
+```yaml
+priors:
+  coefficient: { distribution: "Normal", params: { mu: 0.1, sigma: 0.05 } }  # default for all parents
+  daily_sessions: { distribution: "HalfNormal", params: { sigma: 0.2 } }      # per-parent override
+```
+
+Resolution per parent: use its own named prior if present, else `coefficient`, else a weakly informative `Normal(0, 1)`. Every key under `priors` must be `"coefficient"` or a member of `parents`; anything else raises a `ValueError` at parse time. Each parent's prior is scaled by that parent's units.
+
+---
+
+## `lags`
+
+Expresses a **time-lagged** causal relationship: the child responds to a parent's value some number of grain-steps (days) in the past. This lets the model capture effects the contemporaneous regression can't — e.g., support tickets driving churn weeks later.
+
+```yaml
+- name: churn_rate
+  source: my.metrics.churn_rate
+  parents: [support_tickets]
+  lags: { support_tickets: 21 }   # churn responds to tickets from 3 weeks earlier
+```
+
+Rules:
+- Keys must be members of `parents`; values must be integers ≥ 1 (in grain units — days).
+- `lags` and `formula` are **mutually exclusive** (a formula is a contemporaneous arithmetic identity). Declaring both raises a `ValueError`.
+
+**Effect on the model:** in the probabilistic path, each parent series is shifted back by its lag; the leading `max(lags)` rows of `y` and every parent column are then trimmed so all arrays align with no NaNs, and normalization happens on the trimmed series. If fewer than 10 rows remain after trimming, the engine raises. Parents without an entry in `lags` are used contemporaneously (lag 0).
 
 ---
 
@@ -134,7 +166,8 @@ seasonality:
 1. **DAG integrity:** The metric graph must be acyclic. Cycles are detected at parse time.
 2. **Parent references:** All names in `parents` must be defined elsewhere in `metrics`.
 3. **Formula safety:** Only arithmetic operators and parent names are allowed in `formula`. Unknown names (not in `parents`) or disallowed syntax raises a `ValueError`.
-4. **Distribution names:** `priors.coefficient.distribution` must be one of the four supported values.
+4. **Distribution names:** each prior's `distribution` must be one of the four supported values.
+5. **Prior keys:** every key under `priors` must be `"coefficient"` or a declared parent name.
 
 ---
 

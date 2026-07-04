@@ -314,6 +314,39 @@ metrics:
     assert (trace.posterior["beta_raw"].values > 0).all()
 
 
+def test_per_parent_priors_applied():
+    """A HalfNormal override on one parent and the shared Normal `coefficient`
+    on the other should both take effect: the overridden parent's beta stays
+    positive and both per-parent beta variables appear in the posterior."""
+    yaml_content = """
+metrics:
+  - name: daily_sessions
+    source: dbt.metric.daily_sessions
+  - name: average_order_value
+    source: dbt.metric.average_order_value
+  - name: order_count
+    source: dbt.metric.order_count
+    parents: [daily_sessions, average_order_value]
+    priors:
+      coefficient:
+        distribution: "Normal"
+        params: { mu: 0.1, sigma: 0.05 }
+      daily_sessions:
+        distribution: "HalfNormal"
+        params: { sigma: 0.2 }
+"""
+    parser = Parser(yaml_content)
+    data = generate_mock_data(n_days=50)
+    builder = ModelBuilder(parser.dag, data)
+
+    trace = builder.build_and_sample("order_count", draws=100, tune=100)
+
+    assert "beta_daily_sessions" in trace.posterior
+    assert "beta_average_order_value" in trace.posterior
+    assert (trace.posterior["beta_daily_sessions"].values > 0).all()
+    assert "beta" in trace.posterior
+
+
 def test_unsupported_prior_distribution_in_engine_raises():
     """The engine must reject unknown distributions rather than silently
     substituting Normal(0, 1)."""
@@ -324,6 +357,82 @@ def test_unsupported_prior_distribution_in_engine_raises():
 
     with pytest.raises(ValueError, match="Unsupported prior distribution"):
         builder.build_and_sample("order_count", draws=100, tune=100)
+
+
+# --- Lagged regressor tests ---
+
+def test_lagged_model_trims_rows():
+    """A lag of 5 on a 50-row dataset should leave 45 aligned rows in the fit."""
+    yaml_content = """
+metrics:
+  - name: daily_sessions
+    source: dbt.metric.daily_sessions
+  - name: order_count
+    source: dbt.metric.order_count
+    parents: [daily_sessions]
+    lags: { daily_sessions: 5 }
+"""
+    parser = Parser(yaml_content)
+    data = generate_mock_data(n_days=50)
+    builder = ModelBuilder(parser.dag, data)
+
+    trace = builder.build_and_sample("order_count", draws=100, tune=100)
+
+    assert trace.posterior["trend"].values.shape[-1] == 45
+
+
+def test_lag_recovery_beta_raw():
+    """When y[t] = 0.5 * x[t-5] + small noise, fitting with the correct lag
+    should recover a raw-scale coefficient near 0.5."""
+    rng = np.random.default_rng(7)
+    n = 120
+    lag = 5
+    x = 100.0 + np.cumsum(rng.normal(0, 3.0, n))
+    y = np.empty(n)
+    y[:lag] = 0.5 * x[0]
+    y[lag:] = 0.5 * x[:-lag]
+    y = y + rng.normal(0, 0.5, n)
+    data = pd.DataFrame({
+        "date": pd.date_range("2024-01-01", periods=n),
+        "x": x,
+        "y": y,
+    })
+
+    yaml_content = """
+metrics:
+  - name: x
+    source: dbt.metric.x
+  - name: y
+    source: dbt.metric.y
+    parents: [x]
+    lags: { x: 5 }
+"""
+    parser = Parser(yaml_content)
+    builder = ModelBuilder(parser.dag, data)
+
+    trace = builder.build_and_sample("y", draws=300, tune=300)
+
+    beta_raw_mean = float(trace.posterior["beta_raw"].mean())
+    assert 0.25 < beta_raw_mean < 0.75
+
+
+def test_lag_too_few_rows_raises():
+    """If applying the lag leaves fewer than 10 rows, raise."""
+    yaml_content = """
+metrics:
+  - name: daily_sessions
+    source: dbt.metric.daily_sessions
+  - name: order_count
+    source: dbt.metric.order_count
+    parents: [daily_sessions]
+    lags: { daily_sessions: 8 }
+"""
+    parser = Parser(yaml_content)
+    data = generate_mock_data(n_days=15)
+    builder = ModelBuilder(parser.dag, data)
+
+    with pytest.raises(ValueError, match="Not enough rows after applying lags"):
+        builder.build_and_sample("order_count", draws=50, tune=50)
 
 
 # --- Inference method tests ---

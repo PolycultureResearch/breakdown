@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from breakdown.parser import Parser
 from breakdown.engine.model import ModelBuilder
+from breakdown.engine.rca import run_rca
 from breakdown.data_fetch import MockDataFetcher, LocalDataFetcher, CloudDataFetcher
 
 logger = logging.getLogger(__name__)
@@ -145,7 +146,10 @@ async def analyze_metric(
 
     async with request.app.state.lock:
         builder = ModelBuilder(parser.dag, data)
-        builder.build_and_sample(name, draws=draws, tune=tune, inference_method=inference_method)
+        await asyncio.to_thread(
+            builder.build_and_sample, name,
+            draws=draws, tune=tune, inference_method=inference_method,
+        )
         request.app.state.traces[name] = builder.traces[name]
 
     return {
@@ -188,5 +192,37 @@ async def shapley_attribution(
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+
+    return result
+
+
+@app.post("/rca/{name}")
+async def root_cause_analysis(
+    name: str,
+    request: Request,
+    reference_start: str = Query(..., description="Start of baseline window (YYYY-MM-DD)"),
+    reference_end: str = Query(..., description="End of baseline window (YYYY-MM-DD)"),
+    analysis_start: str = Query(..., description="Start of analysis window (YYYY-MM-DD)"),
+    analysis_end: str = Query(..., description="End of analysis window (YYYY-MM-DD)"),
+):
+    parser = request.app.state.parser
+    data = request.app.state.data
+
+    if name not in parser.dag:
+        raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
+
+    async with request.app.state.lock:
+        builder = ModelBuilder(parser.dag, data)
+        builder.traces.update(request.app.state.traces)
+        try:
+            result = await asyncio.to_thread(
+                run_rca, builder, name,
+                reference_start, reference_end,
+                analysis_start, analysis_end,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        # Persist any traces fitted on demand during this call.
+        request.app.state.traces.update(builder.traces)
 
     return result

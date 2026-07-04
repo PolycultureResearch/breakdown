@@ -119,6 +119,109 @@ metrics:
         Parser(yaml_content)
 
 
+# --- Per-parent prior validation tests ---
+
+def test_per_parent_prior_key_accepted():
+    yaml_content = """
+metrics:
+  - name: daily_sessions
+    source: dbt.metric.daily_sessions
+  - name: marketing_spend
+    source: dbt.metric.marketing_spend
+  - name: order_count
+    source: dbt.metric.order_count
+    parents: [daily_sessions, marketing_spend]
+    priors:
+      coefficient:
+        distribution: "Normal"
+        params: { mu: 0.1, sigma: 0.05 }
+      marketing_spend:
+        distribution: "HalfNormal"
+        params: { sigma: 0.2 }
+"""
+    parser = Parser(yaml_content)
+    metric = parser.get_metric("order_count")
+    assert set(metric.priors.keys()) == {"coefficient", "marketing_spend"}
+
+
+def test_prior_key_not_coefficient_or_parent_raises():
+    yaml_content = """
+metrics:
+  - name: daily_sessions
+    source: dbt.metric.daily_sessions
+  - name: order_count
+    source: dbt.metric.order_count
+    parents: [daily_sessions]
+    priors:
+      not_a_parent:
+        distribution: "Normal"
+        params: { mu: 0.1, sigma: 0.05 }
+"""
+    with pytest.raises(ValueError, match="Prior key 'not_a_parent'"):
+        Parser(yaml_content)
+
+
+# --- Lag validation tests ---
+
+def test_lag_key_not_parent_raises():
+    yaml_content = """
+metrics:
+  - name: support_tickets
+    source: dbt.metric.support_tickets
+  - name: churn_rate
+    source: dbt.metric.churn_rate
+    parents: [support_tickets]
+    lags: { daily_sessions: 21 }
+"""
+    with pytest.raises(ValueError, match="Lag key 'daily_sessions'"):
+        Parser(yaml_content)
+
+
+def test_lag_value_zero_raises():
+    yaml_content = """
+metrics:
+  - name: support_tickets
+    source: dbt.metric.support_tickets
+  - name: churn_rate
+    source: dbt.metric.churn_rate
+    parents: [support_tickets]
+    lags: { support_tickets: 0 }
+"""
+    with pytest.raises(ValueError, match="must be an integer >= 1"):
+        Parser(yaml_content)
+
+
+def test_lag_with_formula_raises():
+    yaml_content = """
+metrics:
+  - name: order_count
+    source: dbt.metric.order_count
+  - name: average_order_value
+    source: dbt.metric.average_order_value
+  - name: revenue
+    source: dbt.metric.revenue
+    formula: "order_count * average_order_value"
+    parents: [order_count, average_order_value]
+    lags: { order_count: 3 }
+"""
+    with pytest.raises(ValueError, match="both `formula` and `lags`"):
+        Parser(yaml_content)
+
+
+def test_lagged_edge_accepted():
+    yaml_content = """
+metrics:
+  - name: support_tickets
+    source: dbt.metric.support_tickets
+  - name: churn_rate
+    source: dbt.metric.churn_rate
+    parents: [support_tickets]
+    lags: { support_tickets: 21 }
+"""
+    parser = Parser(yaml_content)
+    assert parser.get_metric("churn_rate").lags == {"support_tickets": 21}
+
+
 # --- Data fetcher tests ---
 
 def test_mock_fetcher_returns_data():
@@ -201,6 +304,33 @@ def test_mock_fetcher_unknown_metric_falls_back_to_random_walk():
     df = fetcher.fetch_metric("not_in_tree", "2024-01-01", "2024-01-31")
     assert "not_in_tree" in df.columns
     assert len(df) == 31
+
+
+def test_mock_fetcher_lagged_child_correlates_with_shifted_parent():
+    """With a lagged edge, the generated child should correlate more strongly
+    with the lag-shifted parent than with the contemporaneous parent."""
+    yaml_content = """
+metrics:
+  - name: daily_sessions
+    source: dbt.metric.daily_sessions
+  - name: order_count
+    source: dbt.metric.order_count
+    parents: [daily_sessions]
+    priors:
+      coefficient:
+        distribution: "Normal"
+        params: { mu: 0.1, sigma: 0.02 }
+    lags: { daily_sessions: 5 }
+"""
+    parser = Parser(yaml_content)
+    fetcher = MockDataFetcher(dag=parser.dag)
+    sessions = fetcher.fetch_metric("daily_sessions", "2024-01-01", "2024-04-30")["daily_sessions"].values
+    orders = fetcher.fetch_metric("order_count", "2024-01-01", "2024-04-30")["order_count"].values
+
+    L = 5
+    corr_lagged = np.corrcoef(orders[L:], sessions[:-L])[0, 1]
+    corr_contemp = np.corrcoef(orders[L:], sessions[L:])[0, 1]
+    assert corr_lagged > corr_contemp
 
 
 def test_cloud_fetcher_requires_credentials():

@@ -148,6 +148,7 @@ Each metric entry supports the following fields:
 | `parents` | list | Names of metrics that causally influence this one |
 | `formula` | string | Arithmetic expression over parent names (e.g., `"order_count * average_order_value"`). Enables Shapley attribution. |
 | `priors` | dict | Bayesian priors for the causal coefficients (see below) |
+| `lags` | dict | Per-parent time lag in grain units (days). Regresses the child on each parent's value `N` steps earlier. Mutually exclusive with `formula`. |
 | `seasonality` | list | Periodic components to include in the BSTS model |
 | `trend` | string | Trend type — currently `linear` (Gaussian random walk) |
 
@@ -171,7 +172,19 @@ Supported distributions and their parameters:
 | `Exponential` | `lam` | Positive effect, most mass near zero |
 | `LogNormal` | `mu`, `sigma` | Positive, right-skewed effect |
 
-With multiple parents, the same prior currently applies to every parent (scaled per parent's units).
+**Per-parent priors.** `coefficient` sets the default prior for every parent. To override a specific parent, add its name as a key alongside `coefficient` — the named prior wins for that parent, and the rest fall back to `coefficient` (or `Normal(0, 1)` if `coefficient` is absent):
+
+```yaml
+priors:
+  coefficient:                          # default for all parents
+    distribution: "Normal"
+    params: { mu: 0.1, sigma: 0.05 }
+  marketing_spend:                      # override for one parent (must be a parent name)
+    distribution: "HalfNormal"
+    params: { sigma: 0.2 }
+```
+
+Every key under `priors` must be either `coefficient` or the name of a parent; any other key is rejected at parse time. Each parent's prior is scaled into normalized space using that parent's own units.
 
 ### Seasonality
 
@@ -205,6 +218,22 @@ Formulas express exact arithmetic relationships between a metric and its parents
 
 When a formula is defined, the BSTS model fits the **residual** (`y - formula(parents)`) rather than using parent regressors. This correctly captures the structural relationship and surfaces unexplained variance in the residual.
 
+### Lagged regressors
+
+Some causal effects show up with a delay — the README's motivating example is support tickets driving churn *weeks later*. A `lags` dict regresses the child on each parent's value `N` grain-steps (days) earlier:
+
+```yaml
+- name: churn_rate
+  source: my.metrics.churn_rate
+  parents: [support_tickets]
+  lags: { support_tickets: 21 }   # churn responds to tickets from 3 weeks earlier
+```
+
+Rules:
+- Every `lags` key must be a parent; every value must be an integer ≥ 1 (grain units, days).
+- `lags` and `formula` are mutually exclusive — a formula is a contemporaneous identity.
+- The engine shifts each parent by its lag and trims the leading `max(lags)` rows so all series align with no NaNs. It raises if fewer than 10 rows remain.
+
 ---
 
 ## API reference
@@ -215,6 +244,7 @@ When a formula is defined, the BSTS model fits the **residual** (`y - formula(pa
 | `GET` | `/metrics/{name}` | Metric definition, time series, and posterior summary |
 | `POST` | `/analyze/{name}` | Run Bayesian sampling for a metric |
 | `GET` | `/shapley/{name}` | Shapley attribution for a formula metric |
+| `POST` | `/rca/{name}` | Root cause analysis over the metric's ancestors |
 | `GET` | `/ui` | Interactive DAG visualization |
 
 ### `POST /analyze/{name}`
@@ -265,6 +295,61 @@ Example response:
 ```
 
 The `attribution` values are exact Shapley values and are guaranteed to sum to `gap`.
+
+### `POST /rca/{name}`
+
+Walks the ancestor DAG of `name` and attributes the change between a reference window and an analysis window to upstream metrics. Any probabilistic node in scope that hasn't been fit yet is fit on demand with ADVI and its trace is cached (a second call is much faster).
+
+Query parameters (all required, `YYYY-MM-DD`): `reference_start`, `reference_end`, `analysis_start`, `analysis_end`.
+
+```bash
+curl -X POST "http://localhost:9090/rca/revenue?reference_start=2024-01-01&reference_end=2024-02-15&analysis_start=2024-02-16&analysis_end=2024-04-09"
+```
+
+Trimmed response:
+
+```json
+{
+  "target": "revenue",
+  "reference_window": {"start": "2024-01-01", "end": "2024-02-15"},
+  "analysis_window": {"start": "2024-02-16", "end": "2024-04-09"},
+  "nodes": {
+    "revenue": {
+      "baseline": 25000.0, "actual": 27000.0, "gap": 2000.0, "relative_change": 0.08,
+      "attribution_method": "shapley",
+      "unexplained": 12.0,
+      "contributions": [
+        {"parent": "order_count", "estimate": 1600.0, "share_of_gap": 0.8,
+         "ci_95": null, "prob_same_direction": null},
+        {"parent": "average_order_value", "estimate": 388.0, "share_of_gap": 0.19,
+         "ci_95": null, "prob_same_direction": null}
+      ]
+    },
+    "order_count": {
+      "baseline": 500.0, "actual": 540.0, "gap": 40.0, "relative_change": 0.08,
+      "attribution_method": "posterior",
+      "unexplained": 2.0,
+      "contributions": [
+        {"parent": "daily_sessions", "estimate": 38.0, "share_of_gap": 0.95,
+         "ci_95": [31.0, 45.0], "prob_same_direction": 0.99}
+      ]
+    }
+  },
+  "ranked_causes": [
+    {"metric": "order_count", "score": 0.8, "via": "revenue"},
+    {"metric": "daily_sessions", "score": 0.76, "via": "order_count"}
+  ]
+}
+```
+
+### Root cause analysis
+
+`POST /rca/{name}` combines the two attribution methods across a metric tree:
+
+- **Formula nodes** get `attribution_method: "shapley"` — exact Shapley values over the parent window means. `unexplained` is the part of the gap the arithmetic identity doesn't account for (data noise). These contributions have no `ci_95` / `prob_same_direction`.
+- **Probabilistic nodes** get `attribution_method: "posterior"` — each contribution is the posterior over the parent's raw-scale coefficient (`beta_raw`) times the parent's window-over-window change, reported as an `estimate` (mean), a 95% credible interval (`ci_95`), and `prob_same_direction` (posterior mass on the dominant side of zero). Lagged parents are compared over windows shifted back by the lag.
+
+Unfitted probabilistic nodes in scope are fit with ADVI on demand and cached, so the endpoint works without a prior `/analyze` call. `ranked_causes` is a documented heuristic that propagates an influence score from the target up the ancestor tree (weighting each hop by the parent's clamped share of its child's gap); use it as a triage ordering.
 
 ---
 

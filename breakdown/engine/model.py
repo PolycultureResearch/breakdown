@@ -94,6 +94,7 @@ class ModelBuilder:
         self.traces: Dict[str, Any] = {}
         self.scale_params: Dict[str, Tuple[float, float]] = {}
         self.formula_nodes: Dict[str, str] = {}
+        self.lags: Dict[str, Dict[str, int]] = {}
 
     def _validate_data(self, target: str, parents: List[str]) -> None:
         missing_cols = [c for c in [target] + parents if c not in self.data.columns]
@@ -136,19 +137,35 @@ class ModelBuilder:
             y, y_mean, y_std = self._normalize(residual_series)
             X = None
         else:
-            y, y_mean, y_std = self._normalize(self.data[target_metric_name])
+            lags = metric_node.get("lags") or {}
+            max_lag = max(lags.values(), default=0)
+            if max_lag > 0 and len(self.data) - max_lag < 10:
+                raise ValueError(
+                    f"Not enough rows after applying lags to '{target_metric_name}': "
+                    f"{len(self.data)} rows minus max lag {max_lag} leaves "
+                    f"{len(self.data) - max_lag} (need >= 10)."
+                )
+            self.lags[target_metric_name] = lags
+
+            # Shift each parent back by its lag, then trim the leading `max_lag`
+            # rows so every series aligns with no NaNs; normalize afterward.
+            y_series = self.data[target_metric_name]
+            if max_lag > 0:
+                y_series = y_series.iloc[max_lag:]
+            y, y_mean, y_std = self._normalize(y_series)
             X = None
             if parents:
                 X_cols = []
                 for p in parents:
-                    col, p_mean, p_std = self._normalize(self.data[p])
+                    shifted = self.data[p].shift(lags.get(p, 0))
+                    if max_lag > 0:
+                        shifted = shifted.iloc[max_lag:]
+                    col, p_mean, p_std = self._normalize(shifted)
                     self.scale_params[p] = (p_mean, p_std)
                     X_cols.append(col)
                 X = np.column_stack(X_cols)
 
         self.scale_params[target_metric_name] = (y_mean, y_std)
-
-        coef_prior = (metric_node.get("priors") or {}).get("coefficient")
 
         seasonality_defs = metric_node.get("seasonality", [])
         t = np.arange(len(y))
@@ -172,15 +189,25 @@ class ModelBuilder:
 
             if X is not None:
                 # Priors are stated in business units; the fit happens in
-                # z-scored space, so translate them per parent.
+                # z-scored space, so translate them per parent. Each parent gets
+                # its own beta: a per-parent prior if present, else the shared
+                # `coefficient` prior, else a weakly informative Normal(0, 1).
                 x_stds = np.array([self.scale_params[p][1] for p in parents])
                 scale = x_stds / y_std
-                if coef_prior:
-                    dist_name = coef_prior["distribution"]
-                    scaled = scale_prior_params(dist_name, coef_prior.get("params", {}), scale)
-                    beta = _PRIOR_DISTRIBUTIONS[dist_name]("beta", **scaled, shape=X.shape[1])
-                else:
-                    beta = pm.Normal("beta", mu=0.0, sigma=1.0, shape=X.shape[1])
+                priors_cfg = metric_node.get("priors") or {}
+                betas = []
+                for i, p in enumerate(parents):
+                    prior = priors_cfg.get(p) or priors_cfg.get("coefficient")
+                    if prior:
+                        scaled = scale_prior_params(
+                            prior["distribution"], prior.get("params", {}), scale[i]
+                        )
+                        betas.append(
+                            _PRIOR_DISTRIBUTIONS[prior["distribution"]](f"beta_{p}", **scaled)
+                        )
+                    else:
+                        betas.append(pm.Normal(f"beta_{p}", mu=0.0, sigma=1.0))
+                beta = pm.Deterministic("beta", pm.math.stack(betas))
                 pm.Deterministic("beta_raw", beta / scale)
                 regression = pm.math.dot(X, beta)
             else:

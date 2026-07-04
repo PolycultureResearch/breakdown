@@ -42,6 +42,7 @@ class MetricDefinition(BaseModel):
     formula: Optional[str] = None
     parents: List[str] = Field(default_factory=list)
     priors: Dict[str, Prior] = Field(default_factory=dict)
+    lags: Dict[str, int] = Field(default_factory=dict)
     seasonality: List[Seasonality] = Field(default_factory=list)
     trend: Optional[str] = None
 
@@ -53,6 +54,40 @@ class MetricDefinition(BaseModel):
         missing = referenced_names(self.formula) - set(self.parents)
         if missing:
             raise ValueError(f"Formula references metrics not listed in parents: {missing}")
+        return self
+
+    @model_validator(mode="after")
+    def check_priors(self) -> "MetricDefinition":
+        allowed = {"coefficient", *self.parents}
+        for key in self.priors:
+            if key not in allowed:
+                raise ValueError(
+                    f"Prior key '{key}' on metric '{self.name}' must be 'coefficient' "
+                    f"or one of the metric's parents {self.parents}."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def check_lags(self) -> "MetricDefinition":
+        if not self.lags:
+            return self
+        if self.formula is not None:
+            raise ValueError(
+                f"Metric '{self.name}' declares both `formula` and `lags`; a formula "
+                "is a contemporaneous identity and cannot use time-lagged parents."
+            )
+        parent_set = set(self.parents)
+        for key, value in self.lags.items():
+            if key not in parent_set:
+                raise ValueError(
+                    f"Lag key '{key}' on metric '{self.name}' must be one of the "
+                    f"metric's parents {self.parents}."
+                )
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(
+                    f"Lag for '{key}' on metric '{self.name}' must be an integer >= 1, "
+                    f"got {value!r}."
+                )
         return self
 
 class MetricTreeConfig(BaseModel):

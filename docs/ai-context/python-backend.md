@@ -13,6 +13,7 @@ breakdown/
   data_fetch.py    # BaseDataFetcher + Mock / Local / Cloud implementations
   engine/
     model.py       # ModelBuilder (BSTS via PyMC) + compute_shapley()
+    rca.py         # run_rca() — ancestor-DAG root cause analysis
   api/
     main.py        # FastAPI app — routes, lifespan, state
 ```
@@ -134,6 +135,28 @@ Computes Shapley attribution for a formula node using the data already held by t
 
 Returns `az.summary(trace, hdi_prob=0.95)` as a DataFrame. Raises if no trace exists for the target.
 
+**Per-parent priors & lags.** In the probabilistic path, `build_and_sample` builds one `beta_{parent}` per parent — using the parent's own prior if present under `priors`, else the shared `priors.coefficient`, else `Normal(0, 1)` — then exposes `beta = Deterministic(stack(betas))` and `beta_raw = beta / scale` (business units). If the node has `lags`, each parent series is shifted back by its lag and the leading `max(lags)` rows are trimmed before normalization; the fit raises if fewer than 10 rows remain. `builder.lags[target]` records the applied lags.
+
+---
+
+## `engine/rca.py`
+
+### `run_rca(builder, target, reference_start, reference_end, analysis_start, analysis_end, advi_draws=500) -> Dict`
+
+Root cause analysis over `nx.ancestors(dag, target) | {target}`.
+
+1. **Scope & fit.** For every probabilistic (non-formula, non-root) node in scope without a cached trace, fit it with ADVI (`draws=advi_draws`, `tune=50`). Traces are stored on the builder and reused.
+2. **Per-node attribution.** Each node reports `baseline`, `actual`, `gap`, `relative_change` (None if `|baseline| < 1e-12`), plus:
+   - **Formula node** → `attribution_method="shapley"`: exact Shapley over parent window means (reuses `compute_shapley`). `ci_95`/`prob_same_direction` are None. `unexplained = gap - (formula(actuals) - formula(baselines))`.
+   - **Probabilistic node** → `attribution_method="posterior"`: `arr = trace.posterior["beta_raw"].reshape(-1, n_parents)` (axis order = `list(dag.predecessors(node))`). For parent `p`, `samples = arr[:, i] * parent_gap`, giving `estimate` (mean), `ci_95` (2.5/97.5 percentiles), `prob_same_direction` (max mass either side of 0). Lagged parents use windows shifted back by `pd.Timedelta(days=lag)`. `unexplained = gap - sum(estimates)`.
+   - **Root node** → `attribution_method=None`, empty contributions, `unexplained=None`.
+   - Every contribution also carries `share_of_gap = estimate / gap` (None if `|gap| < 1e-12`).
+3. **`ranked_causes`** (documented heuristic): `score[target]=1.0`, propagated in reverse topological order; for each child `c` and parent `p`, `score[p] += score[c] * min(|share_of_gap|, 1.0)`. Returns all scoped nodes except the target, sorted by score desc, each `{"metric", "score", "via"}` where `via` is the child contributing `p`'s largest single term.
+
+`window_mean(data, col, start, end)` is a module-level helper (mean over `start <= date <= end`; raises on an empty window).
+
+The response contract is `{"target", "reference_window", "analysis_window", "nodes", "ranked_causes"}`.
+
 ---
 
 ## `api/main.py`
@@ -164,9 +187,11 @@ Returns `az.summary(trace, hdi_prob=0.95)` as a DataFrame. Raises if no trace ex
 
 **`GET /metrics/{name}`** — Returns metric definition, time series, and posterior summary (if a trace exists).
 
-**`POST /analyze/{name}`** — Query params: `inference_method` (`nuts`|`advi`), `draws` (50–5000), `tune` (50–5000). Acquires the lock, builds a `ModelBuilder`, samples, and caches the trace.
+**`POST /analyze/{name}`** — Query params: `inference_method` (`nuts`|`advi`), `draws` (50–5000), `tune` (50–5000). Acquires the lock, builds a `ModelBuilder`, and runs `build_and_sample` via `asyncio.to_thread` (so the sampling call doesn't block the event loop; the lock still serializes concurrent runs), then caches the trace.
 
 **`GET /shapley/{name}`** — Query params: `reference_start`, `reference_end`, `analysis_start`, `analysis_end` (all `YYYY-MM-DD`). Returns Shapley attribution. Requires the metric to have a `formula`. Returns 422 if not.
+
+**`POST /rca/{name}`** — Query params: `reference_start`, `reference_end`, `analysis_start`, `analysis_end` (all required, `YYYY-MM-DD`). Acquires the lock, builds a `ModelBuilder` seeded with `app.state.traces`, and runs `run_rca` via `asyncio.to_thread` (on-demand ADVI fits happen inside). Persists newly fitted traces back into `app.state.traces`. 404 for an unknown metric; `ValueError` (bad windows / insufficient data) → 422.
 
 ---
 

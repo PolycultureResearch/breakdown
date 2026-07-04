@@ -140,10 +140,19 @@ class MockDataFetcher(BaseDataFetcher):
             elif parents:
                 coef_prior = (node.get("priors") or {}).get("coefficient") or {}
                 default_coef = coef_prior.get("params", {}).get("mu")
+                lags = node.get("lags") or {}
                 signal = np.zeros(n_days)
                 for p in parents:
+                    parent_vals = values[p]
+                    lag = lags.get(p, 0)
+                    if lag > 0:
+                        # Edge-pad with the first value so the child co-moves
+                        # with the parent's value `lag` days earlier.
+                        parent_vals = np.concatenate(
+                            [np.full(lag, parent_vals[0]), parent_vals[:-lag]]
+                        )
                     coef = default_coef if default_coef is not None else float(rng.uniform(0.1, 0.5))
-                    signal += coef * values[p]
+                    signal += coef * parent_vals
                 noise_scale = 0.05 * float(np.abs(signal).mean()) or 1.0
                 values[name] = signal + rng.normal(0, noise_scale, n_days)
             else:
