@@ -4,42 +4,69 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
+import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 
 from breakdown.parser import Parser
 from breakdown.engine.model import ModelBuilder
-from breakdown.data_fetch import MockDataFetcher, LocalDataFetcher, CloudDataFetcher, generate_mock_data
+from breakdown.data_fetch import MockDataFetcher, LocalDataFetcher, CloudDataFetcher
 
 logger = logging.getLogger(__name__)
 
-EXAMPLES_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "examples",
-)
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DEFAULT_TREE_PATH = os.path.join(BASE_DIR, "examples", "jaffle_shop_tree.yml")
+DEFAULT_START_DATE = "2024-01-01"
+DEFAULT_END_DATE = "2024-04-09"
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    jaffle_shop_path = os.path.join(EXAMPLES_DIR, "jaffle_shop_tree.yml")
-    with open(jaffle_shop_path, "r") as f:
-        yaml_config = f.read()
-
-    parser = Parser(yaml_config)
-    provider_cfg = parser.config.provider
-
+def _build_fetcher(provider_cfg, dag):
     if provider_cfg.type == "local":
-        fetcher = LocalDataFetcher(project_path=provider_cfg.project_path)
-    elif provider_cfg.type == "cloud":
-        fetcher = CloudDataFetcher(
+        return LocalDataFetcher(project_path=provider_cfg.project_path)
+    if provider_cfg.type == "cloud":
+        return CloudDataFetcher(
             environment_id=provider_cfg.environment_id,
             host=provider_cfg.host,
             token=provider_cfg.token,
         )
-    else:
-        fetcher = MockDataFetcher()
+    return MockDataFetcher(dag=dag)
 
-    data = generate_mock_data(n_days=100)
+
+def _fetch_all_metrics(parser, fetcher, provider_type, start_date, end_date):
+    """Fetch every metric in the tree and align them on date (inner join)."""
+    frames = []
+    for metric in parser.config.metrics:
+        # local/cloud providers query the semantic layer by the last segment
+        # of `source`; the mock provider generates by tree name directly.
+        if provider_type == "mock":
+            query_name = metric.name
+        else:
+            query_name = metric.source.split(".")[-1]
+        df = fetcher.fetch_metric(query_name, start_date, end_date)
+        df = df.rename(columns={query_name: metric.name})
+        frames.append(df.set_index("date")[[metric.name]])
+
+    data = pd.concat(frames, axis=1, join="inner").reset_index()
+    if data.empty:
+        raise RuntimeError(
+            f"No overlapping dates across metrics in window [{start_date}, {end_date}]"
+        )
+    return data
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    tree_path = os.environ.get("BREAKDOWN_TREE", DEFAULT_TREE_PATH)
+    start_date = os.environ.get("BREAKDOWN_START_DATE", DEFAULT_START_DATE)
+    end_date = os.environ.get("BREAKDOWN_END_DATE", DEFAULT_END_DATE)
+
+    with open(tree_path, "r") as f:
+        yaml_config = f.read()
+
+    parser = Parser(yaml_config)
+    provider_cfg = parser.config.provider
+    fetcher = _build_fetcher(provider_cfg, parser.dag)
+    data = _fetch_all_metrics(parser, fetcher, provider_cfg.type, start_date, end_date)
 
     app.state.parser = parser
     app.state.fetcher = fetcher
@@ -47,13 +74,15 @@ async def lifespan(app: FastAPI):
     app.state.traces: Dict[str, Any] = {}
     app.state.lock = asyncio.Lock()
 
-    logger.info("breakdown API started with provider=%s", provider_cfg.type)
+    logger.info(
+        "breakdown API started: tree=%s provider=%s window=[%s, %s] rows=%d",
+        tree_path, provider_cfg.type, start_date, end_date, len(data),
+    )
     yield
 
 
 app = FastAPI(title="breakdown API", lifespan=lifespan)
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 static_dir = os.path.join(BASE_DIR, "static")
 app.mount("/ui", StaticFiles(directory=static_dir, html=True), name="ui")
 

@@ -2,7 +2,7 @@ import pytest
 import pandas as pd
 import numpy as np
 from breakdown.parser import Parser
-from breakdown.engine.model import ModelBuilder, compute_shapley
+from breakdown.engine.model import ModelBuilder, compute_shapley, scale_prior_params
 from breakdown.data_fetch import generate_mock_data
 
 SIMPLE_YAML = """
@@ -239,6 +239,91 @@ def test_compute_shapley_no_formula_raises():
         builder.compute_shapley(
             "order_count", "2024-01-01", "2024-02-01", "2024-02-01", "2024-03-01"
         )
+
+
+# --- Prior scaling tests ---
+
+def test_scale_prior_params_normal():
+    scale = np.array([2.0, 0.5])
+    scaled = scale_prior_params("Normal", {"mu": 0.1, "sigma": 0.02}, scale)
+    assert np.allclose(scaled["mu"], [0.2, 0.05])
+    assert np.allclose(scaled["sigma"], [0.04, 0.01])
+
+
+def test_scale_prior_params_halfnormal():
+    scale = np.array([2.0])
+    scaled = scale_prior_params("HalfNormal", {"sigma": 0.5}, scale)
+    assert np.allclose(scaled["sigma"], [1.0])
+
+
+def test_scale_prior_params_exponential():
+    # Scaling the variable by s divides the rate by s
+    scale = np.array([2.0])
+    scaled = scale_prior_params("Exponential", {"lam": 4.0}, scale)
+    assert np.allclose(scaled["lam"], [2.0])
+
+
+def test_scale_prior_params_lognormal():
+    # Scaling the variable by s shifts mu by log(s); sigma unchanged
+    scale = np.array([np.e])
+    scaled = scale_prior_params("LogNormal", {"mu": 1.0, "sigma": 0.5}, scale)
+    assert np.allclose(scaled["mu"], [2.0])
+    assert scaled["sigma"] == 0.5
+
+
+def test_scale_prior_params_unknown_distribution_raises():
+    with pytest.raises(ValueError, match="Unsupported prior distribution"):
+        scale_prior_params("Cauchy", {}, np.array([1.0]))
+
+
+def test_beta_raw_recovers_business_units():
+    """With a tight Normal(0.1, 0.02) prior in business units and mock data
+    generated with a true coefficient of 0.1, the raw-scale posterior should
+    land near 0.1 — not near the z-scored coefficient."""
+    parser = Parser(YAML_WITH_PRIORS)
+    data = generate_mock_data(n_days=50)
+    builder = ModelBuilder(parser.dag, data)
+
+    trace = builder.build_and_sample("order_count", draws=200, tune=200)
+
+    assert "beta_raw" in trace.posterior
+    beta_raw_mean = float(trace.posterior["beta_raw"].mean())
+    assert 0.05 < beta_raw_mean < 0.15
+
+
+def test_halfnormal_prior_constrains_beta_positive():
+    yaml_content = """
+metrics:
+  - name: daily_sessions
+    source: dbt.metric.daily_sessions
+  - name: order_count
+    source: dbt.metric.order_count
+    parents: [daily_sessions]
+    priors:
+      coefficient:
+        distribution: "HalfNormal"
+        params: { sigma: 0.2 }
+"""
+    parser = Parser(yaml_content)
+    data = generate_mock_data(n_days=50)
+    builder = ModelBuilder(parser.dag, data)
+
+    trace = builder.build_and_sample("order_count", draws=100, tune=100)
+
+    assert (trace.posterior["beta"].values > 0).all()
+    assert (trace.posterior["beta_raw"].values > 0).all()
+
+
+def test_unsupported_prior_distribution_in_engine_raises():
+    """The engine must reject unknown distributions rather than silently
+    substituting Normal(0, 1)."""
+    parser = Parser(YAML_WITH_PRIORS)
+    data = generate_mock_data(n_days=50)
+    builder = ModelBuilder(parser.dag, data)
+    builder.dag.nodes["order_count"]["priors"]["coefficient"]["distribution"] = "Cauchy"
+
+    with pytest.raises(ValueError, match="Unsupported prior distribution"):
+        builder.build_and_sample("order_count", draws=100, tune=100)
 
 
 # --- Inference method tests ---

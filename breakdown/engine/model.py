@@ -1,4 +1,3 @@
-import ast
 import logging
 import math
 from itertools import combinations
@@ -9,22 +8,41 @@ import pandas as pd
 import networkx as nx
 import pymc as pm
 
+from breakdown.formula import eval_formula
+
 logger = logging.getLogger(__name__)
 
-_FORMULA_SAFE_NODES = (
-    ast.Expression, ast.BinOp, ast.Name, ast.Constant,
-    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow,
-    ast.UnaryOp, ast.USub, ast.UAdd,
-    ast.Load,  # context node on Name nodes
-)
+
+def scale_prior_params(distribution: str, params: Dict[str, Any], scale: np.ndarray) -> Dict[str, Any]:
+    """
+    Translate raw-scale (business-unit) prior parameters into normalized space.
+
+    The model regresses z-scored y on z-scored x, so a raw-scale coefficient
+    beta_raw maps to beta_norm = beta_raw * (x_std / y_std). `scale` is that
+    x_std / y_std factor, one entry per parent.
+    """
+    if distribution == "Normal":
+        return {"mu": params.get("mu", 0.0) * scale, "sigma": params.get("sigma", 1.0) * scale}
+    if distribution == "HalfNormal":
+        return {"sigma": params.get("sigma", 1.0) * scale}
+    if distribution == "Exponential":
+        # Scaling an Exponential(lam) variable by s divides the rate by s.
+        return {"lam": params.get("lam", 1.0) / scale}
+    if distribution == "LogNormal":
+        # Scaling a LogNormal by s shifts mu by log(s); sigma is unchanged.
+        return {"mu": params.get("mu", 0.0) + np.log(scale), "sigma": params.get("sigma", 1.0)}
+    raise ValueError(
+        f"Unsupported prior distribution: '{distribution}'. "
+        "Must be one of: Normal, HalfNormal, Exponential, LogNormal"
+    )
 
 
-def _eval_formula(formula: str, values: Dict[str, np.ndarray]) -> np.ndarray:
-    tree = ast.parse(formula, mode="eval")
-    for node in ast.walk(tree):
-        if not isinstance(node, _FORMULA_SAFE_NODES):
-            raise ValueError(f"Unsafe formula node: {type(node).__name__}")
-    return eval(formula, {"__builtins__": {}}, values)  # noqa: S307
+_PRIOR_DISTRIBUTIONS = {
+    "Normal": pm.Normal,
+    "HalfNormal": pm.HalfNormal,
+    "Exponential": pm.Exponential,
+    "LogNormal": pm.LogNormal,
+}
 
 
 def compute_shapley(
@@ -59,8 +77,8 @@ def compute_shapley(
                     for p in parent_names
                 }
 
-                v_with = float(_eval_formula(formula, {k: np.array([v]) for k, v in vals_with.items()})[0])
-                v_without = float(_eval_formula(formula, {k: np.array([v]) for k, v in vals_without.items()})[0])
+                v_with = float(eval_formula(formula, {k: np.array([v]) for k, v in vals_with.items()})[0])
+                v_without = float(eval_formula(formula, {k: np.array([v]) for k, v in vals_without.items()})[0])
                 phi += weight * (v_with - v_without)
 
         shapley[player] = phi
@@ -112,7 +130,7 @@ class ModelBuilder:
         if formula and parents:
             self.formula_nodes[target_metric_name] = formula
             parent_arrays = {p: self.data[p].values.astype(float) for p in parents}
-            y_formula = _eval_formula(formula, parent_arrays)
+            y_formula = eval_formula(formula, parent_arrays)
             residual = self.data[target_metric_name].values.astype(float) - y_formula
             residual_series = pd.Series(residual, name=f"{target_metric_name}_residual")
             y, y_mean, y_std = self._normalize(residual_series)
@@ -130,13 +148,7 @@ class ModelBuilder:
 
         self.scale_params[target_metric_name] = (y_mean, y_std)
 
-        raw_priors = metric_node.get("priors", {})
-        coef_prior = raw_priors.get("coefficient")
-        if coef_prior and coef_prior.get("distribution") == "Normal":
-            beta_mu = float(coef_prior["params"].get("mu", 0.0))
-            beta_sigma = float(coef_prior["params"].get("sigma", 1.0))
-        else:
-            beta_mu, beta_sigma = 0.0, 1.0
+        coef_prior = (metric_node.get("priors") or {}).get("coefficient")
 
         seasonality_defs = metric_node.get("seasonality", [])
         t = np.arange(len(y))
@@ -159,7 +171,17 @@ class ModelBuilder:
             seasonal = sum(seasonal_terms) if seasonal_terms else 0.0
 
             if X is not None:
-                beta = pm.Normal("beta", mu=beta_mu, sigma=beta_sigma, shape=X.shape[1])
+                # Priors are stated in business units; the fit happens in
+                # z-scored space, so translate them per parent.
+                x_stds = np.array([self.scale_params[p][1] for p in parents])
+                scale = x_stds / y_std
+                if coef_prior:
+                    dist_name = coef_prior["distribution"]
+                    scaled = scale_prior_params(dist_name, coef_prior.get("params", {}), scale)
+                    beta = _PRIOR_DISTRIBUTIONS[dist_name]("beta", **scaled, shape=X.shape[1])
+                else:
+                    beta = pm.Normal("beta", mu=0.0, sigma=1.0, shape=X.shape[1])
+                pm.Deterministic("beta_raw", beta / scale)
                 regression = pm.math.dot(X, beta)
             else:
                 regression = 0.0
@@ -226,8 +248,8 @@ class ModelBuilder:
 
         shapley_values = compute_shapley(formula, parents, parent_baselines, parent_actuals)
 
-        baseline_target = float(_eval_formula(formula, {p: np.array([parent_baselines[p]]) for p in parents})[0])
-        actual_target = float(_eval_formula(formula, {p: np.array([parent_actuals[p]]) for p in parents})[0])
+        baseline_target = float(eval_formula(formula, {p: np.array([parent_baselines[p]]) for p in parents})[0])
+        actual_target = float(eval_formula(formula, {p: np.array([parent_actuals[p]]) for p in parents})[0])
 
         return {
             "target": target_metric_name,

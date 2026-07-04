@@ -9,6 +9,7 @@ The `breakdown` backend uses PyMC to perform Bayesian inference on metric relati
 ```
 breakdown/
   parser.py        # YAML → Pydantic models → NetworkX DAG
+  formula.py       # Shared formula AST validation + safe eval (used by parser, engine, data_fetch)
   data_fetch.py    # BaseDataFetcher + Mock / Local / Cloud implementations
   engine/
     model.py       # ModelBuilder (BSTS via PyMC) + compute_shapley()
@@ -49,7 +50,7 @@ def fetch_metric(self, metric_name: str, start_date: str, end_date: str, grain: 
 Returns a DataFrame with columns `["date", metric_name]`, sorted by date, no NaNs.
 
 ### `MockDataFetcher`
-Generates correlated synthetic data for the jaffle-shop tree. Seeded per metric name — deterministic across calls.
+Constructed with an optional metric DAG (`MockDataFetcher(dag=parser.dag)`). With a DAG, series are generated in topological order so they respect the tree: formula nodes satisfy their formula plus ~2% noise, probabilistic nodes are a coefficient-weighted sum of parents (coefficient taken from the prior's `mu` when available) plus ~5% noise, and roots are random walks with weekly seasonality. Without a DAG (or for names not in it), falls back to an independent random walk. Seeded per metric name — deterministic across calls. The full frame per window is cached.
 
 ### `LocalDataFetcher`
 Invokes `mf query --metrics <name> --group-by metric_time__<grain> --start-time ... --end-time ... --csv <tmpfile>` as a subprocess. `project_path` becomes the working directory. Raises `RuntimeError` on non-zero exit code or OS errors (e.g., path not found).
@@ -102,7 +103,8 @@ Fits a Bayesian Structural Time Series model for `target`. Two code paths:
 **Probabilistic node** (no formula):
 1. Normalizes `y` and all parent columns independently
 2. Fits BSTS with a `beta` regressor on stacked parent columns
-3. Prior on `beta` comes from the YAML `priors.coefficient` field (defaults to `Normal(0, 1)`)
+3. Prior on `beta` comes from the YAML `priors.coefficient` field (defaults to `Normal(0, 1)` in normalized space). User priors are stated in business units and translated into normalized space by `scale_prior_params(distribution, params, scale)` where `scale = x_std / y_std` per parent. All four distributions (`Normal`, `HalfNormal`, `Exponential`, `LogNormal`) are honored; anything else raises `ValueError`.
+4. Adds `beta_raw = beta / scale` as a `pm.Deterministic`, so the trace and `az.summary` report the coefficient in business units — this survives trace caching without needing the builder's `scale_params`.
 
 **Common model components (both paths):**
 ```python
@@ -135,6 +137,16 @@ Returns `az.summary(trace, hdi_prob=0.95)` as a DataFrame. Raises if no trace ex
 ---
 
 ## `api/main.py`
+
+### Startup configuration (env vars, set by `main.py serve` flags)
+
+| Env var | CLI flag | Default |
+|---------|----------|---------|
+| `BREAKDOWN_TREE` | `--tree` | `examples/jaffle_shop_tree.yml` |
+| `BREAKDOWN_START_DATE` | `--start-date` | `2024-01-01` |
+| `BREAKDOWN_END_DATE` | `--end-date` | `2024-04-09` |
+
+`lifespan` builds the fetcher from the tree's `provider` config and fetches every metric in the tree for the configured window, inner-joining on `date`. For `local`/`cloud` providers the queried metric name is the last segment of `source`; the column is renamed to the tree `name`. The mock provider generates by tree name directly.
 
 ### State (set in `lifespan`)
 

@@ -2,7 +2,10 @@ import logging
 from abc import ABC, abstractmethod
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional
+import networkx as nx
+from typing import Dict, List, Optional, Tuple
+
+from breakdown.formula import eval_formula
 
 logger = logging.getLogger(__name__)
 
@@ -96,18 +99,77 @@ class LocalDataFetcher(BaseDataFetcher):
 
 
 class MockDataFetcher(BaseDataFetcher):
-    """Generates synthetic data for development and testing."""
+    """
+    Generates synthetic data for development and testing.
+
+    When constructed with a metric DAG, generated series respect the tree
+    structure: formula nodes satisfy their formula (plus noise), probabilistic
+    nodes co-move with their parents, and root nodes are random walks with
+    weekly seasonality. Without a DAG, each metric is an independent random
+    walk. Only daily grain is supported.
+    """
+    def __init__(self, dag: Optional[nx.DiGraph] = None):
+        self.dag = dag
+        self._cache: Dict[Tuple[str, str], pd.DataFrame] = {}
+
+    @staticmethod
+    def _rng_for(metric_name: str) -> np.random.Generator:
+        # Seeded deterministically per metric — no global state mutation
+        return np.random.default_rng(seed=sum(ord(c) for c in metric_name) % (2**32))
+
+    def _tree_data(self, start_date: str, end_date: str) -> pd.DataFrame:
+        key = (start_date, end_date)
+        if key in self._cache:
+            return self._cache[key]
+
+        dates = pd.date_range(start=start_date, end=end_date)
+        n_days = len(dates)
+        t = np.arange(n_days)
+        values: Dict[str, np.ndarray] = {}
+
+        for name in nx.topological_sort(self.dag):
+            node = self.dag.nodes[name]
+            rng = self._rng_for(name)
+            parents = list(self.dag.predecessors(name))
+            formula = node.get("formula")
+
+            if formula and parents:
+                base = eval_formula(formula, {p: values[p] for p in parents})
+                noise_scale = 0.02 * float(np.abs(base).mean()) or 1.0
+                values[name] = base + rng.normal(0, noise_scale, n_days)
+            elif parents:
+                coef_prior = (node.get("priors") or {}).get("coefficient") or {}
+                default_coef = coef_prior.get("params", {}).get("mu")
+                signal = np.zeros(n_days)
+                for p in parents:
+                    coef = default_coef if default_coef is not None else float(rng.uniform(0.1, 0.5))
+                    signal += coef * values[p]
+                noise_scale = 0.05 * float(np.abs(signal).mean()) or 1.0
+                values[name] = signal + rng.normal(0, noise_scale, n_days)
+            else:
+                level = float(rng.uniform(50, 5000))
+                values[name] = (
+                    level
+                    + np.cumsum(rng.normal(0, 0.02 * level, n_days))
+                    + 0.1 * level * np.sin(2 * np.pi * t / 7)
+                )
+
+        df = pd.DataFrame({"date": dates, **values})
+        self._cache[key] = df
+        return df
+
     def fetch_metric(self, metric_name: str, start_date: str, end_date: str, grain: str = "day") -> pd.DataFrame:
         start = pd.to_datetime(start_date)
         end = pd.to_datetime(end_date)
         if end < start:
             raise ValueError(f"end_date '{end_date}' must be >= start_date '{start_date}'")
+
+        if self.dag is not None and metric_name in self.dag:
+            return self._tree_data(start_date, end_date)[["date", metric_name]].copy()
+
         n_days = (end - start).days + 1
         dates = pd.date_range(start=start_date, periods=n_days)
-
-        # Use a local RNG seeded deterministically per metric — no global state mutation
-        seed = sum(ord(c) for c in metric_name) % (2**32)
-        rng = np.random.default_rng(seed=seed)
+        rng = self._rng_for(metric_name)
         values = 1000 + np.cumsum(rng.normal(0, 10, n_days))
 
         return pd.DataFrame({"date": dates, metric_name: values})

@@ -1,8 +1,9 @@
-import ast
 import yaml
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field, field_validator, model_validator
 import networkx as nx
+
+from breakdown.formula import referenced_names, validate_formula
 
 class Prior(BaseModel):
     distribution: str
@@ -34,13 +35,6 @@ class Seasonality(BaseModel):
     period: int
     name: str
 
-_FORMULA_ALLOWED_NODES = (
-    ast.Expression, ast.BinOp, ast.Name, ast.Constant,
-    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow,
-    ast.UnaryOp, ast.USub, ast.UAdd,
-    ast.Load,  # context node on Name nodes
-)
-
 class MetricDefinition(BaseModel):
     name: str
     description: Optional[str] = None
@@ -52,18 +46,11 @@ class MetricDefinition(BaseModel):
     trend: Optional[str] = None
 
     @model_validator(mode="after")
-    def validate_formula(self) -> "MetricDefinition":
+    def check_formula(self) -> "MetricDefinition":
         if self.formula is None:
             return self
-        try:
-            tree = ast.parse(self.formula, mode="eval")
-        except SyntaxError as e:
-            raise ValueError(f"Invalid formula syntax: {e}") from e
-        for node in ast.walk(tree):
-            if not isinstance(node, _FORMULA_ALLOWED_NODES):
-                raise ValueError(f"Formula contains unsupported operation: {type(node).__name__}")
-        referenced = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
-        missing = referenced - set(self.parents)
+        validate_formula(self.formula)
+        missing = referenced_names(self.formula) - set(self.parents)
         if missing:
             raise ValueError(f"Formula references metrics not listed in parents: {missing}")
         return self

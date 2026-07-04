@@ -85,6 +85,14 @@ uv run python main.py serve
 
 Open `http://localhost:9090/ui` to explore the metric tree.
 
+By default the server loads `examples/jaffle_shop_tree.yml` with mock data. Point it at your own tree and data window:
+
+```bash
+uv run python main.py serve --tree path/to/my_tree.yml --start-date 2025-01-01 --end-date 2025-06-30
+```
+
+At startup, breakdown fetches the time series for every metric in the tree from the configured provider (mock, local MetricFlow, or dbt Cloud Semantic Layer) and aligns them on date.
+
 Run a Bayesian analysis on a metric:
 
 ```bash
@@ -122,9 +130,11 @@ provider:
 
 | Type | Description |
 |------|-------------|
-| `mock` | Deterministic synthetic data. No config needed. Use for development and testing. |
+| `mock` | Deterministic synthetic data that respects the tree structure (formula nodes satisfy their formulas, probabilistic children co-move with parents). No config needed. Use for development and testing. |
 | `local` | Queries a dbt project on disk via the MetricFlow CLI (`mf query`). Requires `project_path`. |
 | `cloud` | Queries the dbt Semantic Layer API via the `dbt-sl-sdk`. Requires `environment_id`, `host`, and `token`. |
+
+For `local` and `cloud`, the metric queried from the semantic layer is the last segment of `source` (e.g., `source: jaffle_shop.metrics.revenue` queries the metric `revenue`); the result is exposed in the tree under `name`. The data window defaults to `2024-01-01`–`2024-04-09` and is set with `--start-date` / `--end-date` (or the `BREAKDOWN_START_DATE` / `BREAKDOWN_END_DATE` / `BREAKDOWN_TREE` environment variables).
 
 ### `metrics`
 
@@ -143,7 +153,7 @@ Each metric entry supports the following fields:
 
 ### Priors
 
-Priors apply when the relationship with a parent is probabilistic (no formula). Supported distributions: `Normal`, `HalfNormal`, `Exponential`, `LogNormal`.
+Priors apply when the relationship with a parent is probabilistic (no formula). They are stated in **business units** — e.g., `mu: 0.1` below means "each additional session is worth ~0.1 orders". Internally the model fits on z-scored data, and breakdown translates the prior into normalized space automatically. The posterior reports both `beta` (normalized) and `beta_raw` (business units).
 
 ```yaml
 priors:
@@ -151,6 +161,17 @@ priors:
     distribution: "Normal"
     params: { mu: 0.1, sigma: 0.02 }
 ```
+
+Supported distributions and their parameters:
+
+| Distribution | Params | Use when |
+|--------------|--------|----------|
+| `Normal` | `mu`, `sigma` | You have a point estimate and uncertainty |
+| `HalfNormal` | `sigma` | The effect must be positive |
+| `Exponential` | `lam` | Positive effect, most mass near zero |
+| `LogNormal` | `mu`, `sigma` | Positive, right-skewed effect |
+
+With multiple parents, the same prior currently applies to every parent (scaled per parent's units).
 
 ### Seasonality
 
@@ -288,6 +309,7 @@ This generalizes to arbitrary formulas and any number of parents via exact enume
 ```
 breakdown/
   parser.py          # YAML → Pydantic models → NetworkX DAG
+  formula.py         # Shared formula validation / safe evaluation
   data_fetch.py      # BaseDataFetcher + Mock / Local / Cloud implementations
   engine/
     model.py         # ModelBuilder (BSTS via PyMC) + compute_shapley()

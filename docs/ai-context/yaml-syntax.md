@@ -100,6 +100,8 @@ formula: "a + b + c"                           # additive (same as linear BSTS, 
 
 Priors apply to the `coefficient` (β) of each parent regressor in a probabilistic (non-formula) node. If omitted, a weakly informative `Normal(0, 1)` prior is used on normalized data.
 
+Prior parameters are stated in **business units** (raw scale). The engine translates them into normalized space via `scale_prior_params()` before fitting, and adds a `beta_raw` deterministic to the trace so posteriors are also readable in business units.
+
 ```yaml
 priors:
   coefficient:
@@ -107,7 +109,7 @@ priors:
     params: { mu: 0.1, sigma: 0.02 }
 ```
 
-Supported distributions: `Normal`, `HalfNormal`, `Exponential`, `LogNormal`.
+Supported distributions and params: `Normal` (`mu`, `sigma`), `HalfNormal` (`sigma`), `Exponential` (`lam`), `LogNormal` (`mu`, `sigma`). With multiple parents, the same prior applies to every parent, scaled per parent. Unknown distributions are rejected at parse time and again by the engine.
 
 ---
 
