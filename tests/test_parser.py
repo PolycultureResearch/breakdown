@@ -57,6 +57,67 @@ metrics:
         Parser(yaml_content)
 
 
+# --- Formula validation tests ---
+
+def test_formula_parsed_and_stored():
+    yaml_content = """
+metrics:
+  - name: orders
+    source: dbt.metric.orders
+  - name: aov
+    source: dbt.metric.aov
+  - name: revenue
+    source: dbt.metric.revenue
+    formula: "orders * aov"
+    parents: [orders, aov]
+"""
+    parser = Parser(yaml_content)
+    metric = parser.get_metric("revenue")
+    assert metric.formula == "orders * aov"
+
+
+def test_formula_with_undeclared_parent_raises():
+    yaml_content = """
+metrics:
+  - name: orders
+    source: dbt.metric.orders
+  - name: revenue
+    source: dbt.metric.revenue
+    formula: "orders * mystery_metric"
+    parents: [orders]
+"""
+    with pytest.raises(ValueError, match="not listed in parents"):
+        Parser(yaml_content)
+
+
+def test_formula_invalid_syntax_raises():
+    yaml_content = """
+metrics:
+  - name: orders
+    source: dbt.metric.orders
+  - name: revenue
+    source: dbt.metric.revenue
+    formula: "orders *** aov"
+    parents: [orders]
+"""
+    with pytest.raises(ValueError, match="formula"):
+        Parser(yaml_content)
+
+
+def test_formula_disallows_function_calls():
+    yaml_content = """
+metrics:
+  - name: orders
+    source: dbt.metric.orders
+  - name: revenue
+    source: dbt.metric.revenue
+    formula: "abs(orders)"
+    parents: [orders]
+"""
+    with pytest.raises(ValueError, match="unsupported operation"):
+        Parser(yaml_content)
+
+
 # --- Data fetcher tests ---
 
 def test_mock_fetcher_returns_data():
@@ -68,7 +129,6 @@ def test_mock_fetcher_returns_data():
 
 
 def test_mock_fetcher_deterministic():
-    """Same call twice should return identical data."""
     fetcher = MockDataFetcher()
     df1 = fetcher.fetch_metric("revenue", "2024-01-01", "2024-03-31")
     df2 = fetcher.fetch_metric("revenue", "2024-01-01", "2024-03-31")
@@ -81,19 +141,15 @@ def test_mock_fetcher_invalid_date_range():
         fetcher.fetch_metric("revenue", "2024-03-31", "2024-01-01")
 
 
-def test_cloud_fetcher_not_implemented():
-    # CloudDataFetcher.__init__ imports dbtsl which may not be installed in CI,
-    # so we test fetch_metric via a minimal subclass that skips __init__.
-    class _TestCloud(CloudDataFetcher):
-        def __init__(self):
-            pass  # skip SDK init
-
-    fetcher = _TestCloud()
-    with pytest.raises(NotImplementedError):
+def test_cloud_fetcher_requires_credentials():
+    """CloudDataFetcher.__init__ should raise when dbtsl client rejects bad credentials."""
+    with pytest.raises(Exception):
+        fetcher = CloudDataFetcher(environment_id="0", host="invalid.host", token="bad-token")
         fetcher.fetch_metric("revenue", "2024-01-01", "2024-03-31")
 
 
-def test_local_fetcher_not_implemented():
-    fetcher = LocalDataFetcher(project_path="/tmp/fake")
-    with pytest.raises(NotImplementedError):
+def test_local_fetcher_raises_on_bad_project():
+    """LocalDataFetcher should raise RuntimeError when mf fails on a non-existent project."""
+    fetcher = LocalDataFetcher(project_path="/tmp/nonexistent_dbt_project")
+    with pytest.raises(RuntimeError, match="mf query failed"):
         fetcher.fetch_metric("revenue", "2024-01-01", "2024-03-31")

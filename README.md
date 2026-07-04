@@ -1,40 +1,58 @@
 # breakdown
 
-**An open engine for metrics tree construction and analysis**
+**An open engine for Bayesian metric tree construction and root cause analysis**
 
-Metrics trees model causal relationships between business metrics and assist in diagnosing the root causes of changes in metrics. Breakdown models your business metrics as a causal graph and uses Bayesian inference to learn the probabilistic relationships between them. Instead of asking "did revenue go up?", you can ask "which upstream metric caused it, and how confident are we?"
+Metrics trees model causal relationships between business metrics and assist in diagnosing the root causes of changes in KPIs. Breakdown models your business metrics as a causal graph and uses Bayesian inference to learn the probabilistic relationships between them. Instead of asking "did revenue drop?", you can ask "which upstream metric drove it, and how confident are we?"
 
-Breakdown handles both determinsistic and probabalisitc causal relationships. Imagine, for example, a KPI like `Net Revenue`, which might be difined as `Gross Revenue - Cost of Goods Sold`. In a metric tree, `Gross Revenue` and `Cost of Goods Sold` deterministically (aka arithmatically) related to `Net Revenue`: The outcome (`Net Revenue`) can be deturmined precisely by the parent metrics using aritmatic. If you notice an unexpect decline in `Net Revenue`, it makes sense to decompose that metric into it's component parts, and see whether the change is driven by an increase in `Cost of Goods Sold` or a decrease in `Gross Revenue` or both. It also lets you define metrics upstream and their relationshps to `Cost of Goods Sold` and `Gross Revenue`, and parent metrics of those, and so on. Breakdown builds a directed acyclic graph of that metrics tree. When you need to find the root cause of a change in a KPI, Because you already have these relationships defined, Breakdown can help find the answer quickly.
+---
 
-Breakdown also handles probabilistic relationships — cases where a metric has a causal effect, but one doesn't determine the other by formula. Consider `Support Ticket Volume` and `Churn Rate`. There's no arithmetic that connects them: you can't compute churn from ticket volume. But historically, when support tickets spike, churn tends to follow a few weeks later, and we can imagine the how filing more support tickets indicates frustration and frustration leads to churn. That's a learned correlation that can be derived probabalistically from historical data. If Churn Rate rises unexpectedly, Breakdown can surface correlated metrics — like Support Ticket Volume, Feature Adoption Rate, or Days Since Last Login — that statistically covaried with churn in the past. You still get the decomposition insight ("churn spiked and ticket volume was elevated two weeks prior"), without pretending the relationship is more certain than it is.
+## Two kinds of causal relationships
 
-## The causal inference engine 
+Breakdown handles both types of relationships you find in real metric trees.
 
-Most existing metrics tree software ether limits a metrics tree to deterministic relationships, or uses simple correlation coeficients to identify metrics that "move together", but only implicitly point to causal relationships. Without causal modeling, metrics trees exell at visualizing business concepts, but have limited use in diagnosing root causes or identifying opportunities. Breakdown tries to overcome these limitations by modeling probabalisitic relationships between metrics using a causal inference technique. 
+**Deterministic (formula-based):** Some metrics are arithmetic identities.
+
+> `Revenue = Order Count × Average Order Value`
+
+When revenue drops, you can decompose the gap exactly. Breakdown uses **Shapley value attribution** to distribute the revenue shortfall between `order_count` and `average_order_value` in a mathematically fair way — accounting for interaction effects that simpler approaches miss.
+
+**Probabilistic (learned):** Other metrics have a causal effect that isn't computable by formula.
+
+> Support ticket volume → Churn rate (weeks later)
+
+There is no arithmetic connecting them, but historically they co-move. Breakdown learns these relationships from your time-series data using **Bayesian Structural Time Series (BSTS)** models. Each BSTS model decomposes a metric into trend, seasonality, and causal regression terms, producing a posterior distribution over the coefficient on each parent metric.
+
+---
 
 ## How it works
 
-You define your metric tree in a YAML file:
+### 1. Define your metric tree in YAML
 
 ```yaml
 provider:
-  type: mock  # or: local, cloud (dbt Semantic Layer)
+  type: mock  # or: local, cloud
 
 metrics:
   - name: daily_sessions
     source: jaffle_shop.metrics.sessions
 
-  - name: order_count # a probabalistic relationship 
+  - name: order_count
+    description: "~10% session-to-order conversion — modeled probabilistically"
     source: jaffle_shop.metrics.order_count
     parents:
       - daily_sessions
     priors:
       coefficient:
         distribution: "Normal"
-        params: { mu: 0.1, sigma: 0.02 }  # ~10% session→order conversion
+        params: { mu: 0.1, sigma: 0.02 }
 
-  - name: revenue # an arithmatic (deterministic) relationship
+  - name: average_order_value
+    source: jaffle_shop.metrics.average_order_value
+
+  - name: revenue
+    description: "Arithmetic identity — Shapley attribution available"
     source: jaffle_shop.metrics.revenue
+    formula: "order_count * average_order_value"
     parents:
       - order_count
       - average_order_value
@@ -43,11 +61,16 @@ metrics:
         name: weekly
 ```
 
-breakdown parses this into a DAG, fetches time-series data for each metric, and fits a Bayesian Structural Time Series model at each node. Each model decomposes a metric into:
+### 2. Breakdown parses this into a DAG
 
-- **Trend** — a Gaussian random walk capturing drift over time
-- **Seasonality** — Fourier components for any periodic patterns you specify
-- **Causal regression** — coefficients on parent metrics, with your priors applied
+The YAML is validated and compiled into a directed acyclic graph using NetworkX. Cycles and undefined parent references are caught at parse time.
+
+### 3. For each metric, choose your analysis
+
+- **BSTS sampling** (`POST /analyze/{name}`) — runs PyMC to fit a state-space model and returns a posterior over trend, seasonality, and causal coefficients.
+- **Shapley attribution** (`GET /shapley/{name}`) — for metrics with a `formula`, computes how much of a period-over-period gap each parent is responsible for.
+
+---
 
 ## Quickstart
 
@@ -57,54 +80,217 @@ breakdown parses this into a DAG, fetches time-series data for each metric, and 
 git clone https://github.com/your-org/breakdown
 cd breakdown
 uv sync
-uv run uvicorn breakdown.api.main:app --reload
+uv run python main.py serve
 ```
 
-Open `http://localhost:8000/ui` to explore the metric tree.
+Open `http://localhost:9090/ui` to explore the metric tree.
 
-To run a Bayesian analysis on a metric:
+Run a Bayesian analysis on a metric:
 
 ```bash
-curl -X POST http://localhost:8000/analyze/order_count
+curl -X POST "http://localhost:9090/analyze/order_count"
 ```
 
-Then click the node in the UI to see the posterior summary.
+Get Shapley attribution for a formula node:
 
-## Data providers
+```bash
+curl "http://localhost:9090/shapley/revenue?reference_start=2024-01-01&reference_end=2024-02-15&analysis_start=2024-02-16&analysis_end=2024-04-09"
+```
 
-| Provider | Config | Status |
-|----------|--------|--------|
-| `mock` | none | Ready — correlated synthetic data for the jaffle-shop example |
-| `local` | `project_path` | Planned — dbt-metricflow against a local project |
-| `cloud` | `environment_id`, `host`, `token` | Planned — dbt Semantic Layer API |
+Run tests:
 
-Set the provider in your YAML:
+```bash
+uv run pytest tests/ -v
+```
+
+---
+
+## YAML reference
+
+### `provider`
+
+Controls how metric time-series data is fetched.
 
 ```yaml
 provider:
-  type: cloud
-  environment_id: "12345"
-  host: "semantic-layer.cloud.getdbt.com"
-  token: "your-token"
+  type: mock           # mock | local | cloud
+  project_path: "..."  # required for type: local
+  environment_id: "..."  # required for type: cloud
+  host: "..."            # required for type: cloud
+  token: "..."           # required for type: cloud
 ```
 
-## API
+| Type | Description |
+|------|-------------|
+| `mock` | Deterministic synthetic data. No config needed. Use for development and testing. |
+| `local` | Queries a dbt project on disk via the MetricFlow CLI (`mf query`). Requires `project_path`. |
+| `cloud` | Queries the dbt Semantic Layer API via the `dbt-sl-sdk`. Requires `environment_id`, `host`, and `token`. |
+
+### `metrics`
+
+Each metric entry supports the following fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Unique identifier used throughout the tree |
+| `source` | string | dbt Semantic Layer metric path (e.g., `jaffle_shop.metrics.revenue`) |
+| `description` | string | Optional human-readable description |
+| `parents` | list | Names of metrics that causally influence this one |
+| `formula` | string | Arithmetic expression over parent names (e.g., `"order_count * average_order_value"`). Enables Shapley attribution. |
+| `priors` | dict | Bayesian priors for the causal coefficients (see below) |
+| `seasonality` | list | Periodic components to include in the BSTS model |
+| `trend` | string | Trend type — currently `linear` (Gaussian random walk) |
+
+### Priors
+
+Priors apply when the relationship with a parent is probabilistic (no formula). Supported distributions: `Normal`, `HalfNormal`, `Exponential`, `LogNormal`.
+
+```yaml
+priors:
+  coefficient:
+    distribution: "Normal"
+    params: { mu: 0.1, sigma: 0.02 }
+```
+
+### Seasonality
+
+```yaml
+seasonality:
+  - period: 7
+    name: weekly
+  - period: 365
+    name: annual
+```
+
+Each seasonality component is modeled with 2 Fourier harmonics (4 parameters: sin/cos × 2 harmonics).
+
+### Formula
+
+Formulas express exact arithmetic relationships between a metric and its parents. The expression is a restricted Python arithmetic expression — only the operators `+`, `-`, `*`, `/`, `**` and named parent metrics are allowed. Function calls and attribute access are rejected at parse time.
+
+```yaml
+- name: net_revenue
+  formula: "gross_revenue - cost_of_goods_sold"
+  parents: [gross_revenue, cost_of_goods_sold]
+
+- name: revenue
+  formula: "order_count * average_order_value"
+  parents: [order_count, average_order_value]
+
+- name: conversion_rate
+  formula: "order_count / daily_sessions"
+  parents: [order_count, daily_sessions]
+```
+
+When a formula is defined, the BSTS model fits the **residual** (`y - formula(parents)`) rather than using parent regressors. This correctly captures the structural relationship and surfaces unexplained variance in the residual.
+
+---
+
+## API reference
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/dag` | Returns the full metric DAG (nodes + edges) |
-| `GET` | `/metrics/{name}` | Returns definition, time series, and posterior summary for a metric |
-| `POST` | `/analyze/{name}` | Runs Bayesian sampling for a metric |
+| `GET` | `/dag` | Full metric DAG (nodes + edges) |
+| `GET` | `/metrics/{name}` | Metric definition, time series, and posterior summary |
+| `POST` | `/analyze/{name}` | Run Bayesian sampling for a metric |
+| `GET` | `/shapley/{name}` | Shapley attribution for a formula metric |
 | `GET` | `/ui` | Interactive DAG visualization |
+
+### `POST /analyze/{name}`
+
+Query parameters:
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `inference_method` | `nuts` | `nuts` (full MCMC) or `advi` (variational inference — faster, less accurate) |
+| `draws` | `500` | Posterior samples to draw |
+| `tune` | `500` | Tuning steps (NUTS only) |
+
+```bash
+# Full MCMC (use for post-mortem analysis)
+curl -X POST "http://localhost:9090/analyze/order_count?inference_method=nuts&draws=1000"
+
+# Fast variational inference (use for live incident triage)
+curl -X POST "http://localhost:9090/analyze/order_count?inference_method=advi"
+```
+
+### `GET /shapley/{name}`
+
+Returns how much of the target metric's gap between two time windows is attributable to each parent. Requires a `formula` on the metric definition.
+
+Query parameters:
+
+| Param | Description |
+|-------|-------------|
+| `reference_start` | Start of the baseline window (`YYYY-MM-DD`) |
+| `reference_end` | End of the baseline window (`YYYY-MM-DD`) |
+| `analysis_start` | Start of the analysis window (`YYYY-MM-DD`) |
+| `analysis_end` | End of the analysis window (`YYYY-MM-DD`) |
+
+Example response:
+
+```json
+{
+  "target": "revenue",
+  "formula": "order_count * average_order_value",
+  "baseline": 50000.0,
+  "actual": 42000.0,
+  "gap": -8000.0,
+  "attribution": {
+    "order_count": -6200.0,
+    "average_order_value": -1800.0
+  }
+}
+```
+
+The `attribution` values are exact Shapley values and are guaranteed to sum to `gap`.
+
+---
+
+## Inference methods
+
+### NUTS (default)
+
+No-U-Turn Sampler via PyMC. Produces exact posterior samples with convergence diagnostics (R-hat, effective sample size). Use for:
+
+- Post-mortem root cause analysis
+- Building confidence in a new metric relationship
+- Any situation where accuracy matters more than speed
+
+### ADVI
+
+Automatic Differentiation Variational Inference. Fits a parametric approximation to the posterior rather than sampling it. Typically 5–10× faster than NUTS. Use for:
+
+- Live incident triage where speed matters
+- Early exploration of a new metric tree
+
+---
+
+## Shapley attribution
+
+For metrics connected by a formula, Breakdown computes exact Shapley values to attribute a period-over-period gap to each parent.
+
+**Why Shapley?** Simpler decompositions (e.g., holding one factor fixed while varying the other) produce different answers depending on the order of decomposition. Shapley values are the unique attribution method that is simultaneously: efficient (values sum to the gap), symmetric (order doesn't matter), and null (a parent that didn't move gets zero credit).
+
+**How it works:** For a gap between `formula(actuals)` and `formula(baselines)`, each parent's Shapley value is the weighted average of its marginal contribution across all possible coalitions of co-varying parents. For a 2-parent multiplicative formula `A × B`:
+
+```
+φ(A) = ΔA × (baseline_B + actual_B) / 2
+φ(B) = ΔB × (baseline_A + actual_A) / 2
+```
+
+This generalizes to arbitrary formulas and any number of parents via exact enumeration (2ⁿ coalitions).
+
+---
 
 ## Project structure
 
 ```
 breakdown/
-  parser.py          # YAML parsing and DAG construction (NetworkX)
-  data_fetch.py      # Data fetcher interface + Mock/Local/Cloud implementations
+  parser.py          # YAML → Pydantic models → NetworkX DAG
+  data_fetch.py      # BaseDataFetcher + Mock / Local / Cloud implementations
   engine/
-    model.py         # PyMC model builder (trend + seasonality + regression)
+    model.py         # ModelBuilder (BSTS via PyMC) + compute_shapley()
   api/
     main.py          # FastAPI app
 static/
@@ -112,26 +298,31 @@ static/
 examples/
   jaffle_shop_tree.yml
 tests/
+  test_parser.py
+  test_engine.py
 ```
 
-## Running tests
-
-```bash
-uv run pytest tests/ -v
-```
+---
 
 ## Tech stack
 
-- **Statistical engine:** [PyMC](https://www.pymc.io/) (Bayesian inference via MCMC)
-- **Data:** [dbt Semantic Layer](https://docs.getdbt.com/docs/use-dbt-semantic-layer/dbt-sl) / [MetricFlow](https://docs.getdbt.com/docs/build/about-metricflow)
-- **API:** [FastAPI](https://fastapi.tiangolo.com/)
-- **Graph:** [NetworkX](https://networkx.org/)
-- **Visualization:** [Cytoscape.js](https://js.cytoscape.org/)
+| Component | Library |
+|-----------|---------|
+| Bayesian inference | [PyMC](https://www.pymc.io/) 5.x |
+| Posterior analysis | [ArviZ](https://python.arviz.org/) |
+| Graph modeling | [NetworkX](https://networkx.org/) |
+| dbt Semantic Layer | [dbt-sl-sdk](https://github.com/dbt-labs/semantic-layer-sdk-python) + [dbt-metricflow](https://github.com/dbt-labs/metricflow) |
+| API | [FastAPI](https://fastapi.tiangolo.com/) + [Uvicorn](https://www.uvicorn.org/) |
+| Visualization | [Cytoscape.js](https://js.cytoscape.org/) |
+| Config / validation | [Pydantic](https://docs.pydantic.dev/) v2 |
+
+---
 
 ## References
 
+- Brodersen, K. H., Gallusser, F., Koehler, J., Remy, N., & Scott, S. L. (2015). [Inferring causal impact using Bayesian structural time-series models](https://projecteuclid.org/journalArticle/Download?urlId=10.1214%2F14-AOAS788). *The Annals of Applied Statistics*, 9(1), 247–274.
+- Štrumbelj, E., & Kononenko, I. (2014). [Explaining prediction models and individual predictions with feature contributions](https://link.springer.com/article/10.1007/s10115-013-0679-x). *Knowledge and Information Systems*, 41(3), 647–665.
 - Levchuk, P. (2025). [The Metric Tree Trap: How math obscures more than it reveals](https://medium.com/@paul.levchuk/the-metric-tree-trap-4280405fd35e). Medium.
-- Brodersen, K. H., Gallusser, F., Koehler, J., Remy, N., & Scott, S. L. (2015). [Inferring causal impact using Bayesian structural time-series models](https://projecteuclid.org/journalArticle/Download?urlId=10.1214%2F14-AOAS788). *The Annals of Applied Statistics*, 9(1), 247-274.
 
 ## Use case: Solving for "what happened over the weekend?" 
 You get a slack message late Sunday evening from the CFO. "I hate to do this again, but can you meet later? Conversions are way down over the weekend. I have to come into Monday's meeting with some idea of what happened." 
@@ -150,5 +341,4 @@ The premise of breakdown is that by defining the causal graph explicitly, before
 Defining the metric tree *a priori* solves two big problems, both related to the reducing the search space when you go looking for the root cause. Consider the two implicit strategies on your late night call with the CFO: slicing the metrics and searching the upstream metrics. You probably combine those strategies, slicing the concerning metric many ways, then slicking all the upstream metrics several ways. Without a metric tree, you could try naively lookihg at all your metrics, and seeing what else changed last friday, and slicing all of those, looking for changes that correlate with your concerning metric in time. Maybe you calculate a correlation cofficinet between your concerning metric and every other metric and each of it's possible slices. Problem one is that the more metrics you examine, the more spurious correlations you are likely to observe. You'll spend your time chasing correlations and then trying to assess causation. Problem two is that the combinatorial explosion of metrics and all their possible slices can start to be computationally intensive. It's not a time you want to be slow. And a third problem is that you may miss any complex, conditional relationships between metrics. 
 
 A metric tree dramatically reduces the search space when you slice up metrics to try to locate the anomoly, and it constrains the space to the metrics that could pheasably cause the observed change. 
-
 

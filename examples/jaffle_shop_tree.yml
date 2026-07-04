@@ -27,13 +27,10 @@ metrics:
   - name: revenue
     description: "Total revenue"
     source: jaffle_shop.metrics.revenue
+    formula: "order_count * average_order_value"
     parents:
       - order_count
       - average_order_value
-    priors:
-      coefficient:
-        distribution: "Normal"
-        params: { mu: 1.0, sigma: 0.01 } # Revenue is deterministic in jaffle-shop, but we model it probabilistically
     seasonality:
       - period: 7
         name: "weekly"

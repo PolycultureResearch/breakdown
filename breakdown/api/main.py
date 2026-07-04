@@ -2,9 +2,9 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 
 from breakdown.parser import Parser
@@ -101,7 +101,13 @@ async def get_metric(name: str, request: Request):
 
 
 @app.post("/analyze/{name}")
-async def analyze_metric(name: str, request: Request):
+async def analyze_metric(
+    name: str,
+    request: Request,
+    inference_method: str = Query(default="nuts", pattern="^(nuts|advi)$"),
+    draws: int = Query(default=500, ge=50, le=5000),
+    tune: int = Query(default=500, ge=50, le=5000),
+):
     parser = request.app.state.parser
     data = request.app.state.data
 
@@ -110,7 +116,48 @@ async def analyze_metric(name: str, request: Request):
 
     async with request.app.state.lock:
         builder = ModelBuilder(parser.dag, data)
-        builder.build_and_sample(name, draws=500, tune=500)
+        builder.build_and_sample(name, draws=draws, tune=tune, inference_method=inference_method)
         request.app.state.traces[name] = builder.traces[name]
 
-    return {"status": "success", "message": f"Analysis complete for {name}"}
+    return {
+        "status": "success",
+        "message": f"Analysis complete for '{name}'",
+        "inference_method": inference_method,
+    }
+
+
+@app.get("/shapley/{name}")
+async def shapley_attribution(
+    name: str,
+    request: Request,
+    reference_start: str = Query(..., description="Start of baseline window (YYYY-MM-DD)"),
+    reference_end: str = Query(..., description="End of baseline window (YYYY-MM-DD)"),
+    analysis_start: str = Query(..., description="Start of analysis window (YYYY-MM-DD)"),
+    analysis_end: str = Query(..., description="End of analysis window (YYYY-MM-DD)"),
+):
+    parser = request.app.state.parser
+    data = request.app.state.data
+
+    if name not in parser.dag:
+        raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
+
+    metric = parser.get_metric(name)
+    if not metric or not metric.formula:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Metric '{name}' has no formula — Shapley attribution requires a formula definition.",
+        )
+
+    builder = ModelBuilder(parser.dag, data)
+    try:
+        result = builder.compute_shapley(
+            target_metric_name=name,
+            reference_start=reference_start,
+            reference_end=reference_end,
+            analysis_start=analysis_start,
+            analysis_end=analysis_end,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return result
