@@ -83,7 +83,7 @@ uv sync
 uv run python main.py serve
 ```
 
-Open `http://localhost:9090/ui` to explore the metric tree.
+Open `http://localhost:9090/ui` to explore the metric tree. The UI shows the DAG (formula vs learned edges, fit status), per-metric time series and posteriors in business units, and a full point-and-click RCA workflow: pick a target and two windows, run it, and read the answer off the graph — nodes tinted by direction of change, edges weighted by share of the gap explained, ranked causes with credible intervals in the sidebar. RCA runs and metric views are deep-linkable (`#rca=…`, `#metric=…`) so an analysis can be shared as a URL.
 
 By default the server loads `examples/jaffle_shop_tree.yml` with mock data. Point it at your own tree and data window:
 
@@ -240,6 +240,7 @@ Rules:
 
 | Method | Path | Description |
 |--------|------|-------------|
+| `GET` | `/meta` | Metric names, data window, provider type, fitted models (UI bootstrap) |
 | `GET` | `/dag` | Full metric DAG (nodes + edges) |
 | `GET` | `/metrics/{name}` | Metric definition, time series, and posterior summary |
 | `POST` | `/analyze/{name}` | Run Bayesian sampling for a metric |

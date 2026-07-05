@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
@@ -93,6 +94,20 @@ async def root():
     return {"message": "breakdown API is running. Visit /ui for the visualization."}
 
 
+@app.get("/meta")
+async def get_meta(request: Request):
+    """Bootstrap info for the UI: metrics, data window, provider, fit status."""
+    parser = request.app.state.parser
+    data = request.app.state.data
+    return {
+        "provider": parser.config.provider.type,
+        "metrics": [m.name for m in parser.config.metrics],
+        "date_start": str(data["date"].min().date()),
+        "date_end": str(data["date"].max().date()),
+        "fitted": sorted(request.app.state.traces.keys()),
+    }
+
+
 @app.get("/dag")
 async def get_dag(request: Request):
     parser = request.app.state.parser
@@ -121,7 +136,11 @@ async def get_metric(name: str, request: Request):
     if name in traces:
         builder = ModelBuilder(parser.dag, data)
         builder.traces[name] = traces[name]
-        summary = builder.get_summary(name).to_dict()
+        # NaN/inf (e.g. r_hat on single-chain ADVI traces) are not valid JSON
+        summary = {
+            col: {k: (float(v) if math.isfinite(v) else None) for k, v in vals.items()}
+            for col, vals in builder.get_summary(name).to_dict().items()
+        }
 
     return {
         "definition": metric.model_dump(),

@@ -65,6 +65,34 @@ def test_lifespan_respects_env_config(tmp_path, monkeypatch):
         assert resp.json()["definition"]["source"] == "my_project.metrics.signups"
 
 
+def test_meta_endpoint():
+    """GET /meta returns UI bootstrap info reflecting current state."""
+    with TestClient(app) as client:
+        resp = client.get("/meta")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["provider"] == "mock"
+        assert body["metrics"] == [m.name for m in app.state.parser.config.metrics]
+        assert body["date_start"] == "2024-01-01"
+        assert body["date_end"] == "2024-04-09"
+        assert body["fitted"] == []
+
+
+def test_metrics_summary_json_safe_after_advi():
+    """ADVI traces have NaN r_hat (single chain); /metrics must still serialize."""
+    with TestClient(app) as client:
+        resp = client.post("/analyze/daily_sessions?inference_method=advi&draws=100")
+        assert resp.status_code == 200
+
+        resp = client.get("/metrics/daily_sessions")
+        assert resp.status_code == 200
+        summary = resp.json()["summary"]
+        assert summary is not None
+        assert "mean" in summary
+        # NaN must have been converted to null, never leaked into the payload
+        assert all(v is None or isinstance(v, float) for v in summary["r_hat"].values())
+
+
 def test_rca_endpoint():
     """POST /rca/{name} returns the RCA contract; runs one ADVI fit."""
     windows = {
