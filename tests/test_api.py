@@ -92,6 +92,27 @@ def test_metrics_summary_json_safe_after_advi():
         assert all(v is None or isinstance(v, float) for v in summary["r_hat"].values())
 
 
+def test_analyze_accepts_fit_end_and_chains():
+    """/analyze takes optional fit_end (exclusive cutoff) and chains; the fit is
+    cached under (name, fit_end) and surfaces in /meta and /metrics."""
+    with TestClient(app) as client:
+        resp = client.post(
+            "/analyze/daily_sessions?inference_method=advi&draws=100&fit_end=2024-03-01"
+        )
+        assert resp.status_code == 200
+
+        resp = client.get("/meta")
+        assert "daily_sessions" in resp.json()["fitted"]
+
+        resp = client.get("/metrics/daily_sessions")
+        assert resp.status_code == 200
+        assert resp.json()["summary"] is not None
+
+        # bad fit_end -> 422
+        resp = client.post("/analyze/daily_sessions?fit_end=not-a-date")
+        assert resp.status_code == 422
+
+
 def test_rca_endpoint():
     """POST /rca/{name} returns the RCA contract; runs one ADVI fit."""
     windows = {

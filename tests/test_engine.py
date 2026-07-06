@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from breakdown.engine.model import (
+    FitResult,
     compute_shapley,
     fit_metric,
     scale_prior_params,
@@ -63,7 +64,7 @@ def test_fit_metric_sampling():
     parser = Parser(SIMPLE_YAML)
     data = generate_mock_data(n_days=50)
 
-    trace = fit_metric(parser.dag, data, "order_count", draws=100, tune=100)
+    trace = fit_metric(parser.dag, data, "order_count", draws=100, tune=100).trace
 
     assert "beta" in trace.posterior
     assert "trend" in trace.posterior
@@ -74,7 +75,7 @@ def test_fit_metric_root_metric():
     parser = Parser(SIMPLE_YAML)
     data = generate_mock_data(n_days=50)
 
-    trace = fit_metric(parser.dag, data, "daily_sessions", draws=100, tune=100)
+    trace = fit_metric(parser.dag, data, "daily_sessions", draws=100, tune=100).trace
 
     assert "trend" in trace.posterior
     assert "beta" not in trace.posterior
@@ -85,7 +86,7 @@ def test_fit_metric_with_priors():
     parser = Parser(YAML_WITH_PRIORS)
     data = generate_mock_data(n_days=50)
 
-    trace = fit_metric(parser.dag, data, "order_count", draws=100, tune=100)
+    trace = fit_metric(parser.dag, data, "order_count", draws=100, tune=100).trace
 
     assert "beta" in trace.posterior
     summary = summarize_trace(trace)
@@ -97,7 +98,7 @@ def test_fit_metric_with_seasonality():
     parser = Parser(YAML_WITH_SEASONALITY)
     data = generate_mock_data(n_days=50)
 
-    trace = fit_metric(parser.dag, data, "revenue", draws=100, tune=100)
+    trace = fit_metric(parser.dag, data, "revenue", draws=100, tune=100).trace
 
     assert "sin_weekly_h1" in trace.posterior
     assert "cos_weekly_h1" in trace.posterior
@@ -107,7 +108,7 @@ def test_summarize_trace_hdi():
     """Summary should use 95% HDI."""
     parser = Parser(SIMPLE_YAML)
     data = generate_mock_data(n_days=50)
-    trace = fit_metric(parser.dag, data, "order_count", draws=100, tune=100)
+    trace = fit_metric(parser.dag, data, "order_count", draws=100, tune=100).trace
 
     summary = summarize_trace(trace)
     hdi_cols = [c for c in summary.columns if "hdi" in c]
@@ -140,7 +141,7 @@ def test_formula_node_samples_without_beta():
     parser = Parser(YAML_WITH_FORMULA)
     data = generate_mock_data(n_days=50)
 
-    trace = fit_metric(parser.dag, data, "revenue", draws=100, tune=100)
+    trace = fit_metric(parser.dag, data, "revenue", draws=100, tune=100).trace
 
     assert "trend" in trace.posterior
     assert "beta" not in trace.posterior
@@ -224,7 +225,7 @@ def test_beta_raw_recovers_business_units():
     parser = Parser(YAML_WITH_PRIORS)
     data = generate_mock_data(n_days=50)
 
-    trace = fit_metric(parser.dag, data, "order_count", draws=200, tune=200)
+    trace = fit_metric(parser.dag, data, "order_count", draws=200, tune=200).trace
 
     assert "beta_raw" in trace.posterior
     beta_raw_mean = float(trace.posterior["beta_raw"].mean())
@@ -247,7 +248,7 @@ metrics:
     parser = Parser(yaml_content)
     data = generate_mock_data(n_days=50)
 
-    trace = fit_metric(parser.dag, data, "order_count", draws=100, tune=100)
+    trace = fit_metric(parser.dag, data, "order_count", draws=100, tune=100).trace
 
     assert (trace.posterior["beta"].values > 0).all()
     assert (trace.posterior["beta_raw"].values > 0).all()
@@ -275,7 +276,7 @@ metrics:
     parser = Parser(yaml_content)
     data = generate_mock_data(n_days=50)
 
-    trace = fit_metric(parser.dag, data, "order_count", draws=100, tune=100)
+    trace = fit_metric(parser.dag, data, "order_count", draws=100, tune=100).trace
 
     assert "beta_daily_sessions" in trace.posterior
     assert "beta_average_order_value" in trace.posterior
@@ -310,7 +311,7 @@ metrics:
     parser = Parser(yaml_content)
     data = generate_mock_data(n_days=50)
 
-    trace = fit_metric(parser.dag, data, "order_count", draws=100, tune=100)
+    trace = fit_metric(parser.dag, data, "order_count", draws=100, tune=100).trace
 
     assert trace.posterior["trend"].values.shape[-1] == 45
 
@@ -343,7 +344,7 @@ metrics:
 """
     parser = Parser(yaml_content)
 
-    trace = fit_metric(parser.dag, data, "y", draws=300, tune=300)
+    trace = fit_metric(parser.dag, data, "y", draws=300, tune=300).trace
 
     beta_raw_mean = float(trace.posterior["beta_raw"].mean())
     assert 0.25 < beta_raw_mean < 0.75
@@ -382,7 +383,146 @@ def test_advi_inference_samples_posterior():
     parser = Parser(SIMPLE_YAML)
     data = generate_mock_data(n_days=50)
 
-    trace = fit_metric(parser.dag, data, "order_count", draws=200, tune=100, inference_method="advi")
+    trace = fit_metric(parser.dag, data, "order_count", draws=200, tune=100, inference_method="advi").trace
 
     assert trace is not None
     assert "trend" in trace.posterior
+
+
+# --- FitResult contract (T1) ---
+
+def test_fit_metric_returns_fit_result():
+    """fit_metric returns a FitResult carrying the normalization constants and
+    the fitted date index, not just the trace."""
+    parser = Parser(SIMPLE_YAML)
+    data = generate_mock_data(n_days=50)
+
+    result = fit_metric(parser.dag, data, "order_count", draws=100, tune=100)
+
+    assert isinstance(result, FitResult)
+    assert result.y_std > 0
+    assert result.parents == ["daily_sessions"]
+    assert len(result.dates) == 50
+    assert result.x_stds.shape == (1,)
+    assert result.inference_method == "nuts"
+    assert result.fit_end is None
+
+
+def test_fit_result_dates_reflect_lag_trim():
+    """With a lag of 5 on 50 days, the fitted date index drops the first 5 rows."""
+    yaml_content = """
+metrics:
+  - name: daily_sessions
+    source: dbt.metric.daily_sessions
+  - name: order_count
+    source: dbt.metric.order_count
+    parents: [daily_sessions]
+    lags: { daily_sessions: 5 }
+"""
+    parser = Parser(yaml_content)
+    data = generate_mock_data(n_days=50)
+
+    result = fit_metric(parser.dag, data, "order_count", draws=100, tune=100)
+
+    assert len(result.dates) == 45
+    assert result.dates[0] == data["date"].iloc[5]
+
+
+# --- Pre-anomaly fit window (T2) ---
+
+def test_fit_end_excludes_anomaly_window():
+    """Fitting only on rows before fit_end recovers the normal-regime coefficient,
+    even when a driver outside the tree shifts y in the excluded window."""
+    rng = np.random.default_rng(0)
+    n = 120
+    x = 100.0 + np.cumsum(rng.normal(0, 3.0, n))
+    y = 0.5 * x + rng.normal(0, 0.5, n)
+    y[90:] -= 20.0  # an off-tree driver, days 90-119
+    dates = pd.date_range("2024-01-01", periods=n)
+    data = pd.DataFrame({"date": dates, "x": x, "y": y})
+
+    yaml_content = """
+metrics:
+  - name: x
+    source: dbt.metric.x
+  - name: y
+    source: dbt.metric.y
+    parents: [x]
+"""
+    parser = Parser(yaml_content)
+    fit_end = str(dates[90].date())
+
+    result = fit_metric(parser.dag, data, "y", draws=300, tune=300, fit_end=fit_end)
+
+    beta_raw_mean = float(result.trace.posterior["beta_raw"].mean())
+    assert 0.4 <= beta_raw_mean <= 0.6
+    assert len(result.dates) == 90
+
+
+def test_fit_end_too_few_rows_raises():
+    parser = Parser(SIMPLE_YAML)
+    data = generate_mock_data(n_days=50)
+    with pytest.raises(ValueError, match="before fit_end"):
+        fit_metric(parser.dag, data, "order_count", draws=50, tune=50,
+                   fit_end=str(data["date"].iloc[8].date()))
+
+
+# --- Trend specification (T3) ---
+
+def test_trend_sigma_config_widens_posterior():
+    """A larger `trend.sigma` prior admits a larger sigma_trend posterior on the
+    same data (weak but stable check that the YAML knob is wired through)."""
+    data = generate_mock_data(n_days=50)
+
+    default_yaml = """
+metrics:
+  - name: daily_sessions
+    source: dbt.metric.daily_sessions
+  - name: order_count
+    source: dbt.metric.order_count
+    parents: [daily_sessions]
+"""
+    wide_yaml = """
+metrics:
+  - name: daily_sessions
+    source: dbt.metric.daily_sessions
+  - name: order_count
+    source: dbt.metric.order_count
+    parents: [daily_sessions]
+    trend: { sigma: 0.2 }
+"""
+    default = fit_metric(Parser(default_yaml).dag, data, "order_count", draws=200, tune=200).trace
+    wide = fit_metric(Parser(wide_yaml).dag, data, "order_count", draws=200, tune=200).trace
+
+    assert float(wide.posterior["sigma_trend"].mean()) > float(default.posterior["sigma_trend"].mean())
+
+
+def test_tight_trend_keeps_beta_identified():
+    """The point of the tight non-centered trend: beta_raw stays sharply
+    identified rather than being stolen by a flexible random walk."""
+    rng = np.random.default_rng(0)
+    n = 120
+    x = 100.0 + np.cumsum(rng.normal(0, 3.0, n))
+    y = 0.5 * x + rng.normal(0, 1.0, n)
+    data = pd.DataFrame({
+        "date": pd.date_range("2024-01-01", periods=n),
+        "x": x,
+        "y": y,
+    })
+    yaml_content = """
+metrics:
+  - name: x
+    source: dbt.metric.x
+  - name: y
+    source: dbt.metric.y
+    parents: [x]
+"""
+    parser = Parser(yaml_content)
+
+    result = fit_metric(parser.dag, data, "y", draws=300, tune=300)
+
+    summary = summarize_trace(result.trace)
+    lo = summary.loc["beta_raw[0]", "hdi_2.5%"]
+    hi = summary.loc["beta_raw[0]", "hdi_97.5%"]
+    assert hi - lo < 0.4
+    assert lo <= 0.5 <= hi

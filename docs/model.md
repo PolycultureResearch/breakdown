@@ -16,11 +16,19 @@ y[t] = α + trend[t] + seasonal[t] + regression[t] + ε[t]
 
 | Term | What it is | Prior |
 |---|---|---|
-| `α` | intercept | Normal(0, 10) |
-| `trend[t]` | local level: a Gaussian random walk that absorbs slow drift | step size ~ HalfNormal(1) |
+| `α` | intercept | Normal(0, 1) — the data is z-scored, so its mean is exactly 0 |
+| `trend[t]` | local level: a non-centered random walk (`cumsum(σ_trend · z)`) that absorbs slow drift | step size σ_trend ~ HalfNormal(0.05) by default, set by the YAML `trend.sigma` |
 | `seasonal[t]` | 2 sin/cos Fourier pairs per `seasonality` entry | coefficients ~ Normal(0, 1) |
 | `regression[t]` | `Σᵢ βᵢ · xᵢ[t]` over the metric's parents | from your YAML `priors`, else Normal(0, 1) in normalized space |
 | `ε[t]` | observation noise | sd ~ HalfNormal(1) |
+
+The trend uses a **non-centered** parameterization (unit normals scaled by
+`σ_trend`) to avoid the funnel geometry that makes a centered random walk hard
+for NUTS and unreliable for ADVI. The default step-size prior is deliberately
+**tight** (HalfNormal(0.05)): the level is expected to drift slowly, leaving the
+movement to be explained by parents and seasonality rather than absorbed into a
+flexible trend. Loosen it per metric with `trend: {sigma: ...}` when a node
+genuinely has fast level changes the parents don't capture.
 
 The three node types use this differently:
 
@@ -33,6 +41,32 @@ The three node types use this differently:
   learn. The BSTS is fitted to the **residual** `observed − formula(parents)`,
   which captures whatever the identity doesn't explain (data noise, definition
   drift).
+
+## What data the fit sees
+
+RCA fits each node on data **strictly before the analysis window** (`fit_end =
+analysis_start`, an exclusive cutoff). This matters: if the anomalous window were
+included in the training data, the flexible trend could absorb the anomaly as
+"drift" and the parent coefficients would be dragged toward a compromise between
+the normal regime and the incident. Fitting on the pre-anomaly period only means
+the βs encode the *normal-regime* relationship, so `beta_raw × Δparent` answers
+the question you actually asked — "given how these metrics normally relate, how
+much of this change do the parents explain?" (This mirrors the CausalImpact
+methodology of fitting on the pre-period and treating the post-period as a
+counterfactual.)
+
+Two consequences worth knowing:
+
+- **Normalization follows the fit window.** z-scoring and prior rescaling use
+  only the pre-anomaly rows, so the anomaly no longer inflates the scale used to
+  normalize it. Because priors are rescaled with sample statistics
+  (`scale = x_std / y_std`), the effective prior in business units is mildly
+  data-dependent — a pragmatic, empirical-Bayes-adjacent choice that is what
+  makes business-unit priors possible.
+- **`/analyze` defaults to the full window.** The exploratory `POST /analyze/{name}`
+  endpoint fits on all loaded data unless you pass `?fit_end=<date>`. To confirm
+  an RCA node with NUTS on exactly the data RCA used, pass
+  `?fit_end=<analysis_start>&inference_method=nuts`.
 
 ## Reading coefficients: `beta` vs `beta_raw`
 
@@ -93,11 +127,14 @@ their credible intervals.
 2. **Relationships are linear and (unless lagged) contemporaneous.** A parent
    whose true effect is nonlinear or delayed by an unmodeled lag will look
    weaker than it is.
-3. **Trend can absorb signal.** The random-walk trend is flexible; when a
-   parent moves slowly, the model can explain the child's drift as "trend"
-   instead of "parent", widening β's credible interval. Watch for this when a
-   CI unexpectedly straddles zero. (A tighter `sigma_trend` prior is the
-   standard remedy; not currently configurable from YAML.)
+3. **Trend can absorb signal.** A flexible random-walk trend can explain a
+   child's slow drift as "trend" instead of "parent", widening β's credible
+   interval. breakdown now defaults to a **tight** step-size prior
+   (HalfNormal(0.05) in z-scored space) precisely to avoid this, so β stays
+   sharply identified in the common case. If a node genuinely has fast level
+   changes its parents don't capture, loosen the prior for that node with
+   `trend: {sigma: ...}` in the YAML — and watch for a β CI that straddles zero
+   as the sign that the trend is now competing with a parent.
 4. **Seasonality needs data to be identified.** A `period: 365` component on
    100 days of data is unidentifiable and will soak up degrees of freedom —
    only declare seasonality your window can actually see (≥2 full periods).

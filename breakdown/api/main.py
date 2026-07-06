@@ -4,7 +4,7 @@ import logging
 import math
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -65,6 +65,17 @@ def _validate_date(value: str, label: str) -> str:
     return value
 
 
+def _pick_fit(traces: Dict[Tuple[str, Optional[str]], Any], name: str):
+    """Best cached fit to summarize for a metric: prefer the full-window fit,
+    else the one with the latest fit_end, else None."""
+    if (name, None) in traces:
+        return traces[(name, None)]
+    dated = [(fit_end, fit) for (n, fit_end), fit in traces.items() if n == name]
+    if not dated:
+        return None
+    return max(dated, key=lambda item: item[0])[1]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     tree_path = os.environ.get("BREAKDOWN_TREE", DEFAULT_TREE_PATH)
@@ -88,7 +99,9 @@ async def lifespan(app: FastAPI):
     app.state.parser = parser
     app.state.fetcher = fetcher
     app.state.data = data
-    app.state.traces: Dict[str, Any] = {}
+    # Keyed by (metric name, fit_end): a full-window fit (fit_end=None) and a
+    # pre-anomaly RCA fit are different objects and must not shadow each other.
+    app.state.traces: Dict[Tuple[str, Optional[str]], Any] = {}
     app.state.lock = asyncio.Lock()
 
     logger.info(
@@ -119,7 +132,7 @@ async def get_meta(request: Request):
         "metrics": [m.name for m in parser.config.metrics],
         "date_start": str(data["date"].min().date()),
         "date_end": str(data["date"].max().date()),
-        "fitted": sorted(request.app.state.traces.keys()),
+        "fitted": sorted({name for (name, _) in request.app.state.traces}),
     }
 
 
@@ -151,11 +164,12 @@ async def get_metric(name: str, request: Request):
         raise HTTPException(status_code=404, detail=f"No data found for metric '{name}'")
 
     summary = None
-    if name in traces:
+    fit = _pick_fit(traces, name)
+    if fit is not None:
         # NaN/inf (e.g. r_hat on single-chain ADVI traces) are not valid JSON
         summary = {
             col: {k: (float(v) if math.isfinite(v) else None) for k, v in vals.items()}
-            for col, vals in summarize_trace(traces[name]).to_dict().items()
+            for col, vals in summarize_trace(fit.trace).to_dict().items()
         }
 
     return {
@@ -172,6 +186,8 @@ async def analyze_metric(
     inference_method: str = Query(default="nuts", pattern="^(nuts|advi)$"),
     draws: int = Query(default=500, ge=50, le=5000),
     tune: int = Query(default=500, ge=50, le=5000),
+    chains: int = Query(default=4, ge=1, le=8),
+    fit_end: Optional[str] = Query(default=None),
 ):
     parser = request.app.state.parser
     data = request.app.state.data
@@ -179,12 +195,20 @@ async def analyze_metric(
     if name not in parser.dag:
         raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
 
+    if fit_end is not None:
+        # Lets the "confirm with NUTS" workflow reproduce exactly what RCA fitted.
+        try:
+            datetime.date.fromisoformat(fit_end)
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"fit_end must be YYYY-MM-DD, got '{fit_end}'")
+
     async with request.app.state.lock:
-        trace = await asyncio.to_thread(
+        fit = await asyncio.to_thread(
             fit_metric, parser.dag, data, name,
             draws=draws, tune=tune, inference_method=inference_method,
+            chains=chains, fit_end=fit_end,
         )
-        request.app.state.traces[name] = trace
+        request.app.state.traces[(name, fit_end)] = fit
 
     return {
         "status": "success",

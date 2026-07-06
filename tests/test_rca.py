@@ -72,25 +72,39 @@ def test_rca_posterior_attribution():
 
 def test_rca_on_demand_fitting_minimal():
     """Only probabilistic non-root nodes in scope get fit; roots and formula
-    nodes are not. New fits land in the caller's trace cache."""
+    nodes are not. New fits land in the caller's trace cache, keyed by the
+    analysis-window start (fit_end), not the bare metric name."""
     dag, data = make_tree()
     traces = {}
 
     rca_on(dag, data, traces, "revenue")
 
-    assert set(traces.keys()) == {"order_count"}
+    assert set(traces.keys()) == {("order_count", AN[0])}
 
 
 def test_rca_trace_reuse():
-    """A cached trace is reused, not re-fit, on a subsequent call."""
+    """A cached trace is reused, not re-fit, on a subsequent call with the same
+    analysis window."""
     dag, data = make_tree()
     traces = {}
     rca_on(dag, data, traces, "revenue")
-    trace = traces["order_count"]
+    trace = traces[("order_count", AN[0])]
 
     rca_on(dag, data, traces, "revenue")
 
-    assert traces["order_count"] is trace
+    assert traces[("order_count", AN[0])] is trace
+
+
+def test_rca_trace_keyed_by_fit_end():
+    """The on-demand fit is keyed by (name, analysis_start); the bare name is
+    never used, so a contaminated full-window fit cannot shadow it."""
+    dag, data = make_tree()
+    traces = {}
+
+    rca_on(dag, data, traces, "order_count")
+
+    assert ("order_count", AN[0]) in traces
+    assert "order_count" not in traces
 
 
 def test_rca_root_target():

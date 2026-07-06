@@ -220,3 +220,51 @@ metrics:
 """
     parser = Parser(yaml_content)
     assert parser.get_metric("churn_rate").lags == {"support_tickets": 21}
+
+
+# --- Trend config tests ---
+
+def test_trend_linear_string_default_sigma():
+    yaml_content = """
+metrics:
+  - name: dau
+    source: dbt.metric.dau
+    trend: linear
+"""
+    metric = Parser(yaml_content).get_metric("dau")
+    assert metric.trend.type == "linear"
+    assert metric.trend.sigma == 0.05
+
+
+def test_trend_dict_sigma():
+    yaml_content = """
+metrics:
+  - name: dau
+    source: dbt.metric.dau
+    trend: { sigma: 0.2 }
+"""
+    metric = Parser(yaml_content).get_metric("dau")
+    assert metric.trend.type == "linear"
+    assert metric.trend.sigma == 0.2
+
+
+def test_trend_invalid_type_string_raises():
+    yaml_content = """
+metrics:
+  - name: dau
+    source: dbt.metric.dau
+    trend: quadratic
+"""
+    with pytest.raises(ValueError, match="Unsupported trend type"):
+        Parser(yaml_content)
+
+
+def test_trend_negative_sigma_raises():
+    yaml_content = """
+metrics:
+  - name: dau
+    source: dbt.metric.dau
+    trend: { sigma: -1 }
+"""
+    with pytest.raises(ValueError, match="trend sigma must be > 0"):
+        Parser(yaml_content)

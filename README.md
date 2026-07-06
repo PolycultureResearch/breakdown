@@ -150,7 +150,7 @@ Each metric entry supports the following fields:
 | `priors` | dict | Bayesian priors for the causal coefficients (see below) |
 | `lags` | dict | Per-parent time lag in grain units (days). Regresses the child on each parent's value `N` steps earlier. Mutually exclusive with `formula`. |
 | `seasonality` | list | Periodic components to include in the BSTS model |
-| `trend` | string | Trend type — currently `linear` (Gaussian random walk) |
+| `trend` | string or dict | Local-level (random-walk) trend. `trend: linear` uses the default step-size prior HalfNormal(0.05); `trend: {type: linear, sigma: 0.1}` widens it so the trend may absorb faster drift. Only `type: linear` is supported. |
 
 ### Priors
 
@@ -257,6 +257,8 @@ Query parameters:
 | `inference_method` | `nuts` | `nuts` (full MCMC) or `advi` (variational inference — faster, less accurate) |
 | `draws` | `500` | Posterior samples to draw |
 | `tune` | `500` | Tuning steps (NUTS only) |
+| `chains` | `4` | Number of NUTS chains (NUTS only) |
+| `fit_end` | none | Exclusive date cutoff (`YYYY-MM-DD`): fit only on rows before it. Defaults to the full window; pass the analysis-window start to reproduce what RCA fits. |
 
 ```bash
 # Full MCMC (use for post-mortem analysis)

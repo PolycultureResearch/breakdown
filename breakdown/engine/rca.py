@@ -20,7 +20,7 @@ parent's share of its child's gap (clamped to [0, 1]). It is meant as a triage
 ordering, not a rigorous multi-hop uncertainty propagation.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 import networkx as nx
 import numpy as np
@@ -96,7 +96,7 @@ def shapley_attribution(
 def run_rca(
     dag: nx.DiGraph,
     data: pd.DataFrame,
-    traces: Dict[str, Any],
+    traces: Dict[Tuple[str, Optional[str]], Any],
     target: str,
     reference_start: str,
     reference_end: str,
@@ -106,8 +106,11 @@ def run_rca(
 ) -> Dict[str, Any]:
     """Attribute `target`'s window-over-window change to its ancestors.
 
-    `traces` is the caller's cache (metric name -> InferenceData). Probabilistic
-    nodes in scope without a cached trace are fit with ADVI and added to it.
+    `traces` is the caller's cache, keyed by `(metric name, fit_end)` -> FitResult.
+    Probabilistic nodes in scope without a cached trace are fit with ADVI on data
+    strictly before `analysis_start` (so the anomaly window is excluded) and added
+    to it. A full-window fit (`fit_end=None`) is never reused here — it is
+    contaminated by the anomaly for attribution purposes.
     """
     if target not in dag:
         raise ValueError(f"Metric '{target}' not found in the metric tree.")
@@ -120,12 +123,15 @@ def run_rca(
     nodes_in_scope = nx.ancestors(dag, target) | {target}
 
     # Fit any probabilistic (non-formula, non-root) node in scope that lacks a
-    # cached trace. Formula nodes and roots need no fit.
+    # cached trace for this analysis window. Formula nodes and roots need no fit.
     for node in nodes_in_scope:
         defn = dag.nodes[node]["definition"]
         parents = list(dag.predecessors(node))
-        if parents and not defn.formula and node not in traces:
-            traces[node] = fit_metric(dag, data, node, draws=advi_draws, inference_method="advi")
+        if parents and not defn.formula and (node, analysis_start) not in traces:
+            traces[(node, analysis_start)] = fit_metric(
+                dag, data, node, draws=advi_draws,
+                inference_method="advi", fit_end=analysis_start,
+            )
 
     nodes_out: Dict[str, Any] = {}
     for node in nodes_in_scope:
@@ -158,7 +164,7 @@ def run_rca(
             unexplained = gap - sh["gap"]
         else:
             attribution_method = "posterior"
-            arr = traces[node].posterior["beta_raw"].values.reshape(-1, len(parents))
+            arr = traces[(node, analysis_start)].trace.posterior["beta_raw"].values.reshape(-1, len(parents))
             estimate_sum = 0.0
             for i, p in enumerate(parents):
                 lag = defn.lags.get(p, 0)

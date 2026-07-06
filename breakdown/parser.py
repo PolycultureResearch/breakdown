@@ -37,6 +37,27 @@ class Seasonality(BaseModel):
     period: int
     name: str
 
+class TrendConfig(BaseModel):
+    """Local-level (random-walk) trend configuration. `sigma` is the prior scale
+    on the per-step drift in z-scored space — the knob that controls how much
+    movement the trend is allowed to absorb before parents/seasonality must."""
+    type: str = "linear"
+    sigma: float = 0.05
+
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, v: str) -> str:
+        if v != "linear":
+            raise ValueError(f"Unsupported trend type: {v}. Must be 'linear'.")
+        return v
+
+    @field_validator("sigma")
+    @classmethod
+    def validate_sigma(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("trend sigma must be > 0")
+        return v
+
 class MetricDefinition(BaseModel):
     name: str
     description: Optional[str] = None
@@ -46,7 +67,17 @@ class MetricDefinition(BaseModel):
     priors: Dict[str, Prior] = Field(default_factory=dict)
     lags: Dict[str, int] = Field(default_factory=dict)
     seasonality: List[Seasonality] = Field(default_factory=list)
-    trend: Optional[str] = None
+    trend: Optional[TrendConfig] = None
+
+    @field_validator("trend", mode="before")
+    @classmethod
+    def coerce_trend(cls, v: Any) -> Any:
+        # Back-compat: `trend: linear` is shorthand for `{type: linear}`.
+        if isinstance(v, str):
+            if v != "linear":
+                raise ValueError(f"Unsupported trend type: {v}. Must be 'linear'.")
+            return {"type": "linear"}
+        return v
 
     @model_validator(mode="after")
     def check_formula(self) -> "MetricDefinition":

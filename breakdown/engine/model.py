@@ -1,14 +1,16 @@
 """Bayesian structural time series (BSTS) fitting for metric-tree nodes.
 
 `fit_metric` is the entry point: given the metric DAG and a tidy DataFrame of
-metric time series, it fits one node's model and returns the posterior as an
-`arviz.InferenceData`. It holds no state — callers own the trace cache.
+metric time series, it fits one node's model and returns a `FitResult` (the
+trace plus the normalization constants, fitted date index, and fit metadata the
+rest of the system needs). It holds no state — callers own the trace cache.
 
 Window-over-window attribution (Shapley and posterior-based) lives in
 `breakdown.engine.rca`; only the pure Shapley computation is defined here.
 """
 import logging
 import math
+from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -17,11 +19,34 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 import pymc as pm
+import pytensor.tensor as pt
 
 from breakdown.formula import eval_formula
 from breakdown.parser import MetricDefinition
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class FitResult:
+    """Everything a caller needs from one node's fit, not just the trace.
+
+    `fit_metric` used to return a bare `arviz.InferenceData`, discarding the
+    normalization constants, the effective date index, and the fit metadata.
+    Downstream code (RCA's trend/seasonal decomposition, window-keyed caching,
+    business-unit rendering) all need those pieces, so they are carried here.
+    """
+
+    trace: Any                       # arviz.InferenceData
+    target: str
+    parents: List[str]               # regressor parents ([] for roots/formula nodes)
+    y_mean: float                    # of the fitted y series (residual for formula nodes)
+    y_std: float
+    x_stds: Optional[np.ndarray]     # per-parent stds of the (lag-shifted) regressors, None if no X
+    dates: pd.DatetimeIndex          # dates actually used in the fit (after lag trim and fit_end cut)
+    inference_method: str            # "nuts" | "advi"
+    fit_end: Optional[str] = None    # exclusive upper date bound of the fit; None = full window
+    diagnostics: Dict[str, Any] = field(default_factory=dict)  # populated by T8
 
 
 def scale_prior_params(distribution: str, params: Dict[str, Any], scale: float) -> Dict[str, Any]:
@@ -126,7 +151,15 @@ def _prepare_series(
     parents: List[str],
     data: pd.DataFrame,
     target: str,
-) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
+) -> Tuple[
+    np.ndarray,
+    Optional[np.ndarray],
+    Optional[np.ndarray],
+    float,
+    float,
+    Optional[np.ndarray],
+    pd.DatetimeIndex,
+]:
     """
     Build the normalized observation vector y and regressor matrix X.
 
@@ -138,15 +171,22 @@ def _prepare_series(
     shifted back by its lag (`lags` in the YAML); the first max-lag rows are
     trimmed so every series aligns with no NaNs.
 
-    Returns (y, X, scale) where scale[i] = x_std_i / y_std converts raw-unit
-    coefficients into normalized space. X and scale are None when there is
-    nothing to regress on.
+    Returns (y, X, scale, y_mean, y_std, x_stds, dates):
+    - `scale[i] = x_std_i / y_std` converts raw-unit coefficients into
+      normalized space; X and scale are None when there is nothing to regress on.
+    - `y_mean`, `y_std` are the normalization constants of the fitted y series
+      (the residual, for formula nodes).
+    - `x_stds` are the raw per-parent stds of the (lag-shifted) regressors, or
+      None when there is no X.
+    - `dates` is the date index actually used in the fit, after lag-trimming.
     """
+    all_dates = pd.DatetimeIndex(pd.to_datetime(data["date"]))
+
     if defn.formula and parents:
         parent_arrays = {p: data[p].values.astype(float) for p in parents}
         residual = data[target].values.astype(float) - eval_formula(defn.formula, parent_arrays)
-        y, _, _ = _normalize(pd.Series(residual, name=f"{target}_residual"))
-        return y, None, None
+        y, y_mean, y_std = _normalize(pd.Series(residual, name=f"{target}_residual"))
+        return y, None, None, y_mean, y_std, None, all_dates
 
     lags = defn.lags
     max_lag = max(lags.values(), default=0)
@@ -158,10 +198,11 @@ def _prepare_series(
         )
 
     y_series = data[target].iloc[max_lag:] if max_lag > 0 else data[target]
-    y, _, y_std = _normalize(y_series)
+    y, y_mean, y_std = _normalize(y_series)
+    dates = all_dates[max_lag:] if max_lag > 0 else all_dates
 
     if not parents:
-        return y, None, None
+        return y, None, None, y_mean, y_std, None, dates
 
     X_cols, x_stds = [], []
     for p in parents:
@@ -172,7 +213,8 @@ def _prepare_series(
         X_cols.append(col)
         x_stds.append(p_std)
 
-    return y, np.column_stack(X_cols), np.array(x_stds) / y_std
+    x_stds_arr = np.array(x_stds)
+    return y, np.column_stack(X_cols), x_stds_arr / y_std, y_mean, y_std, x_stds_arr, dates
 
 
 def _seasonal_component(seasonality: List[Any], t: np.ndarray):
@@ -216,7 +258,9 @@ def fit_metric(
     draws: int = 1000,
     tune: int = 1000,
     inference_method: str = "nuts",
-) -> Any:
+    fit_end: Optional[str] = None,
+    chains: int = 4,
+) -> FitResult:
     """
     Fit the Bayesian structural time series for one metric.
 
@@ -224,10 +268,20 @@ def fit_metric(
 
         y[t] = alpha + trend[t] + seasonal[t] + (X @ beta)[t] + eps[t]
 
-        trend[t]   ~ GaussianRandomWalk(sigma_trend)     local level
+        trend[t]   =  cumsum(sigma_trend * z[t])         local level (non-centered)
+        z[t]       ~  Normal(0, 1)
+        sigma_trend~  HalfNormal(0.05)  (or the YAML `trend.sigma`); the level
+                      drifts slowly so parents and seasonality carry the movement
         seasonal   =  Fourier sin/cos pairs (2 harmonics per `seasonality` entry)
         beta[i]    ~  prior from YAML, stated in business units and rescaled
+        alpha      ~  Normal(0, 1)   (data is z-scored; the mean is exactly 0)
         eps[t]     ~  Normal(0, sigma_obs)
+
+    The trend is a non-centered random walk: sampling unit normals and scaling
+    by `sigma_trend` avoids the Neal's-funnel geometry of a centered walk, which
+    NUTS handles poorly and mean-field ADVI (the RCA default) fails on outright.
+    `pm.Deterministic("trend", ...)` preserves the `trend` posterior variable so
+    downstream decomposition reads it unchanged.
 
     Node types:
     - Formula nodes fit the residual (observed - formula(parents)); no beta.
@@ -235,42 +289,68 @@ def fit_metric(
       lag from `lags` and z-scored.
     - Source nodes (no parents) fit trend + seasonality only.
 
-    Inference: "nuts" (exact MCMC, use when accuracy matters) or "advi"
-    (variational approximation, ~5-10x faster, use for triage). `tune` only
-    applies to NUTS.
+    `fit_end` (exclusive): when set, only rows with `date < fit_end` are used, so
+    the model learns the normal-regime relationship without the anomalous window
+    it is being asked to explain. Normalization and prior scaling then follow the
+    filtered rows too. RCA passes `fit_end = analysis_start`.
 
-    Returns an arviz.InferenceData. The posterior includes `beta_raw`
+    Inference: "nuts" (exact MCMC, use when accuracy matters) or "advi"
+    (variational approximation, ~5-10x faster, use for triage). `tune` and
+    `chains` apply to NUTS only.
+
+    Returns a `FitResult`. Its trace's posterior includes `beta_raw`
     (= beta / scale): the coefficient on each parent in business units,
     i.e. d(target) per unit change of that parent.
     """
     if inference_method not in ("nuts", "advi"):
         raise ValueError(f"inference_method must be 'nuts' or 'advi', got '{inference_method}'")
 
+    if fit_end is not None:
+        dates = pd.to_datetime(data["date"])
+        data = data.loc[dates < pd.to_datetime(fit_end)].reset_index(drop=True)
+        if len(data) < 10:
+            raise ValueError(
+                f"Only {len(data)} rows before fit_end={fit_end} for '{target}' (need >= 10)."
+            )
+
     parents = list(dag.predecessors(target))
     _validate_columns(data, [target] + parents)
     defn: MetricDefinition = dag.nodes[target]["definition"]
 
-    y, X, scale = _prepare_series(defn, parents, data, target)
+    y, X, scale, y_mean, y_std, x_stds, dates = _prepare_series(defn, parents, data, target)
     t = np.arange(len(y))
 
     with pm.Model():
-        sigma_trend = pm.HalfNormal("sigma_trend", 1.0)
-        trend = pm.GaussianRandomWalk("trend", sigma=sigma_trend, shape=len(y))
+        trend_sigma_prior = defn.trend.sigma if defn.trend else 0.05
+        sigma_trend = pm.HalfNormal("sigma_trend", trend_sigma_prior)
+        trend_z = pm.Normal("trend_z", 0.0, 1.0, shape=len(y))
+        trend = pm.Deterministic("trend", pt.cumsum(sigma_trend * trend_z))
         seasonal = _seasonal_component(defn.seasonality, t)
         regression = _regression_component(defn, parents, X, scale)
 
-        alpha = pm.Normal("alpha", mu=0, sigma=10.0)
+        alpha = pm.Normal("alpha", mu=0, sigma=1.0)
         sigma_obs = pm.HalfNormal("sigma_obs", 1.0)
         pm.Normal("obs", mu=alpha + trend + seasonal + regression, sigma=sigma_obs, observed=y)
 
         logger.info(
-            "Sampling metric '%s' method=%s draws=%d tune=%d",
-            target, inference_method, draws, tune,
+            "Sampling metric '%s' method=%s draws=%d tune=%d fit_end=%s",
+            target, inference_method, draws, tune, fit_end,
         )
         if inference_method == "advi":
             approx = pm.fit(n=20_000, method="advi", progressbar=False)
             trace = approx.sample(draws=draws)
         else:
-            trace = pm.sample(draws=draws, tune=tune, target_accept=0.9, chains=2)
+            trace = pm.sample(draws=draws, tune=tune, target_accept=0.9, chains=chains)
 
-    return trace
+    return FitResult(
+        trace=trace,
+        target=target,
+        parents=parents if X is not None else [],
+        y_mean=y_mean,
+        y_std=y_std,
+        x_stds=x_stds,
+        dates=dates,
+        inference_method=inference_method,
+        fit_end=fit_end,
+        diagnostics={},
+    )
