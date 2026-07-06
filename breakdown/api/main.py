@@ -1,18 +1,19 @@
 import asyncio
+import datetime
 import logging
 import math
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 
+from breakdown.data_fetch import CloudDataFetcher, LocalDataFetcher, MockDataFetcher
+from breakdown.engine.model import fit_metric, summarize_trace
+from breakdown.engine.rca import run_rca, shapley_attribution
 from breakdown.parser import Parser
-from breakdown.engine.model import ModelBuilder
-from breakdown.engine.rca import run_rca
-from breakdown.data_fetch import MockDataFetcher, LocalDataFetcher, CloudDataFetcher
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +57,25 @@ def _fetch_all_metrics(parser, fetcher, provider_type, start_date, end_date):
     return data
 
 
+def _validate_date(value: str, label: str) -> str:
+    try:
+        datetime.date.fromisoformat(value)
+    except ValueError:
+        raise RuntimeError(f"{label} must be a valid YYYY-MM-DD date, got '{value}'")
+    return value
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     tree_path = os.environ.get("BREAKDOWN_TREE", DEFAULT_TREE_PATH)
-    start_date = os.environ.get("BREAKDOWN_START_DATE", DEFAULT_START_DATE)
-    end_date = os.environ.get("BREAKDOWN_END_DATE", DEFAULT_END_DATE)
+    start_date = _validate_date(
+        os.environ.get("BREAKDOWN_START_DATE", DEFAULT_START_DATE), "start date"
+    )
+    end_date = _validate_date(
+        os.environ.get("BREAKDOWN_END_DATE", DEFAULT_END_DATE), "end date"
+    )
+    if end_date < start_date:
+        raise RuntimeError(f"end date '{end_date}' is before start date '{start_date}'")
 
     with open(tree_path, "r") as f:
         yaml_config = f.read()
@@ -112,7 +127,10 @@ async def get_meta(request: Request):
 async def get_dag(request: Request):
     parser = request.app.state.parser
     return {
-        "nodes": [n for n in parser.dag.nodes(data=True)],
+        "nodes": [
+            [name, attrs["definition"].model_dump()]
+            for name, attrs in parser.dag.nodes(data=True)
+        ],
         "edges": [list(e) for e in parser.dag.edges()],
     }
 
@@ -134,12 +152,10 @@ async def get_metric(name: str, request: Request):
 
     summary = None
     if name in traces:
-        builder = ModelBuilder(parser.dag, data)
-        builder.traces[name] = traces[name]
         # NaN/inf (e.g. r_hat on single-chain ADVI traces) are not valid JSON
         summary = {
             col: {k: (float(v) if math.isfinite(v) else None) for k, v in vals.items()}
-            for col, vals in builder.get_summary(name).to_dict().items()
+            for col, vals in summarize_trace(traces[name]).to_dict().items()
         }
 
     return {
@@ -164,12 +180,11 @@ async def analyze_metric(
         raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
 
     async with request.app.state.lock:
-        builder = ModelBuilder(parser.dag, data)
-        await asyncio.to_thread(
-            builder.build_and_sample, name,
+        trace = await asyncio.to_thread(
+            fit_metric, parser.dag, data, name,
             draws=draws, tune=tune, inference_method=inference_method,
         )
-        request.app.state.traces[name] = builder.traces[name]
+        request.app.state.traces[name] = trace
 
     return {
         "status": "success",
@@ -179,7 +194,7 @@ async def analyze_metric(
 
 
 @app.get("/shapley/{name}")
-async def shapley_attribution(
+async def get_shapley(
     name: str,
     request: Request,
     reference_start: str = Query(..., description="Start of baseline window (YYYY-MM-DD)"),
@@ -193,17 +208,9 @@ async def shapley_attribution(
     if name not in parser.dag:
         raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
 
-    metric = parser.get_metric(name)
-    if not metric or not metric.formula:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Metric '{name}' has no formula — Shapley attribution requires a formula definition.",
-        )
-
-    builder = ModelBuilder(parser.dag, data)
     try:
-        result = builder.compute_shapley(
-            target_metric_name=name,
+        result = shapley_attribution(
+            parser.dag, data, name,
             reference_start=reference_start,
             reference_end=reference_end,
             analysis_start=analysis_start,
@@ -231,17 +238,14 @@ async def root_cause_analysis(
         raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
 
     async with request.app.state.lock:
-        builder = ModelBuilder(parser.dag, data)
-        builder.traces.update(request.app.state.traces)
+        # run_rca adds any traces it fits on demand to app.state.traces itself.
         try:
             result = await asyncio.to_thread(
-                run_rca, builder, name,
+                run_rca, parser.dag, data, request.app.state.traces, name,
                 reference_start, reference_end,
                 analysis_start, analysis_end,
             )
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
-        # Persist any traces fitted on demand during this call.
-        request.app.state.traces.update(builder.traces)
 
     return result

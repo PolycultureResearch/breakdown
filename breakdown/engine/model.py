@@ -1,25 +1,36 @@
+"""Bayesian structural time series (BSTS) fitting for metric-tree nodes.
+
+`fit_metric` is the entry point: given the metric DAG and a tidy DataFrame of
+metric time series, it fits one node's model and returns the posterior as an
+`arviz.InferenceData`. It holds no state — callers own the trace cache.
+
+Window-over-window attribution (Shapley and posterior-based) lives in
+`breakdown.engine.rca`; only the pure Shapley computation is defined here.
+"""
 import logging
 import math
 from itertools import combinations
 from typing import Any, Dict, List, Optional, Tuple
 
+import arviz as az
+import networkx as nx
 import numpy as np
 import pandas as pd
-import networkx as nx
 import pymc as pm
 
 from breakdown.formula import eval_formula
+from breakdown.parser import MetricDefinition
 
 logger = logging.getLogger(__name__)
 
 
-def scale_prior_params(distribution: str, params: Dict[str, Any], scale: np.ndarray) -> Dict[str, Any]:
+def scale_prior_params(distribution: str, params: Dict[str, Any], scale: float) -> Dict[str, Any]:
     """
     Translate raw-scale (business-unit) prior parameters into normalized space.
 
     The model regresses z-scored y on z-scored x, so a raw-scale coefficient
     beta_raw maps to beta_norm = beta_raw * (x_std / y_std). `scale` is that
-    x_std / y_std factor, one entry per parent.
+    x_std / y_std factor for one parent.
     """
     if distribution == "Normal":
         return {"mu": params.get("mu", 0.0) * scale, "sigma": params.get("sigma", 1.0) * scale}
@@ -53,7 +64,9 @@ def compute_shapley(
 ) -> Dict[str, float]:
     """
     Distribute the gap between formula(actuals) and formula(baselines) across
-    each parent using exact Shapley values.
+    each parent using exact Shapley values (full coalition enumeration, O(2^n)).
+
+    The values are guaranteed to sum to formula(actuals) - formula(baselines).
     """
     n = len(parent_names)
     if n == 0:
@@ -86,209 +99,178 @@ def compute_shapley(
     return shapley
 
 
-class ModelBuilder:
-    def __init__(self, dag: nx.DiGraph, data: pd.DataFrame):
-        self.dag = dag
-        self.data = data
-        self.models: Dict[str, pm.Model] = {}
-        self.traces: Dict[str, Any] = {}
-        self.scale_params: Dict[str, Tuple[float, float]] = {}
-        self.formula_nodes: Dict[str, str] = {}
-        self.lags: Dict[str, Dict[str, int]] = {}
+def summarize_trace(trace: Any) -> pd.DataFrame:
+    """ArviZ posterior summary (mean, sd, 95% HDI, diagnostics) for a trace."""
+    return az.summary(trace, hdi_prob=0.95)
 
-    def _validate_data(self, target: str, parents: List[str]) -> None:
-        missing_cols = [c for c in [target] + parents if c not in self.data.columns]
-        if missing_cols:
-            raise ValueError(f"Columns missing from data: {missing_cols}")
 
-        cols_with_nan = [c for c in [target] + parents if self.data[c].isna().any()]
-        if cols_with_nan:
-            raise ValueError(f"NaN values found in columns: {cols_with_nan}")
+def _validate_columns(data: pd.DataFrame, cols: List[str]) -> None:
+    missing = [c for c in cols if c not in data.columns]
+    if missing:
+        raise ValueError(f"Columns missing from data: {missing}")
+    with_nan = [c for c in cols if data[c].isna().any()]
+    if with_nan:
+        raise ValueError(f"NaN values found in columns: {with_nan}")
 
-    def _normalize(self, series: pd.Series) -> Tuple[np.ndarray, float, float]:
-        mean = series.mean()
-        std = series.std()
-        if std == 0:
-            raise ValueError(f"Column '{series.name}' has zero variance — cannot normalize.")
-        return (series.values - mean) / std, float(mean), float(std)
 
-    def build_and_sample(
-        self,
-        target_metric_name: str,
-        draws: int = 1000,
-        tune: int = 1000,
-        inference_method: str = "nuts",
-    ) -> Any:
-        if inference_method not in ("nuts", "advi"):
-            raise ValueError(f"inference_method must be 'nuts' or 'advi', got '{inference_method}'")
+def _normalize(series: pd.Series) -> Tuple[np.ndarray, float, float]:
+    mean = series.mean()
+    std = series.std()
+    if std == 0:
+        raise ValueError(f"Column '{series.name}' has zero variance — cannot normalize.")
+    return (series.values - mean) / std, float(mean), float(std)
 
-        parents = list(self.dag.predecessors(target_metric_name))
-        self._validate_data(target_metric_name, parents)
 
-        metric_node = self.dag.nodes[target_metric_name]
-        formula: Optional[str] = metric_node.get("formula")
+def _prepare_series(
+    defn: MetricDefinition,
+    parents: List[str],
+    data: pd.DataFrame,
+    target: str,
+) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
+    """
+    Build the normalized observation vector y and regressor matrix X.
 
-        if formula and parents:
-            self.formula_nodes[target_metric_name] = formula
-            parent_arrays = {p: self.data[p].values.astype(float) for p in parents}
-            y_formula = eval_formula(formula, parent_arrays)
-            residual = self.data[target_metric_name].values.astype(float) - y_formula
-            residual_series = pd.Series(residual, name=f"{target_metric_name}_residual")
-            y, y_mean, y_std = self._normalize(residual_series)
-            X = None
+    Formula nodes: y is the z-scored residual (observed - formula(parents));
+    there are no regressors — the structural relationship IS the formula, and
+    the BSTS models only what the formula doesn't explain.
+
+    Probabilistic nodes: each parent becomes a z-scored regressor column,
+    shifted back by its lag (`lags` in the YAML); the first max-lag rows are
+    trimmed so every series aligns with no NaNs.
+
+    Returns (y, X, scale) where scale[i] = x_std_i / y_std converts raw-unit
+    coefficients into normalized space. X and scale are None when there is
+    nothing to regress on.
+    """
+    if defn.formula and parents:
+        parent_arrays = {p: data[p].values.astype(float) for p in parents}
+        residual = data[target].values.astype(float) - eval_formula(defn.formula, parent_arrays)
+        y, _, _ = _normalize(pd.Series(residual, name=f"{target}_residual"))
+        return y, None, None
+
+    lags = defn.lags
+    max_lag = max(lags.values(), default=0)
+    if max_lag > 0 and len(data) - max_lag < 10:
+        raise ValueError(
+            f"Not enough rows after applying lags to '{target}': "
+            f"{len(data)} rows minus max lag {max_lag} leaves "
+            f"{len(data) - max_lag} (need >= 10)."
+        )
+
+    y_series = data[target].iloc[max_lag:] if max_lag > 0 else data[target]
+    y, _, y_std = _normalize(y_series)
+
+    if not parents:
+        return y, None, None
+
+    X_cols, x_stds = [], []
+    for p in parents:
+        shifted = data[p].shift(lags.get(p, 0))
+        if max_lag > 0:
+            shifted = shifted.iloc[max_lag:]
+        col, _, p_std = _normalize(shifted)
+        X_cols.append(col)
+        x_stds.append(p_std)
+
+    return y, np.column_stack(X_cols), np.array(x_stds) / y_std
+
+
+def _seasonal_component(seasonality: List[Any], t: np.ndarray):
+    """Fourier seasonality: 2 sin/cos harmonic pairs per YAML entry.
+    Must be called inside a pm.Model context."""
+    terms = []
+    for s in seasonality:
+        for k in (1, 2):
+            sin_term = np.sin(2 * np.pi * k * t / s.period)
+            cos_term = np.cos(2 * np.pi * k * t / s.period)
+            a = pm.Normal(f"sin_{s.name}_h{k}", mu=0, sigma=1.0)
+            b = pm.Normal(f"cos_{s.name}_h{k}", mu=0, sigma=1.0)
+            terms.append(a * sin_term + b * cos_term)
+    return sum(terms) if terms else 0.0
+
+
+def _regression_component(defn: MetricDefinition, parents: List[str], X, scale):
+    """One beta per parent: the parent's own prior if present, else the shared
+    `coefficient` prior, else weakly informative Normal(0, 1) in normalized
+    space. Priors from YAML are stated in business units and rescaled here.
+    Must be called inside a pm.Model context."""
+    if X is None:
+        return 0.0
+    betas = []
+    for i, p in enumerate(parents):
+        prior = defn.priors.get(p) or defn.priors.get("coefficient")
+        if prior:
+            scaled = scale_prior_params(prior.distribution, prior.params, scale[i])
+            betas.append(_PRIOR_DISTRIBUTIONS[prior.distribution](f"beta_{p}", **scaled))
         else:
-            lags = metric_node.get("lags") or {}
-            max_lag = max(lags.values(), default=0)
-            if max_lag > 0 and len(self.data) - max_lag < 10:
-                raise ValueError(
-                    f"Not enough rows after applying lags to '{target_metric_name}': "
-                    f"{len(self.data)} rows minus max lag {max_lag} leaves "
-                    f"{len(self.data) - max_lag} (need >= 10)."
-                )
-            self.lags[target_metric_name] = lags
+            betas.append(pm.Normal(f"beta_{p}", mu=0.0, sigma=1.0))
+    beta = pm.Deterministic("beta", pm.math.stack(betas))
+    pm.Deterministic("beta_raw", beta / scale)
+    return pm.math.dot(X, beta)
 
-            # Shift each parent back by its lag, then trim the leading `max_lag`
-            # rows so every series aligns with no NaNs; normalize afterward.
-            y_series = self.data[target_metric_name]
-            if max_lag > 0:
-                y_series = y_series.iloc[max_lag:]
-            y, y_mean, y_std = self._normalize(y_series)
-            X = None
-            if parents:
-                X_cols = []
-                for p in parents:
-                    shifted = self.data[p].shift(lags.get(p, 0))
-                    if max_lag > 0:
-                        shifted = shifted.iloc[max_lag:]
-                    col, p_mean, p_std = self._normalize(shifted)
-                    self.scale_params[p] = (p_mean, p_std)
-                    X_cols.append(col)
-                X = np.column_stack(X_cols)
 
-        self.scale_params[target_metric_name] = (y_mean, y_std)
+def fit_metric(
+    dag: nx.DiGraph,
+    data: pd.DataFrame,
+    target: str,
+    draws: int = 1000,
+    tune: int = 1000,
+    inference_method: str = "nuts",
+) -> Any:
+    """
+    Fit the Bayesian structural time series for one metric.
 
-        seasonality_defs = metric_node.get("seasonality", [])
-        t = np.arange(len(y))
+    In normalized (z-scored) space the model is:
 
-        with pm.Model() as model:
-            sigma_trend = pm.HalfNormal("sigma_trend", 1.0)
-            trend = pm.GaussianRandomWalk("trend", sigma=sigma_trend, shape=len(y))
+        y[t] = alpha + trend[t] + seasonal[t] + (X @ beta)[t] + eps[t]
 
-            seasonal_terms = []
-            for s in seasonality_defs:
-                period = s["period"] if isinstance(s, dict) else s.period
-                name = s["name"] if isinstance(s, dict) else s.name
-                for k in range(1, 3):
-                    sin_term = np.sin(2 * np.pi * k * t / period)
-                    cos_term = np.cos(2 * np.pi * k * t / period)
-                    a = pm.Normal(f"sin_{name}_h{k}", mu=0, sigma=1.0)
-                    b = pm.Normal(f"cos_{name}_h{k}", mu=0, sigma=1.0)
-                    seasonal_terms.append(a * sin_term + b * cos_term)
+        trend[t]   ~ GaussianRandomWalk(sigma_trend)     local level
+        seasonal   =  Fourier sin/cos pairs (2 harmonics per `seasonality` entry)
+        beta[i]    ~  prior from YAML, stated in business units and rescaled
+        eps[t]     ~  Normal(0, sigma_obs)
 
-            seasonal = sum(seasonal_terms) if seasonal_terms else 0.0
+    Node types:
+    - Formula nodes fit the residual (observed - formula(parents)); no beta.
+    - Probabilistic nodes regress on their parents, each shifted back by its
+      lag from `lags` and z-scored.
+    - Source nodes (no parents) fit trend + seasonality only.
 
-            if X is not None:
-                # Priors are stated in business units; the fit happens in
-                # z-scored space, so translate them per parent. Each parent gets
-                # its own beta: a per-parent prior if present, else the shared
-                # `coefficient` prior, else a weakly informative Normal(0, 1).
-                x_stds = np.array([self.scale_params[p][1] for p in parents])
-                scale = x_stds / y_std
-                priors_cfg = metric_node.get("priors") or {}
-                betas = []
-                for i, p in enumerate(parents):
-                    prior = priors_cfg.get(p) or priors_cfg.get("coefficient")
-                    if prior:
-                        scaled = scale_prior_params(
-                            prior["distribution"], prior.get("params", {}), scale[i]
-                        )
-                        betas.append(
-                            _PRIOR_DISTRIBUTIONS[prior["distribution"]](f"beta_{p}", **scaled)
-                        )
-                    else:
-                        betas.append(pm.Normal(f"beta_{p}", mu=0.0, sigma=1.0))
-                beta = pm.Deterministic("beta", pm.math.stack(betas))
-                pm.Deterministic("beta_raw", beta / scale)
-                regression = pm.math.dot(X, beta)
-            else:
-                regression = 0.0
+    Inference: "nuts" (exact MCMC, use when accuracy matters) or "advi"
+    (variational approximation, ~5-10x faster, use for triage). `tune` only
+    applies to NUTS.
 
-            alpha = pm.Normal("alpha", mu=0, sigma=10.0)
-            mu = alpha + trend + seasonal + regression
-            sigma_obs = pm.HalfNormal("sigma_obs", 1.0)
-            pm.Normal("obs", mu=mu, sigma=sigma_obs, observed=y)
+    Returns an arviz.InferenceData. The posterior includes `beta_raw`
+    (= beta / scale): the coefficient on each parent in business units,
+    i.e. d(target) per unit change of that parent.
+    """
+    if inference_method not in ("nuts", "advi"):
+        raise ValueError(f"inference_method must be 'nuts' or 'advi', got '{inference_method}'")
 
-            logger.info(
-                "Sampling metric '%s' method=%s draws=%d tune=%d",
-                target_metric_name, inference_method, draws, tune,
-            )
+    parents = list(dag.predecessors(target))
+    _validate_columns(data, [target] + parents)
+    defn: MetricDefinition = dag.nodes[target]["definition"]
 
-            if inference_method == "advi":
-                approx = pm.fit(n=20_000, method="advi", progressbar=False)
-                trace = approx.sample(draws=draws)
-            else:
-                trace = pm.sample(draws=draws, tune=tune, target_accept=0.9, chains=2)
+    y, X, scale = _prepare_series(defn, parents, data, target)
+    t = np.arange(len(y))
 
-        self.models[target_metric_name] = model
-        self.traces[target_metric_name] = trace
-        return trace
+    with pm.Model():
+        sigma_trend = pm.HalfNormal("sigma_trend", 1.0)
+        trend = pm.GaussianRandomWalk("trend", sigma=sigma_trend, shape=len(y))
+        seasonal = _seasonal_component(defn.seasonality, t)
+        regression = _regression_component(defn, parents, X, scale)
 
-    def compute_shapley(
-        self,
-        target_metric_name: str,
-        reference_start: str,
-        reference_end: str,
-        analysis_start: str,
-        analysis_end: str,
-    ) -> Dict[str, Any]:
-        formula = self.formula_nodes.get(target_metric_name)
-        if formula is None:
-            formula = self.dag.nodes[target_metric_name].get("formula")
-        if not formula:
-            raise ValueError(
-                f"Metric '{target_metric_name}' has no formula — "
-                "Shapley attribution requires a formula definition."
-            )
+        alpha = pm.Normal("alpha", mu=0, sigma=10.0)
+        sigma_obs = pm.HalfNormal("sigma_obs", 1.0)
+        pm.Normal("obs", mu=alpha + trend + seasonal + regression, sigma=sigma_obs, observed=y)
 
-        parents = list(self.dag.predecessors(target_metric_name))
-        all_cols = [target_metric_name] + parents
-        missing = [c for c in all_cols if c not in self.data.columns]
-        if missing:
-            raise ValueError(f"Columns missing from data: {missing}")
+        logger.info(
+            "Sampling metric '%s' method=%s draws=%d tune=%d",
+            target, inference_method, draws, tune,
+        )
+        if inference_method == "advi":
+            approx = pm.fit(n=20_000, method="advi", progressbar=False)
+            trace = approx.sample(draws=draws)
+        else:
+            trace = pm.sample(draws=draws, tune=tune, target_accept=0.9, chains=2)
 
-        data = self.data.copy()
-        data["date"] = pd.to_datetime(data["date"])
-
-        ref_mask = (data["date"] >= reference_start) & (data["date"] <= reference_end)
-        act_mask = (data["date"] >= analysis_start) & (data["date"] <= analysis_end)
-
-        if not ref_mask.any():
-            raise ValueError(f"No data in reference window [{reference_start}, {reference_end}]")
-        if not act_mask.any():
-            raise ValueError(f"No data in analysis window [{analysis_start}, {analysis_end}]")
-
-        baselines = {col: float(data.loc[ref_mask, col].mean()) for col in all_cols}
-        actuals = {col: float(data.loc[act_mask, col].mean()) for col in all_cols}
-
-        parent_baselines = {p: baselines[p] for p in parents}
-        parent_actuals = {p: actuals[p] for p in parents}
-
-        shapley_values = compute_shapley(formula, parents, parent_baselines, parent_actuals)
-
-        baseline_target = float(eval_formula(formula, {p: np.array([parent_baselines[p]]) for p in parents})[0])
-        actual_target = float(eval_formula(formula, {p: np.array([parent_actuals[p]]) for p in parents})[0])
-
-        return {
-            "target": target_metric_name,
-            "formula": formula,
-            "baseline": baseline_target,
-            "actual": actual_target,
-            "gap": actual_target - baseline_target,
-            "attribution": shapley_values,
-        }
-
-    def get_summary(self, target_metric_name: str) -> pd.DataFrame:
-        import arviz as az
-        if target_metric_name not in self.traces:
-            raise ValueError(f"No trace found for metric '{target_metric_name}'")
-        return az.summary(self.traces[target_metric_name], hdi_prob=0.95)
+    return trace

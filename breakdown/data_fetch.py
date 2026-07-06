@@ -1,9 +1,10 @@
 import logging
 from abc import ABC, abstractmethod
-import pandas as pd
-import numpy as np
+from typing import Dict, Optional, Tuple
+
 import networkx as nx
-from typing import Dict, List, Optional, Tuple
+import numpy as np
+import pandas as pd
 
 from breakdown.formula import eval_formula
 
@@ -56,9 +57,9 @@ class LocalDataFetcher(BaseDataFetcher):
         logger.info("Initialized LocalDataFetcher for project at %s", project_path)
 
     def fetch_metric(self, metric_name: str, start_date: str, end_date: str, grain: str = "day") -> pd.DataFrame:
+        import os
         import subprocess
         import tempfile
-        import os
 
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
             tmp_path = f.name
@@ -128,23 +129,21 @@ class MockDataFetcher(BaseDataFetcher):
         values: Dict[str, np.ndarray] = {}
 
         for name in nx.topological_sort(self.dag):
-            node = self.dag.nodes[name]
+            defn = self.dag.nodes[name]["definition"]
             rng = self._rng_for(name)
             parents = list(self.dag.predecessors(name))
-            formula = node.get("formula")
 
-            if formula and parents:
-                base = eval_formula(formula, {p: values[p] for p in parents})
+            if defn.formula and parents:
+                base = eval_formula(defn.formula, {p: values[p] for p in parents})
                 noise_scale = 0.02 * float(np.abs(base).mean()) or 1.0
                 values[name] = base + rng.normal(0, noise_scale, n_days)
             elif parents:
-                coef_prior = (node.get("priors") or {}).get("coefficient") or {}
-                default_coef = coef_prior.get("params", {}).get("mu")
-                lags = node.get("lags") or {}
+                coef_prior = defn.priors.get("coefficient")
+                default_coef = coef_prior.params.get("mu") if coef_prior else None
                 signal = np.zeros(n_days)
                 for p in parents:
                     parent_vals = values[p]
-                    lag = lags.get(p, 0)
+                    lag = defn.lags.get(p, 0)
                     if lag > 0:
                         # Edge-pad with the first value so the child co-moves
                         # with the parent's value `lag` days earlier.
@@ -182,33 +181,3 @@ class MockDataFetcher(BaseDataFetcher):
         values = 1000 + np.cumsum(rng.normal(0, 10, n_days))
 
         return pd.DataFrame({"date": dates, metric_name: values})
-
-
-def generate_mock_data(n_days: int = 100, seed: int = 42) -> pd.DataFrame:
-    """Generate a correlated mock dataset for the jaffle-shop metric tree."""
-    rng = np.random.default_rng(seed=seed)
-    dates = pd.date_range(start="2024-01-01", periods=n_days)
-
-    # sessions (root)
-    daily_sessions = (
-        5000
-        + np.cumsum(rng.normal(0, 100, n_days))
-        + 500 * np.sin(2 * np.pi * np.arange(n_days) / 7)
-    )
-
-    # order_count = ~10% of sessions + noise
-    order_count = 0.1 * daily_sessions + rng.normal(0, 10, n_days)
-
-    # average_order_value = 50 + noise
-    average_order_value = 50 + rng.normal(0, 2, n_days)
-
-    # revenue = order_count * average_order_value + noise
-    revenue = order_count * average_order_value + rng.normal(0, 100, n_days)
-
-    return pd.DataFrame({
-        "date": dates,
-        "daily_sessions": daily_sessions,
-        "order_count": order_count,
-        "average_order_value": average_order_value,
-        "revenue": revenue,
-    })

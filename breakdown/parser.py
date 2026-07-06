@@ -1,9 +1,11 @@
-import yaml
-from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import Any, Dict, List, Optional
+
 import networkx as nx
+import yaml
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from breakdown.formula import referenced_names, validate_formula
+
 
 class Prior(BaseModel):
     distribution: str
@@ -104,20 +106,19 @@ class Parser:
         return MetricTreeConfig(**data)
 
     def _build_dag(self) -> nx.DiGraph:
+        # Each node carries its validated MetricDefinition under the
+        # "definition" key: dag.nodes[name]["definition"].formula etc.
         G = nx.DiGraph()
-        
-        # Add all nodes first
-        for metric in self.config.metrics:
-            G.add_node(metric.name, **metric.model_dump())
 
-        # Add edges
+        for metric in self.config.metrics:
+            G.add_node(metric.name, definition=metric)
+
         for metric in self.config.metrics:
             for parent in metric.parents:
                 if parent not in G:
                     raise ValueError(f"Parent metric '{parent}' not found for metric '{metric.name}'")
                 G.add_edge(parent, metric.name)
 
-        # Check for cycles
         if not nx.is_directed_acyclic_graph(G):
             cycles = list(nx.simple_cycles(G))
             raise ValueError(f"Metric tree contains cycles: {cycles}")
@@ -125,10 +126,9 @@ class Parser:
         return G
 
     def get_metric(self, name: str) -> Optional[MetricDefinition]:
-        for metric in self.config.metrics:
-            if metric.name == name:
-                return metric
-        return None
+        if name not in self.dag:
+            return None
+        return self.dag.nodes[name]["definition"]
 
     def get_topological_order(self) -> List[str]:
         return list(nx.topological_sort(self.dag))

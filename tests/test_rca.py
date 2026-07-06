@@ -1,9 +1,8 @@
 import pytest
 
+from breakdown.engine.rca import run_rca, shapley_attribution
 from breakdown.parser import Parser
-from breakdown.engine.model import ModelBuilder
-from breakdown.engine.rca import run_rca
-from breakdown.data_fetch import generate_mock_data
+from tests.synthetic import generate_mock_data
 
 JAFFLE_YAML = """
 metrics:
@@ -28,20 +27,20 @@ REF = ("2024-01-01", "2024-02-15")
 AN = ("2024-02-16", "2024-04-09")
 
 
-def make_builder():
+def make_tree():
     parser = Parser(JAFFLE_YAML)
     data = generate_mock_data(n_days=100)
-    return ModelBuilder(parser.dag, data)
+    return parser.dag, data
 
 
-def rca_on(builder, target):
-    return run_rca(builder, target, REF[0], REF[1], AN[0], AN[1], advi_draws=300)
+def rca_on(dag, data, traces, target):
+    return run_rca(dag, data, traces, target, REF[0], REF[1], AN[0], AN[1], advi_draws=300)
 
 
 def test_rca_formula_attribution():
     """Formula node revenue uses Shapley; estimates sum to gap - unexplained."""
-    builder = make_builder()
-    result = rca_on(builder, "revenue")
+    dag, data = make_tree()
+    result = rca_on(dag, data, {}, "revenue")
 
     rev = result["nodes"]["revenue"]
     assert rev["attribution_method"] == "shapley"
@@ -58,8 +57,8 @@ def test_rca_formula_attribution():
 
 def test_rca_posterior_attribution():
     """Probabilistic node order_count uses the posterior over beta_raw."""
-    builder = make_builder()
-    result = rca_on(builder, "order_count")
+    dag, data = make_tree()
+    result = rca_on(dag, data, {}, "order_count")
 
     oc = result["nodes"]["order_count"]
     assert oc["attribution_method"] == "posterior"
@@ -73,30 +72,31 @@ def test_rca_posterior_attribution():
 
 def test_rca_on_demand_fitting_minimal():
     """Only probabilistic non-root nodes in scope get fit; roots and formula
-    nodes are not."""
-    builder = make_builder()
-    assert builder.traces == {}
+    nodes are not. New fits land in the caller's trace cache."""
+    dag, data = make_tree()
+    traces = {}
 
-    rca_on(builder, "revenue")
+    rca_on(dag, data, traces, "revenue")
 
-    assert set(builder.traces.keys()) == {"order_count"}
+    assert set(traces.keys()) == {"order_count"}
 
 
 def test_rca_trace_reuse():
     """A cached trace is reused, not re-fit, on a subsequent call."""
-    builder = make_builder()
-    rca_on(builder, "revenue")
-    trace = builder.traces["order_count"]
+    dag, data = make_tree()
+    traces = {}
+    rca_on(dag, data, traces, "revenue")
+    trace = traces["order_count"]
 
-    rca_on(builder, "revenue")
+    rca_on(dag, data, traces, "revenue")
 
-    assert builder.traces["order_count"] is trace
+    assert traces["order_count"] is trace
 
 
 def test_rca_root_target():
     """RCA on a root returns just that node with no contributions or causes."""
-    builder = make_builder()
-    result = rca_on(builder, "daily_sessions")
+    dag, data = make_tree()
+    result = rca_on(dag, data, {}, "daily_sessions")
 
     assert set(result["nodes"].keys()) == {"daily_sessions"}
     node = result["nodes"]["daily_sessions"]
@@ -107,8 +107,8 @@ def test_rca_root_target():
 
 def test_rca_ranked_causes():
     """ranked_causes is non-empty, sorted descending, and excludes the target."""
-    builder = make_builder()
-    result = rca_on(builder, "revenue")
+    dag, data = make_tree()
+    result = rca_on(dag, data, {}, "revenue")
 
     ranked = result["ranked_causes"]
     assert len(ranked) > 0
@@ -118,6 +118,25 @@ def test_rca_ranked_causes():
 
 
 def test_rca_unknown_target_raises():
-    builder = make_builder()
+    dag, data = make_tree()
     with pytest.raises(ValueError, match="not found in the metric tree"):
-        rca_on(builder, "nope")
+        rca_on(dag, data, {}, "nope")
+
+
+# --- Standalone Shapley attribution (the GET /shapley contract) ---
+
+def test_shapley_attribution_sums_to_gap():
+    dag, data = make_tree()
+
+    result = shapley_attribution(dag, data, "revenue", REF[0], REF[1], AN[0], AN[1])
+
+    assert set(result["attribution"].keys()) == {"order_count", "average_order_value"}
+    assert abs(result["gap"] - (result["actual"] - result["baseline"])) < 1e-3
+    assert abs(sum(result["attribution"].values()) - result["gap"]) < 1e-3
+
+
+def test_shapley_attribution_no_formula_raises():
+    dag, data = make_tree()
+
+    with pytest.raises(ValueError, match="no formula"):
+        shapley_attribution(dag, data, "order_count", REF[0], REF[1], AN[0], AN[1])

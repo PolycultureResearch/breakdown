@@ -81,7 +81,7 @@ Expresses an exact arithmetic relationship between a metric and its parents.
 
 All names in the formula must appear in `parents`. The parser validates this at load time using Python's `ast` module — no unsafe `eval` is possible.
 
-**Effect on the model:** When a formula is defined, `ModelBuilder` computes `y_formula = eval(formula, parent_data)` for each time step and fits a BSTS model to the **residual** (`y - y_formula`). This means:
+**Effect on the model:** When a formula is defined, `fit_metric` computes `y_formula = eval(formula, parent_data)` for each time step and fits a BSTS model to the **residual** (`y - y_formula`). This means:
 - No `beta` regressor appears in the posterior — the structural relationship is captured by the formula
 - Shapley attribution becomes available via `GET /shapley/{name}`
 - The residual BSTS still models unexplained trend, seasonality, and noise

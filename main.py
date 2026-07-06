@@ -1,4 +1,5 @@
 import argparse
+import datetime
 import os
 
 import uvicorn
@@ -12,10 +13,16 @@ def serve(port: int = 9090, tree: str = None, start_date: str = None, end_date: 
         if not os.path.isfile(tree_path):
             raise SystemExit(f"Metric tree file not found: {tree_path}")
         os.environ["BREAKDOWN_TREE"] = tree_path
-    if start_date:
-        os.environ["BREAKDOWN_START_DATE"] = start_date
-    if end_date:
-        os.environ["BREAKDOWN_END_DATE"] = end_date
+    for flag, value, env in (
+        ("--start-date", start_date, "BREAKDOWN_START_DATE"),
+        ("--end-date", end_date, "BREAKDOWN_END_DATE"),
+    ):
+        if value:
+            try:
+                datetime.date.fromisoformat(value)
+            except ValueError:
+                raise SystemExit(f"{flag} must be a valid YYYY-MM-DD date, got '{value}'")
+            os.environ[env] = value
 
     print(f"Starting breakdown server on http://127.0.0.1:{port}")
     print(f"UI available at http://127.0.0.1:{port}/ui")
