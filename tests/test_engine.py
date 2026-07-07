@@ -7,9 +7,10 @@ from breakdown.engine.model import (
     compute_shapley,
     fit_metric,
     scale_prior_params,
+    seasonal_window_delta,
     summarize_trace,
 )
-from breakdown.parser import Parser
+from breakdown.parser import Parser, Seasonality
 from tests.synthetic import generate_mock_data
 
 SIMPLE_YAML = """
@@ -185,6 +186,67 @@ def test_compute_shapley_additive():
 
     assert abs(sv["a"] - 20.0) < 1e-6
     assert abs(sv["b"] - 30.0) < 1e-6
+
+
+def test_compute_shapley_vectorized_per_day():
+    """Array inputs run one Shapley game per day; per-day-averaged values sum
+    to v(all) − v(∅) = mean_analysis(formula(x_t)) − formula(reference means)."""
+    actuals = {"a": np.array([110.0, 90.0]), "b": np.array([55.0, 45.0])}
+    baselines = {"a": np.full(2, 100.0), "b": np.full(2, 50.0)}
+
+    phi = compute_shapley("a * b", ["a", "b"], baselines, actuals)
+
+    assert isinstance(phi["a"], np.ndarray) and phi["a"].shape == (2,)
+    # v(all) = mean(110*55, 90*45) = 5050; v(empty) = 100*50 = 5000
+    total = phi["a"].mean() + phi["b"].mean()
+    assert abs(total - 50.0) < 1e-9
+
+
+def test_compute_shapley_mismatched_lengths_raise():
+    with pytest.raises(ValueError, match="length"):
+        compute_shapley(
+            "a * b", ["a", "b"],
+            {"a": np.zeros(3), "b": np.zeros(2)},
+            {"a": np.zeros(3), "b": np.zeros(3)},
+        )
+
+
+# --- Seasonal window delta (pure helper, T5) ---
+
+def test_seasonal_window_delta_matches_numpy():
+    """With known Fourier coefficients per sample, the helper must reproduce a
+    direct numpy computation of the window-mean difference exactly."""
+    import arviz as az
+
+    n_samples = 8
+    a1 = np.linspace(0.5, 2.0, n_samples)  # sin h1 coefficient, varies per sample
+    zeros = np.zeros(n_samples)
+    trace = az.from_dict(posterior={
+        "sin_weekly_h1": a1[None, :],   # (chain, draw)
+        "cos_weekly_h1": zeros[None, :],
+        "sin_weekly_h2": zeros[None, :],
+        "cos_weekly_h2": zeros[None, :],
+    })
+    t_ref = np.arange(0, 14)
+    t_an = np.arange(14, 24)
+
+    delta = seasonal_window_delta(trace, [Seasonality(period=7, name="weekly")], t_ref, t_an)
+
+    expected = a1 * (
+        np.sin(2 * np.pi * t_an / 7).mean() - np.sin(2 * np.pi * t_ref / 7).mean()
+    )
+    assert delta.shape == (n_samples,)
+    np.testing.assert_allclose(delta, expected, atol=1e-10)
+
+
+def test_seasonal_window_delta_no_seasonality_is_zero():
+    import arviz as az
+
+    trace = az.from_dict(posterior={"alpha": np.zeros((1, 5))})
+    delta = seasonal_window_delta(trace, [], np.arange(5), np.arange(5, 10))
+
+    assert delta.shape == (5,)
+    assert (delta == 0).all()
 
 
 # --- Prior scaling tests ---

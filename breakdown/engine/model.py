@@ -84,42 +84,64 @@ _PRIOR_DISTRIBUTIONS = {
 def compute_shapley(
     formula: str,
     parent_names: List[str],
-    baselines: Dict[str, float],
-    actuals: Dict[str, float],
-) -> Dict[str, float]:
+    baselines: Dict[str, Any],
+    actuals: Dict[str, Any],
+) -> Dict[str, Any]:
     """
     Distribute the gap between formula(actuals) and formula(baselines) across
     each parent using exact Shapley values (full coalition enumeration, O(2^n)).
 
-    The values are guaranteed to sum to formula(actuals) - formula(baselines).
+    Values may be scalars or equal-length 1-d arrays. Arrays run one Shapley
+    game per position (the per-day path: position = analysis-window day), with
+    each coalition evaluated in a single vectorized formula call. The return
+    type mirrors the input: Dict[str, float] for all-scalar inputs,
+    Dict[str, np.ndarray] otherwise. Length-1 arrays/scalars broadcast.
+
+    By Shapley efficiency the values sum (per position) to
+    formula(actuals) - formula(baselines).
     """
     n = len(parent_names)
     if n == 0:
         return {}
 
-    shapley: Dict[str, float] = {}
+    array_input = any(
+        isinstance(v, np.ndarray) and v.ndim > 0
+        for v in [*baselines.values(), *actuals.values()]
+    )
+    b_arr = {p: np.atleast_1d(np.asarray(baselines[p], dtype=float)) for p in parent_names}
+    a_arr = {p: np.atleast_1d(np.asarray(actuals[p], dtype=float)) for p in parent_names}
+    length = max(arr.shape[0] for arr in [*b_arr.values(), *a_arr.values()])
+    for label, vals in (("baselines", b_arr), ("actuals", a_arr)):
+        for p, arr in vals.items():
+            if arr.shape[0] == 1 and length > 1:
+                vals[p] = np.full(length, arr[0])
+            elif arr.shape[0] != length:
+                raise ValueError(
+                    f"compute_shapley: {label}['{p}'] has length {arr.shape[0]}, expected {length}."
+                )
+
+    shapley: Dict[str, Any] = {}
     for player in parent_names:
         others = [p for p in parent_names if p != player]
-        phi = 0.0
+        phi = np.zeros(length)
         for r in range(n):
             for coalition in combinations(others, r):
                 coalition_set = set(coalition)
                 weight = math.factorial(r) * math.factorial(n - r - 1) / math.factorial(n)
 
                 vals_with = {
-                    p: actuals[p] if (p in coalition_set or p == player) else baselines[p]
+                    p: a_arr[p] if (p in coalition_set or p == player) else b_arr[p]
                     for p in parent_names
                 }
                 vals_without = {
-                    p: actuals[p] if p in coalition_set else baselines[p]
+                    p: a_arr[p] if p in coalition_set else b_arr[p]
                     for p in parent_names
                 }
+                phi = phi + weight * (
+                    eval_formula(formula, vals_with) - eval_formula(formula, vals_without)
+                )
 
-                v_with = float(eval_formula(formula, {k: np.array([v]) for k, v in vals_with.items()})[0])
-                v_without = float(eval_formula(formula, {k: np.array([v]) for k, v in vals_without.items()})[0])
-                phi += weight * (v_with - v_without)
-
-        shapley[player] = phi
+        shapley[player] = phi if array_input else float(phi[0])
 
     return shapley
 
@@ -229,6 +251,41 @@ def _seasonal_component(seasonality: List[Any], t: np.ndarray):
             b = pm.Normal(f"cos_{s.name}_h{k}", mu=0, sigma=1.0)
             terms.append(a * sin_term + b * cos_term)
     return sum(terms) if terms else 0.0
+
+
+def seasonal_window_delta(
+    trace: Any,
+    seasonality: List[Any],
+    t_ref: np.ndarray,
+    t_an: np.ndarray,
+) -> np.ndarray:
+    """Per-posterior-sample (analysis − reference) window mean of the Fourier
+    seasonal component, in normalized units. Returns shape (n_samples,).
+    Zero-length seasonality returns zeros.
+
+    The seasonal component is parametric in integer time t (days since the
+    first fitted date), so unlike the trend it evaluates anywhere — including
+    an analysis window outside the fitted period. Because it is linear in the
+    coefficients, the per-sample window-mean difference is the coefficients
+    dotted with the window-mean difference of the sin/cos design.
+    """
+    posterior = trace.posterior
+    n_samples = posterior.sizes["chain"] * posterior.sizes["draw"]
+    delta = np.zeros(n_samples)
+    for s in seasonality:
+        for k in (1, 2):
+            a = posterior[f"sin_{s.name}_h{k}"].values.reshape(-1)
+            b = posterior[f"cos_{s.name}_h{k}"].values.reshape(-1)
+            sin_delta = (
+                np.sin(2 * np.pi * k * t_an / s.period).mean()
+                - np.sin(2 * np.pi * k * t_ref / s.period).mean()
+            )
+            cos_delta = (
+                np.cos(2 * np.pi * k * t_an / s.period).mean()
+                - np.cos(2 * np.pi * k * t_ref / s.period).mean()
+            )
+            delta = delta + a * sin_delta + b * cos_delta
+    return delta
 
 
 def _regression_component(defn: MetricDefinition, parents: List[str], X, scale):

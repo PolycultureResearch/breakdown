@@ -1,6 +1,8 @@
+import numpy as np
+import pandas as pd
 import pytest
 
-from breakdown.engine.rca import run_rca, shapley_attribution
+from breakdown.engine.rca import _block_bootstrap_indices, run_rca, shapley_attribution
 from breakdown.parser import Parser
 from tests.synthetic import generate_mock_data
 
@@ -38,21 +40,25 @@ def rca_on(dag, data, traces, target):
 
 
 def test_rca_formula_attribution():
-    """Formula node revenue uses Shapley; estimates sum to gap - unexplained."""
+    """Formula node revenue uses Shapley; bootstrap-mean estimates approximately
+    sum to gap - unexplained, and carry CIs (T7)."""
     dag, data = make_tree()
     result = rca_on(dag, data, {}, "revenue")
 
     rev = result["nodes"]["revenue"]
     assert rev["attribution_method"] == "shapley"
+    assert rev["components"] is None
     parents = {c["parent"] for c in rev["contributions"]}
     assert parents == {"order_count", "average_order_value"}
 
+    # Estimates are bootstrap means, so the identity holds only approximately.
     total = sum(c["estimate"] for c in rev["contributions"])
-    assert abs(total - (rev["gap"] - rev["unexplained"])) < 1e-6
+    gap = rev["gap"]
+    assert abs(total - (gap - rev["unexplained"])) < 0.05 * max(1, abs(gap))
 
     for c in rev["contributions"]:
-        assert c["ci_95"] is None
-        assert c["prob_same_direction"] is None
+        assert c["ci_95"] is not None and c["ci_95"][0] <= c["ci_95"][1]
+        assert 0.5 <= c["prob_same_direction"] <= 1.0
 
 
 def test_rca_posterior_attribution():
@@ -68,6 +74,14 @@ def test_rca_posterior_attribution():
     assert c["parent"] == "daily_sessions"
     assert c["ci_95"][0] < c["estimate"] < c["ci_95"][1]
     assert 0.5 <= c["prob_same_direction"] <= 1.0
+
+    # T5: probabilistic nodes report the fitted trend/seasonal deltas.
+    comps = oc["components"]
+    assert set(comps) == {"trend", "seasonal"}
+    for term in comps.values():
+        assert term["ci_95"][0] <= term["estimate"] <= term["ci_95"][1]
+    # No seasonality declared on order_count -> exactly zero seasonal delta.
+    assert comps["seasonal"]["estimate"] == 0.0
 
 
 def test_rca_on_demand_fitting_minimal():
@@ -116,6 +130,7 @@ def test_rca_root_target():
     node = result["nodes"]["daily_sessions"]
     assert node["attribution_method"] is None
     assert node["contributions"] == []
+    assert node["components"] is None
     assert result["ranked_causes"] == []
 
 
@@ -154,3 +169,179 @@ def test_shapley_attribution_no_formula_raises():
 
     with pytest.raises(ValueError, match="no formula"):
         shapley_attribution(dag, data, "order_count", REF[0], REF[1], AN[0], AN[1])
+
+
+# --- Trend & seasonal components (T5) ---
+
+def test_rca_seasonal_component_captures_weekly_pattern():
+    """y = 0.3x + 5·sin(2πt/7) + noise, x ~flat. A whole-week reference window
+    vs a weekday-skewed analysis window creates a purely seasonal gap; the
+    seasonal component must pick it up (right sign) and shrink |unexplained|."""
+    rng = np.random.default_rng(3)
+    n = 120
+    t = np.arange(n)
+    x = 100.0 + rng.normal(0, 1.0, n)
+    y = 0.3 * x + 5.0 * np.sin(2 * np.pi * t / 7) + rng.normal(0, 0.3, n)
+    dates = pd.date_range("2024-01-01", periods=n)
+    data = pd.DataFrame({"date": dates, "x": x, "y": y})
+
+    yaml_content = """
+metrics:
+  - name: x
+    source: dbt.metric.x
+  - name: y
+    source: dbt.metric.y
+    parents: [x]
+    seasonality:
+      - period: 7
+        name: weekly
+"""
+    parser = Parser(yaml_content)
+    ref = (str(dates[56].date()), str(dates[83].date()))    # 4 whole weeks
+    an = (str(dates[84].date()), str(dates[93].date()))     # 10 days, weekday-skewed
+
+    result = run_rca(parser.dag, data, {}, "y", ref[0], ref[1], an[0], an[1], advi_draws=300)
+
+    node = result["nodes"]["y"]
+    comps = node["components"]
+    true_delta = 5.0 * (np.sin(2 * np.pi * t[84:94] / 7).mean()
+                        - np.sin(2 * np.pi * t[56:84] / 7).mean())
+    assert np.sign(comps["seasonal"]["estimate"]) == np.sign(true_delta)
+    # Without the seasonal term, its share of the gap would sit in unexplained.
+    assert abs(node["unexplained"]) < abs(node["unexplained"] + comps["seasonal"]["estimate"])
+
+
+def test_rca_reference_window_outside_fit_raises():
+    """With a lag, the fitted period starts after the data start; a reference
+    window reaching before it must raise a clear error."""
+    yaml_content = """
+metrics:
+  - name: daily_sessions
+    source: dbt.metric.daily_sessions
+  - name: order_count
+    source: dbt.metric.order_count
+    parents: [daily_sessions]
+    lags: { daily_sessions: 5 }
+"""
+    parser = Parser(yaml_content)
+    data = generate_mock_data(n_days=100)
+
+    with pytest.raises(ValueError, match="inside the fitted period"):
+        run_rca(parser.dag, data, {}, "order_count",
+                "2024-01-01", "2024-02-15", "2024-02-16", "2024-03-14",
+                advi_draws=100)
+
+
+# --- Per-day Shapley (T6) ---
+
+def test_per_day_shapley_attributes_covariance_shift():
+    """Marginal window means of orders and aov are identical in both windows,
+    but their within-window correlation flips sign. Shapley on window means sees
+    gap = 0; per-day Shapley attributes the covariance-driven revenue change."""
+    n = 60
+    dates = pd.date_range("2024-01-01", periods=n)
+    f = np.tile([5.0, -5.0], n // 2)             # zero-mean shared factor
+    orders = 100.0 + f
+    aov = np.where(np.arange(n) < 30, 50.0 + 0.5 * f, 50.0 - 0.5 * f)
+    revenue = orders * aov                        # exact identity
+    data = pd.DataFrame({
+        "date": dates,
+        "order_count": orders,
+        "average_order_value": aov,
+        "revenue": revenue,
+    })
+    yaml_content = """
+metrics:
+  - name: order_count
+    source: dbt.metric.order_count
+  - name: average_order_value
+    source: dbt.metric.average_order_value
+  - name: revenue
+    source: dbt.metric.revenue
+    formula: "order_count * average_order_value"
+    parents: [order_count, average_order_value]
+"""
+    parser = Parser(yaml_content)
+
+    result = shapley_attribution(
+        parser.dag, data, "revenue",
+        "2024-01-01", "2024-01-30", "2024-01-31", "2024-02-29",
+    )
+
+    gap = result["actual"] - result["baseline"]
+    # cov flips from +12.5 to -12.5 -> mean daily revenue moves by -12.5
+    assert abs(gap - (-12.5)) < 1e-9
+    assert abs(sum(result["attribution"].values()) - gap) < 1e-6
+
+
+# --- Window bootstrap (T7) ---
+
+def test_block_bootstrap_indices_contract():
+    rng = np.random.default_rng(0)
+    idx = _block_bootstrap_indices(20, 50, rng)
+
+    assert idx.shape == (50, 20)
+    assert idx.min() >= 0 and idx.max() < 20
+    # Deterministic given the seed.
+    idx2 = _block_bootstrap_indices(20, 50, np.random.default_rng(0))
+    np.testing.assert_array_equal(idx, idx2)
+
+
+def test_block_bootstrap_indices_short_window():
+    """n < block degenerates gracefully: valid shape/range, and the resampled
+    window means still vary (the bootstrap must not collapse to rotations)."""
+    rng = np.random.default_rng(0)
+    idx = _block_bootstrap_indices(3, 100, rng)
+
+    assert idx.shape == (100, 3)
+    assert idx.min() >= 0 and idx.max() < 3
+    vals = np.array([10.0, 20.0, 60.0])
+    assert np.unique(vals[idx].mean(axis=1)).size > 1
+
+
+def test_short_analysis_window_widens_ci():
+    """The point of the bootstrap: a 3-day analysis window must yield a wider
+    contribution CI than a 28-day one from the same fit."""
+    rng = np.random.default_rng(11)
+    n = 100
+    x = 100.0 + rng.normal(0, 5.0, n)
+    y = 0.5 * x + rng.normal(0, 1.0, n)
+    dates = pd.date_range("2024-01-01", periods=n)
+    data = pd.DataFrame({"date": dates, "x": x, "y": y})
+    yaml_content = """
+metrics:
+  - name: x
+    source: dbt.metric.x
+  - name: y
+    source: dbt.metric.y
+    parents: [x]
+"""
+    parser = Parser(yaml_content)
+    traces = {}
+    ref = ("2024-01-01", "2024-02-29")
+    # Both analyses start 2024-03-01 -> same fit_end -> the same cached fit,
+    # so the only difference is window-sampling uncertainty.
+    r3 = run_rca(parser.dag, data, traces, "y", ref[0], ref[1],
+                 "2024-03-01", "2024-03-03", advi_draws=300)
+    r28 = run_rca(parser.dag, data, traces, "y", ref[0], ref[1],
+                  "2024-03-01", "2024-03-28", advi_draws=300)
+
+    def ci_width(result):
+        ci = result["nodes"]["y"]["contributions"][0]["ci_95"]
+        return ci[1] - ci[0]
+
+    assert ci_width(r3) > ci_width(r28)
+
+
+def test_rca_deterministic():
+    """Two identical run_rca calls return identical contribution numbers."""
+    dag, data = make_tree()
+    traces = {}
+
+    r1 = rca_on(dag, data, traces, "revenue")
+    r2 = rca_on(dag, data, traces, "revenue")
+
+    for node in r1["nodes"]:
+        assert r1["nodes"][node]["contributions"] == r2["nodes"][node]["contributions"]
+        assert r1["nodes"][node]["components"] == r2["nodes"][node]["components"]
+        assert r1["nodes"][node]["unexplained"] == r2["nodes"][node]["unexplained"]

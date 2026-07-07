@@ -82,28 +82,82 @@ are stated in business units and translated internally, so `mu: 0.1` on
 Given a reference window and an analysis window, each metric's change is its
 **window-mean difference**: `gap = mean(analysis) − mean(reference)`.
 
-- **Formula nodes** get exact Shapley attribution computed on the parents'
-  window means. The parent contributions sum exactly to
-  `formula(analysis means) − formula(reference means)`. No uncertainty — the
-  relationship is an identity.
+- **Formula nodes** get exact **per-day** Shapley attribution: each
+  analysis-window day is one Shapley game in which coalition members take their
+  value on that day and non-members take their reference-window mean, and a
+  parent's contribution is its per-day value averaged over the window. The
+  contributions sum exactly to
+  `mean over analysis days of formula(parents that day) − formula(reference means)`.
+  Compared to Shapley on window means, this attributes changes in the parents'
+  *within-window covariance* to the parents — for `revenue = orders × aov`,
+  "the big orders disappeared" is exactly an orders–aov covariance shift, and
+  it now shows up in the attribution instead of in `unexplained`.
 - **Probabilistic nodes** get posterior attribution: contribution of parent i
-  is the distribution `beta_raw[i] × (parent's gap)`, summarized as a mean, a
-  95% credible interval, and `prob_same_direction` (the posterior probability
-  that the contribution's sign is what the point estimate says). For lagged
-  parents, the parent's gap is measured over windows shifted back by the lag —
-  the parent values that actually influenced the analysis window.
+  is the distribution `beta_raw[i] × (parent's gap)`. For lagged parents, the
+  parent's gap is measured over windows shifted back by the lag — the parent
+  values that actually influenced the analysis window.
+- **Probabilistic nodes also report a `components` block** — the fitted model's
+  own trend and seasonal terms, as window-over-window deltas with credible
+  intervals (see below).
+
+Every contribution is summarized as an `estimate` (mean), a 95% interval
+(`ci_95`), and `prob_same_direction` (the probability mass on the dominant side
+of zero). These intervals reflect **two** sources of uncertainty:
+
+1. **Coefficient uncertainty** (probabilistic nodes): the `beta_raw` posterior.
+2. **Window-sampling uncertainty** (all nodes): a window mean over a handful of
+   days is itself a noisy estimate (its sd shrinks only like 1/√days — brutal
+   for a 2–3 day "what happened this weekend?" window). RCA resamples each
+   window's rows with a **circular moving-block bootstrap** (blocks of up to 7
+   consecutive days, resampled jointly across all metrics so cross-metric
+   correlation within the window is preserved) and composes the resampled
+   window-mean differences with the coefficient posterior. Formula-node
+   contributions get their CIs entirely from this bootstrap — the *relationship*
+   is exact, but the window means feeding it are not.
+
+The bootstrap assumes the series is roughly stationary within each window with
+serial dependence of at most about a week. Replicates are seeded per RCA call,
+so identical requests return identical numbers.
+
+### `components`: trend and seasonal, made explicit
+
+For a fitted (probabilistic) node the model already decomposed the series into
+trend, seasonality, and regression — so RCA reports the first two instead of
+lumping them into `unexplained`:
+
+- **`seasonal`** is the window-over-window change in the fitted Fourier
+  component. It is parametric in time, so it evaluates in both windows exactly.
+  This is where **window composition bias** becomes visible: a reference window
+  with 1.4 weekends compared against an analysis window with 2 creates a real
+  seasonal gap that is *not* anyone's fault — prefer whole-week windows (7, 14,
+  28 days) to avoid manufacturing it.
+- **`trend`** is the fitted level's forecast change: the analysis window lies
+  after the fit period (RCA fits strictly before it), and a random-walk local
+  level forecasts flat at its last fitted state — so the analysis-window trend
+  is `trend[last fitted day]`, compared against the reference-window mean of
+  the fitted trend. Its CI comes from the posterior of that last state, not
+  from forward simulation of new steps.
+
+Formula nodes and roots have `components: null`.
 
 ### `unexplained`
 
 Contributions generally do **not** sum to the node's observed gap; the
-remainder is reported as `unexplained`. It is large when:
+remainder is reported as `unexplained`.
 
-- the node's own data is noisy around the formula (formula nodes), or
-- the linear-in-parents model misses part of the story: trend, seasonality, an
-  unmeasured driver, a wrong lag (probabilistic nodes).
+- For **probabilistic** nodes,
+  `unexplained = gap − Σ parent contributions − trend − seasonal`: with the
+  model's own components broken out, what remains is observation noise and
+  genuine model misfit — an unmeasured driver, a wrong lag, a nonlinearity.
+- For **formula** nodes it is the part of the target's own window-mean change
+  the identity doesn't reproduce: measurement noise of the target around the
+  formula, plus the reference-window Jensen term (the within-*reference*-window
+  covariance of the parents — the analysis-window counterpart is attributed to
+  the parents by the per-day Shapley; the reference window is the stable regime
+  where this term is small and roughly constant).
 
-A large `unexplained` is a finding, not an error — it says "the parents you
-modeled don't account for this move."
+A large `unexplained` is a finding, not an error — it says "neither the parents
+you modeled nor the fitted trend/seasonality account for this move."
 
 ### `share_of_gap` can exceed 100%
 

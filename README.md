@@ -297,7 +297,7 @@ Example response:
 }
 ```
 
-The `attribution` values are exact Shapley values and are guaranteed to sum to `gap`.
+`baseline` is the formula evaluated at the parents' reference-window means; `actual` is the **mean of the formula evaluated day by day** over the analysis window (so within-window co-movement of the parents is included); `gap = actual − baseline`. The `attribution` values are exact per-day Shapley values (averaged over the analysis window) and are guaranteed to sum to `gap`.
 
 ### `POST /rca/{name}`
 
@@ -321,20 +321,25 @@ Trimmed response:
       "baseline": 25000.0, "actual": 27000.0, "gap": 2000.0, "relative_change": 0.08,
       "attribution_method": "shapley",
       "unexplained": 12.0,
+      "components": null,
       "contributions": [
         {"parent": "order_count", "estimate": 1600.0, "share_of_gap": 0.8,
-         "ci_95": null, "prob_same_direction": null},
+         "ci_95": [1450.0, 1740.0], "prob_same_direction": 1.0},
         {"parent": "average_order_value", "estimate": 388.0, "share_of_gap": 0.19,
-         "ci_95": null, "prob_same_direction": null}
+         "ci_95": [210.0, 560.0], "prob_same_direction": 0.99}
       ]
     },
     "order_count": {
       "baseline": 500.0, "actual": 540.0, "gap": 40.0, "relative_change": 0.08,
       "attribution_method": "posterior",
-      "unexplained": 2.0,
+      "unexplained": 1.4,
+      "components": {
+        "trend": {"estimate": 0.5, "ci_95": [-1.1, 2.2]},
+        "seasonal": {"estimate": 0.1, "ci_95": [-0.6, 0.8]}
+      },
       "contributions": [
         {"parent": "daily_sessions", "estimate": 38.0, "share_of_gap": 0.95,
-         "ci_95": [31.0, 45.0], "prob_same_direction": 0.99}
+         "ci_95": [30.0, 46.0], "prob_same_direction": 0.99}
       ]
     }
   },
@@ -349,10 +354,14 @@ Trimmed response:
 
 `POST /rca/{name}` combines the two attribution methods across a metric tree:
 
-- **Formula nodes** get `attribution_method: "shapley"` — exact Shapley values over the parent window means. `unexplained` is the part of the gap the arithmetic identity doesn't account for (data noise). These contributions have no `ci_95` / `prob_same_direction`.
-- **Probabilistic nodes** get `attribution_method: "posterior"` — each contribution is the posterior over the parent's raw-scale coefficient (`beta_raw`) times the parent's window-over-window change, reported as an `estimate` (mean), a 95% credible interval (`ci_95`), and `prob_same_direction` (posterior mass on the dominant side of zero). Lagged parents are compared over windows shifted back by the lag.
+- **Formula nodes** get `attribution_method: "shapley"` — exact per-day Shapley values (each analysis-window day is one Shapley game against the parents' reference means, averaged over the window), so shifts in the parents' within-window co-movement are attributed to parents. `unexplained` is the part of the gap the arithmetic identity doesn't account for (the target's own noise around the formula).
+- **Probabilistic nodes** get `attribution_method: "posterior"` — each contribution is the posterior over the parent's raw-scale coefficient (`beta_raw`) times the parent's window-over-window change. Lagged parents are compared over windows shifted back by the lag. These nodes also report a `components` block: the fitted model's own trend and seasonal terms as window-over-window deltas with CIs, so they no longer hide inside `unexplained`.
 
-Unfitted probabilistic nodes in scope are fit with ADVI on demand and cached, so the endpoint works without a prior `/analyze` call. `ranked_causes` is a documented heuristic that propagates an influence score from the target up the ancestor tree (weighting each hop by the parent's clamped share of its child's gap); use it as a triage ordering.
+Every contribution is reported as an `estimate` (mean), a 95% interval (`ci_95`), and `prob_same_direction` (mass on the dominant side of zero). The intervals combine coefficient uncertainty (probabilistic nodes) with **window-sampling uncertainty** — the window means themselves are resampled with a circular moving-block bootstrap (≤7-day blocks, jointly across metrics, seeded so responses are deterministic). This is what keeps a 3-day analysis window honest: its CIs are visibly wider than a 4-week window's.
+
+Unfitted probabilistic nodes in scope are fit with ADVI on demand — on data strictly before the analysis window — and cached, so the endpoint works without a prior `/analyze` call. `ranked_causes` is a documented heuristic that propagates an influence score from the target up the ancestor tree (weighting each hop by the parent's clamped share of its child's gap); use it as a triage ordering.
+
+See [docs/model.md](docs/model.md) for how to read `components`, `unexplained`, and the bootstrap's assumptions.
 
 ---
 
@@ -381,14 +390,16 @@ For metrics connected by a formula, Breakdown computes exact Shapley values to a
 
 **Why Shapley?** Simpler decompositions (e.g., holding one factor fixed while varying the other) produce different answers depending on the order of decomposition. Shapley values are the unique attribution method that is simultaneously: efficient (values sum to the gap), symmetric (order doesn't matter), and null (a parent that didn't move gets zero credit).
 
-**How it works:** For a gap between `formula(actuals)` and `formula(baselines)`, each parent's Shapley value is the weighted average of its marginal contribution across all possible coalitions of co-varying parents. For a 2-parent multiplicative formula `A × B`:
+**How it works:** The attribution is computed **per analysis-window day**: for each day, coalition members take their observed value on that day and non-members take their reference-window mean, and each parent's Shapley value is the weighted average of its marginal contribution across all coalitions. A parent's reported attribution is its per-day value averaged over the window, so the values sum exactly to `mean(formula evaluated daily over the analysis window) − formula(reference means)`. For a single day of a 2-parent multiplicative formula `A × B`:
 
 ```
 φ(A) = ΔA × (baseline_B + actual_B) / 2
 φ(B) = ΔB × (baseline_A + actual_A) / 2
 ```
 
-This generalizes to arbitrary formulas and any number of parents via exact enumeration (2ⁿ coalitions).
+This generalizes to arbitrary formulas and any number of parents via exact enumeration (2ⁿ coalitions per day, vectorized across days).
+
+**Why per-day?** For any nonlinear formula, `mean(A × B)` differs from `mean(A) × mean(B)` by the within-window covariance of A and B. Attributing on window means would silently drop that term — a real behavioral change like "the large orders disappeared" (an orders–AOV covariance shift) would be reported as noise. Per-day attribution hands it to the parents where it belongs.
 
 ---
 
