@@ -7,7 +7,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"></script>
-    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js" charset="utf-8"></script>
+    <script src="https://cdn.plot.ly/plotly-basic-2.32.0.min.js" charset="utf-8"></script>
 </head>
 <body>
     <header>
@@ -16,6 +16,11 @@
         <div class="control-group">
             <label for="target-select">Target</label>
             <select id="target-select"></select>
+        </div>
+
+        <div class="control-group">
+            <label for="win-preset">Windows</label>
+            <select id="win-preset"></select>
         </div>
 
         <div class="control-group">
@@ -32,6 +37,7 @@
 
         <button id="run-rca" class="primary">Run RCA</button>
         <button id="clear-rca" style="display:none">Clear</button>
+        <button id="copy-link" style="display:none">Copy link</button>
 
         <div id="status"></div>
     </header>
@@ -46,8 +52,9 @@
                 <div class="legend-row"><span class="swatch fitted"></span> model fitted</div>
                 <div class="legend-row"><span class="edge-swatch formula"></span> deterministic edge</div>
                 <div class="legend-row"><span class="edge-swatch dashed"></span> learned edge</div>
-                <div class="legend-row rca-only" style="display:none"><span class="swatch up"></span> moved up</div>
-                <div class="legend-row rca-only" style="display:none"><span class="swatch down"></span> moved down</div>
+                <div class="legend-row rca-only" style="display:none"><span class="swatch up"></span> ▲ moved up</div>
+                <div class="legend-row rca-only" style="display:none"><span class="swatch down"></span> ▼ moved down</div>
+                <div class="legend-row rca-only" style="display:none"><span class="swatch unexp"></span> ◌ large unexplained share</div>
             </div>
         </div>
 

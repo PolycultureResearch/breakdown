@@ -214,6 +214,7 @@ async def analyze_metric(
         "status": "success",
         "message": f"Analysis complete for '{name}'",
         "inference_method": inference_method,
+        "diagnostics": fit.diagnostics,
     }
 
 

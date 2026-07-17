@@ -57,6 +57,134 @@ function setStatus(msg, kind = "") {
   el.className = kind; // "", "busy", "error"
 }
 
+/* ---------- date / window helpers (UTC to match ISO strings) ---------- */
+
+const DAY_MS = 86400000;
+const isoUTC = (d) => d.toISOString().slice(0, 10);
+const addDays = (d, n) => new Date(d.getTime() + n * DAY_MS);
+const daysInclusive = (start, end) => Math.round((end - start) / DAY_MS) + 1;
+
+/* Window presets. compute(startDate, endDate) -> {refStart, refEnd, anStart, anEnd}
+   as ISO strings, or null when the data window is too short (preset omitted). */
+const WINDOW_PRESETS = [
+  {
+    id: "last7-prior28",
+    label: "Last 7d vs prior 28d",
+    compute(start, end) {
+      if (daysInclusive(start, end) < 35) return null;
+      const anEnd = end;
+      const anStart = addDays(end, -6);
+      const refEnd = addDays(anStart, -1);
+      const refStart = addDays(refEnd, -27);
+      if (refStart < start) return null;
+      return { refStart: isoUTC(refStart), refEnd: isoUTC(refEnd), anStart: isoUTC(anStart), anEnd: isoUTC(anEnd) };
+    },
+  },
+  {
+    id: "last14-prior28",
+    label: "Last 14d vs prior 28d",
+    compute(start, end) {
+      if (daysInclusive(start, end) < 42) return null;
+      const anEnd = end;
+      const anStart = addDays(end, -13);
+      const refEnd = addDays(anStart, -1);
+      const refStart = addDays(refEnd, -27);
+      if (refStart < start) return null;
+      return { refStart: isoUTC(refStart), refEnd: isoUTC(refEnd), anStart: isoUTC(anStart), anEnd: isoUTC(anEnd) };
+    },
+  },
+  {
+    id: "weeks-1v4",
+    label: "Last full week vs prior 4 weeks",
+    compute(start, end) {
+      // analysis = last full Mon–Sun week fully inside the window; ref = 4 weeks before.
+      const lastSunday = addDays(end, -end.getUTCDay()); // getUTCDay: Sun=0
+      const anEnd = lastSunday;
+      const anStart = addDays(lastSunday, -6); // Monday
+      const refEnd = addDays(anStart, -1); // prior Sunday
+      const refStart = addDays(anStart, -28); // Monday, 4 weeks earlier
+      if (refStart < start) return null; // needs >= 5 full weeks
+      return { refStart: isoUTC(refStart), refEnd: isoUTC(refEnd), anStart: isoUTC(anStart), anEnd: isoUTC(anEnd) };
+    },
+  },
+  {
+    id: "split60",
+    label: "First 60% vs rest",
+    compute(start, end) {
+      const splitMs = start.getTime() + 0.6 * (end.getTime() - start.getTime());
+      return {
+        refStart: isoUTC(start),
+        refEnd: isoUTC(new Date(splitMs)),
+        anStart: isoUTC(new Date(splitMs + DAY_MS)),
+        anEnd: isoUTC(end),
+      };
+    },
+  },
+  { id: "custom", label: "Custom", compute: null },
+];
+
+function applyPreset(id) {
+  const preset = WINDOW_PRESETS.find((p) => p.id === id);
+  if (!preset || !preset.compute) return; // custom: leave inputs untouched
+  const w = preset.compute(new Date(state.meta.date_start), new Date(state.meta.date_end));
+  if (!w) return;
+  $("ref-start").value = w.refStart;
+  $("ref-end").value = w.refEnd;
+  $("an-start").value = w.anStart;
+  $("an-end").value = w.anEnd;
+}
+
+/* Client-side mirror of the backend window rules. Returns true when valid.
+   Marks offending inputs, toggles #run-rca, and writes the status area. */
+function validateWindows() {
+  const ids = ["ref-start", "ref-end", "an-start", "an-end"];
+  ids.forEach((id) => {
+    const el = $(id);
+    el.classList.remove("invalid");
+    el.removeAttribute("aria-invalid");
+  });
+  const runBtn = $("run-rca");
+  const fail = (bad, msg) => {
+    bad.forEach((id) => {
+      const el = $(id);
+      el.classList.add("invalid");
+      el.setAttribute("aria-invalid", "true");
+    });
+    runBtn.disabled = true;
+    setStatus(msg, "error");
+    return false;
+  };
+
+  const rs = $("ref-start").value, re = $("ref-end").value;
+  const as = $("an-start").value, ae = $("an-end").value;
+  if (!rs || !re || !as || !ae) return fail(ids.filter((id) => !$(id).value), "Set all four window dates.");
+
+  const lo = state.meta.date_start, hi = state.meta.date_end;
+  const oob = ids.filter((id) => $(id).value < lo || $(id).value > hi);
+  if (oob.length) return fail(oob, `Windows must stay within the data range (${lo} … ${hi}).`);
+  if (rs > re) return fail(["ref-start", "ref-end"], "Reference window start must be on or before its end.");
+  if (re >= as) return fail(["ref-end", "an-start"], "Reference window must end before the analysis window starts.");
+  if (as > ae) return fail(["an-start", "an-end"], "Analysis window start must be on or before its end.");
+
+  runBtn.disabled = false;
+  // whole-week advisory (muted, not an error) when seasonality is in play
+  const refLen = daysInclusive(new Date(rs), new Date(re));
+  const anLen = daysInclusive(new Date(as), new Date(ae));
+  const hasSeasonality =
+    state.dag && state.dag.nodes.some(([, def]) => def.seasonality && def.seasonality.length);
+  if (hasSeasonality && (refLen % 7 !== 0 || anLen % 7 !== 0)) {
+    setStatus("ⓘ Windows aren't whole weeks — weekday mix can distort the comparison.");
+  } else {
+    setStatus("");
+  }
+  return true;
+}
+
+/* Copy-link button is visible whenever a deep-linkable state (hash) exists. */
+function updateCopyLink() {
+  $("copy-link").style.display = location.hash ? "" : "none";
+}
+
 function nodeType(def) {
   if (!def.parents || def.parents.length === 0) return "source";
   return def.formula ? "formula" : "prob";
@@ -130,11 +258,29 @@ const CY_STYLE = [
   },
   {
     selector: "edge.rca-up",
-    style: { "line-style": "solid", "line-color": "#16a34a", "target-arrow-color": "#16a34a", width: "data(w)" },
+    style: {
+      "line-style": "solid",
+      "line-color": "#16a34a",
+      "target-arrow-color": "#16a34a",
+      width: "data(w)",
+      "line-opacity": "data(op)",
+      "text-opacity": "data(op)",
+    },
   },
   {
     selector: "edge.rca-down",
-    style: { "line-style": "solid", "line-color": "#dc2626", "target-arrow-color": "#dc2626", width: "data(w)" },
+    style: {
+      "line-style": "solid",
+      "line-color": "#dc2626",
+      "target-arrow-color": "#dc2626",
+      width: "data(w)",
+      "line-opacity": "data(op)",
+      "text-opacity": "data(op)",
+    },
+  },
+  {
+    selector: "node.rca-unexplained",
+    style: { "border-style": "dashed", "border-color": "#d97706", "border-width": 3 },
   },
   { selector: ".faded", style: { opacity: 0.25 } },
   {
@@ -145,6 +291,10 @@ const CY_STYLE = [
 
 function buildGraph() {
   const defs = Object.fromEntries(state.dag.nodes.map(([name, def]) => [name, def]));
+  state.defs = defs;
+  // reverse adjacency: child -> [parents], used to size the run-progress status.
+  state.revAdj = {};
+  state.dag.nodes.forEach(([name]) => (state.revAdj[name] = []));
   const elements = [];
 
   state.dag.nodes.forEach(([name, def]) => {
@@ -155,8 +305,9 @@ function buildGraph() {
   });
   state.dag.edges.forEach(([src, dst]) => {
     const kind = defs[dst].formula ? "formula" : "prob";
+    state.revAdj[dst].push(src);
     elements.push({
-      data: { id: `${src}->${dst}`, source: src, target: dst, label: "", w: 2 },
+      data: { id: `${src}->${dst}`, source: src, target: dst, label: "", w: 2, op: 1 },
       classes: kind,
     });
   });
@@ -178,6 +329,25 @@ function markFitted() {
     const n = state.cy.getElementById(name);
     if (n) n.addClass("fitted");
   });
+}
+
+/* How many probabilistic ancestors of `target` still need fitting — drives the
+   run-progress status. Walks the reverse adjacency built in buildGraph. */
+function countUpstreamFits(target) {
+  const defs = state.defs || {};
+  const fitted = new Set(state.meta.fitted);
+  const seen = new Set();
+  const stack = [...(state.revAdj[target] || [])];
+  let k = 0;
+  while (stack.length) {
+    const name = stack.pop();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const def = defs[name];
+    if (def && def.parents && def.parents.length && !def.formula && !fitted.has(name)) k++;
+    (state.revAdj[name] || []).forEach((p) => stack.push(p));
+  }
+  return k;
 }
 
 /* Label a fitted probabilistic node's incoming edges with beta_raw. */
@@ -203,6 +373,7 @@ function labelBetaEdges(name, metricData) {
 async function selectMetric(name) {
   state.selected = name;
   history.replaceState(null, "", `#metric=${encodeURIComponent(name)}`);
+  updateCopyLink();
   state.cy.$("node:selected").unselect();
   state.cy.getElementById(name).select();
   switchTab("metric");
@@ -406,6 +577,7 @@ function readWindows() {
 
 async function runRCA() {
   const target = $("target-select").value;
+  if (!validateWindows()) return;
   const win = readWindows();
   if (!win) {
     setStatus("Set all four window dates first.", "error");
@@ -413,11 +585,16 @@ async function runRCA() {
   }
   const btn = $("run-rca");
   btn.disabled = true;
-  setStatus("Running RCA — fitting upstream models where needed…", "busy");
+  const k = countUpstreamFits(target);
+  setStatus(
+    k > 0 ? `Running RCA — fitting ${k} upstream model${k === 1 ? "" : "s"}…` : "Running RCA…",
+    "busy",
+  );
   try {
     const qs = new URLSearchParams(win).toString();
     state.rca = await api(`/rca/${encodeURIComponent(target)}?${qs}`, { method: "POST" });
     history.replaceState(null, "", `#rca=${encodeURIComponent(target)}&${qs}`);
+    updateCopyLink();
     state.meta = await api("/meta"); // on-demand fits may have been cached
     state.metricCache = {};
     markFitted();
@@ -450,14 +627,26 @@ function applyRcaOverlay() {
     const n = cy.getElementById(name);
     const dir = node.gap >= 0 ? "rca-up" : "rca-down";
     n.addClass(dir);
-    if (node.relative_change !== null) {
-      n.data("label", `${name}\n${signedPct(node.relative_change)}`);
+    const glyph = node.gap >= 0 ? "▲" : "▼";
+    let label = `${name}\n${glyph}${node.relative_change == null ? "" : " " + signedPct(node.relative_change)}`;
+    // large-unexplained badge: dashed amber border + ◌ glyph
+    if (
+      node.contributions.length &&
+      node.unexplained != null &&
+      Math.abs(node.gap) > 1e-9 &&
+      Math.abs(node.unexplained / node.gap) > 0.35
+    ) {
+      n.addClass("rca-unexplained");
+      label += " ◌";
     }
+    n.data("label", label);
     node.contributions.forEach((c) => {
       const e = cy.getElementById(`${c.parent}->${name}`);
       if (!e.length) return;
       const share = c.share_of_gap === null ? 0 : Math.min(Math.abs(c.share_of_gap), 1);
       e.data("w", 2 + 6 * share);
+      // certainty channel: opacity from prob_same_direction (null -> solid)
+      e.data("op", c.prob_same_direction == null ? 1 : Math.max(0.35, 2 * (c.prob_same_direction - 0.5)));
       e.data("label", c.share_of_gap === null ? "" : pct(Math.abs(c.share_of_gap)));
       e.addClass(c.estimate >= 0 ? "rca-up" : "rca-down");
     });
@@ -468,24 +657,36 @@ function applyRcaOverlay() {
 
 function clearRcaStyles() {
   const cy = state.cy;
-  cy.elements().removeClass("faded rca-up rca-down pathhl");
+  cy.elements().removeClass("faded rca-up rca-down pathhl rca-unexplained");
   cy.nodes().forEach((n) => n.data("label", n.id()));
   cy.edges().forEach((e) => {
     e.data("w", 2);
+    e.data("op", 1);
     e.data("label", "");
   });
   document.querySelectorAll(".rca-only").forEach((el) => (el.style.display = "none"));
 }
 
-function clearRCA() {
+async function clearRCA() {
   state.rca = null;
   state.activeCause = null;
   clearRcaStyles();
-  // restore beta labels on fitted nodes we have cached data for
+  // fast path: restore beta labels from cached metric data
   Object.entries(state.metricCache).forEach(([name, data]) => labelBetaEdges(name, data));
+  // then fetch any fitted metric we don't yet have cached, so every fitted
+  // probabilistic node regains its β labels (not just cached ones)
+  for (const name of state.meta.fitted) {
+    if (state.metricCache[name]) continue;
+    try {
+      const data = await api(`/metrics/${encodeURIComponent(name)}`);
+      state.metricCache[name] = data;
+      labelBetaEdges(name, data);
+    } catch { /* skip metrics that fail to load */ }
+  }
   $("tab-rca").innerHTML = '<p class="placeholder">Pick a target and two windows above, then Run RCA.</p>';
   $("clear-rca").style.display = "none";
   setStatus("");
+  updateCopyLink();
 }
 
 function highlightCause(causeName) {
@@ -576,6 +777,7 @@ function renderRcaTab() {
     <div class="rca-card">
       <div class="sub">${esc(res.target)} · ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)} vs ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}</div>
       <div class="gap-line ${dirCls}">${target.gap >= 0 ? "+" : ""}${fmt(target.gap)} <span style="font-size:14px">(${signedPct(target.relative_change)})</span></div>
+      <div id="rca-strip"></div>
       <div class="sub">${fmt(target.baseline)} → ${fmt(target.actual)} (window means)</div>
     </div>
 
@@ -592,6 +794,53 @@ function renderRcaTab() {
   document.querySelectorAll(".cause-row").forEach((row) => {
     row.addEventListener("click", () => highlightCause(row.dataset.metric));
   });
+
+  renderRcaStrip(res);
+}
+
+/* Target time-series strip inside the RCA card, shaded with the run's own
+   windows (from the response, not the current header inputs). Async-safe:
+   the card renders immediately; this fills the plot when the fetch resolves. */
+async function renderRcaStrip(res) {
+  const strip = $("rca-strip");
+  if (!strip) return;
+  strip.innerHTML = '<div class="strip-loading">loading series…</div>';
+  const name = res.target;
+  let data;
+  try {
+    data = state.metricCache[name] || (await api(`/metrics/${encodeURIComponent(name)}`));
+    state.metricCache[name] = data;
+  } catch {
+    const el = $("rca-strip");
+    if (el) el.remove(); // card must not break on a failed series fetch
+    return;
+  }
+  // guard against a newer run (or a Clear) having replaced the card while awaiting
+  const el = $("rca-strip");
+  if (!el || state.rca !== res) return;
+  el.innerHTML = "";
+
+  const series = data.time_series;
+  const x = series.map((r) => r.date);
+  const y = series.map((r) => r[name]);
+  const shapes = [
+    { type: "rect", xref: "x", yref: "paper", x0: res.reference_window.start, x1: res.reference_window.end, y0: 0, y1: 1, fillcolor: "#94a3b8", opacity: 0.16, line: { width: 0 } },
+    { type: "rect", xref: "x", yref: "paper", x0: res.analysis_window.start, x1: res.analysis_window.end, y0: 0, y1: 1, fillcolor: "#4f46e5", opacity: 0.10, line: { width: 0 } },
+  ];
+  Plotly.newPlot(
+    el,
+    [{ x, y, mode: "lines", line: { color: "#4f46e5", width: 1.6 }, hovertemplate: "%{x|%b %d}: %{y:,.1f}<extra></extra>" }],
+    {
+      margin: { l: 38, r: 6, t: 4, b: 18 },
+      height: 120,
+      shapes,
+      xaxis: { tickfont: { size: 9 }, gridcolor: "#f0f2f5" },
+      yaxis: { tickfont: { size: 9 }, gridcolor: "#f0f2f5" },
+      plot_bgcolor: "#ffffff",
+      paper_bgcolor: "#ffffff",
+    },
+    { displayModeBar: false, responsive: true },
+  );
 }
 
 /* ---------- tabs & init ---------- */
@@ -612,27 +861,51 @@ function initControls() {
   // sensible default target: last metric in the tree (usually the top KPI)
   select.value = state.meta.metrics[state.meta.metrics.length - 1];
 
-  // default windows: first 60% reference, rest analysis
+  // window presets: populate the select with those the data window supports
+  const presetSelect = $("win-preset");
   const start = new Date(state.meta.date_start);
   const end = new Date(state.meta.date_end);
-  const splitMs = start.getTime() + 0.6 * (end.getTime() - start.getTime());
-  const split = new Date(splitMs);
-  const dayAfter = new Date(splitMs + 86400000);
-  const iso = (d) => d.toISOString().slice(0, 10);
+  const available = new Set();
+  WINDOW_PRESETS.forEach((p) => {
+    if (p.id !== "custom" && !p.compute(start, end)) return; // omit too-short presets
+    available.add(p.id);
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.label;
+    presetSelect.appendChild(opt);
+  });
+  const defaultPreset = available.has("last7-prior28") ? "last7-prior28" : "split60";
+  presetSelect.value = defaultPreset;
 
+  // date inputs: bound to the data range; any manual edit -> Custom + revalidate
   const bounds = { min: state.meta.date_start, max: state.meta.date_end };
-  [["ref-start", iso(start)], ["ref-end", iso(split)], ["an-start", iso(dayAfter)], ["an-end", iso(end)]].forEach(
-    ([id, val]) => {
-      const el = $(id);
-      el.value = val;
-      el.min = bounds.min;
-      el.max = bounds.max;
-    },
-  );
+  ["ref-start", "ref-end", "an-start", "an-end"].forEach((id) => {
+    const el = $(id);
+    el.min = bounds.min;
+    el.max = bounds.max;
+    el.addEventListener("change", () => {
+      presetSelect.value = "custom";
+      validateWindows();
+    });
+  });
+
+  applyPreset(defaultPreset);
+  presetSelect.addEventListener("change", () => {
+    applyPreset(presetSelect.value);
+    validateWindows();
+  });
 
   $("run-rca").addEventListener("click", runRCA);
   $("clear-rca").addEventListener("click", clearRCA);
+  $("copy-link").addEventListener("click", () => {
+    navigator.clipboard.writeText(location.href);
+    const btn = $("copy-link");
+    btn.textContent = "Copied ✓";
+    setTimeout(() => { btn.textContent = "Copy link"; }, 1500);
+  });
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
+
+  validateWindows();
 }
 
 /* Deep links: #metric=<name> opens a metric; #rca=<target>&reference_start=…
@@ -661,6 +934,7 @@ async function init() {
     buildGraph();
     setStatus(`${state.meta.metrics.length} metrics · provider: ${state.meta.provider} · ${state.meta.date_start} → ${state.meta.date_end}`);
     applyDeepLink();
+    updateCopyLink();
   } catch (err) {
     setStatus(`Failed to load: ${err.message}`, "error");
   }

@@ -223,6 +223,8 @@ def run_rca(
 
         contributions = []
         components = None
+        inference_method = None
+        fit_quality = None
         if not parents:
             attribution_method = None
             unexplained = None
@@ -267,6 +269,8 @@ def run_rca(
         else:
             attribution_method = "posterior"
             fit = traces[(node, analysis_start)]
+            inference_method = fit.inference_method
+            fit_quality = fit.diagnostics.get("fit_quality")
             arr = fit.trace.posterior["beta_raw"].values.reshape(-1, len(parents))
             n_post = arr.shape[0]
 
@@ -355,6 +359,8 @@ def run_rca(
             "gap": gap,
             "relative_change": relative_change,
             "attribution_method": attribution_method,
+            "inference_method": inference_method,
+            "fit_quality": fit_quality,
             "unexplained": unexplained,
             "components": components,
             "contributions": contributions,

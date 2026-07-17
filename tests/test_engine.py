@@ -588,3 +588,33 @@ metrics:
     hi = summary.loc["beta_raw[0]", "hdi_97.5%"]
     assert hi - lo < 0.4
     assert lo <= 0.5 <= hi
+
+
+# --- Convergence diagnostics (T8) ---
+
+def test_nuts_diagnostics_ok_on_well_behaved_data():
+    """A NUTS fit of the (post-T3, non-centered) model on clean synthetic data
+    must self-report as healthy."""
+    parser = Parser(SIMPLE_YAML)
+    data = generate_mock_data(n_days=50)
+
+    result = fit_metric(parser.dag, data, "order_count", draws=300, tune=300)
+
+    d = result.diagnostics
+    assert d["method"] == "nuts"
+    assert d["fit_quality"] == "ok"
+    assert isinstance(d["divergences"], int)
+    assert d["max_rhat"] < 1.05
+
+
+def test_advi_diagnostics_present():
+    """ADVI fits report a fit_quality verdict and the recent ELBO movement."""
+    parser = Parser(SIMPLE_YAML)
+    data = generate_mock_data(n_days=50)
+
+    result = fit_metric(parser.dag, data, "order_count", draws=200, inference_method="advi")
+
+    d = result.diagnostics
+    assert d["method"] == "advi"
+    assert d["fit_quality"] in ("ok", "suspect")
+    assert "elbo_drop" in d and isinstance(d["elbo_drop"], float)

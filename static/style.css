@@ -12,6 +12,8 @@
   --up-soft: #dcfce7;
   --down: #dc2626;
   --down-soft: #fee2e2;
+  --warn: #d97706;
+  --warn-soft: #fef3c7;
 }
 
 * { box-sizing: border-box; }

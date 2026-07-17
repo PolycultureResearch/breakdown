@@ -151,6 +151,58 @@ def summarize_trace(trace: Any) -> pd.DataFrame:
     return az.summary(trace, hdi_prob=0.95)
 
 
+def _nuts_diagnostics(trace: Any, draws: int, chains: int) -> Dict[str, Any]:
+    """Convergence diagnostics for a NUTS trace.
+
+    `fit_quality` is "suspect" when divergences exceed 1% of total draws, any
+    r_hat exceeds 1.05, or any bulk ESS falls below 100 — coarse thresholds
+    that flag only fits whose credible intervals should not be trusted as-is.
+    Nothing blocks on "suspect"; it is information, not an error.
+    """
+    summary = az.summary(trace)
+    divergences = int(trace.sample_stats.diverging.sum())
+    rhat_vals = summary["r_hat"].to_numpy(dtype=float)
+    ess_vals = summary["ess_bulk"].to_numpy(dtype=float)
+    # r_hat / ess are NaN on single-chain traces; missing values don't flag.
+    max_rhat = float(np.nanmax(rhat_vals)) if np.isfinite(rhat_vals).any() else None
+    min_ess_bulk = float(np.nanmin(ess_vals)) if np.isfinite(ess_vals).any() else None
+    suspect = (
+        divergences > 0.01 * (draws * chains)
+        or (max_rhat is not None and max_rhat > 1.05)
+        or (min_ess_bulk is not None and min_ess_bulk < 100)
+    )
+    return {
+        "fit_quality": "suspect" if suspect else "ok",
+        "method": "nuts",
+        "divergences": divergences,
+        "max_rhat": max_rhat,
+        "min_ess_bulk": min_ess_bulk,
+    }
+
+
+def _advi_diagnostics(approx: Any) -> Dict[str, Any]:
+    """Convergence diagnostics for a mean-field ADVI fit.
+
+    Compares the mean loss (−ELBO) of the last 10% of iterations against the
+    preceding 10%: if the loss is still moving by more than half its recent
+    noise level, the optimization had not converged and the approximation is
+    suspect. `elbo_drop` (mean(prev) − mean(last)) is positive while the loss
+    is still falling.
+    """
+    hist = np.asarray(approx.hist, dtype=float)
+    w = len(hist) // 10
+    if w < 1:
+        return {"fit_quality": "suspect", "method": "advi", "elbo_drop": None}
+    last, prev = hist[-w:], hist[-2 * w:-w]
+    elbo_drop = float(prev.mean() - last.mean())
+    suspect = abs(last.mean() - prev.mean()) > 0.5 * last.std()
+    return {
+        "fit_quality": "suspect" if suspect else "ok",
+        "method": "advi",
+        "elbo_drop": elbo_drop,
+    }
+
+
 def _validate_columns(data: pd.DataFrame, cols: List[str]) -> None:
     missing = [c for c in cols if c not in data.columns]
     if missing:
@@ -396,8 +448,13 @@ def fit_metric(
         if inference_method == "advi":
             approx = pm.fit(n=20_000, method="advi", progressbar=False)
             trace = approx.sample(draws=draws)
+            diagnostics = _advi_diagnostics(approx)
         else:
             trace = pm.sample(draws=draws, tune=tune, target_accept=0.9, chains=chains)
+            diagnostics = _nuts_diagnostics(trace, draws, chains)
+
+    if diagnostics["fit_quality"] == "suspect":
+        logger.warning("Fit for '%s' is suspect: %s", target, diagnostics)
 
     return FitResult(
         trace=trace,
@@ -409,5 +466,5 @@ def fit_metric(
         dates=dates,
         inference_method=inference_method,
         fit_end=fit_end,
-        diagnostics={},
+        diagnostics=diagnostics,
     )
