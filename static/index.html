@@ -55,6 +55,11 @@
                 <div class="legend-row rca-only" style="display:none"><span class="swatch up"></span> ▲ moved up</div>
                 <div class="legend-row rca-only" style="display:none"><span class="swatch down"></span> ▼ moved down</div>
                 <div class="legend-row rca-only" style="display:none"><span class="swatch unexp"></span> ◌ large unexplained share</div>
+                <div class="legend-row sim-only" style="display:none"><span class="swatch pinned"></span> ⊙ set by scenario</div>
+                <div class="legend-row sim-only" style="display:none"><span class="swatch up"></span> ▲ simulated up</div>
+                <div class="legend-row sim-only" style="display:none"><span class="swatch down"></span> ▼ simulated down</div>
+                <div class="legend-row sim-only" style="display:none"><span class="edge-swatch assume"></span> assumption link</div>
+                <div class="legend-row sim-only" style="display:none"><span class="swatch unexp"></span> ⚠ outside historical range</div>
             </div>
         </div>
 
@@ -62,12 +67,16 @@
             <div id="tabs">
                 <div class="tab active" data-tab="metric">Metric</div>
                 <div class="tab" data-tab="rca">Root cause</div>
+                <div class="tab" data-tab="whatif">What-if</div>
             </div>
             <div id="tab-metric" class="tab-content active">
                 <p class="placeholder">Click a node to inspect a metric.</p>
             </div>
             <div id="tab-rca" class="tab-content">
                 <p class="placeholder">Pick a target and two windows above, then Run RCA.</p>
+            </div>
+            <div id="tab-whatif" class="tab-content">
+                <p class="placeholder">Loading…</p>
             </div>
         </div>
     </div>

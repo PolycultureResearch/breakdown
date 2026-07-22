@@ -140,6 +140,59 @@ def test_rca_endpoint():
         assert resp.status_code == 422
 
 
+def test_simulate_endpoint():
+    """POST /simulate returns the scenario contract; runs one ADVI fit on
+    demand; identical requests give identical responses."""
+    scenario = {
+        "baseline_start": "2024-03-01",
+        "baseline_end": "2024-04-09",
+        "interventions": [{"metric": "daily_sessions", "mode": "pct", "value": 0.15}],
+        "assumptions": [{
+            "source": "discount_pct",
+            "target": "average_order_value",
+            "effect": {"kind": "relative", "low": -0.12, "high": -0.08},
+            "note": "10% blanket discount",
+        }],
+        "levers": [{"name": "discount_pct", "value": 10, "unit": "%"}],
+    }
+    with TestClient(app) as client:
+        resp = client.post("/simulate", json=scenario)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert {"baseline_window", "sources", "nodes", "warnings", "caveats"} <= set(body)
+        assert body["nodes"]["daily_sessions"]["status"] == "intervened"
+        assert body["nodes"]["revenue"]["status"] == "affected"
+        assert set(body["nodes"]) == {m.name for m in app.state.parser.config.metrics}
+        assert [s["kind"] for s in body["sources"]] == ["intervention", "assumption"]
+
+        # the on-demand fit is cached and visible in /meta
+        assert "order_count" in client.get("/meta").json()["fitted"]
+
+        # deterministic: same scenario, same response
+        assert client.post("/simulate", json=scenario).json() == body
+
+
+def test_simulate_validation_errors():
+    with TestClient(app) as client:
+        base = {"baseline_start": "2024-03-01", "baseline_end": "2024-04-09"}
+        # unknown metric -> 422
+        resp = client.post("/simulate", json={**base, "interventions": [
+            {"metric": "nope", "mode": "set", "value": 1.0}]})
+        assert resp.status_code == 422
+        # empty scenario -> 422
+        assert client.post("/simulate", json=base).status_code == 422
+        # inverted effect range -> 422 (pydantic)
+        resp = client.post("/simulate", json={**base, "assumptions": [{
+            "source": "x", "target": "revenue",
+            "effect": {"kind": "absolute", "low": 2.0, "high": 1.0}}]})
+        assert resp.status_code == 422
+        # inverted baseline window -> 422
+        resp = client.post("/simulate", json={
+            "baseline_start": "2024-04-09", "baseline_end": "2024-03-01",
+            "interventions": [{"metric": "revenue", "mode": "set", "value": 1.0}]})
+        assert resp.status_code == 422
+
+
 @pytest.mark.anyio
 async def test_analyze_does_not_block_event_loop():
     """Sampling runs in a worker thread, so a trivial request fired during an

@@ -10,6 +10,14 @@ const state = {
   metricCache: {},     // name -> GET /metrics/{name} response
   rca: null,           // last POST /rca response
   activeCause: null,   // highlighted ranked cause
+  whatif: {            // what-if scenario builder + last POST /simulate result
+    baseline: { start: null, end: null },
+    interventions: [], // {metric, mode, value} (value already in API units)
+    assumptions: [],   // {source, target, effect: {kind, low, high}, note}
+    adjusting: null,   // metric name open in the adjust panel
+    result: null,      // last POST /simulate response
+    readerMode: false, // entered via deep link: results first, builder collapsed
+  },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -282,6 +290,61 @@ const CY_STYLE = [
     selector: "node.rca-unexplained",
     style: { "border-style": "dashed", "border-color": "#d97706", "border-width": 3 },
   },
+  /* what-if overlay: sign=hue, certainty=background opacity, pinned=heavy border */
+  {
+    selector: "node.sim-up",
+    style: { "background-color": "#dcfce7", "border-color": "#16a34a", "background-opacity": "data(bgop)" },
+  },
+  {
+    selector: "node.sim-down",
+    style: { "background-color": "#fee2e2", "border-color": "#dc2626", "background-opacity": "data(bgop)" },
+  },
+  {
+    selector: "node.sim-pinned",
+    style: { "border-width": 4, "border-style": "solid", "border-color": "#4f46e5" },
+  },
+  {
+    selector: "node.warn-border",
+    style: { "border-style": "dashed", "border-color": "#d97706", "border-width": 3 },
+  },
+  {
+    selector: "node.lever",
+    style: {
+      shape: "ellipse",
+      "background-color": "#fef3c7",
+      "border-style": "dashed",
+      "border-color": "#d97706",
+      "font-size": 11,
+    },
+  },
+  {
+    selector: "edge.assume",
+    style: {
+      "line-style": "dotted",
+      "line-color": "#d97706",
+      "target-arrow-color": "#d97706",
+      width: 2.5,
+      color: "#92400e",
+    },
+  },
+  {
+    selector: "edge.sim-up",
+    style: {
+      "line-style": "solid",
+      "line-color": "#16a34a",
+      "target-arrow-color": "#16a34a",
+      "line-opacity": "data(op)",
+    },
+  },
+  {
+    selector: "edge.sim-down",
+    style: {
+      "line-style": "solid",
+      "line-color": "#dc2626",
+      "target-arrow-color": "#dc2626",
+      "line-opacity": "data(op)",
+    },
+  },
   { selector: ".faded", style: { opacity: 0.25 } },
   {
     selector: ".pathhl",
@@ -293,19 +356,25 @@ function buildGraph() {
   const defs = Object.fromEntries(state.dag.nodes.map(([name, def]) => [name, def]));
   state.defs = defs;
   // reverse adjacency: child -> [parents], used to size the run-progress status.
+  // forward adjacency: parent -> [children], used for what-if descendant walks.
   state.revAdj = {};
-  state.dag.nodes.forEach(([name]) => (state.revAdj[name] = []));
+  state.fwdAdj = {};
+  state.dag.nodes.forEach(([name]) => {
+    state.revAdj[name] = [];
+    state.fwdAdj[name] = [];
+  });
   const elements = [];
 
   state.dag.nodes.forEach(([name, def]) => {
     elements.push({
-      data: { id: name, label: name },
+      data: { id: name, label: name, bgop: 1 },
       classes: nodeType(def),
     });
   });
   state.dag.edges.forEach(([src, dst]) => {
     const kind = defs[dst].formula ? "formula" : "prob";
     state.revAdj[dst].push(src);
+    state.fwdAdj[src].push(dst);
     elements.push({
       data: { id: `${src}->${dst}`, source: src, target: dst, label: "", w: 2, op: 1 },
       classes: kind,
@@ -320,7 +389,13 @@ function buildGraph() {
     wheelSensitivity: 0.2,
   });
 
-  state.cy.on("tap", "node", (evt) => selectMetric(evt.target.id()));
+  // With the What-if tab active, tapping a node adjusts it in the scenario;
+  // otherwise it opens the Metric tab as before.
+  state.cy.on("tap", "node", (evt) => {
+    if (evt.target.hasClass("lever")) return;
+    if (activeTab() === "whatif") openAdjustPanel(evt.target.id());
+    else selectMetric(evt.target.id());
+  });
   markFitted();
 }
 
@@ -613,7 +688,7 @@ async function runRCA() {
 function applyRcaOverlay() {
   const res = state.rca;
   const cy = state.cy;
-  clearRcaStyles();
+  clearOverlays();
 
   const inScope = new Set(Object.keys(res.nodes));
   cy.nodes().forEach((n) => {
@@ -665,6 +740,21 @@ function clearRcaStyles() {
     e.data("label", "");
   });
   document.querySelectorAll(".rca-only").forEach((el) => (el.style.display = "none"));
+}
+
+function clearWhatifStyles() {
+  const cy = state.cy;
+  cy.$(".assume").remove();
+  cy.$(".lever").remove(); // temporary lever nodes (their edges went with .assume)
+  cy.elements().removeClass("sim-up sim-down sim-pinned warn-border");
+  cy.nodes().forEach((n) => n.data("bgop", 1));
+  document.querySelectorAll(".sim-only").forEach((el) => (el.style.display = "none"));
+}
+
+/* The RCA and what-if overlays are exclusive: the active tab owns the canvas. */
+function clearOverlays() {
+  clearWhatifStyles();
+  clearRcaStyles();
 }
 
 async function clearRCA() {
@@ -843,11 +933,584 @@ async function renderRcaStrip(res) {
   );
 }
 
+/* ---------- what-if ---------- */
+
+function interventionLabel(iv) {
+  if (iv.mode === "pct") return `${iv.metric} ${signedPct(iv.value)}`;
+  if (iv.mode === "delta") return `${iv.metric} ${iv.value >= 0 ? "+" : ""}${fmt(iv.value)}`;
+  return `${iv.metric} = ${fmt(iv.value)}`;
+}
+
+function effectLabel(a) {
+  const f = (v) => (a.effect.kind === "relative" ? signedPct(v) : (v >= 0 ? "+" : "") + fmt(v));
+  return a.effect.low === a.effect.high
+    ? f(a.effect.low)
+    : `${f(a.effect.low)}…${f(a.effect.high)}`;
+}
+
+function initWhatif() {
+  // default baseline: last 28 days of loaded data (clamped to the range)
+  const end = state.meta.date_end;
+  const start28 = isoUTC(addDays(new Date(end), -27));
+  state.whatif.baseline = {
+    start: start28 < state.meta.date_start ? state.meta.date_start : start28,
+    end,
+  };
+  renderWhatifTab();
+}
+
+function renderWhatifTab() {
+  const w = state.whatif;
+  const container = $("tab-whatif");
+  if (!container || !state.meta) return;
+
+  const items = [
+    ...w.interventions.map(
+      (iv, i) => `
+      <div class="wf-item">
+        <span class="kind intervention">adjust</span>
+        <span class="what">${esc(interventionLabel(iv))}</span>
+        <button class="remove" data-kind="intervention" data-idx="${i}" title="Remove">×</button>
+      </div>`,
+    ),
+    ...w.assumptions.map(
+      (a, i) => `
+      <div class="wf-item">
+        <span class="kind assumption">assume</span>
+        <span class="what">${esc(a.source)} → ${esc(a.target)} · ${esc(effectLabel(a))}</span>
+        <button class="remove" data-kind="assumption" data-idx="${i}" title="Remove">×</button>
+      </div>`,
+    ),
+  ].join("");
+
+  const metricOptions = state.meta.metrics
+    .map((m) => `<option value="${esc(m)}">${esc(m)}</option>`)
+    .join("");
+  const levers = [
+    ...new Set(w.assumptions.map((a) => a.source).filter((s) => !state.meta.metrics.includes(s))),
+  ];
+  const sourceOptions = [...state.meta.metrics, ...levers]
+    .map((s) => `<option value="${esc(s)}"></option>`)
+    .join("");
+
+  const builder = `
+    <div class="wf-row">
+      <label>Baseline</label>
+      <input type="date" id="wf-start" value="${esc(w.baseline.start || "")}"
+        min="${esc(state.meta.date_start)}" max="${esc(state.meta.date_end)}">
+      <input type="date" id="wf-end" value="${esc(w.baseline.end || "")}"
+        min="${esc(state.meta.date_start)}" max="${esc(state.meta.date_end)}">
+    </div>
+    <p class="wf-hint">Baseline = window means from real data. Click a node in the graph to adjust it in the scenario.</p>
+    <div id="wf-adjust"></div>
+    <details>
+      <summary>+ Add assumption (an effect the tree doesn't know)</summary>
+      <div class="wf-form">
+        <div class="wf-grid">
+          <label for="wf-a-source">Source</label>
+          <input type="text" id="wf-a-source" list="wf-known-sources" placeholder="metric or lever, e.g. discount_pct">
+          <label for="wf-a-target">Target</label>
+          <select id="wf-a-target">${metricOptions}</select>
+          <label for="wf-a-kind">Effect</label>
+          <select id="wf-a-kind">
+            <option value="relative">% of baseline</option>
+            <option value="absolute">absolute</option>
+          </select>
+          <label>Range</label>
+          <div class="wf-row" style="margin:0">
+            <input type="number" id="wf-a-low" step="any" placeholder="low"> …
+            <input type="number" id="wf-a-high" step="any" placeholder="high">
+          </div>
+          <label for="wf-a-note">Note</label>
+          <input type="text" id="wf-a-note" placeholder="optional">
+        </div>
+        <div class="wf-row" style="margin-top:8px">
+          <button id="wf-a-add">Add assumption</button>
+          <span class="inline-status" id="wf-a-status"></span>
+        </div>
+        <datalist id="wf-known-sources">${sourceOptions}</datalist>
+      </div>
+    </details>
+    <section>
+      <h3>Scenario</h3>
+      ${items || '<p class="placeholder">Empty — adjust a metric or add an assumption.</p>'}
+      <div class="wf-row" style="margin-top:10px">
+        <button id="wf-run" class="primary" ${w.interventions.length + w.assumptions.length ? "" : "disabled"}>Run simulation</button>
+        <button id="wf-clear">Clear</button>
+      </div>
+    </section>`;
+
+  const results = w.result ? renderWhatifResults() : "";
+  // reader mode (deep link): the story first, the edit surface one click away
+  if (w.readerMode && w.result) {
+    container.innerHTML = `${results}<details style="margin-top:14px"><summary>Edit scenario</summary>${builder}</details>`;
+  } else {
+    container.innerHTML = builder + results;
+  }
+  wireWhatifEvents();
+  if (w.adjusting) renderAdjustPanel(w.adjusting);
+}
+
+function wireWhatifEvents() {
+  const w = state.whatif;
+  const on = (id, ev, fn) => {
+    const el = $(id);
+    if (el) el.addEventListener(ev, fn);
+  };
+  on("wf-start", "change", () => {
+    w.baseline.start = $("wf-start").value;
+    if (w.adjusting) renderAdjustPanel(w.adjusting);
+  });
+  on("wf-end", "change", () => {
+    w.baseline.end = $("wf-end").value;
+    if (w.adjusting) renderAdjustPanel(w.adjusting);
+  });
+  on("wf-run", "click", () => runWhatif());
+  on("wf-clear", "click", clearWhatif);
+  on("wf-a-add", "click", addAssumption);
+  document.querySelectorAll("#tab-whatif .wf-item .remove").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const idx = Number(btn.dataset.idx);
+      if (btn.dataset.kind === "intervention") w.interventions.splice(idx, 1);
+      else w.assumptions.splice(idx, 1);
+      renderWhatifTab();
+    });
+  });
+}
+
+function openAdjustPanel(name) {
+  state.whatif.adjusting = name;
+  state.whatif.readerMode = false; // touching the builder = operator mode
+  renderWhatifTab();
+}
+
+async function renderAdjustPanel(name) {
+  const box = $("wf-adjust");
+  if (!box) return;
+  box.innerHTML = `<div class="wf-adjust-card"><p class="placeholder">Loading ${esc(name)}…</p></div>`;
+  let data;
+  try {
+    data = state.metricCache[name] || (await api(`/metrics/${encodeURIComponent(name)}`));
+    state.metricCache[name] = data;
+  } catch (err) {
+    const el = $("wf-adjust");
+    if (el) el.innerHTML = `<div class="wf-adjust-card">Failed to load: ${esc(err.message)}</div>`;
+    return;
+  }
+  if (state.whatif.adjusting !== name || !$("wf-adjust")) return; // stale render
+
+  const w = state.whatif;
+  const vals = data.time_series.map((r) => r[name]).filter((v) => v != null);
+  const hist = {
+    min: Math.min(...vals),
+    max: Math.max(...vals),
+    mean: vals.reduce((a, b) => a + b, 0) / vals.length,
+  };
+  hist.std = Math.sqrt(vals.reduce((a, v) => a + (v - hist.mean) ** 2, 0) / vals.length);
+  const inWin = data.time_series
+    .filter((r) => {
+      const d = String(r.date).slice(0, 10);
+      return (!w.baseline.start || d >= w.baseline.start) && (!w.baseline.end || d <= w.baseline.end);
+    })
+    .map((r) => r[name])
+    .filter((v) => v != null);
+  const base = inWin.length ? inWin.reduce((a, b) => a + b, 0) / inWin.length : hist.mean;
+
+  const existing = w.interventions.find((iv) => iv.metric === name);
+  const mode = existing ? existing.mode : "pct";
+  const initial = existing ? (existing.mode === "pct" ? existing.value * 100 : existing.value) : 0;
+
+  box.innerHTML = `
+    <div class="wf-adjust-card">
+      <h4>Adjust <code>${esc(name)}</code></h4>
+      <div class="wf-row">
+        <select id="wf-mode">
+          <option value="pct" ${mode === "pct" ? "selected" : ""}>% change</option>
+          <option value="delta" ${mode === "delta" ? "selected" : ""}>+/− amount</option>
+          <option value="set" ${mode === "set" ? "selected" : ""}>set value</option>
+        </select>
+        <input type="number" id="wf-value" step="any" value="${initial}">
+        <button id="wf-add" class="primary">${existing ? "Update" : "Add to scenario"}</button>
+      </div>
+      <input type="range" id="wf-slider" min="-50" max="50" step="0.5"
+        value="${mode === "pct" ? initial : 0}" ${mode === "pct" ? "" : 'style="display:none"'}>
+      <div class="wf-preview" id="wf-preview"></div>
+      <div class="range-strip" id="wf-strip"></div>
+      <div class="strip-caption">history min → max · shaded band = mean ± 2σ · amber marker = extrapolating</div>
+    </div>`;
+
+  const params = { base, hist };
+  $("wf-mode").addEventListener("change", () => {
+    const m = $("wf-mode").value;
+    $("wf-slider").style.display = m === "pct" ? "" : "none";
+    $("wf-value").value = m === "set" ? Number(base.toPrecision(6)) : 0;
+    updateAdjustPreview(params);
+  });
+  $("wf-value").addEventListener("input", () => {
+    if ($("wf-mode").value === "pct") $("wf-slider").value = $("wf-value").value;
+    updateAdjustPreview(params);
+  });
+  $("wf-slider").addEventListener("input", () => {
+    $("wf-value").value = $("wf-slider").value;
+    updateAdjustPreview(params);
+  });
+  $("wf-add").addEventListener("click", () => {
+    const m = $("wf-mode").value;
+    let value = Number($("wf-value").value);
+    if (!Number.isFinite(value)) return;
+    if (m === "pct") value /= 100;
+    const iv = { metric: name, mode: m, value };
+    const idx = state.whatif.interventions.findIndex((x) => x.metric === name);
+    if (idx >= 0) state.whatif.interventions[idx] = iv;
+    else state.whatif.interventions.push(iv);
+    state.whatif.adjusting = null;
+    renderWhatifTab();
+  });
+  updateAdjustPreview(params);
+}
+
+/* Live preview + historical range strip for the adjust panel. The strip warns
+   about extrapolation *before* the run, not after. */
+function updateAdjustPreview({ base, hist }) {
+  const modeEl = $("wf-mode"),
+    valEl = $("wf-value");
+  if (!modeEl || !valEl) return;
+  const mode = modeEl.value;
+  const v = Number(valEl.value) || 0;
+  const target = mode === "pct" ? base * (1 + v / 100) : mode === "delta" ? base + v : v;
+  const rel = Math.abs(base) > 1e-12 ? target / base - 1 : null;
+
+  const lo2 = hist.mean - 2 * hist.std,
+    hi2 = hist.mean + 2 * hist.std;
+  const out = target < hist.min || target > hist.max || (hist.std > 0 && (target < lo2 || target > hi2));
+
+  $("wf-preview").innerHTML =
+    `${fmt(base)} → <b class="${out ? "out" : ""}">${fmt(target)}</b>` +
+    (rel == null ? "" : ` (${signedPct(rel)})`) +
+    (out ? ' <span class="out">⚠ outside historical range</span>' : "");
+
+  // strip scale spans history (with padding) and always contains the marker
+  const span = Math.max(hist.max - hist.min, 1e-9);
+  const lo = Math.min(hist.min - 0.1 * span, target);
+  const hi = Math.max(hist.max + 0.1 * span, target);
+  const p = (x) => (100 * (x - lo)) / (hi - lo);
+  const bandLo = Math.max(lo2, hist.min),
+    bandHi = Math.min(hi2, hist.max);
+  $("wf-strip").innerHTML = `
+    <div class="strip-band" style="left:${p(hist.min)}%;width:${p(hist.max) - p(hist.min)}%;background:#e4e7ec"></div>
+    ${hist.std > 0 ? `<div class="strip-band" style="left:${p(bandLo)}%;width:${Math.max(p(bandHi) - p(bandLo), 0)}%"></div>` : ""}
+    <div class="strip-tick" style="left:${p(base)}%" title="baseline ${fmt(base)}"></div>
+    <div class="strip-marker ${out ? "out" : ""}" style="left:${Math.min(Math.max(p(target), 0), 99)}%"></div>`;
+}
+
+function addAssumption() {
+  const status = $("wf-a-status");
+  const source = $("wf-a-source").value.trim();
+  const target = $("wf-a-target").value;
+  const kind = $("wf-a-kind").value;
+  let low = Number($("wf-a-low").value);
+  let high = $("wf-a-high").value === "" ? low : Number($("wf-a-high").value);
+  status.className = "inline-status error";
+  if (!source) { status.textContent = "Source is required (a metric or a lever name)."; return; }
+  if (!target) { status.textContent = "Pick a target metric."; return; }
+  if ($("wf-a-low").value === "" || !Number.isFinite(low) || !Number.isFinite(high)) {
+    status.textContent = "Enter a numeric effect range."; return;
+  }
+  if (low > high) { status.textContent = "Low must be ≤ high."; return; }
+  if (kind === "relative") { low /= 100; high /= 100; }
+  state.whatif.assumptions.push({
+    source, target,
+    effect: { kind, low, high },
+    note: $("wf-a-note").value.trim() || null,
+  });
+  state.whatif.readerMode = false;
+  renderWhatifTab();
+}
+
+function buildScenarioPayload() {
+  const w = state.whatif;
+  if (!w.baseline.start || !w.baseline.end) {
+    setStatus("Set the baseline window first.", "error");
+    return null;
+  }
+  if (!w.interventions.length && !w.assumptions.length) {
+    setStatus("Scenario is empty — adjust a metric or add an assumption.", "error");
+    return null;
+  }
+  const levers = [
+    ...new Set(w.assumptions.map((a) => a.source).filter((s) => !state.meta.metrics.includes(s))),
+  ];
+  return {
+    baseline_start: w.baseline.start,
+    baseline_end: w.baseline.end,
+    interventions: w.interventions,
+    assumptions: w.assumptions.map((a, i) => ({ id: `a${i}`, ...a })),
+    levers: levers.map((name) => ({ name })),
+  };
+}
+
+/* How many probabilistic nodes on affected paths still need fitting — drives
+   the run-progress status. Mirrors the engine's fit-on-demand rule. */
+function countWhatifFits() {
+  const w = state.whatif;
+  const fitted = new Set(state.meta.fitted);
+  const seeds = [...w.interventions.map((iv) => iv.metric), ...w.assumptions.map((a) => a.target)]
+    .filter((m) => m in state.fwdAdj);
+  const affected = new Set(seeds);
+  const stack = [...seeds];
+  while (stack.length) {
+    const n = stack.pop();
+    (state.fwdAdj[n] || []).forEach((c) => {
+      if (!affected.has(c)) { affected.add(c); stack.push(c); }
+    });
+  }
+  let k = 0;
+  affected.forEach((n) => {
+    const def = state.defs[n];
+    if (def && def.parents && def.parents.length && !def.formula && !fitted.has(n)
+        && def.parents.some((p) => affected.has(p))) k++;
+  });
+  return k;
+}
+
+async function runWhatif() {
+  const scenario = buildScenarioPayload();
+  if (!scenario) return;
+  const btn = $("wf-run");
+  if (btn) btn.disabled = true;
+  const k = countWhatifFits();
+  setStatus(k > 0 ? `Simulating — fitting ${k} model${k === 1 ? "" : "s"}…` : "Simulating…", "busy");
+  try {
+    state.whatif.result = await api("/simulate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(scenario),
+    });
+    history.replaceState(null, "", `#whatif=${encodeURIComponent(JSON.stringify(scenario))}`);
+    updateCopyLink();
+    state.meta = await api("/meta"); // on-demand fits may have been cached
+    markFitted();
+    renderWhatifTab();
+    switchTab("whatif");
+    applyWhatifOverlay();
+    setStatus("Simulation complete.");
+  } catch (err) {
+    setStatus(`Simulation failed: ${err.message}`, "error");
+    const b = $("wf-run");
+    if (b) b.disabled = false;
+  }
+}
+
+function clearWhatif() {
+  const w = state.whatif;
+  w.interventions = [];
+  w.assumptions = [];
+  w.result = null;
+  w.adjusting = null;
+  w.readerMode = false;
+  clearOverlays();
+  // restore β edge labels from cached metric data (same as clearRCA's fast path)
+  Object.entries(state.metricCache).forEach(([name, data]) => labelBetaEdges(name, data));
+  if (location.hash.startsWith("#whatif=")) {
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+  updateCopyLink();
+  renderWhatifTab();
+  setStatus("");
+}
+
+function applyWhatifOverlay() {
+  const res = state.whatif.result;
+  if (!res) return;
+  const cy = state.cy;
+  clearOverlays();
+
+  const active = new Set(
+    Object.entries(res.nodes)
+      .filter(([, n]) => n.status !== "baseline")
+      .map(([k]) => k),
+  );
+  // assumption source metrics stay visible: they are part of the scenario story
+  const keepVisible = new Set(active);
+  state.whatif.assumptions.forEach((a) => {
+    if (a.source in (state.defs || {})) keepVisible.add(a.source);
+  });
+
+  cy.nodes().forEach((n) => {
+    if (!keepVisible.has(n.id())) n.addClass("faded");
+  });
+  cy.edges().forEach((e) => {
+    if (!active.has(e.source().id()) || !active.has(e.target().id())) e.addClass("faded");
+  });
+
+  Object.entries(res.nodes).forEach(([name, node]) => {
+    if (node.status === "baseline") return;
+    const n = cy.getElementById(name);
+    if (!n.length) return;
+    const est = node.delta.estimate;
+    if (est > 0) n.addClass("sim-up");
+    else if (est < 0) n.addClass("sim-down");
+    // certainty channel: background opacity from P(direction)
+    n.data("bgop", node.prob_direction == null ? 1 : Math.max(0.35, 2 * (node.prob_direction - 0.5)));
+    let label;
+    if (node.status === "intervened") {
+      n.addClass("sim-pinned");
+      label = `${name}\n⊙ ${fmt(node.simulated)}${node.relative_delta == null ? "" : " (" + signedPct(node.relative_delta) + ")"}`;
+    } else {
+      const glyph = est > 0 ? "▲" : est < 0 ? "▼" : "＝";
+      label = `${name}\n${glyph}${node.relative_delta == null ? "" : " " + signedPct(node.relative_delta)}`;
+    }
+    if (node.extrapolation && node.extrapolation.flag) {
+      n.addClass("warn-border");
+      label += " ⚠";
+    }
+    n.data("label", label);
+  });
+
+  // structural edges between affected nodes colored by the target's direction;
+  // edges into a pinned node stay neutral — the pin severs them (do-operator)
+  cy.edges().forEach((e) => {
+    const s = res.nodes[e.source().id()],
+      t = res.nodes[e.target().id()];
+    if (!s || !t || s.status === "baseline" || t.status === "baseline") return;
+    if (t.status === "intervened") return;
+    if (t.delta.estimate > 0) e.addClass("sim-up");
+    else if (t.delta.estimate < 0) e.addClass("sim-down");
+    e.data("op", t.prob_direction == null ? 1 : Math.max(0.35, 2 * (t.prob_direction - 0.5)));
+  });
+
+  // assumption links drawn as temporary elements; lever sources get a
+  // temporary node placed near their target (no re-layout)
+  state.whatif.assumptions.forEach((a, i) => {
+    const targetNode = cy.getElementById(a.target);
+    if (!targetNode.length) return;
+    let srcId = a.source;
+    if (!(a.source in (state.defs || {}))) {
+      srcId = `lever:${a.source}`;
+      if (!cy.getElementById(srcId).length) {
+        const pos = targetNode.position();
+        cy.add({
+          group: "nodes",
+          data: { id: srcId, label: a.source, bgop: 1 },
+          classes: "lever",
+          position: { x: pos.x - 150, y: pos.y + 90 },
+        });
+      }
+    }
+    cy.add({
+      group: "edges",
+      data: { id: `assume:${i}`, source: srcId, target: a.target, label: effectLabel(a), w: 2.5, op: 1 },
+      classes: "assume",
+    });
+  });
+
+  document.querySelectorAll(".sim-only").forEach((el) => (el.style.display = "flex"));
+}
+
+function renderWhatifResults() {
+  const res = state.whatif.result;
+  const labelFor = (id) => {
+    const s = res.sources.find((x) => x.id === id);
+    return s ? s.label : id;
+  };
+
+  // outcome KPIs: affected nodes with no children
+  const sinks = Object.keys(res.nodes).filter(
+    (n) => res.nodes[n].status !== "baseline" && !(state.fwdAdj[n] || []).length,
+  );
+
+  const cards = sinks
+    .map((name) => {
+      const node = res.nodes[name];
+      const dirCls = node.delta.estimate >= 0 ? "up" : "down";
+      const ci = node.delta.ci_95;
+      return `
+      <div class="rca-card">
+        <div class="sub">${esc(name)} · baseline ${esc(res.baseline_window.start)} → ${esc(res.baseline_window.end)}</div>
+        <div class="gap-line ${dirCls}">${fmt(node.baseline)} → ${fmt(node.simulated)}
+          <span style="font-size:14px">(${signedPct(node.relative_delta)})</span></div>
+        <div class="wf-ci">Δ ${fmt(node.delta.estimate)} · 95% CI [${fmt(ci[0])}, ${fmt(ci[1])}] · P(direction) ${pct(node.prob_direction)}</div>
+        ${waterfallHtml(node, labelFor)}
+      </div>`;
+    })
+    .join("");
+
+  // per-node table, outcome-first (reverse config order keeps KPIs on top)
+  const rows = [...state.meta.metrics]
+    .reverse()
+    .filter((n) => res.nodes[n] && res.nodes[n].status !== "baseline")
+    .map((n) => {
+      const node = res.nodes[n];
+      const ci = node.delta.ci_95;
+      return `<tr>
+        <td><code>${esc(n)}</code>${node.status === "intervened" ? ' <span class="chip lag">⊙ set</span>' : ""}${node.extrapolation && node.extrapolation.flag ? " ⚠" : ""}</td>
+        <td class="num">${fmt(node.baseline)} → ${fmt(node.simulated)}</td>
+        <td class="num">${signedPct(node.relative_delta)}</td>
+        <td class="num">[${fmt(ci[0])}, ${fmt(ci[1])}]</td>
+        <td class="num">${node.prob_direction == null ? "—" : pct(node.prob_direction)}</td>
+      </tr>`;
+    })
+    .join("");
+
+  const warnings = (res.warnings || [])
+    .map((wn) => `<div class="wf-warning">⚠ ${esc(wn.detail)}</div>`)
+    .join("");
+
+  return `
+    <section>
+      <h3>Simulated outcome</h3>
+      ${cards || '<p class="placeholder">No downstream outcome affected.</p>'}
+    </section>
+    <section>
+      <h3>All affected metrics</h3>
+      <table class="data-table">
+        <tr><th>Metric</th><th class="num">baseline → simulated</th><th class="num">Δ%</th><th class="num">95% CI (Δ)</th><th class="num">P(dir)</th></tr>
+        ${rows}
+      </table>
+    </section>
+    ${warnings ? `<section><h3>Warnings</h3>${warnings}</section>` : ""}
+    <div class="wf-caveats">${(res.caveats || []).map((c) => esc(c)).join("<br>")}</div>`;
+}
+
+function waterfallHtml(node, labelFor) {
+  const contribs = node.contributions || [];
+  if (!contribs.length) return "";
+  const maxAbs = Math.max(...contribs.map((c) => Math.abs(c.estimate)), 1e-9);
+  const rows = contribs
+    .map((c) => {
+      const width = (50 * Math.abs(c.estimate)) / maxAbs;
+      const cls = c.estimate >= 0 ? "up" : "down";
+      return `<div class="wf-bar-row">
+      <span class="wf-src" title="${esc(labelFor(c.source))}">${esc(labelFor(c.source))}</span>
+      <span class="wf-bar-wrap"><span class="wf-bar ${cls}" style="width:${width}%"></span></span>
+      <span class="wf-amt">${fmt(c.estimate)}</span>
+    </div>`;
+    })
+    .join("");
+  return `<div style="margin-top:8px">${rows}<div class="wf-shapley-note">contributions sum exactly to the point Δ (Shapley over scenario sources)</div></div>`;
+}
+
 /* ---------- tabs & init ---------- */
 
+function activeTab() {
+  const el = document.querySelector(".tab.active");
+  return el ? el.dataset.tab : "metric";
+}
+
 function switchTab(tab) {
+  const prev = activeTab();
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === tab));
   document.querySelectorAll(".tab-content").forEach((c) => c.classList.toggle("active", c.id === `tab-${tab}`));
+  if (tab === prev) return;
+  // overlay exclusivity: RCA and what-if each own the canvas while active;
+  // the Metric tab keeps whichever overlay was last showing.
+  if (tab === "rca") {
+    clearOverlays();
+    if (state.rca) applyRcaOverlay();
+  } else if (tab === "whatif") {
+    clearOverlays();
+    if (state.whatif.result) applyWhatifOverlay();
+  }
 }
 
 function initControls() {
@@ -909,9 +1572,25 @@ function initControls() {
 }
 
 /* Deep links: #metric=<name> opens a metric; #rca=<target>&reference_start=…
-   (RCA query params) restores a shareable RCA run. */
+   (RCA query params) restores a shareable RCA run; #whatif=<json scenario>
+   replays a what-if scenario in reader mode (results first, builder collapsed). */
 function applyDeepLink() {
   const params = new URLSearchParams(location.hash.slice(1));
+  const whatifJson = params.get("whatif");
+  if (whatifJson) {
+    try {
+      const sc = JSON.parse(whatifJson);
+      const w = state.whatif;
+      w.baseline = { start: sc.baseline_start, end: sc.baseline_end };
+      w.interventions = sc.interventions || [];
+      w.assumptions = (sc.assumptions || []).map(({ id, ...rest }) => rest);
+      w.readerMode = true;
+      switchTab("whatif");
+      renderWhatifTab();
+      runWhatif();
+      return;
+    } catch { /* malformed scenario hash: fall through to other deep links */ }
+  }
   const metric = params.get("metric");
   const rcaTarget = params.get("rca");
   if (rcaTarget && state.meta.metrics.includes(rcaTarget)) {
@@ -932,6 +1611,7 @@ async function init() {
     [state.meta, state.dag] = await Promise.all([api("/meta"), api("/dag")]);
     initControls();
     buildGraph();
+    initWhatif();
     setStatus(`${state.meta.metrics.length} metrics · provider: ${state.meta.provider} · ${state.meta.date_start} → ${state.meta.date_end}`);
     applyDeepLink();
     updateCopyLink();
