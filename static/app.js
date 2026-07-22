@@ -1388,12 +1388,11 @@ function applyWhatifOverlay() {
     if (!(a.source in (state.defs || {}))) {
       srcId = `lever:${a.source}`;
       if (!cy.getElementById(srcId).length) {
-        const pos = targetNode.position();
         cy.add({
           group: "nodes",
           data: { id: srcId, label: a.source, bgop: 1 },
           classes: "lever",
-          position: { x: pos.x - 150, y: pos.y + 90 },
+          position: leverPosition(cy, targetNode, a.source),
         });
       }
     }
@@ -1405,6 +1404,37 @@ function applyWhatifOverlay() {
   });
 
   document.querySelectorAll(".sim-only").forEach((el) => (el.style.display = "flex"));
+}
+
+/* Collision-free position for a temporary lever node near its target: try a
+   ring of candidate offsets and take the first whose padded footprint overlaps
+   no existing node's bounding box (including previously placed levers).
+   All geometry is in Cytoscape model coordinates, so offsets are derived from
+   the target node's own dimensions rather than fixed pixel counts. */
+function leverPosition(cy, targetNode, label) {
+  const tw = targetNode.width(),
+    th = targetNode.height();
+  // ellipse footprint estimate: font-size 11 → ~7 model units per character
+  const w = label.length * 7 + 30;
+  const h = th;
+  const pad = th * 0.4;
+  const pos = targetNode.position();
+  const gapX = tw / 2 + w / 2 + 24; // beside the target
+  const gapY = th + 60; // between this rank and the one below (rankSep 70)
+  const candidates = [
+    [-gapX * 0.7, gapY], [gapX * 0.7, gapY], [-gapX, 0], [gapX, 0],
+    [0, gapY * 1.8], [-gapX * 0.7, gapY * 1.8], [gapX * 0.7, gapY * 1.8],
+    [-gapX, -gapY], [gapX, -gapY],
+  ];
+  const boxes = cy.nodes().map((n) => n.boundingBox());
+  for (const [dx, dy] of candidates) {
+    const x = pos.x + dx,
+      y = pos.y + dy;
+    const bb = { x1: x - w / 2 - pad, x2: x + w / 2 + pad, y1: y - h / 2 - pad, y2: y + h / 2 + pad };
+    const clash = boxes.some((b) => bb.x1 < b.x2 && bb.x2 > b.x1 && bb.y1 < b.y2 && bb.y2 > b.y1);
+    if (!clash) return { x, y };
+  }
+  return { x: pos.x - gapX * 0.7, y: pos.y + gapY }; // crowded graph: first candidate
 }
 
 function renderWhatifResults() {
