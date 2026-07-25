@@ -91,7 +91,7 @@ By default the server loads `examples/jaffle_shop_tree.yml` with mock data. Poin
 uv run python main.py serve --tree path/to/my_tree.yml --start-date 2025-01-01 --end-date 2025-06-30
 ```
 
-At startup, breakdown fetches the time series for every metric in the tree from the configured provider (mock, local MetricFlow, or dbt Cloud Semantic Layer) and aligns them on date.
+At startup, breakdown fetches the time series for every metric in the tree from the configured provider (mock, local MetricFlow, dbt Cloud Semantic Layer, or warehouse-direct SQL) and aligns them on date.
 
 Run a Bayesian analysis on a metric:
 
@@ -113,6 +113,20 @@ uv run pytest tests/ -v
 
 ---
 
+## Driving the UI
+
+Start the server and open `http://localhost:9090/ui`. Breakdown fetches every metric's series from the provider at startup, so the first load takes a few seconds. The steps below use the default `examples/jaffle_shop_tree.yml` and its `2024-01-01`–`2024-04-09` window; substitute your own target and dates. The header date pickers are bounded to the loaded `--start-date`/`--end-date` window.
+
+**1. Inspect a metric — and fit its model.** Click any node in the graph to open the **Metric** tab (right sidebar) with its time series. Nodes that have a probabilistic parent (e.g. `order_count`) show an **Analyze** section: pick **ADVI (fast)** or **NUTS (accurate)** and click **Run** to fit the BSTS. The posterior — trend, seasonality, and the `beta` / `beta_raw` coefficient on each parent — fills in, and the node picks up the "fitted" tint. Leaf and formula nodes just show their series.
+
+**2. Run a root-cause analysis.** In the header bar: choose a **Target** (must be a metric with a `formula`, e.g. `revenue`), set the **Reference** and **Analysis** date pairs (or pick a canned pair from the **Windows** preset), then click **Run RCA**. Breakdown auto-fits any upstream probabilistic models it needs (on data strictly before the analysis window) and paints the result on the graph: nodes tinted by direction of change, edges weighted by each parent's share of the explained gap, and a ranked cause list with credible intervals in the **Root cause** tab. **Copy link** yields a shareable `#rca=…` URL; **Clear** resets.
+
+**3. Simulate a what-if (optional).** Open the **What-if** tab, click nodes to adjust them (interventions), optionally add assumption links for effects the tree doesn't encode, and click **Run simulation** for a steady-state projection with credible intervals rendered on the graph and in the sidebar.
+
+RCA runs and metric views are deep-linkable (`#rca=…`, `#metric=…`), so any analysis can be shared or bookmarked as a URL.
+
+---
+
 ## YAML reference
 
 ### `provider`
@@ -121,11 +135,14 @@ Controls how metric time-series data is fetched.
 
 ```yaml
 provider:
-  type: mock           # mock | local | cloud
+  type: mock           # mock | local | cloud | warehouse
   project_path: "..."  # required for type: local
   environment_id: "..."  # required for type: cloud
-  host: "..."            # required for type: cloud
-  token: "..."           # required for type: cloud
+  host: "..."            # required for type: cloud and warehouse
+  token: "..."           # required for type: cloud and warehouse
+  http_path: "..."       # required for type: warehouse
+  catalog: "..."         # optional for type: warehouse
+  schema: "..."          # optional for type: warehouse
 ```
 
 | Type | Description |
@@ -133,8 +150,11 @@ provider:
 | `mock` | Deterministic synthetic data that respects the tree structure (formula nodes satisfy their formulas, probabilistic children co-move with parents). No config needed. Use for development and testing. |
 | `local` | Queries a dbt project on disk via the MetricFlow CLI (`mf query`). Requires `project_path`. |
 | `cloud` | Queries the dbt Semantic Layer API via the `dbt-sl-sdk`. Requires `environment_id`, `host`, and `token`. |
+| `warehouse` | Runs each metric's own `sql` directly against a warehouse (currently Databricks SQL). Use when the semantic layer isn't queryable — the analyst mirrors governed definitions in SQL. Requires `host`, `http_path`, and `token`. |
 
-For `local` and `cloud`, the metric queried from the semantic layer is the last segment of `source` (e.g., `source: jaffle_shop.metrics.revenue` queries the metric `revenue`); the result is exposed in the tree under `name`. The data window defaults to `2024-01-01`–`2024-04-09` and is set with `--start-date` / `--end-date` (or the `BREAKDOWN_START_DATE` / `BREAKDOWN_END_DATE` / `BREAKDOWN_TREE` environment variables).
+For `local` and `cloud`, the metric queried from the semantic layer is the last segment of `source` (e.g., `source: jaffle_shop.metrics.revenue` queries the metric `revenue`); the result is exposed in the tree under `name`. For `warehouse`, each metric carries its own `sql` (see the `metrics` table) and is keyed by `name`. The data window defaults to `2024-01-01`–`2024-04-09` and is set with `--start-date` / `--end-date` (or the `BREAKDOWN_START_DATE` / `BREAKDOWN_END_DATE` / `BREAKDOWN_TREE` environment variables).
+
+**Secrets in config.** Any provider string field may reference an environment variable with `${VAR}` syntax (e.g. `token: ${DATABRICKS_TOKEN}`), so a tree can be committed without embedding credentials. A referenced variable that isn't set raises a clear error at load time.
 
 ### `metrics`
 
@@ -144,6 +164,7 @@ Each metric entry supports the following fields:
 |-------|------|-------------|
 | `name` | string | Unique identifier used throughout the tree |
 | `source` | string | dbt Semantic Layer metric path (e.g., `jaffle_shop.metrics.revenue`) |
+| `sql` | string | For the `warehouse` provider: a SQL query returning columns `date` and `value`, with `:start_date` / `:end_date` named parameters. Ignored by other providers. |
 | `description` | string | Optional human-readable description |
 | `parents` | list | Names of metrics that causally influence this one |
 | `formula` | string | Arithmetic expression over parent names (e.g., `"order_count * average_order_value"`). Enables Shapley attribution. |

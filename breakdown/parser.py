@@ -1,3 +1,5 @@
+import os
+import re
 from typing import Any, Dict, List, Optional
 
 import networkx as nx
@@ -19,19 +21,54 @@ class Prior(BaseModel):
             raise ValueError(f"Invalid distribution: {v}. Must be one of {valid_dists}")
         return v
 
+_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _expand_env(value: Optional[str]) -> Optional[str]:
+    """Expand ${VAR} references against the environment. Keeps secrets out of
+    committed tree YAML — the config carries ${DATABRICKS_TOKEN}, not the value."""
+    if value is None:
+        return None
+
+    def repl(m: "re.Match[str]") -> str:
+        var = m.group(1)
+        if var not in os.environ:
+            raise ValueError(
+                f"Provider config references environment variable '${{{var}}}' which is not set."
+            )
+        return os.environ[var]
+
+    return _ENV_REF.sub(repl, value)
+
+
 class DataProviderConfig(BaseModel):
-    type: str = "mock" # "mock", "local", "cloud"
+    type: str = "mock" # "mock", "local", "cloud", "warehouse"
     project_path: Optional[str] = None
     environment_id: Optional[str] = None
     host: Optional[str] = None
     token: Optional[str] = None
+    # warehouse (direct SQL) provider
+    http_path: Optional[str] = None
+    catalog: Optional[str] = None
+    # `schema` in YAML; renamed to avoid shadowing BaseModel.schema
+    db_schema: Optional[str] = Field(default=None, alias="schema")
+
+    model_config = {"populate_by_name": True}
 
     @field_validator("type")
     @classmethod
     def validate_type(cls, v: str) -> str:
-        if v not in ["mock", "local", "cloud"]:
-            raise ValueError("type must be one of: mock, local, cloud")
+        if v not in ["mock", "local", "cloud", "warehouse"]:
+            raise ValueError("type must be one of: mock, local, cloud, warehouse")
         return v
+
+    @field_validator(
+        "project_path", "environment_id", "host", "token",
+        "http_path", "catalog", "db_schema", mode="after",
+    )
+    @classmethod
+    def expand_env_vars(cls, v: Optional[str]) -> Optional[str]:
+        return _expand_env(v)
 
 class Seasonality(BaseModel):
     period: int
@@ -62,6 +99,7 @@ class MetricDefinition(BaseModel):
     name: str
     description: Optional[str] = None
     source: str
+    sql: Optional[str] = None
     formula: Optional[str] = None
     parents: List[str] = Field(default_factory=list)
     priors: Dict[str, Prior] = Field(default_factory=dict)

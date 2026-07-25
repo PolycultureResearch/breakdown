@@ -10,7 +10,12 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 
-from breakdown.data_fetch import CloudDataFetcher, LocalDataFetcher, MockDataFetcher
+from breakdown.data_fetch import (
+    CloudDataFetcher,
+    LocalDataFetcher,
+    MockDataFetcher,
+    WarehouseDataFetcher,
+)
 from breakdown.engine.model import fit_metric, summarize_trace
 from breakdown.engine.rca import run_rca, shapley_attribution
 from breakdown.parser import Parser
@@ -23,7 +28,7 @@ DEFAULT_START_DATE = "2024-01-01"
 DEFAULT_END_DATE = "2024-04-09"
 
 
-def _build_fetcher(provider_cfg, dag):
+def _build_fetcher(provider_cfg, dag, metrics=None):
     if provider_cfg.type == "local":
         return LocalDataFetcher(project_path=provider_cfg.project_path)
     if provider_cfg.type == "cloud":
@@ -31,6 +36,21 @@ def _build_fetcher(provider_cfg, dag):
             environment_id=provider_cfg.environment_id,
             host=provider_cfg.host,
             token=provider_cfg.token,
+        )
+    if provider_cfg.type == "warehouse":
+        metric_sql = {m.name: m.sql for m in (metrics or []) if m.sql}
+        missing = [m.name for m in (metrics or []) if not m.sql]
+        if missing:
+            raise RuntimeError(
+                f"warehouse provider requires `sql` on every metric; missing for: {missing}"
+            )
+        return WarehouseDataFetcher(
+            host=provider_cfg.host,
+            http_path=provider_cfg.http_path,
+            token=provider_cfg.token,
+            metric_sql=metric_sql,
+            catalog=provider_cfg.catalog,
+            schema=provider_cfg.db_schema,
         )
     return MockDataFetcher(dag=dag)
 
@@ -40,8 +60,9 @@ def _fetch_all_metrics(parser, fetcher, provider_type, start_date, end_date):
     frames = []
     for metric in parser.config.metrics:
         # local/cloud providers query the semantic layer by the last segment
-        # of `source`; the mock provider generates by tree name directly.
-        if provider_type == "mock":
+        # of `source`; mock and warehouse providers key off the tree name
+        # directly (warehouse resolves it to per-metric SQL).
+        if provider_type in ("mock", "warehouse"):
             query_name = metric.name
         else:
             query_name = metric.source.split(".")[-1]
@@ -93,7 +114,7 @@ async def lifespan(app: FastAPI):
 
     parser = Parser(yaml_config)
     provider_cfg = parser.config.provider
-    fetcher = _build_fetcher(provider_cfg, parser.dag)
+    fetcher = _build_fetcher(provider_cfg, parser.dag, parser.config.metrics)
     data = _fetch_all_metrics(parser, fetcher, provider_cfg.type, start_date, end_date)
 
     app.state.parser = parser
