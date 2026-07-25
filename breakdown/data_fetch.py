@@ -99,6 +99,93 @@ class LocalDataFetcher(BaseDataFetcher):
         return df[["date", metric_name]].sort_values("date").reset_index(drop=True)
 
 
+class WarehouseDataFetcher(BaseDataFetcher):
+    """Fetches data by running per-metric SQL directly against a warehouse.
+
+    Unlike the semantic-layer providers, each metric in the tree carries its own
+    `sql` — a SELECT that returns two columns, ``date`` and ``value``, with
+    ``:start_date`` / ``:end_date`` named parameters for the window. This is the
+    "warehouse-direct" path: the analyst mirrors governed metric definitions in
+    SQL, so it works even when the semantic layer isn't reachable (e.g. a dbt
+    Fusion project whose SL can't be queried offline).
+
+    Currently targets Databricks SQL warehouses. Returned series are reindexed to
+    a complete daily range and gap-filled with 0, which is correct for **flow**
+    metrics (per-day deltas such as new/churn MRR). Stock metrics like a running
+    cumulative would need forward-fill instead — model those with care.
+    """
+    def __init__(
+        self,
+        host: str,
+        http_path: str,
+        token: str,
+        metric_sql: Dict[str, str],
+        catalog: Optional[str] = None,
+        schema: Optional[str] = None,
+    ):
+        self.host = host
+        self.http_path = http_path
+        self.token = token
+        self.metric_sql = metric_sql
+        self.catalog = catalog
+        self.schema = schema
+        self._con = None
+
+    def _cursor(self):
+        if self._con is None:
+            from databricks import sql as dbsql
+            self._con = dbsql.connect(
+                server_hostname=self.host,
+                http_path=self.http_path,
+                access_token=self.token,
+            )
+            if self.catalog and self.schema:
+                c = self._con.cursor()
+                c.execute(f"USE {self.catalog}.{self.schema}")
+                c.close()
+        return self._con.cursor()
+
+    def fetch_metric(self, metric_name: str, start_date: str, end_date: str, grain: str = "day") -> pd.DataFrame:
+        if grain != "day":
+            raise ValueError("WarehouseDataFetcher only supports daily grain")
+        sql = self.metric_sql.get(metric_name)
+        if sql is None:
+            raise RuntimeError(
+                f"No `sql` defined for metric '{metric_name}'. The warehouse provider "
+                "requires each metric to carry a SQL query returning (date, value)."
+            )
+
+        cur = self._cursor()
+        try:
+            cur.execute(sql, parameters={"start_date": start_date, "end_date": end_date})
+            cols = [d[0].lower() for d in cur.description]
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+
+        df = pd.DataFrame(rows, columns=cols)
+        if "date" not in df.columns or "value" not in df.columns:
+            raise RuntimeError(
+                f"SQL for metric '{metric_name}' must return columns named 'date' and "
+                f"'value'; got {list(df.columns)}."
+            )
+        df["date"] = pd.to_datetime(df["date"])
+        df["value"] = df["value"].astype(float)
+
+        # Reindex onto the full daily window so missing days become explicit
+        # zeros (correct for flow metrics) rather than dropping rows from the
+        # tree-wide inner join.
+        full = pd.date_range(start=start_date, end=end_date, freq="D")
+        df = (
+            df.set_index("date")["value"]
+            .reindex(full, fill_value=0.0)
+            .rename(metric_name)
+            .rename_axis("date")
+            .reset_index()
+        )
+        return df
+
+
 class MockDataFetcher(BaseDataFetcher):
     """
     Generates synthetic data for development and testing.

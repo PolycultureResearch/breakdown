@@ -1,7 +1,12 @@
 import numpy as np
 import pytest
 
-from breakdown.data_fetch import CloudDataFetcher, LocalDataFetcher, MockDataFetcher
+from breakdown.data_fetch import (
+    CloudDataFetcher,
+    LocalDataFetcher,
+    MockDataFetcher,
+    WarehouseDataFetcher,
+)
 from breakdown.parser import Parser
 
 TREE_YAML = """
@@ -125,3 +130,83 @@ def test_local_fetcher_raises_on_bad_project():
     fetcher = LocalDataFetcher(project_path="/tmp/nonexistent_dbt_project")
     with pytest.raises(RuntimeError, match="mf query failed"):
         fetcher.fetch_metric("revenue", "2024-01-01", "2024-03-31")
+
+
+# --- warehouse provider ---
+
+WAREHOUSE_TREE = """
+provider:
+  type: warehouse
+  host: ${TEST_WH_HOST}
+  http_path: /sql/1.0/warehouses/abc
+  token: ${TEST_WH_TOKEN}
+  catalog: narrative
+  schema: default
+metrics:
+  - name: new_mrr
+    source: narrative.default.fct_mrr_movements
+    sql: "SELECT day AS date, SUM(new_mrr_usd) AS value FROM fct_mrr_movements WHERE day BETWEEN :start_date AND :end_date GROUP BY day"
+"""
+
+
+def test_provider_env_var_interpolation(monkeypatch):
+    monkeypatch.setenv("TEST_WH_HOST", "dbc-xyz.databricks.com")
+    monkeypatch.setenv("TEST_WH_TOKEN", "dapi-secret")
+    cfg = Parser(WAREHOUSE_TREE).config.provider
+    assert cfg.type == "warehouse"
+    assert cfg.host == "dbc-xyz.databricks.com"
+    assert cfg.token == "dapi-secret"
+    assert cfg.db_schema == "default"  # `schema` in YAML, aliased to avoid BaseModel clash
+
+
+def test_provider_missing_env_var_raises(monkeypatch):
+    monkeypatch.delenv("TEST_WH_HOST", raising=False)
+    monkeypatch.setenv("TEST_WH_TOKEN", "dapi-secret")
+    with pytest.raises(Exception, match="TEST_WH_HOST"):
+        Parser(WAREHOUSE_TREE)
+
+
+class _StubCursor:
+    def __init__(self, rows):
+        self._rows = rows
+        self.description = [("date",), ("value",)]
+        self.executed = None
+
+    def execute(self, sql, parameters=None):
+        self.executed = (sql, parameters)
+
+    def fetchall(self):
+        return self._rows
+
+    def close(self):
+        pass
+
+
+def test_warehouse_fetcher_reindexes_and_zero_fills(monkeypatch):
+    import datetime
+
+    # Two movement days inside a five-day window; the gaps must become 0.
+    rows = [
+        (datetime.date(2025, 6, 2), 100.0),
+        (datetime.date(2025, 6, 4), 250.0),
+    ]
+    cursor = _StubCursor(rows)
+    fetcher = WarehouseDataFetcher(
+        host="h", http_path="p", token="t",
+        metric_sql={"new_mrr": "SELECT ... :start_date ... :end_date"},
+    )
+    monkeypatch.setattr(fetcher, "_cursor", lambda: cursor)
+
+    df = fetcher.fetch_metric("new_mrr", "2025-06-01", "2025-06-05")
+
+    assert list(df.columns) == ["date", "new_mrr"]
+    assert len(df) == 5  # full daily range
+    assert df["new_mrr"].tolist() == [0.0, 100.0, 0.0, 250.0, 0.0]
+    # window bounds were bound as named parameters, not string-formatted
+    assert cursor.executed[1] == {"start_date": "2025-06-01", "end_date": "2025-06-05"}
+
+
+def test_warehouse_fetcher_unknown_metric_raises():
+    fetcher = WarehouseDataFetcher(host="h", http_path="p", token="t", metric_sql={})
+    with pytest.raises(RuntimeError, match="No `sql` defined"):
+        fetcher.fetch_metric("missing", "2025-06-01", "2025-06-05")

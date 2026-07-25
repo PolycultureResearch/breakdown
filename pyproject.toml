@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "arviz<1.0.0",
+    "databricks-sql-connector>=4.4.0",
     "dbt-metricflow>=0.10.1",
     "dbt-sl-sdk[sync]>=0.13.2",
     "fastapi>=0.135.2",
