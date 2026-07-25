@@ -12,6 +12,8 @@ The breakdown UI is a single-page app served by FastAPI at `/ui`, in the spirit 
 
 **UC4 — Trust the model.** Surface just enough diagnostics (R-hat, observation noise) that a data scientist can tell a healthy fit from a broken one, without drowning a business user in an ArviZ dump. Raw summary stays available behind a collapsible.
 
+**UC5 — Simulate a scenario (what-if).** "If trial→member conversion went up 0.3%, what happens to MRR?" The user picks a baseline window, adjusts one or more metrics (clicking nodes with the What-if tab active), optionally asserts assumption links (effects the tree doesn't know, e.g. a discount lever), and runs a steady-state simulation. Results render on the graph (deltas, pinned nodes, assumption edges) and in the sidebar (outcome cards, source waterfall, per-node table with CIs). Design spec: `what_if_design.md`.
+
 ## Layout
 
 ```
@@ -30,7 +32,8 @@ The breakdown UI is a single-page app served by FastAPI at `/ui`, in the spirit 
 
 - **Header** holds the RCA controls: target select, two date-range pairs (prefilled from `/meta`: reference = first 60% of the data window, analysis = the rest), Run/Clear, and a status area for progress ("Fitting upstream models…") and errors.
 - **Canvas** is the primary surface; the graph is the product. Dagre layered layout with `rankDir: 'BT'` so the tree reads like a KPI tree: outcome metrics on top, drivers below.
-- **Sidebar** (360px) has two tabs: **Metric** (UC3/UC4) and **Root cause** (UC1). Clicking a node opens Metric; finishing an RCA run switches to Root cause.
+- **Sidebar** (410px) has three tabs: **Metric** (UC3/UC4), **Root cause** (UC1), and **What-if** (UC5). Clicking a node opens Metric — unless the What-if tab is active, in which case it opens that node's adjust panel. Finishing an RCA run switches to Root cause.
+- **Overlay exclusivity**: the RCA and what-if overlays never coexist; the active tab owns the canvas (switching to Root cause or What-if re-applies that tab's overlay via a shared `clearOverlays()`), and the Metric tab keeps whichever overlay was last showing.
 
 ## Visual language
 
@@ -53,6 +56,18 @@ Light theme, quiet by default so RCA color can carry meaning when it appears.
 - Node background shifts to the soft up/down color by sign of `relative_change`; a second label line shows the signed percent (`−16.2%`).
 - Edge width scales `2 + 6·min(|share_of_gap|, 1)`; edge color goes up/down by the sign of the contribution `estimate`; edge label shows the share as a percent.
 - The legend gains the up/down swatches while the overlay is active.
+
+**What-if overlay** (applied after a simulation, removed by Clear / tab switch):
+- Non-baseline nodes tint soft up/down by delta sign with a `▲ +3.4%` label line; **background opacity encodes P(direction)** (same certainty channel as RCA edge opacity).
+- **Intervened nodes** get a heavy solid indigo border and a `⊙ <value>` label — visibly pinned (do-operator).
+- **Assumption links** are temporary dotted amber edges added to the graph; non-metric sources ("levers", e.g. `discount_pct`) appear as temporary amber-dashed ellipse nodes placed near their target without re-layout.
+- Extrapolation-flagged nodes get the dashed amber border + `⚠`; edges into a pinned node stay neutral (the pin severs them).
+
+## What-if tab
+
+1. **Builder**: baseline window date pair (default: last 28 days of data); adjust panel (opens on node tap — mode select %/delta/set, slider, live preview, and a pure-CSS **historical range strip** showing min→max, the ±2σ band, the baseline tick, and an amber marker when the setting extrapolates); "+ Add assumption" form (source metric-or-lever with datalist, target select, %/absolute effect range, note); scenario item list with remove controls; Run/Clear.
+2. **Results**: outcome card per affected sink (`baseline → simulated (+%) · Δ CI · P(direction)`) with a **source waterfall** (signed bar per intervention/assumption; sums exactly to the point delta by Shapley efficiency); per-node table (outcome-first); extrapolation warnings; always-on caveats footer.
+3. **Reader mode**: entering via a `#whatif=` deep link renders results first with the builder collapsed behind `<details>Edit scenario</details>`.
 
 ## Root cause tab
 
@@ -79,6 +94,7 @@ Name + type chip (Source / Probabilistic / Formula) + fitted chip. Description, 
 | `GET /metrics/{name}` | definition, time series, posterior summary |
 | `POST /analyze/{name}` | fit from the Metric tab |
 | `POST /rca/{name}` | the RCA run |
+| `POST /simulate` | the what-if scenario run (JSON body: baseline window, interventions, assumptions, levers) |
 
 States to handle everywhere: loading, empty (no fit yet), error (surface the API `detail` string in the status area, never a silent failure).
 
@@ -88,5 +104,6 @@ The URL hash makes analyses shareable and the UI scriptable:
 
 - `#metric=<name>` — opens the Metric tab for that node on load.
 - `#rca=<target>&reference_start=…&reference_end=…&analysis_start=…&analysis_end=…` — sets the header controls and re-runs the RCA on load.
+- `#whatif=<URI-encoded scenario JSON>` — replays a what-if scenario on load in reader mode (results first, builder collapsed).
 
-The hash is kept in sync via `history.replaceState` as the user selects metrics or completes RCA runs.
+The hash is kept in sync via `history.replaceState` as the user selects metrics or completes RCA / what-if runs.

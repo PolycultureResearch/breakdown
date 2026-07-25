@@ -18,6 +18,7 @@ from breakdown.data_fetch import (
 )
 from breakdown.engine.model import fit_metric, summarize_trace
 from breakdown.engine.rca import run_rca, shapley_attribution
+from breakdown.engine.simulate import ScenarioRequest, run_scenario
 from breakdown.parser import Parser
 
 logger = logging.getLogger(__name__)
@@ -290,6 +291,25 @@ async def root_cause_analysis(
                 run_rca, parser.dag, data, request.app.state.traces, name,
                 reference_start, reference_end,
                 analysis_start, analysis_end,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+    return result
+
+
+@app.post("/simulate")
+async def simulate(scenario: ScenarioRequest, request: Request):
+    """Steady-state what-if simulation. Stateless: the client owns the
+    scenario; on-demand fits land in the shared trace cache."""
+    parser = request.app.state.parser
+    data = request.app.state.data
+
+    async with request.app.state.lock:
+        # run_scenario adds any traces it fits on demand to app.state.traces.
+        try:
+            result = await asyncio.to_thread(
+                run_scenario, parser.dag, data, request.app.state.traces, scenario,
             )
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))

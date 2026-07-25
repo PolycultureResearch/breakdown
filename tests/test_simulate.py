@@ -1,0 +1,297 @@
+"""Tests for the steady-state scenario engine (`run_scenario`).
+
+Fast tests stub FitResults with `az.from_dict` posteriors so coefficients are
+exact and no PyMC sampling runs; constant input data makes window means (and
+therefore deltas) exactly predictable. One slow test at the end exercises the
+real ADVI fit-on-demand path.
+"""
+import arviz as az
+import numpy as np
+import pandas as pd
+import pytest
+from pydantic import ValidationError
+
+from breakdown.engine.model import FitResult
+from breakdown.engine.simulate import (
+    Assumption,
+    EffectRange,
+    Intervention,
+    ScenarioRequest,
+    run_scenario,
+)
+from breakdown.parser import Parser
+from tests.synthetic import generate_mock_data
+
+JAFFLE_YAML = """
+metrics:
+  - name: daily_sessions
+    source: dbt.metric.daily_sessions
+  - name: order_count
+    source: dbt.metric.order_count
+    parents: [daily_sessions]
+  - name: average_order_value
+    source: dbt.metric.average_order_value
+  - name: revenue
+    source: dbt.metric.revenue
+    formula: "order_count * average_order_value"
+    parents: [order_count, average_order_value]
+"""
+
+BASELINE = {"baseline_start": "2024-01-01", "baseline_end": "2024-02-29"}
+
+
+def make_dag():
+    return Parser(JAFFLE_YAML).dag
+
+
+def make_data(n: int = 60) -> pd.DataFrame:
+    """Constant series: window means are exact, so deltas are too."""
+    dates = pd.date_range("2024-01-01", periods=n)  # ends 2024-02-29 for n=60
+    return pd.DataFrame({
+        "date": dates,
+        "daily_sessions": np.full(n, 1000.0),
+        "order_count": np.full(n, 100.0),
+        "average_order_value": np.full(n, 50.0),
+        "revenue": np.full(n, 5000.0),
+    })
+
+
+def stub_fit(target: str, parents: list, beta_post) -> FitResult:
+    """FitResult whose beta_raw posterior is exactly `beta_post` (n_post,) or
+    (n_post, n_parents)."""
+    beta = np.asarray(beta_post, dtype=float)
+    if beta.ndim == 1:
+        beta = beta[:, None]
+    trace = az.from_dict(posterior={"beta_raw": beta[None, :, :]})
+    return FitResult(
+        trace=trace, target=target, parents=parents, y_mean=0.0, y_std=1.0,
+        x_stds=None, dates=pd.DatetimeIndex([]), inference_method="advi",
+        fit_end=None, diagnostics={"fit_quality": "good"},
+    )
+
+
+def order_count_traces(beta_post):
+    """Trace cache with a stubbed order_count fit under the full-window key
+    (the baseline in these tests runs to the end of the data)."""
+    return {("order_count", None): stub_fit("order_count", ["daily_sessions"], beta_post)}
+
+
+def test_deterministic_chain_exact():
+    """Intervening on a formula parent propagates exactly; no fit is needed
+    because no probabilistic edge is on the affected path."""
+    result = run_scenario(
+        make_dag(), make_data(), {},
+        ScenarioRequest(**BASELINE, interventions=[
+            Intervention(metric="order_count", mode="set", value=120.0),
+        ]),
+    )
+    oc = result["nodes"]["order_count"]
+    assert oc["status"] == "intervened"
+    assert oc["delta"]["estimate"] == pytest.approx(20.0)
+    assert oc["delta"]["ci_95"] == [pytest.approx(20.0), pytest.approx(20.0)]
+
+    rev = result["nodes"]["revenue"]
+    assert rev["status"] == "affected"
+    assert rev["delta"]["estimate"] == pytest.approx(20.0 * 50.0)
+    assert rev["delta"]["ci_95"] == [pytest.approx(1000.0), pytest.approx(1000.0)]
+    assert rev["prob_direction"] == 1.0
+    assert rev["simulated"] == pytest.approx(6000.0)
+
+    assert result["nodes"]["daily_sessions"]["status"] == "baseline"
+    assert result["nodes"]["average_order_value"]["status"] == "baseline"
+
+
+def test_prob_edge_point_mass_beta():
+    """A degenerate posterior propagates as beta * delta with zero CI width."""
+    result = run_scenario(
+        make_dag(), make_data(), order_count_traces(np.full(400, 0.1)),
+        ScenarioRequest(**BASELINE, interventions=[
+            Intervention(metric="daily_sessions", mode="delta", value=200.0),
+        ]),
+    )
+    oc = result["nodes"]["order_count"]
+    assert oc["status"] == "affected"
+    assert oc["delta"]["estimate"] == pytest.approx(0.1 * 200.0)
+    assert oc["delta"]["ci_95"] == [pytest.approx(20.0), pytest.approx(20.0)]
+    assert oc["fit_quality"] == "good"
+
+    rev = result["nodes"]["revenue"]
+    assert rev["delta"]["estimate"] == pytest.approx(20.0 * 50.0)
+
+
+def test_prob_edge_posterior_spread_composes_downstream():
+    """A spread posterior yields a matching delta distribution, and the CI
+    scales draw-aligned through the downstream formula node."""
+    beta_post = np.linspace(0.05, 0.15, 500)  # mean 0.1
+    result = run_scenario(
+        make_dag(), make_data(), order_count_traces(beta_post),
+        ScenarioRequest(**BASELINE, interventions=[
+            Intervention(metric="daily_sessions", mode="delta", value=200.0),
+        ]),
+    )
+    oc = result["nodes"]["order_count"]
+    assert oc["delta"]["estimate"] == pytest.approx(20.0, abs=0.5)
+    lo, hi = oc["delta"]["ci_95"]
+    assert 9.0 < lo < 12.0    # ~ 200 * 5.25th-percentile beta
+    assert 28.0 < hi < 31.0
+    assert oc["prob_direction"] == 1.0
+
+    # revenue delta = 50 * order_count delta per draw, so the CI scales by 50.
+    rev = result["nodes"]["revenue"]
+    assert rev["delta"]["ci_95"][0] == pytest.approx(50.0 * lo)
+    assert rev["delta"]["ci_95"][1] == pytest.approx(50.0 * hi)
+
+
+def test_do_operator_clamps_intervened_node():
+    """Intervening on a node severs it from its parents: the sessions delta
+    must not flow into the pinned order_count."""
+    result = run_scenario(
+        make_dag(), make_data(), order_count_traces(np.full(400, 0.1)),
+        ScenarioRequest(**BASELINE, interventions=[
+            Intervention(metric="daily_sessions", mode="delta", value=200.0),
+            Intervention(metric="order_count", mode="set", value=130.0),
+        ]),
+    )
+    oc = result["nodes"]["order_count"]
+    assert oc["status"] == "intervened"
+    assert oc["delta"]["estimate"] == pytest.approx(30.0)  # not 30 + 20
+    assert oc["delta"]["ci_95"] == [pytest.approx(30.0), pytest.approx(30.0)]
+
+    rev = result["nodes"]["revenue"]
+    assert rev["delta"]["estimate"] == pytest.approx(30.0 * 50.0)
+
+    # Shapley over sources: with the order_count pin inactive, sessions would
+    # have contributed 20; averaging the two orders gives 10 vs 20.
+    oc_contribs = {c["source"]: c["estimate"] for c in oc["contributions"]}
+    assert oc_contribs["i:daily_sessions"] == pytest.approx(10.0)
+    assert oc_contribs["i:order_count"] == pytest.approx(20.0)
+    assert sum(oc_contribs.values()) == pytest.approx(oc["delta"]["estimate"])
+    rev_contribs = {c["source"]: c["estimate"] for c in rev["contributions"]}
+    assert sum(rev_contribs.values()) == pytest.approx(rev["delta"]["estimate"])
+
+
+def test_assumption_deterministic_and_stochastic():
+    """low == high is a deterministic effect; a range becomes a Normal whose
+    central 90% interval matches the stated bounds."""
+    exact = run_scenario(
+        make_dag(), make_data(), {},
+        ScenarioRequest(**BASELINE, assumptions=[
+            Assumption(source="discount_pct", target="average_order_value",
+                       effect=EffectRange(kind="relative", low=-0.1, high=-0.1)),
+        ]),
+    )
+    aov = exact["nodes"]["average_order_value"]
+    assert aov["status"] == "affected"
+    assert aov["delta"]["estimate"] == pytest.approx(-5.0)
+    assert exact["nodes"]["revenue"]["delta"]["estimate"] == pytest.approx(-500.0)
+    assert exact["sources"][0]["kind"] == "assumption"
+
+    spread = run_scenario(
+        make_dag(), make_data(), {},
+        ScenarioRequest(**BASELINE, assumptions=[
+            Assumption(source="discount_pct", target="average_order_value",
+                       effect=EffectRange(kind="relative", low=-0.12, high=-0.08)),
+        ]),
+    )
+    aov = spread["nodes"]["average_order_value"]
+    assert aov["delta"]["estimate"] == pytest.approx(-5.0, abs=0.3)
+    lo, hi = aov["delta"]["ci_95"]
+    # stated 90% interval is [-6, -4]; the 95% CI is slightly wider
+    assert -6.8 < lo < -5.7
+    assert -4.3 < hi < -3.2
+
+    # seeded rng: identical calls are identical responses
+    again = run_scenario(
+        make_dag(), make_data(), {},
+        ScenarioRequest(**BASELINE, assumptions=[
+            Assumption(source="discount_pct", target="average_order_value",
+                       effect=EffectRange(kind="relative", low=-0.12, high=-0.08)),
+        ]),
+    )
+    assert again == spread
+
+
+def test_decomposition_sums_through_nonlinear_formula():
+    """Source contributions sum exactly to the node delta (Shapley efficiency),
+    with the order x aov interaction term apportioned rather than dangling."""
+    result = run_scenario(
+        make_dag(), make_data(), order_count_traces(np.full(400, 0.1)),
+        ScenarioRequest(**BASELINE,
+            interventions=[Intervention(metric="daily_sessions", mode="pct", value=0.15)],
+            assumptions=[Assumption(source="promo", target="average_order_value",
+                                    effect=EffectRange(kind="relative", low=0.1, high=0.1))],
+        ),
+    )
+    # sessions +150 -> orders +15; aov +5; revenue = 115*55 - 100*50 = 1325
+    rev = result["nodes"]["revenue"]
+    assert rev["delta"]["estimate"] == pytest.approx(1325.0)
+    contribs = {c["source"]: c["estimate"] for c in rev["contributions"]}
+    assert sum(contribs.values()) == pytest.approx(1325.0)
+    # each source gets its main effect plus half the 15*5 interaction
+    assert contribs["i:daily_sessions"] == pytest.approx(15 * 50 + 75 / 2)
+    assert contribs["a0"] == pytest.approx(100 * 5 + 75 / 2)
+
+
+def test_scope_flags_and_override():
+    result = run_scenario(
+        make_dag(), make_data(), {},
+        ScenarioRequest(**BASELINE,
+            interventions=[Intervention(metric="average_order_value", mode="set", value=55.0)],
+            assumptions=[Assumption(source="promo", target="average_order_value",
+                                    effect=EffectRange(kind="relative", low=0.2, high=0.3))],
+        ),
+    )
+    # upstream/disjoint nodes untouched
+    assert result["nodes"]["daily_sessions"]["status"] == "baseline"
+    assert result["nodes"]["order_count"]["status"] == "baseline"
+    # the intervention wins over the assumption on the same node
+    assert result["nodes"]["average_order_value"]["delta"]["estimate"] == pytest.approx(5.0)
+    assert any(w["kind"] == "override" for w in result["warnings"])
+    # constant history: any move is outside [min, max]
+    assert result["nodes"]["average_order_value"]["extrapolation"]["flag"] is True
+    assert any(
+        w["kind"] == "extrapolation" and w["metric"] == "average_order_value"
+        for w in result["warnings"]
+    )
+
+
+def test_validation_errors():
+    dag, data = make_dag(), make_data()
+    with pytest.raises(ValueError, match="not found"):
+        run_scenario(dag, data, {}, ScenarioRequest(**BASELINE, interventions=[
+            Intervention(metric="nope", mode="set", value=1.0)]))
+    with pytest.raises(ValueError, match="at least one"):
+        run_scenario(dag, data, {}, ScenarioRequest(**BASELINE))
+    with pytest.raises(ValueError, match="too many sources"):
+        run_scenario(dag, data, {}, ScenarioRequest(**BASELINE, assumptions=[
+            Assumption(source=f"l{i}", target="revenue",
+                       effect=EffectRange(kind="absolute", low=1.0, high=2.0))
+            for i in range(11)]))
+    with pytest.raises(ValueError, match="before"):
+        run_scenario(dag, data, {}, ScenarioRequest(
+            baseline_start="2024-02-01", baseline_end="2024-01-01",
+            interventions=[Intervention(metric="revenue", mode="set", value=1.0)]))
+    with pytest.raises(ValidationError):
+        EffectRange(kind="absolute", low=2.0, high=1.0)
+
+
+def test_fit_on_demand_with_real_advi():
+    """Uncached probabilistic nodes on affected paths are fit with ADVI and
+    cached under (name, fit_end); baseline short of the data end uses a dated
+    key."""
+    parser = Parser(JAFFLE_YAML)
+    data = generate_mock_data(n_days=100)  # ends 2024-04-09
+    traces = {}
+    result = run_scenario(
+        parser.dag, data, traces,
+        ScenarioRequest(
+            baseline_start="2024-03-01", baseline_end="2024-03-31",
+            interventions=[Intervention(metric="daily_sessions", mode="pct", value=0.1)],
+        ),
+        advi_draws=200,
+    )
+    assert ("order_count", "2024-04-01") in traces
+    assert result["nodes"]["order_count"]["status"] == "affected"
+    assert result["nodes"]["revenue"]["delta"]["estimate"] > 0
+    ci = result["nodes"]["revenue"]["delta"]["ci_95"]
+    assert ci[0] < result["nodes"]["revenue"]["delta"]["estimate"] < ci[1]
