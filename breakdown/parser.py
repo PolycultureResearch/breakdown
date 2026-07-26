@@ -106,6 +106,17 @@ class MetricDefinition(BaseModel):
     lags: Dict[str, int] = Field(default_factory=dict)
     seasonality: List[Seasonality] = Field(default_factory=list)
     trend: Optional[TrendConfig] = None
+    # UI display hint for the node card's big number; does not affect modeling.
+    format: Optional[str] = None
+
+    @field_validator("format")
+    @classmethod
+    def check_format(cls, v: Any) -> Any:
+        if v is not None and v not in ("currency", "percent", "number"):
+            raise ValueError(
+                f"format must be one of 'currency', 'percent', 'number', got '{v}'"
+            )
+        return v
 
     @field_validator("trend", mode="before")
     @classmethod

@@ -5,9 +5,17 @@
 const state = {
   meta: null,          // GET /meta
   dag: null,           // GET /dag
+  series: null,        // GET /series -> {dates:[], columns:{name:[values]}}
   cy: null,
   selected: null,      // selected metric name
   metricCache: {},     // name -> GET /metrics/{name} response
+  cardConfig: {        // node-card display (canvas-wide, with per-node overrides)
+    variant: "full",   // "num" | "delta" | "spark" | "full"
+    deltaLen: 7,       // period-over-period comparison length, in data points
+    sparkLen: 30,      // sparkline trailing window, in data points
+    overrides: {},     // metric name -> variant (per-node override of `variant`)
+  },
+  cardOverlay: {},     // metric name -> {value,dpct,dir,mark} while RCA / what-if is active (transient)
   rca: null,           // last POST /rca response
   activeCause: null,   // highlighted ranked cause
   whatif: {            // what-if scenario builder + last POST /simulate result
@@ -198,6 +206,249 @@ function nodeType(def) {
   return def.formula ? "formula" : "prob";
 }
 
+/* ---------- node cards ----------
+   Each metric node is drawn as an SVG "stat card" set as the Cytoscape node's
+   background-image. The SVG has a transparent background and draws only text +
+   sparkline, so the node's own background-color and border still render behind
+   it — RCA / what-if / selection overlays keep working untouched. */
+
+const CARD_W = 200;
+const CARD_H = { num: 64, delta: 92, spark: 112, full: 140 };
+const CARD_FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+const CARD_COL = { up: "#16a34a", down: "#dc2626", flat: "#64748b" };
+const CARD_COL_SOFT = { up: "#e7f6ec", down: "#fdeaea", flat: "#eef1f5" };
+const VARIANT_LABEL = {
+  num: "Number", delta: "Number + Δ", spark: "Number + spark", full: "Number + Δ + spark",
+};
+
+function effectiveVariant(name) {
+  return state.cardConfig.overrides[name] || state.cardConfig.variant;
+}
+
+/* Big-number formatting driven by the metric definition's optional `format`
+   ("currency" | "percent" | "number", default number). Currency/large numbers
+   go compact (k/M/B) to fit the card. */
+function compactNum(x) {
+  const ax = Math.abs(x);
+  if (ax >= 1e9) return (x / 1e9).toFixed(1) + "B";
+  if (ax >= 1e6) return (x / 1e6).toFixed(1) + "M";
+  if (ax >= 1e4) return (x / 1e3).toFixed(1) + "k"; // compact at 10k+; keeps 4-digit values readable
+  return fmt(x);
+}
+
+function fmtCardValue(name, value) {
+  if (value == null) return "—";
+  const f = (state.defs && state.defs[name] && state.defs[name].format) || "number";
+  if (f === "currency") return "$" + compactNum(value);
+  if (f === "percent") return (value * 100).toFixed(1) + "%";
+  return fmt(value);
+}
+
+/* Derive the card's numbers from a metric's daily series + the current config.
+   Big number = latest value; delta = latest vs `deltaLen` points earlier;
+   sparkline = trailing `sparkLen` points. */
+function deriveCardData(name) {
+  const cfg = state.cardConfig;
+  const s = (state.series && state.series.columns[name]) || [];
+  let lastIdx = -1;
+  for (let i = s.length - 1; i >= 0; i--) {
+    if (s[i] != null) { lastIdx = i; break; }
+  }
+  const value = lastIdx >= 0 ? s[lastIdx] : null;
+
+  let prior = null;
+  for (let i = lastIdx - cfg.deltaLen; i >= 0; i--) {
+    if (s[i] != null) { prior = s[i]; break; }
+  }
+  let dpct = null, dir = "flat";
+  if (value != null && prior != null && prior !== 0) {
+    const dabs = value - prior;
+    dpct = dabs / Math.abs(prior);
+    dir = dabs > 1e-12 ? "up" : dabs < -1e-12 ? "down" : "flat";
+  }
+
+  const spark = s.slice(Math.max(0, s.length - cfg.sparkLen)).filter((v) => v != null);
+  return { value, dpct, dir, spark };
+}
+
+/* Sparkline: filled area (gradient id="g") + line + endpoint dot, mapped into
+   the rectangle [x0,y0]-[x1,y1] (y0 top). */
+function sparkPaths(data, x0, x1, y0, y1, col) {
+  const n = data.length;
+  if (n < 2) return "";
+  const min = Math.min(...data), max = Math.max(...data), rng = (max - min) || 1;
+  const X = (i) => x0 + (i / (n - 1)) * (x1 - x0);
+  const Y = (v) => y1 - ((v - min) / rng) * (y1 - y0);
+  const pts = data.map((v, i) => [X(i), Y(v)]);
+  const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+  const area = `${line} L ${X(n - 1).toFixed(1)} ${y1} L ${X(0).toFixed(1)} ${y1} Z`;
+  const e = pts[n - 1];
+  return (
+    `<path d="${area}" fill="url(#g)"/>` +
+    `<path d="${line}" fill="none" stroke="${col}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>` +
+    `<circle cx="${e[0].toFixed(1)}" cy="${e[1].toFixed(1)}" r="2.4" fill="${col}"/>`
+  );
+}
+
+/* Delta as a colored pill centered on (cx, baseline). `mark` is an optional
+   trailing glyph (◌ unexplained, ⊙ set by scenario, ⚠ extrapolated). Width is
+   estimated from the text length — good enough at this size. */
+function deltaSvg(dpct, dir, mark, cx, baseline) {
+  const hasVal = dpct != null;
+  if (!hasVal && !mark) {
+    return `<text x="${cx}" y="${baseline}" text-anchor="middle" font-size="12.5" fill="#8a94a6" font-family="${CARD_FONT}">—</text>`;
+  }
+  const col = CARD_COL[dir] || CARD_COL.flat, bg = CARD_COL_SOFT[dir] || CARD_COL_SOFT.flat;
+  const tri = dir === "up" ? "▲" : dir === "down" ? "▼" : "▬";
+  let txt = hasVal ? `${tri} ${signedPct(dpct)}` : "—";
+  if (mark) txt += ` ${mark}`;
+  const w = txt.length * 7 + 14;
+  const x = cx - w / 2;
+  return (
+    `<rect x="${x.toFixed(1)}" y="${baseline - 14}" width="${w.toFixed(1)}" height="19" rx="6" fill="${bg}"/>` +
+    `<text x="${cx}" y="${baseline}" text-anchor="middle" font-size="12.5" font-weight="600" fill="${col}" font-family="${CARD_FONT}">${esc(txt)}</text>`
+  );
+}
+
+function buildCardSVG(name, d, variant, isOverride, overlay) {
+  const H = CARD_H[variant];
+  const cx = CARD_W / 2;
+  const showSpark = variant === "spark" || variant === "full";
+  const showDelta = variant === "delta" || variant === "full";
+  const dispName = name.length > 26 ? name.slice(0, 25) + "…" : name;
+
+  // Fold in an active RCA / what-if overlay: it can replace the big number
+  // (what-if simulated value), the delta, its direction, and add a mark glyph.
+  const val = overlay && overlay.value != null ? overlay.value : d.value;
+  const dpct = overlay ? overlay.dpct : d.dpct;
+  const dir = overlay ? overlay.dir : d.dir;
+  const mark = overlay ? overlay.mark : null;
+
+  let defs = "";
+  let inner =
+    `<text x="${cx}" y="20" text-anchor="middle" font-size="13" font-weight="600" fill="#475569" font-family="${CARD_FONT}">${esc(dispName)}</text>` +
+    `<text x="${cx}" y="52" text-anchor="middle" font-size="34" font-weight="700" fill="#1a202c" font-family="${CARD_FONT}">${esc(fmtCardValue(name, val))}</text>`;
+
+  if (showSpark && d.spark.length >= 2) {
+    const col = CARD_COL[dir] || CARD_COL.flat;
+    defs =
+      `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">` +
+      `<stop offset="0" stop-color="${col}" stop-opacity="0.15"/>` +
+      `<stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>`;
+    const y0 = showDelta ? 64 : 70, y1 = showDelta ? 96 : 104;
+    inner += sparkPaths(d.spark, 16, CARD_W - 16, y0, y1, col);
+  }
+
+  if (showDelta) {
+    if (showSpark) {
+      inner += `<line x1="16" y1="110" x2="${CARD_W - 16}" y2="110" stroke="#eef1f6" stroke-width="1"/>`;
+      inner += deltaSvg(dpct, dir, mark, cx, 130);
+    } else {
+      inner += deltaSvg(dpct, dir, mark, cx, 82);
+    }
+  }
+
+  if (isOverride) {
+    // small indigo dot: this node's variant is pinned, ignoring the canvas default
+    inner +=
+      `<circle cx="${CARD_W - 12}" cy="12" r="6" fill="#4f46e5" fill-opacity="0.18"/>` +
+      `<circle cx="${CARD_W - 12}" cy="12" r="3.5" fill="#4f46e5"/>`;
+  }
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${CARD_W}" height="${H}" viewBox="0 0 ${CARD_W} ${H}">${defs}${inner}</svg>`;
+}
+
+function svgDataURI(svg) {
+  return "data:image/svg+xml;utf8," + encodeURIComponent(svg);
+}
+
+/* Paint one node's card. Sets a fixed size (so dagre spaces cards correctly)
+   and blanks the text label (the card draws the name itself). */
+function renderNodeCard(name) {
+  const node = state.cy.getElementById(name);
+  if (!node.length) return;
+  const variant = effectiveVariant(name);
+  const d = deriveCardData(name);
+  const isOverride = name in state.cardConfig.overrides;
+  const overlay = state.cardOverlay[name] || null;
+  node.style({
+    "background-image": svgDataURI(buildCardSVG(name, d, variant, isOverride, overlay)),
+    "background-fit": "contain",
+    "width": CARD_W,
+    "height": CARD_H[variant],
+    "padding": 0,
+    "label": "",
+    "text-opacity": 0, // card draws the name itself; hide Cytoscape's own label
+  });
+}
+
+function renderAllCards() {
+  if (!state.series || !state.cy) return;
+  state.cy.batch(() => {
+    state.dag.nodes.forEach(([name]) => renderNodeCard(name));
+  });
+}
+
+function runLayout(fit = false) {
+  state.cy
+    .layout({ name: "dagre", rankDir: "BT", nodeSep: 40, rankSep: 70, padding: 24, fit, animate: false })
+    .run();
+}
+
+const CARD_CFG_KEY = "breakdown.cardConfig";
+
+function loadCardConfig() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CARD_CFG_KEY) || "{}");
+    const c = state.cardConfig;
+    if (["num", "delta", "spark", "full"].includes(saved.variant)) c.variant = saved.variant;
+    if (Number.isFinite(saved.deltaLen)) c.deltaLen = saved.deltaLen;
+    if (Number.isFinite(saved.sparkLen)) c.sparkLen = saved.sparkLen;
+    if (saved.overrides && typeof saved.overrides === "object") c.overrides = saved.overrides;
+  } catch { /* ignore malformed storage */ }
+}
+
+function saveCardConfig() {
+  try {
+    localStorage.setItem(CARD_CFG_KEY, JSON.stringify(state.cardConfig));
+  } catch { /* storage disabled: config just won't persist */ }
+}
+
+/* Wire the canvas-wide card controls. Variant changes resize nodes (re-layout,
+   preserving the viewport); length changes only repaint. */
+function initCardControls() {
+  const variantSel = $("card-variant");
+  const sparkInp = $("card-spark");
+  const deltaInp = $("card-delta");
+  variantSel.value = state.cardConfig.variant;
+  sparkInp.value = state.cardConfig.sparkLen;
+  deltaInp.value = state.cardConfig.deltaLen;
+
+  variantSel.addEventListener("change", () => {
+    state.cardConfig.variant = variantSel.value;
+    saveCardConfig();
+    renderAllCards();
+    runLayout(false);
+  });
+  const clampInt = (el, lo, hi, fallback) => {
+    let v = parseInt(el.value, 10);
+    if (!Number.isFinite(v)) v = fallback;
+    v = Math.max(lo, Math.min(hi, v));
+    el.value = v;
+    return v;
+  };
+  sparkInp.addEventListener("change", () => {
+    state.cardConfig.sparkLen = clampInt(sparkInp, 2, 365, 30);
+    saveCardConfig();
+    renderAllCards();
+  });
+  deltaInp.addEventListener("change", () => {
+    state.cardConfig.deltaLen = clampInt(deltaInp, 1, 365, 7);
+    saveCardConfig();
+    renderAllCards();
+  });
+}
+
 /* ---------- graph ---------- */
 
 const CY_STYLE = [
@@ -385,9 +636,13 @@ function buildGraph() {
     container: $("cy"),
     elements,
     style: CY_STYLE,
-    layout: { name: "dagre", rankDir: "BT", nodeSep: 40, rankSep: 70, padding: 24 },
     wheelSensitivity: 0.2,
   });
+  // Paint the stat cards first (this fixes each node's size), then lay out so
+  // dagre spaces the real card footprints. Falls back to label-sized nodes when
+  // the series failed to load (renderAllCards is a no-op without state.series).
+  renderAllCards();
+  runLayout(true);
 
   // With the What-if tab active, tapping a node adjusts it in the scenario;
   // otherwise it opens the Metric tab as before.
@@ -491,6 +746,20 @@ function renderMetricTab(name, data) {
     </table>
 
     <section>
+      <h3>Card display</h3>
+      <div class="analyze-row">
+        <select id="node-variant">
+          <option value="">Canvas default (${VARIANT_LABEL[state.cardConfig.variant]})</option>
+          <option value="num">Number</option>
+          <option value="delta">Number + Δ</option>
+          <option value="spark">Number + spark</option>
+          <option value="full">Number + Δ + spark</option>
+        </select>
+      </div>
+      <p class="inline-status">Override how just this node is drawn on the canvas.</p>
+    </section>
+
+    <section>
       <h3>Time series</h3>
       <div id="ts-chart"></div>
       <div class="chart-caption"><span class="win-ref"></span> reference &nbsp; <span class="win-an"></span> analysis</div>
@@ -519,6 +788,25 @@ function renderMetricTab(name, data) {
   renderTimeSeries(name, data.time_series);
   renderPosterior(name, data);
   $("an-run").addEventListener("click", () => runAnalyze(name));
+  wireNodeVariant(name);
+}
+
+/* Per-node card-variant override, set from the Metric tab. Empty value clears
+   the override (node follows the canvas default again). Re-lays out only when
+   the card's height actually changes. */
+function wireNodeVariant(name) {
+  const sel = $("node-variant");
+  if (!sel) return;
+  sel.value = state.cardConfig.overrides[name] || "";
+  sel.addEventListener("change", () => {
+    if (sel.value) state.cardConfig.overrides[name] = sel.value;
+    else delete state.cardConfig.overrides[name];
+    saveCardConfig();
+    const node = state.cy.getElementById(name);
+    const before = node.length ? node.height() : 0;
+    renderNodeCard(name);
+    if (node.length && node.height() !== before) runLayout(false);
+  });
 }
 
 function renderTimeSeries(name, series) {
@@ -700,11 +988,9 @@ function applyRcaOverlay() {
 
   Object.entries(res.nodes).forEach(([name, node]) => {
     const n = cy.getElementById(name);
-    const dir = node.gap >= 0 ? "rca-up" : "rca-down";
-    n.addClass(dir);
-    const glyph = node.gap >= 0 ? "▲" : "▼";
-    let label = `${name}\n${glyph}${node.relative_change == null ? "" : " " + signedPct(node.relative_change)}`;
-    // large-unexplained badge: dashed amber border + ◌ glyph
+    n.addClass(node.gap >= 0 ? "rca-up" : "rca-down");
+    // large-unexplained badge: dashed amber border + ◌ glyph on the card
+    let mark = null;
     if (
       node.contributions.length &&
       node.unexplained != null &&
@@ -712,9 +998,15 @@ function applyRcaOverlay() {
       Math.abs(node.unexplained / node.gap) > 0.35
     ) {
       n.addClass("rca-unexplained");
-      label += " ◌";
+      mark = "◌";
     }
-    n.data("label", label);
+    // the card shows the RCA change (gap over the two windows) while RCA is on
+    state.cardOverlay[name] = {
+      value: null, // keep the latest value as the big number
+      dpct: node.relative_change,
+      dir: node.gap >= 0 ? "up" : "down",
+      mark,
+    };
     node.contributions.forEach((c) => {
       const e = cy.getElementById(`${c.parent}->${name}`);
       if (!e.length) return;
@@ -727,6 +1019,7 @@ function applyRcaOverlay() {
     });
   });
 
+  renderAllCards(); // repaint cards with the RCA overlay folded in
   document.querySelectorAll(".rca-only").forEach((el) => (el.style.display = "flex"));
 }
 
@@ -739,6 +1032,8 @@ function clearRcaStyles() {
     e.data("op", 1);
     e.data("label", "");
   });
+  state.cardOverlay = {};
+  renderAllCards(); // restore base cards
   document.querySelectorAll(".rca-only").forEach((el) => (el.style.display = "none"));
 }
 
@@ -748,6 +1043,8 @@ function clearWhatifStyles() {
   cy.$(".lever").remove(); // temporary lever nodes (their edges went with .assume)
   cy.elements().removeClass("sim-up sim-down sim-pinned warn-border");
   cy.nodes().forEach((n) => n.data("bgop", 1));
+  state.cardOverlay = {};
+  renderAllCards(); // restore base cards
   document.querySelectorAll(".sim-only").forEach((el) => (el.style.display = "none"));
 }
 
@@ -1352,19 +1649,19 @@ function applyWhatifOverlay() {
     else if (est < 0) n.addClass("sim-down");
     // certainty channel: background opacity from P(direction)
     n.data("bgop", node.prob_direction == null ? 1 : Math.max(0.35, 2 * (node.prob_direction - 0.5)));
-    let label;
-    if (node.status === "intervened") {
-      n.addClass("sim-pinned");
-      label = `${name}\n⊙ ${fmt(node.simulated)}${node.relative_delta == null ? "" : " (" + signedPct(node.relative_delta) + ")"}`;
-    } else {
-      const glyph = est > 0 ? "▲" : est < 0 ? "▼" : "＝";
-      label = `${name}\n${glyph}${node.relative_delta == null ? "" : " " + signedPct(node.relative_delta)}`;
-    }
+    let mark = null;
+    if (node.status === "intervened") { n.addClass("sim-pinned"); mark = "⊙"; }
     if (node.extrapolation && node.extrapolation.flag) {
       n.addClass("warn-border");
-      label += " ⚠";
+      mark = (mark || "") + "⚠";
     }
-    n.data("label", label);
+    // the card shows the simulated value + its delta from baseline
+    state.cardOverlay[name] = {
+      value: node.simulated,
+      dpct: node.relative_delta,
+      dir: est > 0 ? "up" : est < 0 ? "down" : "flat",
+      mark,
+    };
   });
 
   // structural edges between affected nodes colored by the target's direction;
@@ -1403,6 +1700,7 @@ function applyWhatifOverlay() {
     });
   });
 
+  renderAllCards(); // repaint cards with the what-if overlay folded in
   document.querySelectorAll(".sim-only").forEach((el) => (el.style.display = "flex"));
 }
 
@@ -1639,8 +1937,18 @@ async function init() {
   setStatus("Loading…", "busy");
   try {
     [state.meta, state.dag] = await Promise.all([api("/meta"), api("/dag")]);
+    // Series hydrates every node card in one request; degrade to name-only
+    // nodes if it fails rather than blocking the whole graph.
+    try {
+      state.series = await api("/series");
+    } catch (err) {
+      state.series = null;
+      console.warn("card series unavailable:", err.message);
+    }
+    loadCardConfig();
     initControls();
     buildGraph();
+    initCardControls();
     initWhatif();
     setStatus(`${state.meta.metrics.length} metrics · provider: ${state.meta.provider} · ${state.meta.date_start} → ${state.meta.date_end}`);
     applyDeepLink();
