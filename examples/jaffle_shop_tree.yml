@@ -9,10 +9,18 @@ metrics:
   - name: daily_sessions
     description: "Total count of website sessions per day"
     source: jaffle_shop.metrics.sessions
+    format:
+      style: number
+      unit: sessions
+      decimals: 0
 
   - name: order_count
     description: "Total number of orders placed"
     source: jaffle_shop.metrics.order_count
+    format:
+      style: number
+      unit: orders / day
+      decimals: 0
     parents:
       - daily_sessions
     priors:

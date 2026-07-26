@@ -214,6 +214,7 @@ function nodeType(def) {
 
 const CARD_W = 200;
 const CARD_H = { num: 64, delta: 92, spark: 112, full: 140 };
+const UNIT_H = 15; // extra card height when a metric declares a unit caption
 const CARD_FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 const CARD_COL = { up: "#16a34a", down: "#dc2626", flat: "#64748b" };
 const CARD_COL_SOFT = { up: "#e7f6ec", down: "#fdeaea", flat: "#eef1f5" };
@@ -226,22 +227,44 @@ function effectiveVariant(name) {
 }
 
 /* Big-number formatting driven by the metric definition's optional `format`
-   ("currency" | "percent" | "number", default number). Currency/large numbers
-   go compact (k/M/B) to fit the card. */
-function compactNum(x) {
-  const ax = Math.abs(x);
-  if (ax >= 1e9) return (x / 1e9).toFixed(1) + "B";
-  if (ax >= 1e6) return (x / 1e6).toFixed(1) + "M";
-  if (ax >= 1e4) return (x / 1e3).toFixed(1) + "k"; // compact at 10k+; keeps 4-digit values readable
-  return fmt(x);
+   object {style, unit, decimals, compact, symbol}. Presentation only. */
+function normalizeFormat(f) {
+  if (!f) return { style: "number" };
+  if (typeof f === "string") return { style: f }; // defensive (backend coerces already)
+  return f;
+}
+
+function metricFormat(name) {
+  return normalizeFormat(state.defs && state.defs[name] && state.defs[name].format);
+}
+
+/* Card height grows by one line when the metric shows a unit caption. Used for
+   both the SVG viewBox and the Cytoscape node size — they must agree. */
+function cardHeight(name, variant) {
+  return CARD_H[variant] + (metricFormat(name).unit ? UNIT_H : 0);
+}
+
+function withDecimals(x, dec) {
+  return x.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec });
+}
+
+function compactNum(x, dec) {
+  const ax = Math.abs(x), d = dec == null ? 1 : dec;
+  if (ax >= 1e9) return (x / 1e9).toFixed(d) + "B";
+  if (ax >= 1e6) return (x / 1e6).toFixed(d) + "M";
+  if (ax >= 1e4) return (x / 1e3).toFixed(d) + "k"; // compact at 10k+; keeps 4-digit values readable
+  return dec == null ? fmt(x) : withDecimals(x, dec);
 }
 
 function fmtCardValue(name, value) {
   if (value == null) return "—";
-  const f = (state.defs && state.defs[name] && state.defs[name].format) || "number";
-  if (f === "currency") return "$" + compactNum(value);
-  if (f === "percent") return (value * 100).toFixed(1) + "%";
-  return fmt(value);
+  const f = metricFormat(name);
+  const dec = f.decimals;
+  if (f.style === "percent") return (value * 100).toFixed(dec == null ? 1 : dec) + "%";
+  const compact = f.compact == null ? f.style === "currency" : f.compact;
+  let s = compact ? compactNum(value, dec) : dec == null ? fmt(value) : withDecimals(value, dec);
+  if (f.style === "currency") s = (f.symbol || "$") + s;
+  return s;
 }
 
 /* Derive the card's numbers from a metric's daily series + the current config.
@@ -311,7 +334,6 @@ function deltaSvg(dpct, dir, mark, cx, baseline) {
 }
 
 function buildCardSVG(name, d, variant, isOverride, overlay) {
-  const H = CARD_H[variant];
   const cx = CARD_W / 2;
   const showSpark = variant === "spark" || variant === "full";
   const showDelta = variant === "delta" || variant === "full";
@@ -324,10 +346,20 @@ function buildCardSVG(name, d, variant, isOverride, overlay) {
   const dir = overlay ? overlay.dir : d.dir;
   const mark = overlay ? overlay.mark : null;
 
+  // Optional unit caption under the value; everything below it shifts down.
+  const unit = metricFormat(name).unit;
+  const uOff = unit ? UNIT_H : 0;
+  const H = CARD_H[variant] + uOff;
+
   let defs = "";
   let inner =
     `<text x="${cx}" y="20" text-anchor="middle" font-size="13" font-weight="600" fill="#475569" font-family="${CARD_FONT}">${esc(dispName)}</text>` +
     `<text x="${cx}" y="52" text-anchor="middle" font-size="34" font-weight="700" fill="#1a202c" font-family="${CARD_FONT}">${esc(fmtCardValue(name, val))}</text>`;
+
+  if (unit) {
+    const u = unit.length > 22 ? unit.slice(0, 21) + "…" : unit;
+    inner += `<text x="${cx}" y="66" text-anchor="middle" font-size="11" fill="#8a94a6" font-family="${CARD_FONT}">${esc(u)}</text>`;
+  }
 
   if (showSpark && d.spark.length >= 2) {
     const col = CARD_COL[dir] || CARD_COL.flat;
@@ -335,16 +367,16 @@ function buildCardSVG(name, d, variant, isOverride, overlay) {
       `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">` +
       `<stop offset="0" stop-color="${col}" stop-opacity="0.15"/>` +
       `<stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>`;
-    const y0 = showDelta ? 64 : 70, y1 = showDelta ? 96 : 104;
+    const y0 = (showDelta ? 64 : 70) + uOff, y1 = (showDelta ? 96 : 104) + uOff;
     inner += sparkPaths(d.spark, 16, CARD_W - 16, y0, y1, col);
   }
 
   if (showDelta) {
     if (showSpark) {
-      inner += `<line x1="16" y1="110" x2="${CARD_W - 16}" y2="110" stroke="#eef1f6" stroke-width="1"/>`;
-      inner += deltaSvg(dpct, dir, mark, cx, 130);
+      inner += `<line x1="16" y1="${110 + uOff}" x2="${CARD_W - 16}" y2="${110 + uOff}" stroke="#eef1f6" stroke-width="1"/>`;
+      inner += deltaSvg(dpct, dir, mark, cx, 130 + uOff);
     } else {
-      inner += deltaSvg(dpct, dir, mark, cx, 82);
+      inner += deltaSvg(dpct, dir, mark, cx, 82 + uOff);
     }
   }
 
@@ -375,7 +407,7 @@ function renderNodeCard(name) {
     "background-image": svgDataURI(buildCardSVG(name, d, variant, isOverride, overlay)),
     "background-fit": "contain",
     "width": CARD_W,
-    "height": CARD_H[variant],
+    "height": cardHeight(name, variant),
     "padding": 0,
     "label": "",
     "text-opacity": 0, // card draws the name itself; hide Cytoscape's own label
