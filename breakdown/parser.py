@@ -49,6 +49,11 @@ class DataProviderConfig(BaseModel):
     token: Optional[str] = None
     # warehouse (direct SQL) provider
     http_path: Optional[str] = None
+    # Databricks CLI auth profile (from `databricks auth login --profile ...`).
+    # When set, the warehouse provider authenticates via the Databricks SDK's
+    # unified OAuth instead of a PAT `token`; `host` is then read from the
+    # profile if not given explicitly.
+    profile: Optional[str] = None
     catalog: Optional[str] = None
     # `schema` in YAML; renamed to avoid shadowing BaseModel.schema
     db_schema: Optional[str] = Field(default=None, alias="schema")
@@ -64,7 +69,7 @@ class DataProviderConfig(BaseModel):
 
     @field_validator(
         "project_path", "environment_id", "host", "token",
-        "http_path", "catalog", "db_schema", mode="after",
+        "http_path", "profile", "catalog", "db_schema", mode="after",
     )
     @classmethod
     def expand_env_vars(cls, v: Optional[str]) -> Optional[str]:

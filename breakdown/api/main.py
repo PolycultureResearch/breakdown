@@ -52,6 +52,7 @@ def _build_fetcher(provider_cfg, dag, metrics=None):
             metric_sql=metric_sql,
             catalog=provider_cfg.catalog,
             schema=provider_cfg.db_schema,
+            profile=provider_cfg.profile,
         )
     return MockDataFetcher(dag=dag)
 

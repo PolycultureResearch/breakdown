@@ -210,3 +210,50 @@ def test_warehouse_fetcher_unknown_metric_raises():
     fetcher = WarehouseDataFetcher(host="h", http_path="p", token="t", metric_sql={})
     with pytest.raises(RuntimeError, match="No `sql` defined"):
         fetcher.fetch_metric("missing", "2025-06-01", "2025-06-05")
+
+
+def test_warehouse_fetcher_requires_auth():
+    # Neither a PAT token nor an OAuth profile → construction must fail loudly.
+    with pytest.raises(ValueError, match="token.*or.*profile|profile"):
+        WarehouseDataFetcher(host="h", http_path="p", token=None, metric_sql={})
+
+
+def test_warehouse_fetcher_profile_uses_credentials_provider(monkeypatch):
+    """With a `profile`, the connector is called with an OAuth credentials
+    provider (not access_token), and host defaults to the profile's host."""
+    captured = {}
+
+    class _FakeConfig:
+        def __init__(self, profile=None):
+            captured["profile"] = profile
+            self.host = "https://dbc-fake.cloud.databricks.com/"
+
+        def authenticate(self):  # HeaderFactory stand-in
+            return {}
+
+    class _StubConnection:
+        def cursor(self):
+            return _StubCursor([])
+
+    def _fake_connect(**kwargs):
+        captured["connect_kwargs"] = kwargs
+        return _StubConnection()
+
+    import databricks.sql as dbsql_mod
+    from databricks.sdk import core as sdk_core
+
+    monkeypatch.setattr(sdk_core, "Config", _FakeConfig)
+    monkeypatch.setattr(dbsql_mod, "connect", _fake_connect)
+
+    fetcher = WarehouseDataFetcher(
+        host=None, http_path="/sql/1.0/warehouses/x", token=None,
+        metric_sql={}, profile="narrative",
+    )
+    fetcher._cursor()
+
+    assert captured["profile"] == "narrative"
+    kw = captured["connect_kwargs"]
+    assert "access_token" not in kw
+    assert callable(kw["credentials_provider"])
+    # host resolved from the profile, with scheme/trailing slash stripped
+    assert kw["server_hostname"] == "dbc-fake.cloud.databricks.com"
