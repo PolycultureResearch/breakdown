@@ -12,7 +12,7 @@ The breakdown UI is a single-page app served by FastAPI at `/ui`, in the spirit 
 
 **UC4 — Trust the model.** Surface just enough diagnostics (R-hat, observation noise) that a data scientist can tell a healthy fit from a broken one, without drowning a business user in an ArviZ dump. Raw summary stays available behind a collapsible.
 
-**UC5 — Simulate a scenario (what-if).** "If trial→member conversion went up 0.3%, what happens to MRR?" The user picks a baseline window, adjusts one or more metrics (clicking nodes with the What-if tab active), optionally asserts assumption links (effects the tree doesn't know, e.g. a discount lever), and runs a steady-state simulation. Results render on the graph (deltas, pinned nodes, assumption edges) and in the sidebar (outcome cards, source waterfall, per-node table with CIs). Design spec: `what_if_design.md`.
+**UC5 — Simulate a scenario (what-if).** "If trial→member conversion went up 0.3%, what happens to MRR?" The user picks a baseline window, adjusts one or more metrics (clicking nodes with the What-if tab active), optionally asserts assumption links (effects the tree doesn't know, e.g. a discount lever), and runs a steady-state simulation. Results render on the graph (deltas, pinned nodes, assumption edges) and in the sidebar (outcome cards, source waterfall, per-node table with CIs). Design spec: `knowledge/what_if_design.md`.
 
 ## Layout
 
@@ -48,18 +48,32 @@ Light theme, quiet by default so RCA color can carry meaning when it appears.
 | formula (violet) | `#9333ea` | formula-node border + deterministic edges |
 | up / down | `#16a34a` / `#dc2626` (soft `#dcfce7` / `#fee2e2`) | RCA gap direction |
 
-**Nodes** are white round-rects with the metric name; border color encodes type — gray `#94a3b8` for source metrics (no parents), indigo for probabilistic, violet for formula nodes. A fitted model tints the node background `#eef2ff`. Selected node gets the accent border.
+**Nodes** are white round-rects rendered as **stat cards** (see *Node cards* below): a big number, an optional period-over-period delta, and an optional sparkline. Border color encodes type — gray `#94a3b8` for source metrics (no parents), indigo for probabilistic, violet for formula nodes. A fitted model tints the node background `#eef2ff`. Selected node gets the accent border.
 
 **Edges** point parent → child. Deterministic edges (child has a `formula`) are **solid violet**; probabilistic edges are **dashed indigo**. When a probabilistic child is fitted, its incoming edges label with the raw-scale coefficient: `β 0.10 [0.08, 0.13]`.
 
+### Node cards
+
+Each metric node is drawn as a **stat card** rather than a bare label. The card is
+an SVG data-URI set as the Cytoscape node's `background-image` with a **transparent
+background**, so the node's own border and `background-color` still render behind it
+— which is why the RCA / what-if / selection overlays (all class-driven border/fill)
+keep working unchanged.
+
+- **Variants** (increasing detail): `num` (big number only) · `delta` (+ period-over-period delta pill) · `spark` (+ trailing sparkline) · `full` (both). Set canvas-wide via the floating toolbar (top-left), or overridden per node from the Metric tab (an indigo dot marks an overridden node). Config + overrides persist to `localStorage` under `breakdown.cardConfig`.
+- **Numbers.** Big number = latest value. Delta = latest vs `deltaLen` points earlier (both lengths are canvas-wide controls). Sparkline = trailing `sparkLen` points, thin line + area fill + endpoint dot, colored by direction (semantic green/red, never the indigo brand hue).
+- **Formatting** comes from the metric definition's optional `format` (`{style, unit, decimals, compact, symbol}`); a `unit` renders a small caption under the value and grows the card one line.
+- **Overlay-aware.** While an RCA or what-if overlay is active the card folds in that overlay's numbers (RCA gap %, what-if simulated value) with `◌` / `⊙` / `⚠` marks, so a node never shows two conflicting deltas. State lives in `state.cardOverlay`; the renderer is `renderNodeCard` / `buildCardSVG` in `static/app.js`.
+- All cards hydrate from a single **`GET /series`** call (every metric's aligned daily series) at load.
+
 **RCA overlay** (applied after a run, removed by Clear):
-- Node background shifts to the soft up/down color by sign of `relative_change`; a second label line shows the signed percent (`−16.2%`).
+- Node background shifts to the soft up/down color by sign of `relative_change`; the card's delta shows the signed percent (`−16.2%`).
 - Edge width scales `2 + 6·min(|share_of_gap|, 1)`; edge color goes up/down by the sign of the contribution `estimate`; edge label shows the share as a percent.
 - The legend gains the up/down swatches while the overlay is active.
 
 **What-if overlay** (applied after a simulation, removed by Clear / tab switch):
-- Non-baseline nodes tint soft up/down by delta sign with a `▲ +3.4%` label line; **background opacity encodes P(direction)** (same certainty channel as RCA edge opacity).
-- **Intervened nodes** get a heavy solid indigo border and a `⊙ <value>` label — visibly pinned (do-operator).
+- Non-baseline nodes tint soft up/down by delta sign; the card's big number becomes the simulated value and its delta the `▲ +3.4%` change from baseline. **Background opacity encodes P(direction)** (same certainty channel as RCA edge opacity).
+- **Intervened nodes** get a heavy solid indigo border and a `⊙` mark on the card — visibly pinned (do-operator).
 - **Assumption links** are temporary dotted amber edges added to the graph; non-metric sources ("levers", e.g. `discount_pct`) appear as temporary amber-dashed ellipse nodes placed near their target without re-layout.
 - Extrapolation-flagged nodes get the dashed amber border + `⚠`; edges into a pinned node stay neutral (the pin severs them).
 
@@ -91,6 +105,7 @@ Name + type chip (Source / Probabilistic / Formula) + fitted chip. Description, 
 |---|---|
 | `GET /meta` | metric names, data date range, provider, fitted list — bootstraps header controls |
 | `GET /dag` | nodes + edges |
+| `GET /series` | every metric's aligned daily series (one call) — hydrates the node cards |
 | `GET /metrics/{name}` | definition, time series, posterior summary |
 | `POST /analyze/{name}` | fit from the Metric tab |
 | `POST /rca/{name}` | the RCA run |
