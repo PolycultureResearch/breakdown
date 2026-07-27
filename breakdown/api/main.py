@@ -170,6 +170,25 @@ async def get_dag(request: Request):
     }
 
 
+@app.get("/series")
+async def get_series(request: Request):
+    """Every metric's daily series in one aligned response, for the node cards.
+    `app.state.data` is already a date-aligned frame (date + one column per
+    metric), so this is a cheap columnar dump. NaN -> null for valid JSON."""
+    parser = request.app.state.parser
+    data = request.app.state.data
+    names = [m.name for m in parser.config.metrics if m.name in data.columns]
+    columns = {
+        name: [None if (v is None or (isinstance(v, float) and math.isnan(v))) else float(v)
+               for v in data[name].tolist()]
+        for name in names
+    }
+    return {
+        "dates": [str(d.date()) for d in data["date"]],
+        "columns": columns,
+    }
+
+
 @app.get("/metrics/{name}")
 async def get_metric(name: str, request: Request):
     parser = request.app.state.parser

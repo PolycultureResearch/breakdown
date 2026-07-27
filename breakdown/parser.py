@@ -95,6 +95,33 @@ class TrendConfig(BaseModel):
             raise ValueError("trend sigma must be > 0")
         return v
 
+class MetricFormat(BaseModel):
+    """How a metric's big number is displayed on its node card. Presentation
+    only — never affects modeling. Written in YAML either as the shorthand
+    `format: currency` or as a mapping with any of these keys."""
+    style: str = "number"           # "currency" | "percent" | "number"
+    unit: Optional[str] = None      # small caption under the value, e.g. "sessions", "ms"
+    decimals: Optional[int] = None  # fixed fraction digits; None = automatic
+    compact: Optional[bool] = None  # k/M/B notation; None = auto (currency compacts large values)
+    symbol: str = "$"               # currency symbol, when style == "currency"
+
+    @field_validator("style")
+    @classmethod
+    def check_style(cls, v: str) -> str:
+        if v not in ("currency", "percent", "number"):
+            raise ValueError(
+                f"format.style must be 'currency', 'percent', or 'number', got '{v}'"
+            )
+        return v
+
+    @field_validator("decimals")
+    @classmethod
+    def check_decimals(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and not (0 <= v <= 10):
+            raise ValueError(f"format.decimals must be between 0 and 10, got {v}")
+        return v
+
+
 class MetricDefinition(BaseModel):
     name: str
     description: Optional[str] = None
@@ -106,6 +133,16 @@ class MetricDefinition(BaseModel):
     lags: Dict[str, int] = Field(default_factory=dict)
     seasonality: List[Seasonality] = Field(default_factory=list)
     trend: Optional[TrendConfig] = None
+    # UI display hint for the node card's big number; does not affect modeling.
+    format: Optional[MetricFormat] = None
+
+    @field_validator("format", mode="before")
+    @classmethod
+    def coerce_format(cls, v: Any) -> Any:
+        # shorthand: `format: currency` is `format: {style: currency}`
+        if isinstance(v, str):
+            return {"style": v}
+        return v
 
     @field_validator("trend", mode="before")
     @classmethod

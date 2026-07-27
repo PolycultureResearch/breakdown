@@ -127,6 +127,32 @@ button:disabled { opacity: 0.5; cursor: default; }
 #canvas-wrap { flex: 1; position: relative; }
 #cy { position: absolute; inset: 0; }
 
+#card-toolbar {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ct-row { display: flex; align-items: center; gap: 6px; }
+.ct-row label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  width: 66px;
+  flex-shrink: 0;
+}
+.ct-row select { flex: 1; }
+.ct-row input[type="number"] { width: 56px; }
+.ct-unit { font-size: 11px; color: var(--muted); }
+
 #legend {
   position: absolute;
   left: 12px;
