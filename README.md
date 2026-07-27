@@ -172,6 +172,7 @@ Each metric entry supports the following fields:
 | `lags` | dict | Per-parent time lag in grain units (days). Regresses the child on each parent's value `N` steps earlier. Mutually exclusive with `formula`. |
 | `seasonality` | list | Periodic components to include in the BSTS model |
 | `trend` | string or dict | Local-level (random-walk) trend. `trend: linear` uses the default step-size prior HalfNormal(0.05); `trend: {type: linear, sigma: 0.1}` widens it so the trend may absorb faster drift. Only `type: linear` is supported. |
+| `format` | string or dict | UI display hint for the node card's big number — presentation only, no effect on modeling. See [Display format](#display-format). |
 
 ### Priors
 
@@ -254,6 +255,25 @@ Rules:
 - Every `lags` key must be a parent; every value must be an integer ≥ 1 (grain units, days).
 - `lags` and `formula` are mutually exclusive — a formula is a contemporaneous identity.
 - The engine shifts each parent by its lag and trims the leading `max(lags)` rows so all series align with no NaNs. It raises if fewer than 10 rows remain.
+
+### Display format
+
+`format` controls how a metric's **big number** is displayed on its node card in the UI. It is presentation only — it never affects modeling, attribution, or the API's numeric values. Use the string shorthand for the common case, or a mapping for finer control:
+
+```yaml
+- name: revenue
+  format: currency          # shorthand for {style: currency}
+
+- name: daily_sessions
+  format:
+    style: number           # currency | percent | number  (default number)
+    unit: sessions          # small caption under the value; grows the card one line
+    decimals: 0             # fixed fraction digits (default: automatic)
+    compact: true           # k / M / B notation (default: auto — currency compacts large values)
+    symbol: "$"             # currency symbol, when style is currency
+```
+
+Delta values (period-over-period change) always render as a percent; `format` applies to the big number only.
 
 ---
 
@@ -427,10 +447,11 @@ This generalizes to arbitrary formulas and any number of parents via exact enume
 ## Project structure
 
 ```
+AGENTS.md            # Orientation for contributors (human or AI) — start here to build
 breakdown/
   parser.py          # YAML → Pydantic models → NetworkX DAG
   formula.py         # Shared formula validation / safe evaluation
-  data_fetch.py      # BaseDataFetcher + Mock / Local / Cloud implementations
+  data_fetch.py      # BaseDataFetcher + Mock / Local / Cloud / Warehouse implementations
   engine/
     model.py         # fit_metric() — BSTS via PyMC; compute_shapley()
     rca.py           # run_rca() + shapley_attribution() — root cause analysis
@@ -440,12 +461,14 @@ static/
   index.html         # UI: Cytoscape DAG + RCA workflow (app.js, style.css)
 docs/
   model.md           # Model assumptions & how to interpret results — start here
+  ai-context/        # Architecture deep-dives (backend, frontend) for contributors
 examples/
   jaffle_shop_tree.yml
+knowledge/           # Product & design specs, roadmap, reference trees
 tests/
 ```
 
-**If you're going to interpret breakdown's output, read [docs/model.md](docs/model.md)** — it explains what the model assumes, what `unexplained` means, why shares can exceed 100%, and when to trust (or distrust) a credible interval.
+**If you're going to interpret breakdown's output, read [docs/model.md](docs/model.md)** — it explains what the model assumes, what `unexplained` means, why shares can exceed 100%, and when to trust (or distrust) a credible interval. **If you're going to work on the codebase, read [AGENTS.md](AGENTS.md)** — the project's invariants and where everything lives.
 
 ---
 

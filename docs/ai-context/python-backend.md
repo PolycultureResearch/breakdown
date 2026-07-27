@@ -30,7 +30,7 @@ Design rules:
 
 ## `parser.py`
 
-**`MetricDefinition`** — Pydantic model for one metric node. Fields: `name`, `source`, `description`, `parents`, `formula`, `priors: Dict[str, Prior]`, `lags: Dict[str, int]`, `seasonality: List[Seasonality]`. Validators enforce: formula is arithmetic-only AST and references only parents; prior keys are `"coefficient"` or a parent name; lag keys are parents, values are ints ≥ 1, and `lags` is mutually exclusive with `formula`.
+**`MetricDefinition`** — Pydantic model for one metric node. Fields: `name`, `source`, `description`, `sql` (warehouse provider only), `parents`, `formula`, `priors: Dict[str, Prior]`, `lags: Dict[str, int]`, `seasonality: List[Seasonality]`, `trend: Optional[TrendConfig]` (local-level random-walk step-size prior), `format: Optional[MetricFormat]` (UI display hint — presentation only, coerced from the `format: currency` string shorthand). Validators enforce: formula is arithmetic-only AST and references only parents; prior keys are `"coefficient"` or a parent name; lag keys are parents, values are ints ≥ 1, and `lags` is mutually exclusive with `formula`.
 
 **`Parser`** — wraps `MetricTreeConfig` + a `networkx.DiGraph`.
 - `parser.dag` — the compiled DAG. **Each node stores its validated model under the `definition` key**: `dag.nodes[name]["definition"]` is a `MetricDefinition` (attribute access, not dict `.get`). This is the single source of truth downstream.
@@ -143,6 +143,8 @@ Dates are validated (ISO format, start ≤ end) both at the CLI and in `lifespan
 **`GET /meta`** — metrics, data window, provider, fitted list (UI bootstrap).
 
 **`GET /dag`** — nodes (`[name, definition.model_dump()]`) and edges.
+
+**`GET /series`** — every metric's daily series in one aligned columnar payload (`{dates, columns: {name: [values]}}`) from `app.state.data`; hydrates the UI's node cards in a single request (NaN → null).
 
 **`GET /metrics/{name}`** — definition, time series, and posterior summary via `summarize_trace` (non-finite values serialized as `null`).
 
