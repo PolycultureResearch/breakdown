@@ -5,13 +5,24 @@ roadmap. For how the codebase is built, see [`../AGENTS.md`](../AGENTS.md) and
 [`../docs/ai-context/`](../docs/ai-context/); to use breakdown, see the
 [README](../README.md).
 
-## Product & design specs
+## Roadmap
 
-- [`product_integration_plan.md`](product_integration_plan.md) — data-connectivity plan (from the Narrative pilot)
-- [`statistical_improvement_plan.md`](statistical_improvement_plan.md) — statistical hardening tickets (T-series)
-- [`ui_design_spec.md`](ui_design_spec.md) — UI design spec (the what & why)
-- [`ui_implementation_plan.md`](ui_implementation_plan.md) — UI tickets U1–U6 (the how)
+- [`roadmap.md`](roadmap.md) — **start here** for what to build next: a prioritized,
+  status-tagged list of engineering/product work (no go-to-market).
+
+## Design specs
+
+The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
+[`../docs/ai-context/`](../docs/ai-context/)):
+
+- [`ui_design_spec.md`](ui_design_spec.md) — UI design spec
 - [`what_if_design.md`](what_if_design.md) — what-if simulation design spec
+
+## Archive
+
+- [`archive/`](archive/) — executed implementation plans (statistical T1–T12, UI
+  U1–U6, connectivity analysis), kept for rationale. Their open items are carried
+  forward in [`roadmap.md`](roadmap.md).
 
 ## Example trees
 
