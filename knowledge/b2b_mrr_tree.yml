@@ -1,0 +1,740 @@
+# =============================================================================
+# breakdown example: B2B SaaS "Total MRR" metric tree
+# =============================================================================
+#
+# Adapted from the "B2B Metrics Canvas" (New MRR Metrics Tree) by Metrics Labs:
+#   https://miro.com/app/board/uXjVNq48sQI=/?share_link_id=353173494684
+#
+# That Miro board is an unusually complete, well-structured example of a B2B SaaS
+# metric tree: ~150 metric cards feeding a single apex (Total MRR -> Total ARR),
+# organized into a new-business funnel (self-serve + sales-led), an expansion /
+# renewals branch, a churn branch, and a set of "Traffic Conversion Influences".
+#
+# This file translates that tree into breakdown's YAML, mapping the board's two
+# kinds of edge onto breakdown's two kinds of causal relationship:
+#
+#   * Arithmetic identities  -> `formula` nodes (Shapley attribution).
+#     e.g. Total MRR is the sum of its movement components; a signup count is
+#     traffic * conversion rate. These decompose a period-over-period gap exactly.
+#
+#   * Influence relationships -> probabilistic `parents` + `priors` (BSTS).
+#     The board's "Traffic Conversion Influences" (page speed, time on site,
+#     bounce rate, ...) drive the traffic-conversion rates but have no closed
+#     form; likewise lead-response time drives sales-qualification rate, and
+#     trial-activation speed drives trial conversion. These are learned edges,
+#     some with a time `lag`.
+#
+# `source` paths are illustrative (provider: mock). Point them at your own
+# semantic-layer metrics to run this against real data. The tree is a DAG;
+# a few of the board's stock/ratio back-references are dropped to keep it acyclic
+# and every metric's `Metric Ref` from the board is kept in a trailing comment.
+# =============================================================================
+
+provider:
+  type: mock # options: mock, local, cloud, warehouse
+
+metrics:
+
+  # ===========================================================================
+  # APEX — Total MRR / Total ARR
+  # ===========================================================================
+
+  - name: total_arr
+    description: "Total Annual Recurring Revenue. Total MRR annualized."
+    source: b2b_saas.metrics.total_arr
+    formula: "total_mrr * 12"
+    parents: [total_mrr]
+    seasonality:
+      - period: 7
+        name: weekly
+      - period: 365
+        name: annual
+
+  - name: total_mrr
+    description: >-
+      Total Monthly Recurring Revenue at the end of the period — the MRR
+      waterfall: retained base plus the net of new, expansion and resurrection
+      against contraction and churn. (Metric Ref: TotMRR)
+    source: b2b_saas.metrics.total_mrr
+    formula: >-
+      retained_mrr + new_mrr + expansion_mrr + resurrection_mrr
+      - contraction_mrr - churned_mrr
+    parents:
+      - retained_mrr
+      - new_mrr
+      - expansion_mrr
+      - resurrection_mrr
+      - contraction_mrr
+      - churned_mrr
+    seasonality:
+      - period: 7
+        name: weekly
+
+  # ===========================================================================
+  # NEW MRR — new-business acquisition
+  # ===========================================================================
+
+  - name: new_mrr
+    description: "MRR from newly acquired customers. (Metric Ref: NewMRR)"
+    source: b2b_saas.metrics.new_mrr
+    formula: "new_customers * average_new_mrr"
+    parents: [new_customers, average_new_mrr]
+
+  - name: average_new_mrr
+    description: "MRR per new customer. (Metric Ref: AvgNewMRR)"
+    source: b2b_saas.metrics.average_new_mrr
+
+  - name: new_customers
+    description: >-
+      New customers won in the period, from both the self-serve/PLG funnel
+      (converted trials) and the sales-led funnel (new business deals).
+      (Metric Ref: NewCust)
+    source: b2b_saas.metrics.new_customers
+    formula: "converted_trials + new_business_deals"
+    parents: [converted_trials, new_business_deals]
+
+  # --- Self-serve / product-led funnel -------------------------------------
+
+  - name: converted_trials
+    description: "Trials that converted to paid customers. (Metric Ref: ConvertedTrials)"
+    source: b2b_saas.metrics.converted_trials
+    formula: "true_trials * true_trial_conversion_rate"
+    parents: [true_trials, true_trial_conversion_rate]
+
+  - name: true_trial_conversion_rate
+    description: >-
+      Rate at which genuine (non-tire-kicker) trials convert to paid. Modeled
+      probabilistically: faster activation and higher product-qualification of
+      the trial lift conversion, but not by a fixed formula. Activation speed
+      acts with a lag. (Metric Ref: TrueTrialConvRate)
+    source: b2b_saas.metrics.true_trial_conversion_rate
+    parents:
+      - product_qualified_leads
+      - time_to_trial_activation
+      - trial_to_pql_rate
+    priors:
+      coefficient:
+        distribution: "Normal"
+        params: { mu: 0.0, sigma: 0.05 }
+      time_to_trial_activation: # slower activation -> lower conversion
+        distribution: "Normal"
+        params: { mu: -0.01, sigma: 0.01 }
+      trial_to_pql_rate: # more trials reaching PQL -> higher conversion
+        distribution: "HalfNormal"
+        params: { sigma: 0.3 }
+    lags:
+      time_to_trial_activation: 7 # activation friction shows up ~a week later
+
+  - name: product_qualified_leads
+    description: "Trials that hit product-qualified-lead thresholds. (Metric Ref: PQLs)"
+    source: b2b_saas.metrics.product_qualified_leads
+    formula: "true_trials * trial_to_pql_rate"
+    parents: [true_trials, trial_to_pql_rate]
+
+  - name: trial_to_pql_rate
+    description: "Share of true trials reaching PQL status. (Metric Ref: TrialToPQLRate)"
+    source: b2b_saas.metrics.trial_to_pql_rate
+
+  - name: time_to_trial_activation
+    description: "Days from trial start to first activation event. (Metric Ref: TimeTrialActiv)"
+    source: b2b_saas.metrics.time_to_trial_activation
+
+  - name: true_trials
+    description: "New trials net of low-intent/fraudulent trials. (Metric Ref: TrueTrials)"
+    source: b2b_saas.metrics.true_trials
+    formula: "new_trials * true_share_of_trials"
+    parents: [new_trials, true_share_of_trials]
+
+  - name: true_share_of_trials
+    description: "Share of new trials that are genuine. (Metric Ref: TrueShareTrials)"
+    source: b2b_saas.metrics.true_share_of_trials
+
+  - name: new_trials
+    description: >-
+      New trials started, summed across acquisition channels. (Metric Ref: NewTrials)
+    source: b2b_saas.metrics.new_trials
+    formula: >-
+      organic_signups + ad_sourced_signups + email_sourced_signups
+      + referral_signups + social_sourced_signups
+    parents:
+      - organic_signups
+      - ad_sourced_signups
+      - email_sourced_signups
+      - referral_signups
+      - social_sourced_signups
+
+  # --- Channel: Organic ----------------------------------------------------
+
+  - name: organic_signups
+    description: "Signups from organic traffic. (Metric Ref: OrgSignups)"
+    source: b2b_saas.metrics.organic_signups
+    formula: "organic_traffic * organic_traffic_conversion_rate"
+    parents: [organic_traffic, organic_traffic_conversion_rate]
+
+  - name: organic_traffic
+    description: "Unique organic visitors. (Metric Ref: OrgVisitors)"
+    source: b2b_saas.metrics.organic_traffic
+
+  - name: organic_traffic_conversion_rate
+    description: >-
+      Visitor-to-signup rate for organic traffic. Learned from the site-
+      experience "Traffic Conversion Influences": faster pages and stickier
+      sessions convert better; higher bounce converts worse.
+      (Metric Ref: OrgSignupRate)
+    source: b2b_saas.metrics.organic_traffic_conversion_rate
+    parents:
+      - page_speed
+      - time_on_site
+      - website_bounce_rate
+    priors:
+      coefficient:
+        distribution: "Normal"
+        params: { mu: 0.0, sigma: 0.02 }
+      page_speed: # slower pages (higher load seconds) -> lower conversion
+        distribution: "Normal"
+        params: { mu: -0.01, sigma: 0.005 }
+      website_bounce_rate: # higher bounce -> lower conversion
+        distribution: "Normal"
+        params: { mu: -0.2, sigma: 0.1 }
+      time_on_site: # more engaged sessions -> higher conversion
+        distribution: "HalfNormal"
+        params: { sigma: 0.05 }
+
+  # --- Channel: Paid / Ads --------------------------------------------------
+
+  - name: ad_sourced_signups
+    description: "Signups from paid/advertising traffic. (Metric Ref: AdSrcSignups)"
+    source: b2b_saas.metrics.ad_sourced_signups
+    formula: "paid_traffic * paid_traffic_conversion_rate"
+    parents: [paid_traffic, paid_traffic_conversion_rate]
+
+  - name: paid_traffic
+    description: "Unique ad-sourced visitors. (Metric Ref: UniqueAdSrcVisitors)"
+    source: b2b_saas.metrics.paid_traffic
+    formula: "ad_impressions * ad_click_through_rate"
+    parents: [ad_impressions, ad_click_through_rate]
+
+  - name: ad_impressions
+    description: "Paid ad impressions served. (Metric Ref: AdImps)"
+    source: b2b_saas.metrics.ad_impressions
+
+  - name: ad_click_through_rate
+    description: "Click-through rate on paid ads. (Metric Ref: AdClickThruRate)"
+    source: b2b_saas.metrics.ad_click_through_rate
+
+  - name: paid_traffic_conversion_rate
+    description: >-
+      Visitor-to-signup rate for paid traffic. Learned; shares the site-
+      experience drivers. (Metric Ref: AdSrcSignupRate)
+    source: b2b_saas.metrics.paid_traffic_conversion_rate
+    parents:
+      - page_speed
+      - website_bounce_rate
+    priors:
+      page_speed:
+        distribution: "Normal"
+        params: { mu: -0.01, sigma: 0.005 }
+      website_bounce_rate:
+        distribution: "Normal"
+        params: { mu: -0.2, sigma: 0.1 }
+
+  # --- Channel: Email -------------------------------------------------------
+
+  - name: email_sourced_signups
+    description: "Signups from email traffic. (Metric Ref: EmailSrcSignups)"
+    source: b2b_saas.metrics.email_sourced_signups
+    formula: "email_traffic * email_traffic_conversion_rate"
+    parents: [email_traffic, email_traffic_conversion_rate]
+
+  - name: email_traffic
+    description: "Unique email-sourced visitors. (Metric Ref: UniqueEmailSrcVisitors)"
+    source: b2b_saas.metrics.email_traffic
+    formula: "opened_emails * email_click_through_rate"
+    parents: [opened_emails, email_click_through_rate]
+
+  - name: email_traffic_conversion_rate
+    description: "Visitor-to-signup rate for email traffic. (Metric Ref: EmailSrcSignupRate)"
+    source: b2b_saas.metrics.email_traffic_conversion_rate
+
+  - name: email_click_through_rate
+    description: "Click-through rate on delivered/opened emails. (Metric Ref: EmailClickThruRate)"
+    source: b2b_saas.metrics.email_click_through_rate
+
+  - name: opened_emails
+    description: "Emails opened. (Metric Ref: OpenEmails)"
+    source: b2b_saas.metrics.opened_emails
+    formula: "delivered_emails * email_open_rate"
+    parents: [delivered_emails, email_open_rate]
+
+  - name: email_open_rate
+    description: "Open rate on delivered emails. (Metric Ref: EmailOpenRate)"
+    source: b2b_saas.metrics.email_open_rate
+
+  - name: delivered_emails
+    description: "Emails successfully delivered (sent net of bounces). (Metric Ref: DeliverEmails)"
+    source: b2b_saas.metrics.delivered_emails
+    formula: "sent_emails * (1 - email_bounce_rate)"
+    parents: [sent_emails, email_bounce_rate]
+
+  - name: email_bounce_rate
+    description: "Share of sent emails that bounced. (Metric Ref: EmailBounceRate)"
+    source: b2b_saas.metrics.email_bounce_rate
+
+  - name: sent_emails
+    description: "Marketing emails sent. (Metric Ref: SentEmails)"
+    source: b2b_saas.metrics.sent_emails
+    formula: "total_email_subscribers * sent_emails_per_contact"
+    parents: [total_email_subscribers, sent_emails_per_contact]
+
+  - name: sent_emails_per_contact
+    description: "Send frequency per subscriber. (Metric Ref: SentEmailsPerCtct)"
+    source: b2b_saas.metrics.sent_emails_per_contact
+
+  - name: total_email_subscribers
+    description: "Email subscriber base: net of new subscribes and unsubscribes. (Metric Ref: TotEmailSubs)"
+    source: b2b_saas.metrics.total_email_subscribers
+    formula: "new_email_subscribers - new_email_unsubscribes"
+    parents: [new_email_subscribers, new_email_unsubscribes]
+
+  - name: new_email_subscribers
+    description: "New email subscribers added. (Metric Ref: NewEmailSubs)"
+    source: b2b_saas.metrics.new_email_subscribers
+
+  - name: new_email_unsubscribes
+    description: "Email unsubscribes. (Metric Ref: NewEmailUnsubs)"
+    source: b2b_saas.metrics.new_email_unsubscribes
+
+  # --- Channel: Referral ----------------------------------------------------
+
+  - name: referral_signups
+    description: "Signups from referral-link traffic. (Metric Ref: RefSignups)"
+    source: b2b_saas.metrics.referral_signups
+    formula: "referral_link_traffic * referral_traffic_conversion_rate"
+    parents: [referral_link_traffic, referral_traffic_conversion_rate]
+
+  - name: referral_traffic_conversion_rate
+    description: "Visitor-to-signup rate for referral traffic. (Metric Ref: RefLinkConvRate)"
+    source: b2b_saas.metrics.referral_traffic_conversion_rate
+
+  - name: referral_link_traffic
+    description: "Unique referral-link views. (Metric Ref: UniqRefLinkViews)"
+    source: b2b_saas.metrics.referral_link_traffic
+    formula: "sent_referral_links * referral_link_view_rate"
+    parents: [sent_referral_links, referral_link_view_rate]
+
+  - name: referral_link_view_rate
+    description: "View rate on sent referral links. (Metric Ref: RefLinkViewRate)"
+    source: b2b_saas.metrics.referral_link_view_rate
+
+  - name: sent_referral_links
+    description: "Referral invites sent. (Metric Ref: SentRefLinks)"
+    source: b2b_saas.metrics.sent_referral_links
+    formula: "referrers * invites_per_referrer"
+    parents: [referrers, invites_per_referrer]
+
+  - name: invites_per_referrer
+    description: "Invites sent per referring customer. (Metric Ref: InvitePerRef)"
+    source: b2b_saas.metrics.invites_per_referrer
+
+  - name: referrers
+    description: "Customers who referred at least once. (Metric Ref: Referrs)"
+    source: b2b_saas.metrics.referrers
+    formula: "total_customers * referral_participation_rate"
+    parents: [total_customers, referral_participation_rate]
+
+  - name: referral_participation_rate
+    description: "Share of customers who participate in referrals. (Metric Ref: RefParticRate)"
+    source: b2b_saas.metrics.referral_participation_rate
+
+  # --- Channel: Social ------------------------------------------------------
+
+  - name: social_sourced_signups
+    description: "Signups from social traffic. (Metric Ref: RefSignups/Social)"
+    source: b2b_saas.metrics.social_sourced_signups
+    formula: "social_media_traffic * social_traffic_conversion_rate"
+    parents: [social_media_traffic, social_traffic_conversion_rate]
+
+  - name: social_traffic_conversion_rate
+    description: "Visitor-to-signup rate for social traffic. (Metric Ref: RefLinkConvRate/Social)"
+    source: b2b_saas.metrics.social_traffic_conversion_rate
+
+  - name: social_media_traffic
+    description: "Social-sourced visitors. (Metric Ref: UniqRefLinkViews/Social)"
+    source: b2b_saas.metrics.social_media_traffic
+    formula: "social_impressions * social_impressions_ctr"
+    parents: [social_impressions, social_impressions_ctr]
+
+  - name: social_impressions
+    description: "Organic/social impressions. (Metric Ref: SentRefLinks/Social)"
+    source: b2b_saas.metrics.social_impressions
+
+  - name: social_impressions_ctr
+    description: "Click-through rate on social impressions. (Metric Ref: RefLinkViewRate/Social)"
+    source: b2b_saas.metrics.social_impressions_ctr
+
+  # --- Sales-led / Enterprise new-business funnel ---------------------------
+
+  - name: new_business_deals
+    description: "Closed-won new-business deals (sales-led). (Metric Ref: NewBizDeals)"
+    source: b2b_saas.metrics.new_business_deals
+    formula: "accepted_opportunities * new_business_opportunity_win_rate"
+    parents: [accepted_opportunities, new_business_opportunity_win_rate]
+
+  - name: new_business_opportunity_win_rate
+    description: >-
+      Win rate on accepted new-business opportunities. Learned; longer sales
+      cycles and slower proposals depress it. (Metric Ref: NewBizOppWinRate)
+    source: b2b_saas.metrics.new_business_opportunity_win_rate
+    parents:
+      - new_business_opportunity_sales_cycle
+      - time_to_sent_new_business_proposal
+    priors:
+      new_business_opportunity_sales_cycle:
+        distribution: "Normal"
+        params: { mu: -0.005, sigma: 0.003 }
+      time_to_sent_new_business_proposal:
+        distribution: "Normal"
+        params: { mu: -0.005, sigma: 0.003 }
+
+  - name: new_business_opportunity_sales_cycle
+    description: "Days to close a new-business opportunity. (Metric Ref: NewBizOppSalesCycle)"
+    source: b2b_saas.metrics.new_business_opportunity_sales_cycle
+
+  - name: time_to_sent_new_business_proposal
+    description: "Days to send a proposal after opportunity open. (Metric Ref: TimeSentNewBizProp)"
+    source: b2b_saas.metrics.time_to_sent_new_business_proposal
+
+  - name: accepted_opportunities
+    description: "Opportunities accepted by sales. (Metric Ref: AcceptOpps)"
+    source: b2b_saas.metrics.accepted_opportunities
+    formula: "opened_new_business_opportunities * opened_to_accepted_opportunity_rate"
+    parents: [opened_new_business_opportunities, opened_to_accepted_opportunity_rate]
+
+  - name: opened_to_accepted_opportunity_rate
+    description: "Open-to-accept rate on opportunities. (Metric Ref: OpenToAcceptOppRate)"
+    source: b2b_saas.metrics.opened_to_accepted_opportunity_rate
+
+  - name: opened_new_business_opportunities
+    description: "New-business opportunities opened. (Metric Ref: OpenNewBizOpps)"
+    source: b2b_saas.metrics.opened_new_business_opportunities
+    parents: [sales_qualified_leads]
+    priors:
+      coefficient:
+        distribution: "HalfNormal"
+        params: { sigma: 0.8 }
+
+  - name: sales_qualified_leads
+    description: "Leads qualified by sales. (Metric Ref: SQLs)"
+    source: b2b_saas.metrics.sales_qualified_leads
+    formula: "sales_accepted_leads * sales_qualification_rate"
+    parents: [sales_accepted_leads, sales_qualification_rate]
+
+  - name: sales_qualification_rate
+    description: >-
+      Rate at which accepted leads become sales-qualified. Learned; faster
+      lead response, more SDR talk time and better prospect coverage raise it.
+      Lead-response effect acts with a short lag. (Metric Ref: SalesQualRate)
+    source: b2b_saas.metrics.sales_qualification_rate
+    parents:
+      - time_to_lead_response
+      - sdr_talk_time
+      - prospect_coverage
+    priors:
+      coefficient:
+        distribution: "Normal"
+        params: { mu: 0.0, sigma: 0.05 }
+      time_to_lead_response: # slower response -> lower qualification
+        distribution: "Normal"
+        params: { mu: -0.02, sigma: 0.01 }
+      sdr_talk_time:
+        distribution: "HalfNormal"
+        params: { sigma: 0.1 }
+      prospect_coverage:
+        distribution: "HalfNormal"
+        params: { sigma: 0.2 }
+    lags:
+      time_to_lead_response: 3
+
+  - name: time_to_lead_response
+    description: "Minutes to first lead response. (Metric Ref: TimeLeadResp)"
+    source: b2b_saas.metrics.time_to_lead_response
+
+  - name: sdr_talk_time
+    description: "SDR live talk-time minutes. (Metric Ref: SDRTalkTime)"
+    source: b2b_saas.metrics.sdr_talk_time
+
+  - name: prospect_coverage
+    description: "Share of target prospects covered. (Metric Ref: ProspCovge)"
+    source: b2b_saas.metrics.prospect_coverage
+
+  - name: sales_accepted_leads
+    description: "Leads accepted by sales from marketing. (Metric Ref: SALs)"
+    source: b2b_saas.metrics.sales_accepted_leads
+
+  # ===========================================================================
+  # EXPANSION MRR — in-term expansion + renewal expansion
+  # ===========================================================================
+
+  - name: expansion_mrr
+    description: "Total expansion MRR. (Metric Ref: ExpandMRR)"
+    source: b2b_saas.metrics.expansion_mrr
+    formula: "in_term_expansion_mrr + incremental_renewal_mrr"
+    parents: [in_term_expansion_mrr, incremental_renewal_mrr]
+
+  - name: in_term_expansion_mrr
+    description: "Mid-term expansion: upsells plus attaches/cross-sells. (Metric Ref: InTermExpMRR)"
+    source: b2b_saas.metrics.in_term_expansion_mrr
+    formula: "upsell_mrr + attach_mrr"
+    parents: [upsell_mrr, attach_mrr]
+
+  - name: upsell_mrr
+    description: "MRR from upsells to existing customers. (Metric Ref: UpsellMRR)"
+    source: b2b_saas.metrics.upsell_mrr
+    formula: "upsells * average_upsell_mrr"
+    parents: [upsells, average_upsell_mrr]
+
+  - name: average_upsell_mrr
+    description: "Average MRR per upsell. (Metric Ref: AvgExpandMRR/Upsell)"
+    source: b2b_saas.metrics.average_upsell_mrr
+
+  - name: upsells
+    description: "Count of upsells closed. (Metric Ref: Upsells)"
+    source: b2b_saas.metrics.upsells
+    formula: "upsell_opportunities * upsell_close_rate"
+    parents: [upsell_opportunities, upsell_close_rate]
+
+  - name: upsell_close_rate
+    description: "Close rate on upsell opportunities. (Metric Ref: UpsellCloseRate)"
+    source: b2b_saas.metrics.upsell_close_rate
+
+  - name: upsell_opportunities
+    description: "Open upsell opportunities. (Metric Ref: UpsellOpps)"
+    source: b2b_saas.metrics.upsell_opportunities
+    formula: "total_customers * upsell_opportunity_open_rate"
+    parents: [total_customers, upsell_opportunity_open_rate]
+
+  - name: upsell_opportunity_open_rate
+    description: "Rate at which customers open an upsell opportunity. (Metric Ref: UpsellOppOpenRate)"
+    source: b2b_saas.metrics.upsell_opportunity_open_rate
+
+  - name: attach_mrr
+    description: "MRR from cross-sell/attach motions. (Metric Ref: AttachMRR)"
+    source: b2b_saas.metrics.attach_mrr
+    formula: "cross_sells * average_cross_sell_mrr"
+    parents: [cross_sells, average_cross_sell_mrr]
+
+  - name: average_cross_sell_mrr
+    description: "Average MRR per cross-sell/attach. (Metric Ref: AvgExpandMRR/CrossSell)"
+    source: b2b_saas.metrics.average_cross_sell_mrr
+
+  - name: cross_sells
+    description: "Count of cross-sells/attaches closed. (Metric Ref: CrossSells)"
+    source: b2b_saas.metrics.cross_sells
+    formula: "cross_sell_opportunities * cross_sell_close_rate"
+    parents: [cross_sell_opportunities, cross_sell_close_rate]
+
+  - name: cross_sell_close_rate
+    description: "Close rate on cross-sell opportunities. (Metric Ref: CrossSellCloseRate)"
+    source: b2b_saas.metrics.cross_sell_close_rate
+
+  - name: cross_sell_opportunities
+    description: "Open cross-sell opportunities. (Metric Ref: CrossSellOpps)"
+    source: b2b_saas.metrics.cross_sell_opportunities
+    formula: "total_customers * cross_sell_opportunity_open_rate"
+    parents: [total_customers, cross_sell_opportunity_open_rate]
+
+  - name: cross_sell_opportunity_open_rate
+    description: "Rate at which customers open a cross-sell opportunity. (Metric Ref: CrossSellOppOpenRate)"
+    source: b2b_saas.metrics.cross_sell_opportunity_open_rate
+
+  # --- Renewal expansion ----------------------------------------------------
+
+  - name: incremental_renewal_mrr
+    description: "Net-new MRR from expanded renewals. (Metric Ref: IncRenewalMRR)"
+    source: b2b_saas.metrics.incremental_renewal_mrr
+    formula: "expanded_renewals * expansion_per_expanded_renewal"
+    parents: [expanded_renewals, expansion_per_expanded_renewal]
+
+  - name: expansion_per_expanded_renewal
+    description: "Average MRR uplift per expanded renewal. (Metric Ref: ExpandPerExpandRenewal)"
+    source: b2b_saas.metrics.expansion_per_expanded_renewal
+
+  - name: expanded_renewals
+    description: "Renewals that expanded in value. (Metric Ref: ExpandRenewals)"
+    source: b2b_saas.metrics.expanded_renewals
+    formula: "won_renewal_deals * expansion_share_of_renewals"
+    parents: [won_renewal_deals, expansion_share_of_renewals]
+
+  - name: expansion_share_of_renewals
+    description: "Share of won renewals that expanded. (Metric Ref: ExpandShareRenewals)"
+    source: b2b_saas.metrics.expansion_share_of_renewals
+
+  - name: won_renewal_deals
+    description: "Contracts renewed in the period. (Metric Ref: WonRenewDeals)"
+    source: b2b_saas.metrics.won_renewal_deals
+    formula: "exposed_contracts * contract_renewal_rate"
+    parents: [exposed_contracts, contract_renewal_rate]
+
+  - name: exposed_contracts
+    description: "Contracts up for renewal in the period. (Metric Ref: ExposedContracts)"
+    source: b2b_saas.metrics.exposed_contracts
+
+  - name: contract_renewal_rate
+    description: "Share of exposed contracts that renew. (Metric Ref: ContractRenewRate)"
+    source: b2b_saas.metrics.contract_renewal_rate
+
+  # ===========================================================================
+  # CONTRACTION MRR — in-term + renewal downgrades
+  # ===========================================================================
+
+  - name: contraction_mrr
+    description: "Total contraction (downgrade) MRR. (Metric Ref: CtrctMRR)"
+    source: b2b_saas.metrics.contraction_mrr
+    formula: "in_term_contraction_mrr + renewal_contraction_mrr"
+    parents: [in_term_contraction_mrr, renewal_contraction_mrr]
+
+  - name: in_term_contraction_mrr
+    description: "Mid-term downgrades. (Metric Ref: InTermCtrctMRR)"
+    source: b2b_saas.metrics.in_term_contraction_mrr
+    formula: "in_term_contraction_customers * average_in_term_contraction_mrr"
+    parents: [in_term_contraction_customers, average_in_term_contraction_mrr]
+
+  - name: average_in_term_contraction_mrr
+    description: "Average MRR lost per in-term contraction. (Metric Ref: AvgInTermCtrctMRR)"
+    source: b2b_saas.metrics.average_in_term_contraction_mrr
+
+  - name: in_term_contraction_customers
+    description: "Customers who downgraded mid-term. (Metric Ref: InTermCtrctCust)"
+    source: b2b_saas.metrics.in_term_contraction_customers
+    formula: "total_customers * customer_contraction_rate"
+    parents: [total_customers, customer_contraction_rate]
+
+  - name: customer_contraction_rate
+    description: "Rate at which customers contract mid-term. (Metric Ref: CustContrRate)"
+    source: b2b_saas.metrics.customer_contraction_rate
+
+  - name: renewal_contraction_mrr
+    description: "MRR lost to downgrades at renewal. (Metric Ref: RenewContractionMRR)"
+    source: b2b_saas.metrics.renewal_contraction_mrr
+    formula: "contraction_renewals * contraction_per_contraction_renewal"
+    parents: [contraction_renewals, contraction_per_contraction_renewal]
+
+  - name: contraction_per_contraction_renewal
+    description: "Average MRR lost per contracted renewal. (Metric Ref: CtrctPerCtrctRenewal)"
+    source: b2b_saas.metrics.contraction_per_contraction_renewal
+
+  - name: contraction_renewals
+    description: "Renewals that contracted in value. (Metric Ref: CtrctRenewals)"
+    source: b2b_saas.metrics.contraction_renewals
+    formula: "won_renewal_deals * contraction_share_of_renewals"
+    parents: [won_renewal_deals, contraction_share_of_renewals]
+
+  - name: contraction_share_of_renewals
+    description: "Share of won renewals that contracted. (Metric Ref: CtrctShareRenewals)"
+    source: b2b_saas.metrics.contraction_share_of_renewals
+
+  # ===========================================================================
+  # CHURNED MRR — attrition
+  # ===========================================================================
+
+  - name: churned_mrr
+    description: "MRR lost to churned customers. (Metric Ref: ChurnMRR)"
+    source: b2b_saas.metrics.churned_mrr
+    formula: "churned_customers * average_churned_mrr"
+    parents: [churned_customers, average_churned_mrr]
+
+  - name: average_churned_mrr
+    description: "Average MRR per churned customer. (Metric Ref: AvgChurnMRR)"
+    source: b2b_saas.metrics.average_churned_mrr
+
+  - name: churned_customers
+    description: "Customers lost: controllable plus uncontrollable attrition. (Metric Ref: ChurnCust)"
+    source: b2b_saas.metrics.churned_customers
+    formula: "controllable_attrition + uncontrollable_attrition"
+    parents: [controllable_attrition, uncontrollable_attrition]
+
+  - name: controllable_attrition
+    description: >-
+      Churn the business could have prevented (in-term cancellations that
+      weren't saved). (Metric Ref: ContrAttrit)
+    source: b2b_saas.metrics.controllable_attrition
+    formula: "cancel_requests - saved_cancel_requests"
+    parents: [cancel_requests, saved_cancel_requests]
+
+  - name: cancel_requests
+    description: "In-term cancellation requests received. (Metric Ref: CancReqs)"
+    source: b2b_saas.metrics.cancel_requests
+
+  - name: saved_cancel_requests
+    description: "Cancellation requests saved by retention motions. (Metric Ref: SavedCancReqs)"
+    source: b2b_saas.metrics.saved_cancel_requests
+
+  - name: uncontrollable_attrition
+    description: "Churn outside the business's control (e.g. company shutdowns). (Metric Ref: UncontrAttrit)"
+    source: b2b_saas.metrics.uncontrollable_attrition
+
+  # ===========================================================================
+  # RESURRECTION MRR — win-backs
+  # ===========================================================================
+
+  - name: resurrection_mrr
+    description: "MRR from resurrected (won-back) customers. (Metric Ref: ResurrMRR)"
+    source: b2b_saas.metrics.resurrection_mrr
+    formula: "resurrected_customers * average_resurrection_mrr"
+    parents: [resurrected_customers, average_resurrection_mrr]
+
+  - name: average_resurrection_mrr
+    description: "Average MRR per resurrected customer. (Metric Ref: AvgResurrMRR)"
+    source: b2b_saas.metrics.average_resurrection_mrr
+
+  - name: resurrected_customers
+    description: "Previously-churned customers won back. (Metric Ref: ResurrCust)"
+    source: b2b_saas.metrics.resurrected_customers
+    formula: "cumulative_churned_customers * resurrection_rate"
+    parents: [cumulative_churned_customers, resurrection_rate]
+
+  - name: cumulative_churned_customers
+    description: "Historical churned-customer pool available to resurrect. (Metric Ref: CumChurn)"
+    source: b2b_saas.metrics.cumulative_churned_customers
+
+  - name: resurrection_rate
+    description: "Rate at which churned customers resurrect. (Metric Ref: ResurrRate)"
+    source: b2b_saas.metrics.resurrection_rate
+
+  # ===========================================================================
+  # RETAINED MRR — surviving base (modeled as a stock leaf here)
+  # ===========================================================================
+
+  - name: retained_mrr
+    description: >-
+      MRR retained from the prior period's base (surviving customers at their
+      prior rate). Treated as an input stock in this example. (Metric Ref: RetainMRR)
+    source: b2b_saas.metrics.retained_mrr
+
+  # ===========================================================================
+  # SHARED STOCK — customer base
+  # ===========================================================================
+
+  - name: total_customers
+    description: >-
+      Active customer base at period start. An accumulating stock; treated as an
+      input leaf here (it feeds expansion, contraction and referral branches).
+      (Metric Ref: TotCust)
+    source: b2b_saas.metrics.total_customers
+
+  # ===========================================================================
+  # TRAFFIC CONVERSION INFLUENCES — site-experience leaves
+  # (learned drivers of the traffic-conversion rates above)
+  # ===========================================================================
+
+  - name: page_speed
+    description: "Median page load time, seconds (lower is better). (Metric Ref: PgSpeed)"
+    source: b2b_saas.metrics.page_speed
+
+  - name: time_on_site
+    description: "Average time on site, seconds. (Metric Ref: TimeOnSite)"
+    source: b2b_saas.metrics.time_on_site
+
+  - name: website_bounce_rate
+    description: "Single-page-session (bounce) rate. (Metric Ref: WebBounceRate)"
+    source: b2b_saas.metrics.website_bounce_rate
