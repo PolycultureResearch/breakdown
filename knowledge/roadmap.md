@@ -18,9 +18,9 @@ Legend: ✅ shipped · ◑ partially shipped · ○ not started.
 3. **Never ship a number the engine can't defend.** Credible intervals, a
    first-class `unexplained` term, and suspect-fit flags are the brand. Every new
    surface inherits this honesty posture — no bare point estimates.
-4. **Optimize time-to-first-trusted-RCA.** The product's north-star metric: elapsed
+4. **Optimize time-to-first-trusted-RCA.** Breakdown should be easy to set up and get value from. The product's north-star metric: elapsed
    time from "here are my credentials" to "breakdown correctly explained an incident
-   I already understood." Every onboarding and UX investment is judged against it.
+   I already understood." 
 
 ---
 
