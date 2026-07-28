@@ -140,6 +140,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="breakdown API", lifespan=lifespan)
 
+
+@app.middleware("http")
+async def ui_no_cache(request: Request, call_next):
+    """Make browsers revalidate the no-build-step UI on every load.
+
+    StaticFiles sends ETag/Last-Modified but no Cache-Control, so browsers
+    heuristically cache /ui assets and keep showing a stale app.js/index.html
+    after an upgrade. `no-cache` forces a conditional request each time —
+    unchanged files still come back as cheap 304s."""
+    response = await call_next(request)
+    if request.url.path.startswith("/ui"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 static_dir = os.path.join(BASE_DIR, "static")
 app.mount("/ui", StaticFiles(directory=static_dir, html=True), name="ui")
 
