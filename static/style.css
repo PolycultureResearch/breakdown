@@ -421,6 +421,17 @@ details .data-table { margin-top: 8px; }
 .wf-row { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
 .wf-row label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
 .wf-hint { font-size: 12.5px; color: var(--muted); margin: 8px 0; }
+.wf-hint-action { font-style: italic; color: var(--fg); margin-top: 2px; }
+.wf-to { font-size: 11px; color: var(--muted); }
+.wf-form .wf-grid .wf-row { flex-wrap: nowrap; }
+.wf-form .wf-grid .wf-row input[type="number"] { width: auto; flex: 1; min-width: 0; }
+.wf-form .wf-grid .wf-help {
+  grid-column: 2;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.35;
+  margin: -2px 0 4px;
+}
 
 .wf-adjust-card, .wf-form {
   background: var(--bg);

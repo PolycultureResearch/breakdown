@@ -1492,29 +1492,38 @@ function renderWhatifTab() {
       <label>Baseline</label>
       <input type="date" id="wf-start" value="${esc(w.baseline.start || "")}"
         min="${esc(state.meta.date_start)}" max="${esc(state.meta.date_end)}">
+      <span class="wf-to">to</span>
       <input type="date" id="wf-end" value="${esc(w.baseline.end || "")}"
         min="${esc(state.meta.date_start)}" max="${esc(state.meta.date_end)}">
     </div>
-    <p class="wf-hint">Baseline = window means from real data. Click a node in the graph to adjust it in the scenario.</p>
+    <p class="wf-hint">Date range for baseline metric values.</p>
+    <p class="wf-hint wf-hint-action">Click a node in the graph to adjust it in the scenario.</p>
     <div id="wf-adjust"></div>
     <details>
       <summary>+ Add assumption (an effect the tree doesn't know)</summary>
       <div class="wf-form">
+        <p class="wf-hint">Assert a causal effect the tree hasn't learned:
+        the <strong>source</strong> drives a change in the <strong>target</strong>
+        metric, by an amount you believe.</p>
         <div class="wf-grid">
           <label for="wf-a-source">Source</label>
-          <input type="text" id="wf-a-source" list="wf-known-sources" placeholder="metric or lever, e.g. discount_pct">
+          <input type="text" id="wf-a-source" list="wf-known-sources" placeholder="e.g. discount_pct">
+          <span class="wf-help">What has the effect — a tree metric, or any outside lever (free text).</span>
           <label for="wf-a-target">Target</label>
           <select id="wf-a-target">${metricOptions}</select>
+          <span class="wf-help">The metric it affects — the effect lands here and propagates downstream.</span>
           <label for="wf-a-kind">Effect</label>
           <select id="wf-a-kind">
             <option value="relative">% of baseline</option>
             <option value="absolute">absolute</option>
           </select>
+          <span class="wf-help">How the target moves: relative to its baseline, or in absolute units.</span>
           <label>Range</label>
           <div class="wf-row" style="margin:0">
             <input type="number" id="wf-a-low" step="any" placeholder="low"> …
             <input type="number" id="wf-a-high" step="any" placeholder="high">
           </div>
+          <span class="wf-help">The effect size you're ~90% confident spans the truth (low … high).</span>
           <label for="wf-a-note">Note</label>
           <input type="text" id="wf-a-note" placeholder="optional">
         </div>
