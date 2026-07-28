@@ -1549,7 +1549,7 @@ function renderWhatifTab() {
       ${items || '<p class="placeholder">Empty — adjust a metric or add an assumption.</p>'}
       <div class="wf-row" style="margin-top:10px">
         <button id="wf-run" class="primary" ${w.interventions.length + w.assumptions.length ? "" : "disabled"}>Run simulation</button>
-        <button id="wf-clear">Clear</button>
+        <button id="wf-clear" title="Remove all adjustments and assumptions (and any result)">Clear scenario</button>
       </div>
     </section>`;
 
@@ -1580,6 +1580,7 @@ function wireWhatifEvents() {
   });
   on("wf-run", "click", () => runWhatif());
   on("wf-clear", "click", clearWhatif);
+  on("wf-clear-result", "click", clearWhatifResult);
   on("wf-a-add", "click", addAssumption);
   document.querySelectorAll("#tab-whatif .wf-item .remove").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1818,8 +1819,15 @@ function clearWhatif() {
   const w = state.whatif;
   w.interventions = [];
   w.assumptions = [];
-  w.result = null;
   w.adjusting = null;
+  clearWhatifResult();
+}
+
+/* Dismiss the result + canvas overlay only; the scenario stays editable so
+   the user can tweak and re-run without rebuilding it. */
+function clearWhatifResult() {
+  const w = state.whatif;
+  w.result = null;
   w.readerMode = false;
   clearOverlays();
   // restore β edge labels from cached metric data (same as clearRCA's fast path)
@@ -1958,6 +1966,7 @@ function renderWhatifResults() {
     return s ? s.label : id;
   };
 
+
   // outcome KPIs: affected nodes with no children
   const sinks = Object.keys(res.nodes).filter(
     (n) => res.nodes[n].status !== "baseline" && !(state.fwdAdj[n] || []).length,
@@ -2002,7 +2011,10 @@ function renderWhatifResults() {
 
   return `
     <section>
-      <h3>Simulated outcome</h3>
+      <div class="wf-results-head">
+        <h3>Simulated outcome</h3>
+        <button id="wf-clear-result" title="Dismiss this result and its canvas overlay — the scenario stays for tweaking and re-running">Clear simulation</button>
+      </div>
       ${cards || '<p class="placeholder">No downstream outcome affected.</p>'}
     </section>
     <section>

@@ -397,6 +397,10 @@ details .data-table { margin-top: 8px; }
 .rca-actions { display: flex; gap: 8px; margin-top: 2px; }
 #rca-setup .inline-status { margin: 0; }
 
+.wf-results-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wf-results-head h3 { margin: 0; }
+#wf-clear-result { font-size: 12px; padding: 4px 10px; }
+
 .sign-warning {
   font-size: 12px;
   color: #92400e;
