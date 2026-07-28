@@ -4,11 +4,13 @@
 between a reference window and an analysis window to upstream metrics. Two
 attribution methods are used depending on the node type:
 
-- **Formula nodes** (arithmetic identities): exact per-day Shapley attribution —
-  each analysis-window day is one Shapley game against the parents' reference
-  means, and a parent's contribution is its per-day value averaged over the
-  window. Contributions therefore capture within-window covariance shifts, and
-  they carry CIs from the window bootstrap below.
+- **Formula nodes** (arithmetic identities): exact symmetric per-day Shapley
+  attribution — a window-means bridge game plus each parent's share of the
+  within-window co-movement term of *each* window (analysis added, reference
+  subtracted). Both windows are treated per-day, so contributions capture
+  covariance *shifts* between windows, attributions sum exactly to the
+  formula's own gap, and `unexplained` is measurement residual only. CIs come
+  from the window bootstrap below.
 - **Probabilistic nodes** (learned BSTS regressions): the posterior over the
   raw-scale coefficient (`beta_raw`) times the parent's window-over-window
   change. The fitted model's own trend and seasonal components are reported
@@ -66,10 +68,6 @@ def _window_values(
     return data.loc[mask, col].values.astype(float)
 
 
-def _eval_scalar(formula: str, values: Dict[str, float]) -> float:
-    return float(eval_formula(formula, {k: np.array([v]) for k, v in values.items()})[0])
-
-
 def _block_bootstrap_indices(n: int, n_boot: int, rng, block: int = 7) -> np.ndarray:
     """(n_boot, n) integer index array; circular moving-block bootstrap.
 
@@ -110,21 +108,35 @@ def shapley_attribution(
     analysis_start: str,
     analysis_end: str,
 ) -> Dict[str, Any]:
-    """Per-day exact Shapley decomposition of a formula metric's
+    """Symmetric per-day Shapley decomposition of a formula metric's
     window-over-window gap.
 
-    Each analysis-window day is its own Shapley game: coalition members take
-    their value on that day, non-members their reference-window mean. A
-    parent's attribution is its per-day Shapley value averaged over the
-    analysis window; by efficiency the attributions sum exactly to
-    `gap = actual − baseline` where `actual = mean over analysis days of
-    formula(parents on that day)` and `baseline = formula(reference means)`.
+    Both windows are evaluated per-day (`baseline` / `actual` are the mean over
+    each window's days of `formula(parents on that day)`), and each parent's
+    attribution is the sum of three exact Shapley games:
 
-    Unlike Shapley on window means, this attributes changes in the parents'
-    within-analysis-window covariance (for `revenue = orders × aov`, "the big
-    orders disappeared" is an orders–aov covariance shift) to the parents
-    instead of leaving them outside the attribution. Returns the
-    `GET /shapley` response shape.
+    - **means**: the window-means bridge (reference means → analysis means);
+    - **covariance_analysis**: one game per analysis-window day with
+      non-members at the *analysis* means — the parent's share of the
+      within-analysis-window co-movement term `mean_an f(daily) − f(μ_an)`;
+    - **covariance_reference**: the same within the reference window,
+      subtracted.
+
+    The parts telescope, so attributions sum exactly to `gap = actual −
+    baseline` for windows of any (unequal) lengths. A covariance *shift*
+    between windows (for `revenue = orders × aov`, "the big orders
+    disappeared" is an orders–aov covariance shift) is attributed to the
+    parents; when nothing moves — means and covariance alike — every part
+    cancels and the attribution is zero. For non-product formulas the
+    covariance terms are, precisely, each window's full within-window
+    co-movement/Jensen term. Because the reference window is now evaluated
+    per-day, a single pathological reference day (e.g. a near-zero
+    denominator in a ratio formula) affects `baseline` symmetrically with the
+    analysis side — resolve those at the data grain, not here.
+
+    Returns the `GET /shapley` response shape; `decomposition` carries the
+    per-parent parts with `attribution = means + covariance_analysis −
+    covariance_reference`.
     """
     defn = dag.nodes[target]["definition"]
     if not defn.formula:
@@ -141,19 +153,37 @@ def shapley_attribution(
     ref_start, ref_end = pd.to_datetime(reference_start), pd.to_datetime(reference_end)
     an_start, an_end = pd.to_datetime(analysis_start), pd.to_datetime(analysis_end)
 
-    ref_means = {p: window_mean(frame, p, ref_start, ref_end) for p in parents}
-    daily_actuals = {p: _window_values(frame, p, an_start, an_end) for p in parents}
-    n_days = len(next(iter(daily_actuals.values())))
+    ref_daily = {p: _window_values(frame, p, ref_start, ref_end) for p in parents}
+    an_daily = {p: _window_values(frame, p, an_start, an_end) for p in parents}
+    ref_means = {p: float(ref_daily[p].mean()) for p in parents}
+    an_means = {p: float(an_daily[p].mean()) for p in parents}
 
-    baseline = _eval_scalar(defn.formula, ref_means)
-    actual = float(eval_formula(defn.formula, daily_actuals).mean())
+    # Both windows are evaluated per-day, so an exact identity reconstructs
+    # the node's own window means on both sides and the attributions'
+    # efficiency holds against the node's own gap.
+    baseline = float(eval_formula(defn.formula, ref_daily).mean())
+    actual = float(eval_formula(defn.formula, an_daily).mean())
 
-    phi = compute_shapley(
-        defn.formula,
-        parents,
-        {p: np.full(n_days, ref_means[p]) for p in parents},
-        daily_actuals,
-    )
+    # Three exact games that telescope to actual - baseline: the window-means
+    # bridge, plus each parent's share of the within-window co-movement term
+    # (mean_w f(daily) - f(window means)) of each window. Windows may have
+    # different lengths — no per-day pairing is ever needed.
+    phi_means = compute_shapley(defn.formula, parents, ref_means, an_means)
+    phi_cov_an = compute_shapley(defn.formula, parents, an_means, an_daily)
+    phi_cov_ref = compute_shapley(defn.formula, parents, ref_means, ref_daily)
+
+    attribution: Dict[str, float] = {}
+    decomposition: Dict[str, Dict[str, float]] = {}
+    for p in parents:
+        means_part = float(phi_means[p])
+        cov_an_part = float(phi_cov_an[p].mean())
+        cov_ref_part = float(phi_cov_ref[p].mean())
+        attribution[p] = means_part + cov_an_part - cov_ref_part
+        decomposition[p] = {
+            "means": means_part,
+            "covariance_analysis": cov_an_part,
+            "covariance_reference": cov_ref_part,
+        }
 
     return {
         "target": target,
@@ -161,7 +191,8 @@ def shapley_attribution(
         "baseline": baseline,
         "actual": actual,
         "gap": actual - baseline,
-        "attribution": {p: float(phi[p].mean()) for p in parents},
+        "attribution": attribution,
+        "decomposition": decomposition,
     }
 
 
@@ -236,22 +267,42 @@ def run_rca(
 
             # Bootstrap the windows jointly across parents (one set of day
             # indices per replicate) to preserve cross-metric correlation, then
-            # run one vectorized per-day Shapley over all replicates: replicate
-            # b occupies positions [b*n_an, (b+1)*n_an) with its own resampled
-            # reference means repeated across them.
+            # run the same three-game decomposition per replicate, vectorized
+            # over all replicates: a window-means bridge on the resampled
+            # means, and each window's per-day co-movement game against that
+            # replicate's own resampled means (replicate b occupies positions
+            # [b*n, (b+1)*n) of the flattened per-day games).
             ref_vals = {p: _window_values(frame, p, ref_start, ref_end) for p in parents}
             an_vals = {p: _window_values(frame, p, an_start, an_end) for p in parents}
             n_an = len(next(iter(an_vals.values())))
-            ref_idx = _block_bootstrap_indices(len(next(iter(ref_vals.values()))), _N_BOOT, rng)
+            n_ref = len(next(iter(ref_vals.values())))
+            ref_idx = _block_bootstrap_indices(n_ref, _N_BOOT, rng)
             an_idx = _block_bootstrap_indices(n_an, _N_BOOT, rng)
-            boot_baselines = {
-                p: np.repeat(ref_vals[p][ref_idx].mean(axis=1), n_an) for p in parents
-            }
-            boot_actuals = {p: an_vals[p][an_idx].reshape(-1) for p in parents}
-            phi = compute_shapley(defn.formula, parents, boot_baselines, boot_actuals)
+            boot_ref_means = {p: ref_vals[p][ref_idx].mean(axis=1) for p in parents}
+            boot_an_means = {p: an_vals[p][an_idx].mean(axis=1) for p in parents}
+
+            phi_means = compute_shapley(
+                defn.formula, parents, boot_ref_means, boot_an_means
+            )
+            phi_cov_an = compute_shapley(
+                defn.formula,
+                parents,
+                {p: np.repeat(boot_an_means[p], n_an) for p in parents},
+                {p: an_vals[p][an_idx].reshape(-1) for p in parents},
+            )
+            phi_cov_ref = compute_shapley(
+                defn.formula,
+                parents,
+                {p: np.repeat(boot_ref_means[p], n_ref) for p in parents},
+                {p: ref_vals[p][ref_idx].reshape(-1) for p in parents},
+            )
 
             for p in parents:
-                phi_b = phi[p].reshape(_N_BOOT, n_an).mean(axis=1)
+                phi_b = (
+                    phi_means[p]
+                    + phi_cov_an[p].reshape(_N_BOOT, n_an).mean(axis=1)
+                    - phi_cov_ref[p].reshape(_N_BOOT, n_ref).mean(axis=1)
+                )
                 estimate = float(phi_b.mean())
                 contributions.append({
                     "parent": p,

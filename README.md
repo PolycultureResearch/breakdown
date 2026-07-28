@@ -335,11 +335,15 @@ Example response:
   "attribution": {
     "order_count": -6200.0,
     "average_order_value": -1800.0
+  },
+  "decomposition": {
+    "order_count": {"means": -6100.0, "covariance_analysis": -80.0, "covariance_reference": 20.0},
+    "average_order_value": {"means": -1700.0, "covariance_analysis": -80.0, "covariance_reference": 20.0}
   }
 }
 ```
 
-`baseline` is the formula evaluated at the parents' reference-window means; `actual` is the **mean of the formula evaluated day by day** over the analysis window (so within-window co-movement of the parents is included); `gap = actual − baseline`. The `attribution` values are exact per-day Shapley values (averaged over the analysis window) and are guaranteed to sum to `gap`.
+`baseline` and `actual` are each the **mean of the formula evaluated day by day** over the reference and analysis windows respectively (so both windows' within-window co-movement of the parents is included); `gap = actual − baseline`. Each `attribution` value is the sum of three exact Shapley games, reported per parent in `decomposition`: `attribution = means + covariance_analysis − covariance_reference` (the window-means bridge plus the parent's share of each window's within-window co-movement term). The attributions are guaranteed to sum to `gap`.
 
 ### `POST /rca/{name}`
 
@@ -396,7 +400,7 @@ Trimmed response:
 
 `POST /rca/{name}` combines the two attribution methods across a metric tree:
 
-- **Formula nodes** get `attribution_method: "shapley"` — exact per-day Shapley values (each analysis-window day is one Shapley game against the parents' reference means, averaged over the window), so shifts in the parents' within-window co-movement are attributed to parents. `unexplained` is the part of the gap the arithmetic identity doesn't account for (the target's own noise around the formula).
+- **Formula nodes** get `attribution_method: "shapley"` — exact symmetric per-day Shapley values (a window-means bridge plus each parent's share of the within-window co-movement term of each window, analysis added and reference subtracted), so shifts in the parents' within-window co-movement are attributed to parents. `unexplained` is only the target's own measurement noise around the formula — for an exact identity it is zero.
 - **Probabilistic nodes** get `attribution_method: "posterior"` — each contribution is the posterior over the parent's raw-scale coefficient (`beta_raw`) times the parent's window-over-window change. Lagged parents are compared over windows shifted back by the lag. These nodes also report a `components` block: the fitted model's own trend and seasonal terms as window-over-window deltas with CIs, so they no longer hide inside `unexplained`.
 
 Every contribution is reported as an `estimate` (mean), a 95% interval (`ci_95`), and `prob_same_direction` (mass on the dominant side of zero). The intervals combine coefficient uncertainty (probabilistic nodes) with **window-sampling uncertainty** — the window means themselves are resampled with a circular moving-block bootstrap (≤7-day blocks, jointly across metrics, seeded so responses are deterministic). This is what keeps a 3-day analysis window honest: its CIs are visibly wider than a 4-week window's.
@@ -432,16 +436,20 @@ For metrics connected by a formula, Breakdown computes exact Shapley values to a
 
 **Why Shapley?** Simpler decompositions (e.g., holding one factor fixed while varying the other) produce different answers depending on the order of decomposition. Shapley values are the unique attribution method that is simultaneously: efficient (values sum to the gap), symmetric (order doesn't matter), and null (a parent that didn't move gets zero credit).
 
-**How it works:** The attribution is computed **per analysis-window day**: for each day, coalition members take their observed value on that day and non-members take their reference-window mean, and each parent's Shapley value is the weighted average of its marginal contribution across all coalitions. A parent's reported attribution is its per-day value averaged over the window, so the values sum exactly to `mean(formula evaluated daily over the analysis window) − formula(reference means)`. For a single day of a 2-parent multiplicative formula `A × B`:
+**How it works:** Each parent's attribution is the sum of **three exact Shapley games**, all computed by full coalition enumeration (2ⁿ coalitions, vectorized across days):
+
+1. **The window-means bridge** — one game from the parents' reference-window means to their analysis-window means.
+2. **The analysis window's co-movement share** — one game per analysis-window day, non-members held at the *analysis* means; averaged over the window it is the parent's share of `mean_an(formula daily) − formula(analysis means)`.
+3. **The reference window's co-movement share** — the same inside the reference window, *subtracted*.
+
+The parts telescope, so attributions sum exactly to `mean(formula daily over analysis) − mean(formula daily over reference)` — the formula's own gap. For a 2-parent multiplicative formula `A × B` this reduces to the closed form:
 
 ```
-φ(A) = ΔA × (baseline_B + actual_B) / 2
-φ(B) = ΔB × (baseline_A + actual_A) / 2
+φ(A) = Δmean(A) × (mean_ref(B) + mean_an(B)) / 2  +  (cov_an(A,B) − cov_ref(A,B)) / 2
+φ(B) = Δmean(B) × (mean_ref(A) + mean_an(A)) / 2  +  (cov_an(A,B) − cov_ref(A,B)) / 2
 ```
 
-This generalizes to arbitrary formulas and any number of parents via exact enumeration (2ⁿ coalitions per day, vectorized across days).
-
-**Why per-day?** For any nonlinear formula, `mean(A × B)` differs from `mean(A) × mean(B)` by the within-window covariance of A and B. Attributing on window means would silently drop that term — a real behavioral change like "the large orders disappeared" (an orders–AOV covariance shift) would be reported as noise. Per-day attribution hands it to the parents where it belongs.
+**Why per-day, in both windows?** For any nonlinear formula, `mean(A × B)` differs from `mean(A) × mean(B)` by the within-window covariance of A and B. Attributing on window means would silently drop that term — a real behavioral change like "the large orders disappeared" (an orders–AOV covariance shift) would be reported as noise. Treating **both** windows per-day means the covariance *delta* is handed to the parents where it belongs, while a covariance that exists but didn't change contributes nothing — and `unexplained` stays exactly zero for an exact identity instead of absorbing the reference window's covariance.
 
 ---
 

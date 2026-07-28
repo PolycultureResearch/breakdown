@@ -82,16 +82,21 @@ are stated in business units and translated internally, so `mu: 0.1` on
 Given a reference window and an analysis window, each metric's change is its
 **window-mean difference**: `gap = mean(analysis) − mean(reference)`.
 
-- **Formula nodes** get exact **per-day** Shapley attribution: each
-  analysis-window day is one Shapley game in which coalition members take their
-  value on that day and non-members take their reference-window mean, and a
-  parent's contribution is its per-day value averaged over the window. The
-  contributions sum exactly to
-  `mean over analysis days of formula(parents that day) − formula(reference means)`.
-  Compared to Shapley on window means, this attributes changes in the parents'
-  *within-window covariance* to the parents — for `revenue = orders × aov`,
-  "the big orders disappeared" is exactly an orders–aov covariance shift, and
-  it now shows up in the attribution instead of in `unexplained`.
+- **Formula nodes** get exact **symmetric per-day** Shapley attribution. Both
+  windows are evaluated day by day, and each parent's contribution is the sum
+  of three exact Shapley games: a **window-means bridge** (reference means →
+  analysis means), plus the parent's share of the **within-analysis-window
+  co-movement term**, minus its share of the **within-reference-window**
+  counterpart. The parts telescope, so contributions sum exactly to
+  `mean over analysis days of formula(parents that day) − mean over reference
+  days of formula(parents that day)`. Compared to Shapley on window means,
+  this attributes *shifts* in the parents' within-window covariance to the
+  parents — for `revenue = orders × aov`, "the big orders disappeared" is
+  exactly an orders–aov covariance shift, and it shows up in the attribution
+  instead of in `unexplained` — while a covariance that is merely *present*
+  but unchanged in both windows contributes nothing. (For non-product
+  formulas the co-movement terms are each window's full Jensen gap
+  `mean f(daily) − f(means)`.)
 - **Probabilistic nodes** get posterior attribution: contribution of parent i
   is the distribution `beta_raw[i] × (parent's gap)`. For lagged parents, the
   parent's gap is measured over windows shifted back by the lag — the parent
@@ -149,12 +154,11 @@ remainder is reported as `unexplained`.
   `unexplained = gap − Σ parent contributions − trend − seasonal`: with the
   model's own components broken out, what remains is observation noise and
   genuine model misfit — an unmeasured driver, a wrong lag, a nonlinearity.
-- For **formula** nodes it is the part of the target's own window-mean change
-  the identity doesn't reproduce: measurement noise of the target around the
-  formula, plus the reference-window Jensen term (the within-*reference*-window
-  covariance of the parents — the analysis-window counterpart is attributed to
-  the parents by the per-day Shapley; the reference window is the stable regime
-  where this term is small and roughly constant).
+- For **formula** nodes it is only the target's own measurement noise around
+  the identity: both windows are reconstructed per-day from the parents, so an
+  exact identity has `unexplained = 0` up to floating point, and anything
+  nonzero means the target's own series genuinely disagrees with
+  `formula(parents)` inside one of the windows.
 
 A large `unexplained` is a finding, not an error — it says "neither the parents
 you modeled nor the fitted trend/seasonality account for this move."

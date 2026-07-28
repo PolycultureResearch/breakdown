@@ -237,7 +237,8 @@ metrics:
 def test_per_day_shapley_attributes_covariance_shift():
     """Marginal window means of orders and aov are identical in both windows,
     but their within-window correlation flips sign. Shapley on window means sees
-    gap = 0; per-day Shapley attributes the covariance-driven revenue change."""
+    gap = 0; symmetric per-day Shapley attributes the covariance *delta*
+    between the windows to the parents."""
     n = 60
     dates = pd.date_range("2024-01-01", periods=n)
     f = np.tile([5.0, -5.0], n // 2)             # zero-mean shared factor
@@ -269,9 +270,12 @@ metrics:
     )
 
     gap = result["actual"] - result["baseline"]
-    # cov flips from +12.5 to -12.5 -> mean daily revenue moves by -12.5
-    assert abs(gap - (-12.5)) < 1e-9
+    # cov flips from +12.5 to -12.5: both windows are evaluated per-day, so
+    # the gap is the full covariance delta, split evenly for a product.
+    assert abs(gap - (-25.0)) < 1e-9
     assert abs(sum(result["attribution"].values()) - gap) < 1e-6
+    for phi in result["attribution"].values():
+        assert abs(phi - (-12.5)) < 1e-9
 
 
 # --- Window bootstrap (T7) ---
