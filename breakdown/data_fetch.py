@@ -113,32 +113,66 @@ class WarehouseDataFetcher(BaseDataFetcher):
     a complete daily range and gap-filled with 0, which is correct for **flow**
     metrics (per-day deltas such as new/churn MRR). Stock metrics like a running
     cumulative would need forward-fill instead — model those with care.
+
+    Authentication is either a personal access token (`token`) or a Databricks
+    CLI OAuth `profile` created by ``databricks auth login --profile <name>``.
+    With a profile, credentials come from the Databricks SDK's unified auth and
+    `host` defaults to the profile's host — no long-lived secret in the config.
     """
     def __init__(
         self,
-        host: str,
+        host: Optional[str],
         http_path: str,
-        token: str,
+        token: Optional[str],
         metric_sql: Dict[str, str],
         catalog: Optional[str] = None,
         schema: Optional[str] = None,
+        profile: Optional[str] = None,
     ):
+        if not token and not profile:
+            raise ValueError(
+                "warehouse provider needs either a `token` (PAT) or a `profile` "
+                "(from `databricks auth login`) for authentication."
+            )
         self.host = host
         self.http_path = http_path
         self.token = token
         self.metric_sql = metric_sql
         self.catalog = catalog
         self.schema = schema
+        self.profile = profile
         self._con = None
+
+    def _connect(self):
+        from databricks import sql as dbsql
+
+        if self.profile:
+            # Reuse the Databricks SDK's unified OAuth for this CLI profile. The
+            # connector's `credentials_provider` wants a zero-arg callable that
+            # returns a HeaderFactory; `Config.authenticate` is exactly that.
+            from databricks.sdk.core import Config
+
+            cfg = Config(profile=self.profile)
+            host = self.host or cfg.host
+            if not host:
+                raise ValueError(
+                    f"Could not resolve a host for profile '{self.profile}'. Set "
+                    "`host` in the provider config or check the profile."
+                )
+            return dbsql.connect(
+                server_hostname=host.replace("https://", "").rstrip("/"),
+                http_path=self.http_path,
+                credentials_provider=lambda: cfg.authenticate,
+            )
+        return dbsql.connect(
+            server_hostname=self.host,
+            http_path=self.http_path,
+            access_token=self.token,
+        )
 
     def _cursor(self):
         if self._con is None:
-            from databricks import sql as dbsql
-            self._con = dbsql.connect(
-                server_hostname=self.host,
-                http_path=self.http_path,
-                access_token=self.token,
-            )
+            self._con = self._connect()
             if self.catalog and self.schema:
                 c = self._con.cursor()
                 c.execute(f"USE {self.catalog}.{self.schema}")
