@@ -236,8 +236,21 @@ function normalizeFormat(f) {
   return f;
 }
 
+/* Display default when a metric declares no `format`: guess from naming
+   conventions. Conservative, presentation-only, and an explicit `format`
+   always wins — this only saves obvious cases (an *_mrr flow rendering as a
+   bare float) from looking wrong out of the box. */
+const CURRENCY_NAME = /(^|_)(mrr|arr|revenue|arpu|arpa|aov|gmv|usd|price|cost|costs|spend|ltv|cac)(_|$)/;
+const PERCENT_NAME = /(^|_)(rate|pct|percent|share|ratio)(_|$)/;
+function guessFormat(name) {
+  if (CURRENCY_NAME.test(name)) return { style: "currency" };
+  if (PERCENT_NAME.test(name)) return { style: "percent" };
+  return { style: "number" };
+}
+
 function metricFormat(name) {
-  return normalizeFormat(state.defs && state.defs[name] && state.defs[name].format);
+  const declared = state.defs && state.defs[name] && state.defs[name].format;
+  return declared ? normalizeFormat(declared) : guessFormat(name);
 }
 
 /* Card height grows by one line when the metric shows a unit caption. Used for
@@ -264,9 +277,11 @@ function fmtCardValue(name, value) {
   const dec = f.decimals;
   if (f.style === "percent") return (value * 100).toFixed(dec == null ? 1 : dec) + "%";
   const compact = f.compact == null ? f.style === "currency" : f.compact;
-  let s = compact ? compactNum(value, dec) : dec == null ? fmt(value) : withDecimals(value, dec);
+  const mag = Math.abs(value);
+  let s = compact ? compactNum(mag, dec) : dec == null ? fmt(mag) : withDecimals(mag, dec);
   if (f.style === "currency") s = (f.symbol || "$") + s;
-  return s;
+  // Sign outside the symbol: -$103, never $-103.
+  return (value < 0 ? "-" : "") + s;
 }
 
 /* Inclusive end date of the period starting at `iso` for a grain. */

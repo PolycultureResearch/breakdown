@@ -338,6 +338,8 @@ Metrics have different natural time grains: signups are daily events, a cohort c
 
 Delta values (period-over-period change) always render as a percent; `format` applies to the big number only.
 
+**Display defaults.** When a metric declares no `format`, the UI guesses one from naming conventions — names containing tokens like `mrr`, `arr`, `revenue`, `arpu`, `aov`, `usd`, `cost`, `spend` render as currency; `rate`, `pct`, `percent`, `share`, `ratio` render as percent; everything else as a plain number. This is presentation-only and an explicit `format` always wins — declare one whenever the guess would be wrong.
+
 ---
 
 ## API reference
