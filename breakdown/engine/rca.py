@@ -41,19 +41,14 @@ import pandas as pd
 
 from breakdown.engine.model import compute_shapley, fit_metric, seasonal_window_delta
 from breakdown.formula import eval_formula
-from breakdown.grains import GrainedData
-
-
-def _day_frame(data):
-    """Transitional (1.7 phase 2): RCA still runs on a single daily frame;
-    grain-aware attribution lands in phase 4."""
-    if isinstance(data, GrainedData):
-        if set(data.frames) != {"day"}:
-            raise NotImplementedError(
-                "Mixed-grain trees are not supported by RCA yet (1.7 phase 4)."
-            )
-        return data.frame("day")
-    return data
+from breakdown.grains import (
+    BOOT_BLOCK,
+    ensure_grained,
+    fit_grain,
+    shift_periods,
+    snap_window,
+    steps_between,
+)
 
 # Bootstrap replicates per window; fixed so contribution CIs are comparable
 # across nodes and runs.
@@ -71,7 +66,7 @@ def window_mean(data: pd.DataFrame, col: str, start: pd.Timestamp, end: pd.Times
 def _window_values(
     data: pd.DataFrame, col: str, start: pd.Timestamp, end: pd.Timestamp
 ) -> np.ndarray:
-    """Daily values of `col` over rows whose date is within [start, end]
+    """Per-period values of `col` over rows whose date is within [start, end]
     (inclusive). Raises if the window is empty."""
     mask = (data["date"] >= start) & (data["date"] <= end)
     if not mask.any():
@@ -109,6 +104,15 @@ def _sample_summary(samples: np.ndarray) -> Dict[str, Any]:
             float(np.percentile(samples, 2.5)),
             float(np.percentile(samples, 97.5)),
         ],
+    }
+
+
+def _window_info(snapped) -> Dict[str, Any]:
+    """The whole periods a requested window snapped to, for the response."""
+    return {
+        "start": str(snapped.first_start.date()),
+        "end": str(snapped.last_end.date()),
+        "n_periods": snapped.n_periods,
     }
 
 
@@ -151,21 +155,30 @@ def shapley_attribution(
     per-parent parts with `attribution = means + covariance_analysis −
     covariance_reference`.
     """
-    data = _day_frame(data)
+    data = ensure_grained(data)
     defn = dag.nodes[target]["definition"]
     if not defn.formula:
         raise ValueError(
             f"Metric '{target}' has no formula — Shapley attribution requires a formula definition."
         )
     parents = list(dag.predecessors(target))
-    missing = [p for p in parents if p not in data.columns]
-    if missing:
-        raise ValueError(f"Columns missing from data: {missing}")
+    grain = fit_grain(dag, target)
+    frame = data.fit_frame(target, parents, grain)
 
-    frame = data.copy()
-    frame["date"] = pd.to_datetime(frame["date"])
-    ref_start, ref_end = pd.to_datetime(reference_start), pd.to_datetime(reference_end)
-    an_start, an_end = pd.to_datetime(analysis_start), pd.to_datetime(analysis_end)
+    snapped_ref = snap_window(reference_start, reference_end, grain)
+    snapped_an = snap_window(analysis_start, analysis_end, grain)
+    if snapped_ref is None or snapped_an is None:
+        which, s, e = (
+            ("reference", reference_start, reference_end)
+            if snapped_ref is None
+            else ("analysis", analysis_start, analysis_end)
+        )
+        raise ValueError(
+            f"The {which} window [{s}, {e}] contains no whole '{grain}' period "
+            f"for '{target}'."
+        )
+    ref_start, ref_end = snapped_ref.first_start, snapped_ref.last_start
+    an_start, an_end = snapped_an.first_start, snapped_an.last_start
 
     ref_daily = {p: _window_values(frame, p, ref_start, ref_end) for p in parents}
     an_daily = {p: _window_values(frame, p, an_start, an_end) for p in parents}
@@ -202,6 +215,11 @@ def shapley_attribution(
     return {
         "target": target,
         "formula": defn.formula,
+        "grain": grain,
+        "effective_windows": {
+            "reference": _window_info(snapped_ref),
+            "analysis": _window_info(snapped_an),
+        },
         "baseline": baseline,
         "actual": actual,
         "gap": actual - baseline,
@@ -232,11 +250,7 @@ def run_rca(
     if target not in dag:
         raise ValueError(f"Metric '{target}' not found in the metric tree.")
 
-    data = _day_frame(data)
-    frame = data.copy()
-    frame["date"] = pd.to_datetime(frame["date"])
-    ref_start, ref_end = pd.to_datetime(reference_start), pd.to_datetime(reference_end)
-    an_start, an_end = pd.to_datetime(analysis_start), pd.to_datetime(analysis_end)
+    data = ensure_grained(data)
 
     # One seeded generator per call: bootstrap replicates (and hence every
     # contribution number) are identical across identical calls.
@@ -245,11 +259,19 @@ def run_rca(
     nodes_in_scope = nx.ancestors(dag, target) | {target}
 
     # Fit any probabilistic (non-formula, non-root) node in scope that lacks a
-    # cached trace for this analysis window. Formula nodes and roots need no fit.
+    # cached trace for this analysis window. Formula nodes and roots need no
+    # fit; nodes whose windows hold no whole period at their grain are skipped
+    # (they are reported below without attribution).
     for node in nodes_in_scope:
         defn = dag.nodes[node]["definition"]
         parents = list(dag.predecessors(node))
         if parents and not defn.formula and (node, analysis_start) not in traces:
+            g = fit_grain(dag, node)
+            if (
+                snap_window(reference_start, reference_end, g) is None
+                or snap_window(analysis_start, analysis_end, g) is None
+            ):
+                continue
             traces[(node, analysis_start)] = fit_metric(
                 dag, data, node, draws=advi_draws,
                 inference_method="advi", fit_end=analysis_start,
@@ -261,6 +283,36 @@ def run_rca(
     for node in sorted(nodes_in_scope):
         defn = dag.nodes[node]["definition"]
         parents = list(dag.predecessors(node))
+        grain = fit_grain(dag, node)
+        frame = data.fit_frame(node, parents, grain)
+
+        # Windows are interpreted per node at its grain: only whole periods
+        # fully inside the requested [start, end] count. A window too short
+        # for the grain reports a status instead of failing the whole RCA.
+        snapped_ref = snap_window(reference_start, reference_end, grain)
+        snapped_an = snap_window(analysis_start, analysis_end, grain)
+        if snapped_ref is None or snapped_an is None:
+            nodes_out[node] = {
+                "status": "window_shorter_than_grain",
+                "grain": grain,
+                "effective_windows": None,
+                "baseline": None,
+                "actual": None,
+                "gap": None,
+                "relative_change": None,
+                "attribution_method": None,
+                "inference_method": None,
+                "fit_quality": None,
+                "ci_status": None,
+                "unexplained": None,
+                "components": None,
+                "contributions": [],
+            }
+            continue
+        ref_start, ref_end = snapped_ref.first_start, snapped_ref.last_start
+        an_start, an_end = snapped_an.first_start, snapped_an.last_start
+        single_period = snapped_ref.n_periods == 1 or snapped_an.n_periods == 1
+        block = BOOT_BLOCK[grain]
 
         baseline = window_mean(frame, node, ref_start, ref_end)
         actual = window_mean(frame, node, an_start, an_end)
@@ -274,6 +326,7 @@ def run_rca(
         if not parents:
             attribution_method = None
             unexplained = None
+            ci_status = None
         elif defn.formula:
             attribution_method = "shapley"
             sh = shapley_attribution(
@@ -291,8 +344,8 @@ def run_rca(
             an_vals = {p: _window_values(frame, p, an_start, an_end) for p in parents}
             n_an = len(next(iter(an_vals.values())))
             n_ref = len(next(iter(ref_vals.values())))
-            ref_idx = _block_bootstrap_indices(n_ref, _N_BOOT, rng)
-            an_idx = _block_bootstrap_indices(n_an, _N_BOOT, rng)
+            ref_idx = _block_bootstrap_indices(n_ref, _N_BOOT, rng, block=block)
+            an_idx = _block_bootstrap_indices(n_an, _N_BOOT, rng, block=block)
             boot_ref_means = {p: ref_vals[p][ref_idx].mean(axis=1) for p in parents}
             boot_an_means = {p: an_vals[p][an_idx].mean(axis=1) for p in parents}
 
@@ -319,18 +372,22 @@ def run_rca(
                     - phi_cov_ref[p].reshape(_N_BOOT, n_ref).mean(axis=1)
                 )
                 estimate = float(phi_b.mean())
+                # A single-period window degenerates the block bootstrap to
+                # identical replicates; report no interval rather than a
+                # falsely-zero-width one.
                 contributions.append({
                     "parent": p,
                     "estimate": estimate,
                     "share_of_gap": (estimate / gap) if abs(gap) >= 1e-12 else None,
-                    "ci_95": [
+                    "ci_95": None if single_period else [
                         float(np.percentile(phi_b, 2.5)),
                         float(np.percentile(phi_b, 97.5)),
                     ],
-                    "prob_same_direction": float(
+                    "prob_same_direction": None if single_period else float(
                         max((phi_b > 0).mean(), (phi_b < 0).mean())
                     ),
                 })
+            ci_status = "degenerate_single_period" if single_period else "ok"
             unexplained = gap - sh["gap"]
         else:
             attribution_method = "posterior"
@@ -340,19 +397,25 @@ def run_rca(
             arr = fit.trace.posterior["beta_raw"].values.reshape(-1, len(parents))
             n_post = arr.shape[0]
 
-            # Map window dates onto the fitted time index: t = days since the
-            # first fitted date, matching the model's internal t = arange(len(y)).
+            # Map window period starts onto the fitted time index: t = grain
+            # steps since the first fitted period, matching the model's
+            # internal t = arange(len(y)). For day grain this is exactly the
+            # old days-since-first-fitted-date mapping.
             ref_mask = (frame["date"] >= ref_start) & (frame["date"] <= ref_end)
             an_mask = (frame["date"] >= an_start) & (frame["date"] <= an_end)
-            t_ref = (frame.loc[ref_mask, "date"] - fit.dates[0]).dt.days.to_numpy()
-            t_an = (frame.loc[an_mask, "date"] - fit.dates[0]).dt.days.to_numpy()
+            t_ref = steps_between(
+                pd.DatetimeIndex(frame.loc[ref_mask, "date"]), fit.dates[0], grain
+            )
+            t_an = steps_between(
+                pd.DatetimeIndex(frame.loc[an_mask, "date"]), fit.dates[0], grain
+            )
 
             trend_samples = fit.trace.posterior["trend"].values.reshape(n_post, -1)
             if (t_ref < 0).any() or (t_ref >= trend_samples.shape[1]).any():
                 raise ValueError(
                     f"Reference window [{reference_start}, {reference_end}] must lie "
-                    f"inside the fitted period for '{node}' "
-                    f"({fit.dates[0].date()} to {fit.dates[-1].date()})."
+                    f"inside the fitted period for '{node}' (grain '{grain}', "
+                    f"{fit.dates[0].date()} to {fit.dates[-1].date()})."
                 )
 
             # Trend: the analysis window is outside the fitted period (the fit
@@ -373,25 +436,33 @@ def run_rca(
 
             # Window bootstrap indices, shared across this node's parents
             # (joint resampling); lag-shifted windows span the same number of
-            # days on a daily grid, so the same position indices apply.
-            ref_idx = _block_bootstrap_indices(len(t_ref), _N_BOOT, rng)
-            an_idx = _block_bootstrap_indices(len(t_an), _N_BOOT, rng)
+            # periods on the grain spine, so the same position indices apply.
+            ref_idx = _block_bootstrap_indices(len(t_ref), _N_BOOT, rng, block=block)
+            an_idx = _block_bootstrap_indices(len(t_an), _N_BOOT, rng, block=block)
 
             estimate_sum = 0.0
             for i, p in enumerate(parents):
                 lag = defn.lags.get(p, 0)
                 # The parent values that influenced the analysis window are
-                # those `lag` days earlier, so shift both windows back.
-                shift = pd.Timedelta(days=lag)
-                p_ref_vals = _window_values(frame, p, ref_start - shift, ref_end - shift)
-                p_an_vals = _window_values(frame, p, an_start - shift, an_end - shift)
+                # those `lag` grain steps earlier, so shift both windows back
+                # by whole periods (stays on the spine across month bounds).
+                p_ref_vals = _window_values(
+                    frame, p,
+                    shift_periods(ref_start, -lag, grain),
+                    shift_periods(ref_end, -lag, grain),
+                )
+                p_an_vals = _window_values(
+                    frame, p,
+                    shift_periods(an_start, -lag, grain),
+                    shift_periods(an_end, -lag, grain),
+                )
                 r_idx = (
                     ref_idx if len(p_ref_vals) == ref_idx.shape[1]
-                    else _block_bootstrap_indices(len(p_ref_vals), _N_BOOT, rng)
+                    else _block_bootstrap_indices(len(p_ref_vals), _N_BOOT, rng, block=block)
                 )
                 a_idx = (
                     an_idx if len(p_an_vals) == an_idx.shape[1]
-                    else _block_bootstrap_indices(len(p_an_vals), _N_BOOT, rng)
+                    else _block_bootstrap_indices(len(p_an_vals), _N_BOOT, rng, block=block)
                 )
                 delta_samples = p_an_vals[a_idx].mean(axis=1) - p_ref_vals[r_idx].mean(axis=1)
                 # Shuffle so posterior draw i is not systematically paired with
@@ -418,8 +489,18 @@ def run_rca(
                 - components["trend"]["estimate"]
                 - components["seasonal"]["estimate"]
             )
+            # The beta_raw posterior still carries real uncertainty on a
+            # single-period window; the flag says the window-sampling
+            # component of the CI is absent.
+            ci_status = "posterior_only_single_period" if single_period else "ok"
 
         nodes_out[node] = {
+            "status": "ok",
+            "grain": grain,
+            "effective_windows": {
+                "reference": _window_info(snapped_ref),
+                "analysis": _window_info(snapped_an),
+            },
             "baseline": baseline,
             "actual": actual,
             "gap": gap,
@@ -427,6 +508,7 @@ def run_rca(
             "attribution_method": attribution_method,
             "inference_method": inference_method,
             "fit_quality": fit_quality,
+            "ci_status": ci_status,
             "unexplained": unexplained,
             "components": components,
             "contributions": contributions,
