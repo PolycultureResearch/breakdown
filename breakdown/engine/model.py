@@ -378,6 +378,7 @@ def fit_metric(
     inference_method: str = "nuts",
     fit_end: Optional[str] = None,
     chains: int = 4,
+    random_seed: Optional[int] = None,
 ) -> FitResult:
     """
     Fit the Bayesian structural time series for one metric.
@@ -419,7 +420,10 @@ def fit_metric(
 
     Inference: "nuts" (exact MCMC, use when accuracy matters) or "advi"
     (variational approximation, ~5-10x faster, use for triage). `tune` and
-    `chains` apply to NUTS only.
+    `chains` apply to NUTS only. `random_seed` makes the fit reproducible on
+    a given platform/dependency set (RCA and simulate pass a fixed seed so
+    their on-demand fits — and hence API responses — are deterministic even
+    across empty trace caches; tests seed to kill stochastic flakes).
 
     Returns a `FitResult`. Its trace's posterior includes `beta_raw`
     (= beta / scale): the coefficient on each parent in business units,
@@ -485,11 +489,16 @@ def fit_metric(
             target, inference_method, draws, tune, fit_end,
         )
         if inference_method == "advi":
-            approx = pm.fit(n=20_000, method="advi", progressbar=False)
-            trace = approx.sample(draws=draws)
+            approx = pm.fit(
+                n=20_000, method="advi", progressbar=False, random_seed=random_seed
+            )
+            trace = approx.sample(draws=draws, random_seed=random_seed)
             diagnostics = _advi_diagnostics(approx)
         else:
-            trace = pm.sample(draws=draws, tune=tune, target_accept=0.9, chains=chains)
+            trace = pm.sample(
+                draws=draws, tune=tune, target_accept=0.9, chains=chains,
+                random_seed=random_seed,
+            )
             diagnostics = _nuts_diagnostics(trace, draws, chains)
 
     if diagnostics["fit_quality"] == "suspect":

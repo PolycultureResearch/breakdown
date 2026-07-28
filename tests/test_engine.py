@@ -594,11 +594,12 @@ metrics:
 
 def test_nuts_diagnostics_ok_on_well_behaved_data():
     """A NUTS fit of the (post-T3, non-centered) model on clean synthetic data
-    must self-report as healthy."""
+    must self-report as healthy. Seeded: an unseeded marginal run can trip the
+    diagnostic thresholds by chance, which made this the suite's one flake."""
     parser = Parser(SIMPLE_YAML)
     data = generate_mock_data(n_days=50)
 
-    result = fit_metric(parser.dag, data, "order_count", draws=300, tune=300)
+    result = fit_metric(parser.dag, data, "order_count", draws=300, tune=300, random_seed=42)
 
     d = result.diagnostics
     assert d["method"] == "nuts"

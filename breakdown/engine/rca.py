@@ -283,6 +283,7 @@ def run_rca(
             traces[(node, analysis_start)] = fit_metric(
                 dag, data, node, draws=advi_draws,
                 inference_method="advi", fit_end=analysis_start,
+                random_seed=0,
             )
 
     nodes_out: Dict[str, Any] = {}
