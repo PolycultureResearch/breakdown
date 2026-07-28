@@ -330,6 +330,21 @@ details .data-table { margin-top: 8px; }
 .attr-block h4 { font-size: 13px; margin: 12px 0 6px; }
 .attr-block h4 .method { font-weight: 400; font-size: 11px; color: var(--muted); }
 
+.attr-head { display: flex; align-items: center; justify-content: space-between; }
+.rca-view-toggle { display: inline-flex; border: 1px solid #d8dde4; border-radius: 6px; overflow: hidden; }
+.rca-view-btn {
+  border: none; background: #fff; color: var(--muted);
+  font-size: 11px; padding: 3px 10px; cursor: pointer;
+}
+.rca-view-btn + .rca-view-btn { border-left: 1px solid #d8dde4; }
+.rca-view-btn.active { background: var(--accent); color: #fff; }
+.data-table tr.interaction-row td { font-style: italic; }
+.data-table .hint {
+  display: inline-block; width: 13px; height: 13px; line-height: 13px;
+  border-radius: 50%; background: #e8ebf0; color: var(--muted);
+  font-size: 10px; font-style: normal; text-align: center; cursor: help;
+}
+
 /* ---------- What-if tab ---------- */
 
 .swatch.pinned { border: 3px solid var(--accent); }

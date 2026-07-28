@@ -142,6 +142,20 @@ Given a reference window and an analysis window, each metric's change is its
   own trend and seasonal terms, as window-over-window deltas with credible
   intervals (see below).
 
+**Reading the two views (formula nodes).** The three games surface as two
+presentations. The **headline** is the window-aggregate bridge — each parent's
+means-bridge contribution plus one explicit *co-movement shift* row (the
+summed interaction term across parents, `interaction` in the response). This
+is the standard price/volume/mix decomposition, with the interaction shown as
+its own labeled line rather than silently split among the factors — a large
+co-movement row ("price and volume started moving together differently") is a
+finding, not a nuisance. The **detailed** view splits each parent into
+`means + comovement = total` (the `decomposition` on each contribution). For
+a product the co-movement term is exactly the parents' covariance delta,
+split evenly; for ratios and other formulas it is each window's full
+within-window Jensen term, so read it as "co-movement", not strictly
+"covariance".
+
 Every contribution is summarized as an `estimate` (mean), a 95% interval
 (`ci_95`), and `prob_same_direction` (the probability mass on the dominant side
 of zero). These intervals reflect **two** sources of uncertainty:

@@ -17,6 +17,7 @@ const state = {
   },
   cardOverlay: {},     // metric name -> {value,dpct,dir,mark} while RCA / what-if is active (transient)
   rca: null,           // last POST /rca response
+  rcaView: "headline", // formula-node attribution view: "headline" | "detailed"
   activeCause: null,   // highlighted ranked cause
   whatif: {            // what-if scenario builder + last POST /simulate result
     baseline: { start: null, end: null },
@@ -1182,6 +1183,13 @@ function renderRcaTab() {
 
   // attribution detail: target first, then ranked order
   const order = [res.target, ...res.ranked_causes.map((c) => c.metric)];
+  const view = state.rcaView;
+  const shareOf = (v, gap) => (Math.abs(gap) > 1e-12 ? pct(v / gap) : "—");
+  const ciCell = (ci) => (ci ? `[${fmt(ci[0])}, ${fmt(ci[1])}]` : "—");
+  const anyTwoLevel = order.some((name) => {
+    const n = res.nodes[name];
+    return n && n.contributions.some((c) => c.decomposition);
+  });
   const blocks = order
     .filter((name) => res.nodes[name] && res.nodes[name].contributions.length)
     .map((name) => {
@@ -1196,34 +1204,93 @@ function renderRcaTab() {
         node.ci_status === "degenerate_single_period"
           ? ` · single-period window: no bootstrap CI`
           : "";
-      const rows = node.contributions
-        .map(
-          (c) => `<tr>
-            <td><code>${esc(c.parent)}</code></td>
-            <td class="num">${fmt(c.estimate)}</td>
-            <td class="num">${c.share_of_gap === null ? "—" : pct(c.share_of_gap)}</td>
-            <td class="num">${c.ci_95 ? `[${fmt(c.ci_95[0])}, ${fmt(c.ci_95[1])}]` : "—"}</td>
-            <td class="num">${c.prob_same_direction == null ? "—" : pct(c.prob_same_direction)}</td>
-          </tr>`,
-        )
-        .join("");
-      const unexplained =
-        node.unexplained !== null
-          ? `<tr class="dim"><td>unexplained</td><td class="num">${fmt(node.unexplained)}</td><td class="num">${
-              Math.abs(node.gap) > 1e-12 ? pct(node.unexplained / node.gap) : "—"
-            }</td><td class="num">—</td><td class="num">—</td></tr>`
-          : "";
+      const twoLevel = node.contributions.some((c) => c.decomposition);
+      let header, rows, nCols;
+
+      if (twoLevel && view === "headline") {
+        // Headline: the window-means bridge per parent plus one explicit
+        // co-movement (interaction) row — the price/volume/mix view.
+        nCols = 4;
+        header = `<tr><th>Driver</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th></tr>`;
+        rows = node.contributions
+          .map((c) => {
+            const m = c.decomposition.means;
+            return `<tr>
+              <td><code>${esc(c.parent)}</code></td>
+              <td class="num">${fmt(m.estimate)}</td>
+              <td class="num">${shareOf(m.estimate, node.gap)}</td>
+              <td class="num">${ciCell(m.ci_95)}</td>
+            </tr>`;
+          })
+          .join("");
+        if (node.interaction) {
+          rows += `<tr class="interaction-row">
+            <td>co-movement shift <span class="hint" title="How much of the gap comes from the parents moving together within the window (their covariance) changing between the two windows — rather than from their individual averages moving. Switch to Detailed to see how it splits across parents.">?</span></td>
+            <td class="num">${fmt(node.interaction.estimate)}</td>
+            <td class="num">${shareOf(node.interaction.estimate, node.gap)}</td>
+            <td class="num">${ciCell(node.interaction.ci_95)}</td>
+          </tr>`;
+        }
+      } else if (twoLevel) {
+        // Detailed: full per-parent split — means + co-movement = total.
+        nCols = 6;
+        header = `<tr><th>Parent</th><th class="num">means</th><th class="num">co-movement</th><th class="num">total Δ</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>`;
+        rows = node.contributions
+          .map(
+            (c) => `<tr>
+              <td><code>${esc(c.parent)}</code></td>
+              <td class="num">${fmt(c.decomposition.means.estimate)}</td>
+              <td class="num">${fmt(c.decomposition.comovement.estimate)}</td>
+              <td class="num">${fmt(c.estimate)}</td>
+              <td class="num">${ciCell(c.ci_95)}</td>
+              <td class="num">${c.prob_same_direction == null ? "—" : pct(c.prob_same_direction)}</td>
+            </tr>`,
+          )
+          .join("");
+      } else {
+        nCols = 5;
+        header = `<tr><th>Parent</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>`;
+        rows = node.contributions
+          .map(
+            (c) => `<tr>
+              <td><code>${esc(c.parent)}</code></td>
+              <td class="num">${fmt(c.estimate)}</td>
+              <td class="num">${c.share_of_gap === null ? "—" : pct(c.share_of_gap)}</td>
+              <td class="num">${ciCell(c.ci_95)}</td>
+              <td class="num">${c.prob_same_direction == null ? "—" : pct(c.prob_same_direction)}</td>
+            </tr>`,
+          )
+          .join("");
+      }
+
+      let unexplained = "";
+      if (node.unexplained !== null) {
+        const dash = '<td class="num">—</td>';
+        if (nCols === 6) {
+          // Detailed view: unexplained sits in the "total Δ" column.
+          unexplained = `<tr class="dim"><td>unexplained</td>${dash}${dash}<td class="num">${fmt(node.unexplained)}</td>${dash}${dash}</tr>`;
+        } else {
+          unexplained = `<tr class="dim"><td>unexplained</td><td class="num">${fmt(node.unexplained)}</td><td class="num">${shareOf(node.unexplained, node.gap)}</td>${dash.repeat(nCols - 3)}</tr>`;
+        }
+      }
       return `
         <div class="attr-block">
           <h4>${esc(name)} <span class="method">· ${method}${snapNote}${ciNote}</span></h4>
           <table class="data-table">
-            <tr><th>Parent</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>
+            ${header}
             ${rows}
             ${unexplained}
           </table>
         </div>`;
     })
     .join("");
+
+  const viewToggle = anyTwoLevel
+    ? `<div class="rca-view-toggle">
+         <button class="rca-view-btn${view === "headline" ? " active" : ""}" data-view="headline" title="Window-means bridge per parent, with the co-movement shift as its own row">Headline</button>
+         <button class="rca-view-btn${view === "detailed" ? " active" : ""}" data-view="detailed" title="Full per-parent split: means + co-movement = total">Detailed</button>
+       </div>`
+    : "";
 
   $("tab-rca").innerHTML = `
     <div class="rca-card">
@@ -1240,12 +1307,23 @@ function renderRcaTab() {
     </section>
 
     <section>
-      <h3>Attribution detail</h3>
+      <div class="attr-head">
+        <h3>Attribution detail</h3>
+        ${viewToggle}
+      </div>
       ${blocks || '<p class="placeholder">No attributable edges in scope.</p>'}
     </section>`;
 
   document.querySelectorAll(".cause-row").forEach((row) => {
     row.addEventListener("click", () => highlightCause(row.dataset.metric));
+  });
+  document.querySelectorAll(".rca-view-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (state.rcaView !== btn.dataset.view) {
+        state.rcaView = btn.dataset.view;
+        renderRcaTab();
+      }
+    });
   });
 
   renderRcaStrip(res);
