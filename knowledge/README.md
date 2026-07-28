@@ -17,6 +17,12 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
 
 - [`ui_design_spec.md`](ui_design_spec.md) — UI design spec
 - [`what_if_design.md`](what_if_design.md) — what-if simulation design spec
+- [`grain_design.md`](grain_design.md) — per-node aggregation grain (roadmap
+  1.7): decisions and contracts for `grain`/`kind`, resample-up, window
+  snapping, and the two-level attribution view
+- [`grain_research.md`](grain_research.md) — the external research behind the
+  grain design: MetricFlow precedent, temporal-aggregation literature,
+  Sun/Shapley/Bennet index theory, tool survey
 
 ## Archive
 
