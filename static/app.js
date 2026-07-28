@@ -253,6 +253,25 @@ function metricFormat(name) {
   return declared ? normalizeFormat(declared) : guessFormat(name);
 }
 
+/* Map a MOVEMENT direction ("up"/"down") to a COLOR direction through the
+   metric's declared `direction` (display-only): for down_is_good metrics an
+   upward move colors red, a downward move green; neutral always colors gray.
+   Arrows and labels stay directional — only the good/bad coloring flips. */
+function goodDir(name, dir) {
+  if (dir !== "up" && dir !== "down") return dir;
+  const decl = (state.defs && state.defs[name] && state.defs[name].direction) || "up_is_good";
+  if (decl === "neutral") return "flat";
+  if (decl === "down_is_good") return dir === "up" ? "down" : "up";
+  return dir;
+}
+
+/* Goodness-mapped overlay class ("<prefix>-up" green / "<prefix>-down" red),
+   or null for neutral metrics — they get no judgmental tint at all. */
+function goodClass(name, dir, prefix) {
+  const g = goodDir(name, dir);
+  return g === "up" ? `${prefix}-up` : g === "down" ? `${prefix}-down` : null;
+}
+
 /* Card height grows by one line when the metric shows a unit caption. Used for
    both the SVG viewBox and the Cytoscape node size — they must agree. */
 function cardHeight(name, variant) {
@@ -354,12 +373,12 @@ function sparkPaths(data, x0, x1, y0, y1, col) {
 /* Delta as a colored pill centered on (cx, baseline). `mark` is an optional
    trailing glyph (◌ unexplained, ⊙ set by scenario, ⚠ extrapolated). Width is
    estimated from the text length — good enough at this size. */
-function deltaSvg(dpct, dir, mark, cx, baseline) {
+function deltaSvg(dpct, dir, mark, cx, baseline, colorDir = dir) {
   const hasVal = dpct != null;
   if (!hasVal && !mark) {
     return `<text x="${cx}" y="${baseline}" text-anchor="middle" font-size="12.5" fill="#8a94a6" font-family="${CARD_FONT}">—</text>`;
   }
-  const col = CARD_COL[dir] || CARD_COL.flat, bg = CARD_COL_SOFT[dir] || CARD_COL_SOFT.flat;
+  const col = CARD_COL[colorDir] || CARD_COL.flat, bg = CARD_COL_SOFT[colorDir] || CARD_COL_SOFT.flat;
   const tri = dir === "up" ? "▲" : dir === "down" ? "▼" : "▬";
   let txt = hasVal ? `${tri} ${signedPct(dpct)}` : "—";
   if (mark) txt += ` ${mark}`;
@@ -399,8 +418,9 @@ function buildCardSVG(name, d, variant, isOverride, overlay) {
     inner += `<text x="${cx}" y="66" text-anchor="middle" font-size="11" fill="#8a94a6" font-family="${CARD_FONT}">${esc(u)}</text>`;
   }
 
+  const colorDir = goodDir(name, dir);
   if (showSpark && d.spark.length >= 2) {
-    const col = CARD_COL[dir] || CARD_COL.flat;
+    const col = CARD_COL[colorDir] || CARD_COL.flat;
     defs =
       `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">` +
       `<stop offset="0" stop-color="${col}" stop-opacity="0.15"/>` +
@@ -412,9 +432,9 @@ function buildCardSVG(name, d, variant, isOverride, overlay) {
   if (showDelta) {
     if (showSpark) {
       inner += `<line x1="16" y1="${110 + uOff}" x2="${CARD_W - 16}" y2="${110 + uOff}" stroke="#eef1f6" stroke-width="1"/>`;
-      inner += deltaSvg(dpct, dir, mark, cx, 130 + uOff);
+      inner += deltaSvg(dpct, dir, mark, cx, 130 + uOff, colorDir);
     } else {
-      inner += deltaSvg(dpct, dir, mark, cx, 82 + uOff);
+      inner += deltaSvg(dpct, dir, mark, cx, 82 + uOff, colorDir);
     }
   }
 
@@ -1100,7 +1120,8 @@ function applyRcaOverlay() {
 
   Object.entries(res.nodes).forEach(([name, node]) => {
     const n = cy.getElementById(name);
-    n.addClass(node.gap >= 0 ? "rca-up" : "rca-down");
+    const tint = goodClass(name, node.gap >= 0 ? "up" : "down", "rca");
+    if (tint) n.addClass(tint);
     // large-unexplained badge: dashed amber border + ◌ glyph on the card
     let mark = null;
     if (
@@ -1127,7 +1148,9 @@ function applyRcaOverlay() {
       // certainty channel: opacity from prob_same_direction (null -> solid)
       e.data("op", c.prob_same_direction == null ? 1 : Math.max(0.35, 2 * (c.prob_same_direction - 0.5)));
       e.data("label", c.share_of_gap === null ? "" : pct(Math.abs(c.share_of_gap)));
-      e.addClass(c.estimate >= 0 ? "rca-up" : "rca-down");
+      // Edge color = the effect's goodness for the CHILD it lands on.
+      const edgeTint = goodClass(name, c.estimate >= 0 ? "up" : "down", "rca");
+      if (edgeTint) e.addClass(edgeTint);
     });
   });
 
@@ -1234,7 +1257,7 @@ function renderRcaTab() {
     return;
   }
 
-  const dirCls = target.gap >= 0 ? "up" : "down";
+  const dirCls = goodDir(res.target, target.gap >= 0 ? "up" : "down");
   const skipped = Object.entries(res.nodes)
     .filter(([, n]) => n.status === "window_shorter_than_grain")
     .map(([name, n]) => `<code>${esc(name)}</code> (${esc(n.grain)})`);
@@ -1884,8 +1907,10 @@ function applyWhatifOverlay() {
     const n = cy.getElementById(name);
     if (!n.length) return;
     const est = node.delta.estimate;
-    if (est > 0) n.addClass("sim-up");
-    else if (est < 0) n.addClass("sim-down");
+    if (est !== 0) {
+      const tint = goodClass(name, est > 0 ? "up" : "down", "sim");
+      if (tint) n.addClass(tint);
+    }
     // certainty channel: background opacity from P(direction)
     n.data("bgop", node.prob_direction == null ? 1 : Math.max(0.35, 2 * (node.prob_direction - 0.5)));
     let mark = null;
@@ -1910,8 +1935,10 @@ function applyWhatifOverlay() {
       t = res.nodes[e.target().id()];
     if (!s || !t || s.status === "baseline" || t.status === "baseline") return;
     if (t.status === "intervened") return;
-    if (t.delta.estimate > 0) e.addClass("sim-up");
-    else if (t.delta.estimate < 0) e.addClass("sim-down");
+    if (t.delta.estimate !== 0) {
+      const tint = goodClass(e.target().id(), t.delta.estimate > 0 ? "up" : "down", "sim");
+      if (tint) e.addClass(tint);
+    }
     e.data("op", t.prob_direction == null ? 1 : Math.max(0.35, 2 * (t.prob_direction - 0.5)));
   });
 
@@ -1990,7 +2017,7 @@ function renderWhatifResults() {
   const cards = sinks
     .map((name) => {
       const node = res.nodes[name];
-      const dirCls = node.delta.estimate >= 0 ? "up" : "down";
+      const dirCls = goodDir(name, node.delta.estimate >= 0 ? "up" : "down");
       const ci = node.delta.ci_95;
       return `
       <div class="rca-card">
@@ -1998,7 +2025,7 @@ function renderWhatifResults() {
         <div class="gap-line ${dirCls}">${fmt(node.baseline)} → ${fmt(node.simulated)}
           <span style="font-size:14px">(${signedPct(node.relative_delta)})</span></div>
         <div class="wf-ci">Δ ${fmt(node.delta.estimate)} · 95% CI [${fmt(ci[0])}, ${fmt(ci[1])}] · P(direction) ${pct(node.prob_direction)}</div>
-        ${waterfallHtml(node, labelFor)}
+        ${waterfallHtml(name, node, labelFor)}
       </div>`;
     })
     .join("");
@@ -2043,14 +2070,14 @@ function renderWhatifResults() {
     <div class="wf-caveats">${(res.caveats || []).map((c) => esc(c)).join("<br>")}</div>`;
 }
 
-function waterfallHtml(node, labelFor) {
+function waterfallHtml(name, node, labelFor) {
   const contribs = node.contributions || [];
   if (!contribs.length) return "";
   const maxAbs = Math.max(...contribs.map((c) => Math.abs(c.estimate)), 1e-9);
   const rows = contribs
     .map((c) => {
       const width = (50 * Math.abs(c.estimate)) / maxAbs;
-      const cls = c.estimate >= 0 ? "up" : "down";
+      const cls = goodDir(name, c.estimate >= 0 ? "up" : "down");
       return `<div class="wf-bar-row">
       <span class="wf-src" title="${esc(labelFor(c.source))}">${esc(labelFor(c.source))}</span>
       <span class="wf-bar-wrap"><span class="wf-bar ${cls}" style="width:${width}%"></span></span>
