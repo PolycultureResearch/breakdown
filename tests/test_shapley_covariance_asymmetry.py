@@ -160,3 +160,44 @@ def test_unexplained_is_measurement_residual_only():
         frame = make_frame(cov_ref=k, cov_an=1.0)
         result = run_rca(dag, frame, {}, "volume", *REF, *AN)
         assert abs(result["nodes"]["volume"]["unexplained"]) < 1e-9
+
+
+def test_two_level_decomposition_separates_means_and_comovement():
+    """The two-level view: per-parent decomposition (means + comovement =
+    estimate, exactly per replicate) and the node-level interaction row. A
+    pure covariance shift lands in the interaction, not the means bridge; a
+    pure mean shift leaves the interaction at zero."""
+    dag = Parser(YAML).dag
+
+    # Covariance shift only (means fixed): gap = cov_an - cov_ref = -3.
+    frame = make_frame(cov_ref=2.0, cov_an=-1.0)
+    node = run_rca(dag, frame, {}, "volume", *REF, *AN)["nodes"]["volume"]
+    total_means = 0.0
+    for c in node["contributions"]:
+        parts = c["decomposition"]
+        assert abs(
+            parts["means"]["estimate"] + parts["comovement"]["estimate"] - c["estimate"]
+        ) < 1e-9
+        assert abs(parts["means"]["estimate"]) < 0.5  # bootstrap noise only
+        total_means += parts["means"]["estimate"]
+    # Structural: interaction == sum of per-parent comovement parts.
+    comovement_sum = sum(
+        c["decomposition"]["comovement"]["estimate"] for c in node["contributions"]
+    )
+    assert abs(node["interaction"]["estimate"] - comovement_sum) < 1e-9
+    # The interaction carries the (covariance-driven) gap; the block
+    # bootstrap attenuates resampled covariance somewhat, so assert sign and
+    # magnitude rather than equality.
+    assert np.sign(node["interaction"]["estimate"]) == np.sign(node["gap"])
+    assert abs(node["interaction"]["estimate"]) > 0.5 * abs(node["gap"])
+    assert node["interaction"]["ci_95"] is not None
+
+    # Mean shift only (covariance fixed): the interaction row is ~0.
+    frame = make_frame(cov_ref=2.0, cov_an=2.0, mu_b_an=12.0, mu_c_an=4.0)
+    node = run_rca(dag, frame, {}, "volume", *REF, *AN)["nodes"]["volume"]
+    assert abs(node["interaction"]["estimate"]) < 0.5
+    # And the means bridge carries the gap.
+    total_means = sum(
+        c["decomposition"]["means"]["estimate"] for c in node["contributions"]
+    )
+    assert abs(total_means - node["gap"]) < 0.15 * abs(node["gap"])

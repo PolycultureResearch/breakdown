@@ -314,6 +314,7 @@ def run_rca(
                 "ci_status": None,
                 "unexplained": None,
                 "components": None,
+                "interaction": None,
                 "contributions": [],
             }
             continue
@@ -331,6 +332,7 @@ def run_rca(
         components = None
         inference_method = None
         fit_quality = None
+        interaction = None
         if not parents:
             attribution_method = None
             unexplained = None
@@ -387,16 +389,25 @@ def run_rca(
                 {p: ref_vals[p][ref_idx].reshape(-1) for p in parents},
             )
 
+            # A single-period window degenerates the block bootstrap to
+            # identical replicates; report no interval rather than a
+            # falsely-zero-width one.
+            def _boot_summary(samples: np.ndarray) -> Dict[str, Any]:
+                out = _sample_summary(samples)
+                if single_period:
+                    out["ci_95"] = None
+                return out
+
+            interaction_b = np.zeros(_N_BOOT)
             for p in parents:
-                phi_b = (
-                    phi_means[p]
-                    + phi_cov_an[p].reshape(_N_BOOT, n_an).mean(axis=1)
+                means_b = phi_means[p]
+                comovement_b = (
+                    phi_cov_an[p].reshape(_N_BOOT, n_an).mean(axis=1)
                     - phi_cov_ref[p].reshape(_N_BOOT, n_ref).mean(axis=1)
                 )
+                interaction_b = interaction_b + comovement_b
+                phi_b = means_b + comovement_b
                 estimate = float(phi_b.mean())
-                # A single-period window degenerates the block bootstrap to
-                # identical replicates; report no interval rather than a
-                # falsely-zero-width one.
                 contributions.append({
                     "parent": p,
                     "estimate": estimate,
@@ -408,7 +419,18 @@ def run_rca(
                     "prob_same_direction": None if single_period else float(
                         max((phi_b > 0).mean(), (phi_b < 0).mean())
                     ),
+                    # Two-level view: the window-means bridge part and the
+                    # co-movement (covariance/Jensen) shift part; they sum to
+                    # `estimate` exactly per bootstrap replicate.
+                    "decomposition": {
+                        "means": _boot_summary(means_b),
+                        "comovement": _boot_summary(comovement_b),
+                    },
                 })
+            # The headline view's explicit interaction row: the total
+            # within-window co-movement shift across parents, shown as its own
+            # line instead of silently folded into the factors.
+            interaction = _boot_summary(interaction_b)
             ci_status = "degenerate_single_period" if single_period else "ok"
             unexplained = gap - sh["gap"]
         else:
@@ -533,6 +555,7 @@ def run_rca(
             "ci_status": ci_status,
             "unexplained": unexplained,
             "components": components,
+            "interaction": interaction,
             "contributions": contributions,
         }
 
