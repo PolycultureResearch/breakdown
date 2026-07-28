@@ -64,7 +64,7 @@ keep working unchanged.
 - **Numbers.** Big number = latest value. Delta = latest vs `deltaLen` points earlier (both lengths are canvas-wide controls). Sparkline = trailing `sparkLen` points, thin line + area fill + endpoint dot, colored by direction (semantic green/red, never the indigo brand hue).
 - **Formatting** comes from the metric definition's optional `format` (`{style, unit, decimals, compact, symbol}`); a `unit` renders a small caption under the value and grows the card one line.
 - **Overlay-aware.** While an RCA or what-if overlay is active the card folds in that overlay's numbers (RCA gap %, what-if simulated value) with `◌` / `⊙` / `⚠` marks, so a node never shows two conflicting deltas. State lives in `state.cardOverlay`; the renderer is `renderNodeCard` / `buildCardSVG` in `static/app.js`.
-- All cards hydrate from a single **`GET /series`** call (every metric's aligned daily series) at load.
+- All cards hydrate from a single **`GET /series`** call at load — per-metric `{grain, dates, values}` at each metric's native grain (mixed-grain trees have no shared date axis, so dates are per-metric). Card "points" are grain periods: days for daily metrics, weeks/months for coarser ones.
 
 **RCA overlay** (applied after a run, removed by Clear):
 - Node background shifts to the soft up/down color by sign of `relative_change`; the card's delta shows the signed percent (`−16.2%`).
@@ -87,11 +87,11 @@ keep working unchanged.
 
 1. **Target summary card**: gap in business units, baseline → actual, relative change, the two windows.
 2. **Ranked causes**: one row per cause — rank, metric name, horizontal score bar, "via <child>". Clicking a row selects the node and highlights the path from cause to target.
-3. **Attribution detail**: per child node, a table of parent contributions (estimate, share, 95% CI, P(direction)) plus the `unexplained` remainder. Shapley rows show "exact" instead of a CI.
+3. **Attribution detail**: per child node, a contributions table plus the `unexplained` remainder. Formula (Shapley) nodes are **two-level** with a global Headline/Detailed toggle: **Headline** (default) shows each parent's window-means-bridge contribution plus one explicit italic *co-movement shift* row (from the response's per-contribution `decomposition` and node-level `interaction`); **Detailed** shows the full per-parent split (means + co-movement = total Δ, CI, P(dir)). Posterior nodes always show the flat table (estimate, share, 95% CI, P(direction)). Non-day nodes note their grain and snapped windows in the block header; single-period windows render "—" for withheld CIs; nodes skipped as `window_shorter_than_grain` are listed in the RCA card.
 
 ## Metric tab
 
-Name + type chip (Source / Probabilistic / Formula) + fitted chip. Description, source path, parents (with `lag Nd` badges). Time series chart (Plotly line, ~200px) with the reference window shaded gray and the analysis window shaded indigo whenever RCA windows are set. If fitted: coefficient table (parent, `beta_raw` mean, 95% HDI) mapped from `beta_raw[i]` by parent order, small diagnostics line (max R-hat, `sigma_obs`), and the full ArviZ summary behind `<details>`. Analyze controls: method (ADVI default — fast; NUTS for accuracy), draws, run button with inline busy state.
+Name + type chip (Source / Probabilistic / Formula) + fitted chip. Description, source path, grain + kind row, parents (with lag badges in grain steps — `lag Nd` for daily nodes, `lag N week(s)` etc. for coarser). Time series chart (Plotly line, ~200px) with the reference window shaded gray and the analysis window shaded indigo whenever RCA windows are set. If fitted: coefficient table (parent, `beta_raw` mean, 95% HDI) mapped from `beta_raw[i]` by parent order, small diagnostics line (max R-hat, `sigma_obs`), and the full ArviZ summary behind `<details>`. Analyze controls: method (ADVI default — fast; NUTS for accuracy), draws, run button with inline busy state.
 
 ## Tech choices
 
@@ -105,7 +105,7 @@ Name + type chip (Source / Probabilistic / Formula) + fitted chip. Description, 
 |---|---|
 | `GET /meta` | metric names, data date range, provider, fitted list — bootstraps header controls |
 | `GET /dag` | nodes + edges |
-| `GET /series` | every metric's aligned daily series (one call) — hydrates the node cards |
+| `GET /series` | every metric's native-grain series, per-metric `{grain, dates, values}` (one call) — hydrates the node cards |
 | `GET /metrics/{name}` | definition, time series, posterior summary |
 | `POST /analyze/{name}` | fit from the Metric tab |
 | `POST /rca/{name}` | the RCA run |
