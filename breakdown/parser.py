@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 from typing import Any, Dict, List, Optional
@@ -7,6 +8,9 @@ import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from breakdown.formula import referenced_names, validate_formula
+from breakdown.grains import GRAINS, is_finer, nests_in
+
+logger = logging.getLogger(__name__)
 
 
 class Prior(BaseModel):
@@ -79,6 +83,15 @@ class Seasonality(BaseModel):
     period: int
     name: str
 
+    @field_validator("period")
+    @classmethod
+    def check_period(cls, v: int) -> int:
+        if v < 2:
+            raise ValueError(
+                f"seasonality period must be an integer >= 2 (in grain steps), got {v}"
+            )
+        return v
+
 class TrendConfig(BaseModel):
     """Local-level (random-walk) trend configuration. `sigma` is the prior scale
     on the per-step drift in z-scored space — the knob that controls how much
@@ -131,6 +144,12 @@ class MetricDefinition(BaseModel):
     name: str
     description: Optional[str] = None
     source: str
+    # Natural grain of the series: it is fetched, fitted, and attributed at
+    # this grain, never below it. Finer flow/stock parents resample up to it.
+    grain: str = "day"
+    # Temporal aggregation kind: flows sum over time, stocks take the last
+    # value, rates can never be auto-aggregated (recompute from components).
+    kind: str = "flow"
     sql: Optional[str] = None
     formula: Optional[str] = None
     parents: List[str] = Field(default_factory=list)
@@ -140,6 +159,35 @@ class MetricDefinition(BaseModel):
     trend: Optional[TrendConfig] = None
     # UI display hint for the node card's big number; does not affect modeling.
     format: Optional[MetricFormat] = None
+
+    @field_validator("grain")
+    @classmethod
+    def check_grain(cls, v: str) -> str:
+        if v not in GRAINS:
+            raise ValueError(f"grain must be one of {list(GRAINS)}, got '{v}'")
+        return v
+
+    @field_validator("kind")
+    @classmethod
+    def check_kind(cls, v: str) -> str:
+        if v not in ("flow", "stock", "rate"):
+            raise ValueError(f"kind must be one of ['flow', 'stock', 'rate'], got '{v}'")
+        return v
+
+    @model_validator(mode="after")
+    def warn_grain_relative_seasonality(self) -> "MetricDefinition":
+        # Seasonality periods are in grain steps: `period: 7` means weekly on
+        # a daily node but 7 months on a monthly one. Warn when a non-day node
+        # declares a classic day-grain period.
+        if self.grain != "day":
+            for s in self.seasonality:
+                if s.period in (7, 30, 365):
+                    logger.warning(
+                        "Metric '%s': seasonality period %d at grain '%s' spans "
+                        "%d %ss — periods are in grain steps; check this is intended.",
+                        self.name, s.period, self.grain, s.period, self.grain,
+                    )
+        return self
 
     @field_validator("format", mode="before")
     @classmethod
@@ -234,7 +282,41 @@ class Parser:
             cycles = list(nx.simple_cycles(G))
             raise ValueError(f"Metric tree contains cycles: {cycles}")
 
+        self._validate_grains(G)
         return G
+
+    @staticmethod
+    def _validate_grains(G: nx.DiGraph) -> None:
+        """Cross-node grain rules (need both edge endpoints, so they can't
+        live on MetricDefinition): a parent may never be coarser than its
+        child, and a finer parent must be auto-aggregatable up to the child's
+        grain — flow/stock kinds whose grain nests in the child's."""
+        for parent, child in G.edges:
+            pdefn = G.nodes[parent]["definition"]
+            cdefn = G.nodes[child]["definition"]
+            pg, cg = pdefn.grain, cdefn.grain
+            if is_finer(cg, pg):
+                raise ValueError(
+                    f"Metric '{child}' (grain '{cg}') has parent '{parent}' at "
+                    f"coarser grain '{pg}'. A parent may not be coarser than its "
+                    f"child — downward disaggregation is undefined. Declare "
+                    f"'{child}' at '{pg}' or provide '{parent}' at '{cg}'."
+                )
+            if is_finer(pg, cg):
+                if pdefn.kind == "rate":
+                    raise ValueError(
+                        f"Metric '{child}' (grain '{cg}') has rate parent "
+                        f"'{parent}' at finer grain '{pg}'. Rates cannot be "
+                        f"aggregated automatically; declare '{parent}' at grain "
+                        f"'{cg}', recomputed from its components at that grain."
+                    )
+                if not nests_in(pg, cg):
+                    raise ValueError(
+                        f"Metric '{child}' (grain '{cg}') has parent '{parent}' "
+                        f"at grain '{pg}', which does not nest in '{cg}' (weeks "
+                        f"straddle month boundaries). Declare '{parent}' at "
+                        f"'{cg}' instead."
+                    )
 
     def get_metric(self, name: str) -> Optional[MetricDefinition]:
         if name not in self.dag:

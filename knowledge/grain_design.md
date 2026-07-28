@@ -16,6 +16,11 @@ never be auto-aggregated — averaging per-day ratios is wrong — so a rate
 finer than its child is a parse-time error telling the author to declare the
 rate at the child's grain, recomputed from its components. A parent *coarser*
 than its child is always an error: downward disaggregation is undefined.
+Auto-coarsening additionally requires the finer grain to **nest** in the
+coarser one — days tile weeks and months, but weeks straddle month
+boundaries, so a weekly flow under a monthly node is a parse error (declare
+it monthly) rather than an approximation that silently leaks flow across the
+boundary.
 
 ## Why per-node, not a global tree grain
 

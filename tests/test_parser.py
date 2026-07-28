@@ -268,3 +268,139 @@ metrics:
 """
     with pytest.raises(ValueError, match="trend sigma must be > 0"):
         Parser(yaml_content)
+
+
+# --- Grain & kind validation tests ---
+
+def test_grain_and_kind_default_for_legacy_yaml():
+    yaml_content = """
+metrics:
+  - name: dau
+    source: dbt.metric.dau
+"""
+    metric = Parser(yaml_content).get_metric("dau")
+    assert metric.grain == "day"
+    assert metric.kind == "flow"
+
+
+def test_grain_and_kind_parsed():
+    yaml_content = """
+metrics:
+  - name: mrr
+    source: dbt.metric.mrr
+    grain: month
+    kind: stock
+"""
+    metric = Parser(yaml_content).get_metric("mrr")
+    assert metric.grain == "month"
+    assert metric.kind == "stock"
+
+
+def test_invalid_grain_raises():
+    yaml_content = """
+metrics:
+  - name: dau
+    source: dbt.metric.dau
+    grain: hour
+"""
+    with pytest.raises(ValueError, match="grain must be one of"):
+        Parser(yaml_content)
+
+
+def test_invalid_kind_raises():
+    yaml_content = """
+metrics:
+  - name: dau
+    source: dbt.metric.dau
+    kind: balance
+"""
+    with pytest.raises(ValueError, match="kind must be one of"):
+        Parser(yaml_content)
+
+
+def test_parent_coarser_than_child_raises():
+    yaml_content = """
+metrics:
+  - name: monthly_mrr
+    source: dbt.metric.monthly_mrr
+    grain: month
+    kind: stock
+  - name: daily_signups
+    source: dbt.metric.daily_signups
+    parents: [monthly_mrr]
+"""
+    with pytest.raises(ValueError, match="coarser grain 'month'"):
+        Parser(yaml_content)
+
+
+def test_finer_rate_parent_raises():
+    yaml_content = """
+metrics:
+  - name: daily_arpu
+    source: dbt.metric.daily_arpu
+    kind: rate
+  - name: weekly_revenue
+    source: dbt.metric.weekly_revenue
+    grain: week
+    parents: [daily_arpu]
+"""
+    with pytest.raises(ValueError, match="rate parent 'daily_arpu' at finer grain"):
+        Parser(yaml_content)
+
+
+def test_weekly_parent_under_monthly_child_raises():
+    yaml_content = """
+metrics:
+  - name: weekly_starts
+    source: dbt.metric.weekly_starts
+    grain: week
+  - name: monthly_new_mrr
+    source: dbt.metric.monthly_new_mrr
+    grain: month
+    parents: [weekly_starts]
+"""
+    with pytest.raises(ValueError, match="does not nest in 'month'"):
+        Parser(yaml_content)
+
+
+def test_finer_flow_parent_accepted():
+    yaml_content = """
+metrics:
+  - name: daily_signups
+    source: dbt.metric.daily_signups
+  - name: weekly_conversions
+    source: dbt.metric.weekly_conversions
+    grain: week
+    parents: [daily_signups]
+"""
+    parser = Parser(yaml_content)
+    assert parser.dag.has_edge("daily_signups", "weekly_conversions")
+
+
+def test_seasonality_period_below_two_raises():
+    yaml_content = """
+metrics:
+  - name: dau
+    source: dbt.metric.dau
+    seasonality:
+      - period: 1
+        name: degenerate
+"""
+    with pytest.raises(ValueError, match="period must be an integer >= 2"):
+        Parser(yaml_content)
+
+
+def test_day_grain_period_on_coarse_node_warns(caplog):
+    yaml_content = """
+metrics:
+  - name: weekly_active
+    source: dbt.metric.weekly_active
+    grain: week
+    seasonality:
+      - period: 7
+        name: suspicious
+"""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="breakdown.parser"):
+        Parser(yaml_content)
+    assert any("grain steps" in r.message for r in caplog.records)
