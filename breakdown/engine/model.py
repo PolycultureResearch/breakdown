@@ -22,7 +22,7 @@ import pymc as pm
 import pytensor.tensor as pt
 
 from breakdown.formula import eval_formula
-from breakdown.grains import GrainedData
+from breakdown.grains import ensure_grained, fit_grain, next_start
 from breakdown.parser import MetricDefinition
 
 logger = logging.getLogger(__name__)
@@ -44,9 +44,10 @@ class FitResult:
     y_mean: float                    # of the fitted y series (residual for formula nodes)
     y_std: float
     x_stds: Optional[np.ndarray]     # per-parent stds of the (lag-shifted) regressors, None if no X
-    dates: pd.DatetimeIndex          # dates actually used in the fit (after lag trim and fit_end cut)
+    dates: pd.DatetimeIndex          # period starts actually used in the fit (after lag trim and fit_end cut)
     inference_method: str            # "nuts" | "advi"
     fit_end: Optional[str] = None    # exclusive upper date bound of the fit; None = full window
+    grain: str = "day"               # the grain the fit ran at (the node's own)
     diagnostics: Dict[str, Any] = field(default_factory=dict)  # populated by T8
 
 
@@ -396,13 +397,18 @@ def fit_metric(
     Node types:
     - Formula nodes fit the residual (observed - formula(parents)); no beta.
     - Probabilistic nodes regress on their parents, each shifted back by its
-      lag from `lags` and z-scored.
+      lag from `lags` (in grain steps) and z-scored.
     - Source nodes (no parents) fit trend + seasonality only.
 
-    `fit_end` (exclusive): when set, only rows with `date < fit_end` are used, so
-    the model learns the normal-regime relationship without the anomalous window
-    it is being asked to explain. Normalization and prior scaling then follow the
-    filtered rows too. RCA passes `fit_end = analysis_start`.
+    The fit runs at the node's own declared grain: the target is used natively
+    and finer flow/stock parents are resampled up to it, so `t`, lags, and
+    seasonality periods are all in grain steps.
+
+    `fit_end` (exclusive): when set, only whole periods that end on/before
+    `fit_end` are used, so the model learns the normal-regime relationship
+    without the anomalous window it is being asked to explain (for day grain
+    this is exactly `date < fit_end`). Normalization and prior scaling then
+    follow the filtered rows too. RCA passes `fit_end = analysis_start`.
 
     Inference: "nuts" (exact MCMC, use when accuracy matters) or "advi"
     (variational approximation, ~5-10x faster, use for triage). `tune` and
@@ -415,28 +421,45 @@ def fit_metric(
     if inference_method not in ("nuts", "advi"):
         raise ValueError(f"inference_method must be 'nuts' or 'advi', got '{inference_method}'")
 
-    if isinstance(data, GrainedData):
-        # Transitional (1.7 phase 2): grain-aware fitting lands in phase 3.
-        if set(data.frames) != {"day"}:
-            raise NotImplementedError(
-                "Mixed-grain trees are not supported by fit_metric yet (1.7 phase 3)."
-            )
-        data = data.frame("day")
+    parents = list(dag.predecessors(target))
+    # The fit runs at the node's own grain: the target native, finer
+    # flow/stock parents resampled up, aligned on whole periods.
+    grain = fit_grain(dag, target)
+    data = ensure_grained(data).fit_frame(target, parents, grain)
 
     if fit_end is not None:
         dates = pd.to_datetime(data["date"])
-        data = data.loc[dates < pd.to_datetime(fit_end)].reset_index(drop=True)
+        cutoff = pd.to_datetime(fit_end)
+        # Whole-period-strict: keep only periods that END on/before fit_end,
+        # so a coarse period straddling the anomaly can't train the model.
+        # For day grain `next_start(d) <= fit_end` is exactly `d < fit_end` —
+        # identical to the pre-grain behavior.
+        ends = pd.DatetimeIndex([next_start(d, grain) for d in dates])
+        data = data.loc[ends <= cutoff].reset_index(drop=True)
         if len(data) < 10:
             raise ValueError(
-                f"Only {len(data)} rows before fit_end={fit_end} for '{target}' (need >= 10)."
+                f"Only {len(data)} whole {grain} periods before fit_end={fit_end} "
+                f"for '{target}' (need >= 10)."
             )
 
-    parents = list(dag.predecessors(target))
     _validate_columns(data, [target] + parents)
     defn: MetricDefinition = dag.nodes[target]["definition"]
 
     y, X, scale, y_mean, y_std, x_stds, dates = _prepare_series(defn, parents, data, target)
     t = np.arange(len(y))
+
+    # Seasonality periods are in grain steps; a period the data can't cover
+    # twice is unidentifiable (composes with the 1.1 hardening work).
+    seasonality_warnings = []
+    for s in defn.seasonality:
+        if len(y) < 2 * s.period:
+            msg = (
+                f"Seasonality '{s.name}' (period {s.period} {grain}s) on '{target}' "
+                f"is unidentifiable: only {len(y)} fitted {grain} periods "
+                f"(need >= {2 * s.period})."
+            )
+            seasonality_warnings.append(msg)
+            logger.warning(msg)
 
     with pm.Model():
         trend_sigma_prior = defn.trend.sigma if defn.trend else 0.05
@@ -464,6 +487,8 @@ def fit_metric(
 
     if diagnostics["fit_quality"] == "suspect":
         logger.warning("Fit for '%s' is suspect: %s", target, diagnostics)
+    if seasonality_warnings:
+        diagnostics["seasonality_warnings"] = seasonality_warnings
 
     return FitResult(
         trace=trace,
@@ -475,5 +500,6 @@ def fit_metric(
         dates=dates,
         inference_method=inference_method,
         fit_end=fit_end,
+        grain=grain,
         diagnostics=diagnostics,
     )

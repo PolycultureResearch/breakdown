@@ -263,6 +263,8 @@ class GrainedData:
     def series(self, metric: str, grain: Optional[str] = None) -> pd.DataFrame:
         """`["date", metric]` frame at the metric's native grain, or resampled
         up to `grain` by the metric's kind."""
+        if metric not in self.grain_of:
+            raise ValueError(f"Columns missing from data: ['{metric}']")
         native = self.grain_of[metric]
         out = self.frames[native][["date", metric]]
         if grain is None or grain == native:
@@ -276,6 +278,10 @@ class GrainedData:
     def fit_frame(self, target: str, parents: Iterable[str], grain: str) -> pd.DataFrame:
         """`["date", target, *parents]` aligned at `grain`: the target native,
         finer flow/stock parents resampled up, inner-joined on whole periods."""
+        parents = list(parents)
+        missing = [c for c in [target, *parents] if c not in self.grain_of]
+        if missing:
+            raise ValueError(f"Columns missing from data: {missing}")
         out = self.series(target, grain)
         for p in parents:
             out = out.merge(self.series(p, grain), on="date", how="inner")
