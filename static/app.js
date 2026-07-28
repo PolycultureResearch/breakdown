@@ -16,6 +16,7 @@ const state = {
     overrides: {},     // metric name -> variant (per-node override of `variant`)
   },
   cardOverlay: {},     // metric name -> {value,dpct,dir,mark} while RCA / what-if is active (transient)
+  asOf: null,          // ISO date anchoring card headlines; defaults to the tree-wide data edge
   rca: null,           // last POST /rca response
   rcaView: "headline", // formula-node attribution view: "headline" | "detailed"
   activeCause: null,   // highlighted ranked cause
@@ -197,9 +198,9 @@ function validateWindows() {
   return true;
 }
 
-/* Copy-link button is visible whenever a deep-linkable state (hash) exists. */
-function updateCopyLink() {
-  $("copy-link").style.display = location.hash ? "" : "none";
+/* Keep the Share menu's items in sync with what is currently shareable. */
+function updateShareMenu() {
+  $("share-rca-json").disabled = !state.rca;
 }
 
 function nodeType(def) {
@@ -235,8 +236,21 @@ function normalizeFormat(f) {
   return f;
 }
 
+/* Display default when a metric declares no `format`: guess from naming
+   conventions. Conservative, presentation-only, and an explicit `format`
+   always wins — this only saves obvious cases (an *_mrr flow rendering as a
+   bare float) from looking wrong out of the box. */
+const CURRENCY_NAME = /(^|_)(mrr|arr|revenue|arpu|arpa|aov|gmv|usd|price|cost|costs|spend|ltv|cac)(_|$)/;
+const PERCENT_NAME = /(^|_)(rate|pct|percent|share|ratio)(_|$)/;
+function guessFormat(name) {
+  if (CURRENCY_NAME.test(name)) return { style: "currency" };
+  if (PERCENT_NAME.test(name)) return { style: "percent" };
+  return { style: "number" };
+}
+
 function metricFormat(name) {
-  return normalizeFormat(state.defs && state.defs[name] && state.defs[name].format);
+  const declared = state.defs && state.defs[name] && state.defs[name].format;
+  return declared ? normalizeFormat(declared) : guessFormat(name);
 }
 
 /* Card height grows by one line when the metric shows a unit caption. Used for
@@ -263,19 +277,40 @@ function fmtCardValue(name, value) {
   const dec = f.decimals;
   if (f.style === "percent") return (value * 100).toFixed(dec == null ? 1 : dec) + "%";
   const compact = f.compact == null ? f.style === "currency" : f.compact;
-  let s = compact ? compactNum(value, dec) : dec == null ? fmt(value) : withDecimals(value, dec);
+  const mag = Math.abs(value);
+  let s = compact ? compactNum(mag, dec) : dec == null ? fmt(mag) : withDecimals(mag, dec);
   if (f.style === "currency") s = (f.symbol || "$") + s;
-  return s;
+  // Sign outside the symbol: -$103, never $-103.
+  return (value < 0 ? "-" : "") + s;
+}
+
+/* Inclusive end date of the period starting at `iso` for a grain. */
+function periodEndISO(iso, grain) {
+  if (grain === "day") return iso;
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (grain === "week") dt.setUTCDate(dt.getUTCDate() + 6);
+  else { dt.setUTCMonth(dt.getUTCMonth() + 1); dt.setUTCDate(0); }  // month: last day
+  return dt.toISOString().slice(0, 10);
 }
 
 /* Derive the card's numbers from a metric's native-grain series + the current
-   config. Big number = latest value; delta = latest vs `deltaLen` points
-   earlier; sparkline = trailing `sparkLen` points. Points are grain periods
-   (days for daily metrics, weeks/months for coarser ones). */
+   config. Big number = latest value at the as-of anchor; delta = that vs
+   `deltaLen` points earlier; sparkline = trailing `sparkLen` points. Points
+   are grain periods (days for daily metrics, weeks/months for coarser ones).
+   Only periods FULLY completed by `state.asOf` count, so a calendar week the
+   data edge cuts in half never becomes a headline number. */
 function deriveCardData(name) {
   const cfg = state.cardConfig;
   const m = state.series && state.series.metrics && state.series.metrics[name];
-  const s = (m && m.values) || [];
+  let s = (m && m.values) || [];
+  if (m && state.asOf) {
+    let cut = -1;
+    for (let i = m.dates.length - 1; i >= 0; i--) {
+      if (periodEndISO(m.dates[i], m.grain) <= state.asOf) { cut = i; break; }
+    }
+    s = s.slice(0, cut + 1);
+  }
   let lastIdx = -1;
   for (let i = s.length - 1; i >= 0; i--) {
     if (s[i] != null) { lastIdx = i; break; }
@@ -465,6 +500,15 @@ function initCardControls() {
     renderAllCards();
     runLayout(false);
   });
+  // Collapsible display menu: card options are occasional-use, so they live
+  // behind one quiet button instead of a permanent four-row panel.
+  const displayToggle = $("display-toggle");
+  const displayMenu = $("display-menu");
+  displayToggle.addEventListener("click", () => {
+    const open = displayMenu.style.display !== "none";
+    displayMenu.style.display = open ? "none" : "";
+    $("display-caret").textContent = open ? "▸" : "▾";
+  });
   const clampInt = (el, lo, hi, fallback) => {
     let v = parseInt(el.value, 10);
     if (!Number.isFinite(v)) v = fallback;
@@ -482,6 +526,24 @@ function initCardControls() {
     saveCardConfig();
     renderAllCards();
   });
+
+  // As-of anchor. Defaults to the tree-wide data edge (min data_through
+  // across metrics); deliberately NOT persisted — freshness moves daily.
+  const asofInp = $("card-asof");
+  if (asofInp) {
+    asofInp.min = state.meta.date_start;
+    asofInp.max = state.meta.date_end;
+    if (state.asOf) asofInp.value = state.asOf;
+    asofInp.addEventListener("change", () => {
+      let v = asofInp.value;
+      if (!v) v = state.meta.date_end;
+      if (v < asofInp.min) v = asofInp.min;
+      if (v > asofInp.max) v = asofInp.max;
+      asofInp.value = v;
+      state.asOf = v;
+      renderAllCards();
+    });
+  }
 }
 
 /* ---------- graph ---------- */
@@ -738,7 +800,7 @@ function labelBetaEdges(name, metricData) {
 async function selectMetric(name) {
   state.selected = name;
   history.replaceState(null, "", `#metric=${encodeURIComponent(name)}`);
-  updateCopyLink();
+  updateShareMenu();
   state.cy.$("node:selected").unselect();
   state.cy.getElementById(name).select();
   switchTab("metric");
@@ -779,6 +841,12 @@ function renderMetricTab(name, data) {
     <table class="kv">
       <tr><td>Source</td><td><code>${esc(def.source)}</code></td></tr>
       <tr><td>Grain</td><td><code>${esc(grain)}</code> · ${esc(def.kind || "flow")}</td></tr>
+      ${state.meta.data_through && state.meta.data_through[name]
+        ? `<tr><td>Data through</td><td>${esc(state.meta.data_through[name])}${
+            state.meta.data_through[name] < state.meta.date_end
+              ? ' <span class="chip lag">lags window end</span>' : ""
+          }</td></tr>`
+        : ""}
       <tr><td>Parents</td><td>${parentChips}</td></tr>
       ${def.formula ? `<tr><td>Formula</td><td><code>${esc(def.formula)}</code></td></tr>` : ""}
     </table>
@@ -908,6 +976,11 @@ function renderPosterior(name, data) {
     : `<p style="color:var(--muted);font-size:12.5px;margin:4px 0">
          ${def.formula ? "Formula node — the structural relationship is exact; the model fits the residual." : "No causal parents — trend and seasonality only."}</p>`;
 
+  const signWarnings = (data.diagnostics && data.diagnostics.sign_warnings) || [];
+  const signWarningHtml = signWarnings
+    .map((w) => `<p class="sign-warning">⚠ ${esc(w)}</p>`)
+    .join("");
+
   // diagnostics: worst r_hat across all parameters (NUTS only; ADVI has none)
   let diag = "";
   const rhats = Object.values(summary.r_hat || {}).filter((v) => v !== null && !Number.isNaN(v));
@@ -931,6 +1004,7 @@ function renderPosterior(name, data) {
 
   box.innerHTML = `
     ${coefTable}
+    ${signWarningHtml}
     ${diag}
     <details>
       <summary>All parameters (${params.length})</summary>
@@ -995,7 +1069,7 @@ async function runRCA() {
     const qs = new URLSearchParams(win).toString();
     state.rca = await api(`/rca/${encodeURIComponent(target)}?${qs}`, { method: "POST" });
     history.replaceState(null, "", `#rca=${encodeURIComponent(target)}&${qs}`);
-    updateCopyLink();
+    updateShareMenu();
     state.meta = await api("/meta"); // on-demand fits may have been cached
     state.metricCache = {};
     markFitted();
@@ -1108,10 +1182,10 @@ async function clearRCA() {
       labelBetaEdges(name, data);
     } catch { /* skip metrics that fail to load */ }
   }
-  $("tab-rca").innerHTML = '<p class="placeholder">Pick a target and two windows above, then Run RCA.</p>';
+  $("rca-results").innerHTML = '<p class="placeholder">Set the two windows and run.</p>';
   $("clear-rca").style.display = "none";
   setStatus("");
-  updateCopyLink();
+  updateShareMenu();
 }
 
 function highlightCause(causeName) {
@@ -1149,7 +1223,7 @@ function renderRcaTab() {
   const target = res.nodes[res.target];
 
   if (target.status === "window_shorter_than_grain") {
-    $("tab-rca").innerHTML = `
+    $("rca-results").innerHTML = `
       <div class="rca-card">
         <div class="sub">${esc(res.target)}</div>
         <p class="placeholder">The requested windows contain no whole
@@ -1203,6 +1277,10 @@ function renderRcaTab() {
       const ciNote =
         node.ci_status === "degenerate_single_period"
           ? ` · single-period window: no bootstrap CI`
+          : "";
+      const signNote =
+        node.sign_warnings && node.sign_warnings.length
+          ? ` · <span class="sign-flag" title="${esc(node.sign_warnings.join("\n\n"))}">⚠ learned sign contradicts expectation</span>`
           : "";
       const twoLevel = node.contributions.some((c) => c.decomposition);
       let header, rows, nCols;
@@ -1275,7 +1353,7 @@ function renderRcaTab() {
       }
       return `
         <div class="attr-block">
-          <h4>${esc(name)} <span class="method">· ${method}${snapNote}${ciNote}</span></h4>
+          <h4>${esc(name)} <span class="method">· ${method}${snapNote}${ciNote}${signNote}</span></h4>
           <table class="data-table">
             ${header}
             ${rows}
@@ -1292,7 +1370,7 @@ function renderRcaTab() {
        </div>`
     : "";
 
-  $("tab-rca").innerHTML = `
+  $("rca-results").innerHTML = `
     <div class="rca-card">
       <div class="sub">${esc(res.target)} · ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)} vs ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}</div>
       <div class="gap-line ${dirCls}">${target.gap >= 0 ? "+" : ""}${fmt(target.gap)} <span style="font-size:14px">(${signedPct(target.relative_change)})</span></div>
@@ -1439,29 +1517,38 @@ function renderWhatifTab() {
       <label>Baseline</label>
       <input type="date" id="wf-start" value="${esc(w.baseline.start || "")}"
         min="${esc(state.meta.date_start)}" max="${esc(state.meta.date_end)}">
+      <span class="wf-to">to</span>
       <input type="date" id="wf-end" value="${esc(w.baseline.end || "")}"
         min="${esc(state.meta.date_start)}" max="${esc(state.meta.date_end)}">
     </div>
-    <p class="wf-hint">Baseline = window means from real data. Click a node in the graph to adjust it in the scenario.</p>
+    <p class="wf-hint">Date range for baseline metric values.</p>
+    <p class="wf-hint wf-hint-action">Click a node in the graph to adjust it in the scenario.</p>
     <div id="wf-adjust"></div>
     <details>
       <summary>+ Add assumption (an effect the tree doesn't know)</summary>
       <div class="wf-form">
+        <p class="wf-hint">Assert a causal effect the tree hasn't learned:
+        the <strong>source</strong> drives a change in the <strong>target</strong>
+        metric, by an amount you believe.</p>
         <div class="wf-grid">
           <label for="wf-a-source">Source</label>
-          <input type="text" id="wf-a-source" list="wf-known-sources" placeholder="metric or lever, e.g. discount_pct">
+          <input type="text" id="wf-a-source" list="wf-known-sources" placeholder="e.g. discount_pct">
+          <span class="wf-help">What has the effect — a tree metric, or any outside lever (free text).</span>
           <label for="wf-a-target">Target</label>
           <select id="wf-a-target">${metricOptions}</select>
+          <span class="wf-help">The metric it affects — the effect lands here and propagates downstream.</span>
           <label for="wf-a-kind">Effect</label>
           <select id="wf-a-kind">
             <option value="relative">% of baseline</option>
             <option value="absolute">absolute</option>
           </select>
+          <span class="wf-help">How the target moves: relative to its baseline, or in absolute units.</span>
           <label>Range</label>
           <div class="wf-row" style="margin:0">
             <input type="number" id="wf-a-low" step="any" placeholder="low"> …
             <input type="number" id="wf-a-high" step="any" placeholder="high">
           </div>
+          <span class="wf-help">The effect size you're ~90% confident spans the truth (low … high).</span>
           <label for="wf-a-note">Note</label>
           <input type="text" id="wf-a-note" placeholder="optional">
         </div>
@@ -1477,7 +1564,7 @@ function renderWhatifTab() {
       ${items || '<p class="placeholder">Empty — adjust a metric or add an assumption.</p>'}
       <div class="wf-row" style="margin-top:10px">
         <button id="wf-run" class="primary" ${w.interventions.length + w.assumptions.length ? "" : "disabled"}>Run simulation</button>
-        <button id="wf-clear">Clear</button>
+        <button id="wf-clear" title="Remove all adjustments and assumptions (and any result)">Clear scenario</button>
       </div>
     </section>`;
 
@@ -1508,6 +1595,7 @@ function wireWhatifEvents() {
   });
   on("wf-run", "click", () => runWhatif());
   on("wf-clear", "click", clearWhatif);
+  on("wf-clear-result", "click", clearWhatifResult);
   on("wf-a-add", "click", addAssumption);
   document.querySelectorAll("#tab-whatif .wf-item .remove").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1728,7 +1816,7 @@ async function runWhatif() {
       body: JSON.stringify(scenario),
     });
     history.replaceState(null, "", `#whatif=${encodeURIComponent(JSON.stringify(scenario))}`);
-    updateCopyLink();
+    updateShareMenu();
     state.meta = await api("/meta"); // on-demand fits may have been cached
     markFitted();
     renderWhatifTab();
@@ -1746,8 +1834,15 @@ function clearWhatif() {
   const w = state.whatif;
   w.interventions = [];
   w.assumptions = [];
-  w.result = null;
   w.adjusting = null;
+  clearWhatifResult();
+}
+
+/* Dismiss the result + canvas overlay only; the scenario stays editable so
+   the user can tweak and re-run without rebuilding it. */
+function clearWhatifResult() {
+  const w = state.whatif;
+  w.result = null;
   w.readerMode = false;
   clearOverlays();
   // restore β edge labels from cached metric data (same as clearRCA's fast path)
@@ -1755,7 +1850,7 @@ function clearWhatif() {
   if (location.hash.startsWith("#whatif=")) {
     history.replaceState(null, "", location.pathname + location.search);
   }
-  updateCopyLink();
+  updateShareMenu();
   renderWhatifTab();
   setStatus("");
 }
@@ -1886,6 +1981,7 @@ function renderWhatifResults() {
     return s ? s.label : id;
   };
 
+
   // outcome KPIs: affected nodes with no children
   const sinks = Object.keys(res.nodes).filter(
     (n) => res.nodes[n].status !== "baseline" && !(state.fwdAdj[n] || []).length,
@@ -1930,7 +2026,10 @@ function renderWhatifResults() {
 
   return `
     <section>
-      <h3>Simulated outcome</h3>
+      <div class="wf-results-head">
+        <h3>Simulated outcome</h3>
+        <button id="wf-clear-result" title="Dismiss this result and its canvas overlay — the scenario stays for tweaking and re-running">Clear simulation</button>
+      </div>
       ${cards || '<p class="placeholder">No downstream outcome affected.</p>'}
     </section>
     <section>
@@ -2032,11 +2131,32 @@ function initControls() {
 
   $("run-rca").addEventListener("click", runRCA);
   $("clear-rca").addEventListener("click", clearRCA);
-  $("copy-link").addEventListener("click", () => {
+  // Share menu: copy the deep link, download the last RCA response.
+  const shareMenu = $("share-menu");
+  const closeShare = () => { shareMenu.style.display = "none"; };
+  $("share-toggle").addEventListener("click", (e) => {
+    e.stopPropagation();
+    updateShareMenu();
+    shareMenu.style.display = shareMenu.style.display === "none" ? "" : "none";
+  });
+  document.addEventListener("click", (e) => {
+    if (!$("share-wrap").contains(e.target)) closeShare();
+  });
+  $("share-copy-link").addEventListener("click", () => {
     navigator.clipboard.writeText(location.href);
-    const btn = $("copy-link");
-    btn.textContent = "Copied ✓";
-    setTimeout(() => { btn.textContent = "Copy link"; }, 1500);
+    const title = $("share-copy-link").querySelector(".share-title");
+    title.textContent = "Copied ✓";
+    setTimeout(() => { title.textContent = "Copy link"; closeShare(); }, 900);
+  });
+  $("share-rca-json").addEventListener("click", () => {
+    if (!state.rca) return;
+    const blob = new Blob([JSON.stringify(state.rca, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `rca_${state.rca.target}_${state.rca.analysis_window.start}_${state.rca.analysis_window.end}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    closeShare();
   });
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
 
@@ -2089,14 +2209,20 @@ async function init() {
       state.series = null;
       console.warn("card series unavailable:", err.message);
     }
+    // Anchor headlines at the tree-wide data edge: the oldest data_through
+    // across metrics. A source mart lagging the requested window then shows
+    // its true last day instead of a zero-filled or half-loaded tail.
+    const edges = Object.values(state.meta.data_through || {});
+    state.asOf = edges.length ? edges.reduce((a, b) => (a < b ? a : b)) : state.meta.date_end;
     loadCardConfig();
     initControls();
     buildGraph();
     initCardControls();
     initWhatif();
-    setStatus(`${state.meta.metrics.length} metrics · provider: ${state.meta.provider} · ${state.meta.date_start} → ${state.meta.date_end}`);
+    const edgeNote = state.asOf < state.meta.date_end ? ` · data → ${state.asOf}` : "";
+    setStatus(`${state.meta.metrics.length} metrics · provider: ${state.meta.provider} · ${state.meta.date_start} → ${state.meta.date_end}${edgeNote}`);
     applyDeepLink();
-    updateCopyLink();
+    updateShareMenu();
   } catch (err) {
     setStatus(`Failed to load: ${err.message}`, "error");
   }

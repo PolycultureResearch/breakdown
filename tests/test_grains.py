@@ -213,3 +213,39 @@ def test_grained_missing_grain_raises():
     gd = build_grained({"a": daily}, {"a": "day"}, {"a": "flow"})
     with pytest.raises(ValueError, match="No metrics at grain 'month'"):
         gd.frame("month")
+
+
+# --- freshness (last_observed / data_through) ---
+
+def test_build_grained_captures_last_observed_before_join():
+    """Freshness is per-metric from each provider frame, surviving the
+    within-grain inner join that trims to the common tail."""
+    fresh = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=10), "a": np.ones(10)})
+    stale = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=7), "b": np.ones(7)})
+    gd = build_grained(
+        {"a": fresh, "b": stale},
+        {"a": "day", "b": "day"},
+        {"a": "flow", "b": "flow"},
+    )
+    # Joined day frame is trimmed to the stale metric's tail...
+    assert len(gd.frame("day")) == 7
+    # ...but per-metric freshness keeps the true edges.
+    assert gd.last_observed["a"] == pd.Timestamp("2024-01-10")
+    assert gd.last_observed["b"] == pd.Timestamp("2024-01-07")
+    assert gd.data_through("a") == pd.Timestamp("2024-01-10")
+
+
+def test_data_through_is_period_end_for_coarse_grains():
+    weekly = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=3, freq="W-MON"),
+                           "w": np.ones(3)})
+    gd = build_grained({"w": weekly}, {"w": "week"}, {"w": "flow"})
+    # Last observed week starts Mon Jan 15 -> covered through Sun Jan 21.
+    assert gd.last_observed["w"] == pd.Timestamp("2024-01-15")
+    assert gd.data_through("w") == pd.Timestamp("2024-01-21")
+
+
+def test_from_frame_sets_last_observed():
+    df = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=5), "a": np.ones(5)})
+    gd = ensure_grained(df)
+    assert gd.data_through("a") == pd.Timestamp("2024-01-05")
+    assert gd.data_through("missing") is None

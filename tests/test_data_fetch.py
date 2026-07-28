@@ -185,7 +185,9 @@ class _StubCursor:
 def test_warehouse_fetcher_reindexes_and_zero_fills(monkeypatch):
     import datetime
 
-    # Two movement days inside a five-day window; the gaps must become 0.
+    # Two movement days inside a five-day window: the interior gap becomes 0;
+    # the trailing day after the last returned row is trimmed (not-yet-loaded,
+    # not zero).
     rows = [
         (datetime.date(2025, 6, 2), 100.0),
         (datetime.date(2025, 6, 4), 250.0),
@@ -200,8 +202,8 @@ def test_warehouse_fetcher_reindexes_and_zero_fills(monkeypatch):
     df = fetcher.fetch_metric("new_mrr", "2025-06-01", "2025-06-05")
 
     assert list(df.columns) == ["date", "new_mrr"]
-    assert len(df) == 5  # full daily range
-    assert df["new_mrr"].tolist() == [0.0, 100.0, 0.0, 250.0, 0.0]
+    assert len(df) == 4  # daily range through the last observed row
+    assert df["new_mrr"].tolist() == [0.0, 100.0, 0.0, 250.0]
     # window bounds were bound as named parameters, not string-formatted
     assert cursor.executed[1] == {"start_date": "2025-06-01", "end_date": "2025-06-05"}
 
@@ -345,14 +347,15 @@ def _wh_fetcher(rows):
     return fetcher
 
 
-def test_warehouse_weekly_flow_zero_fills_missing_weeks():
+def test_warehouse_weekly_flow_zero_fills_interior_trims_trailing():
     import datetime
     rows = [
         (datetime.date(2024, 1, 1), 100.0),   # Monday
         (datetime.date(2024, 1, 15), 250.0),  # Monday, gap week between
     ]
     df = _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week")
-    assert df["m"].tolist() == [100.0, 0.0, 250.0, 0.0]
+    # Interior gap (Jan 8) -> 0; trailing week (Jan 22) trimmed as unloaded.
+    assert df["m"].tolist() == [100.0, 0.0, 250.0]
     assert all(d.dayofweek == 0 for d in df["date"])
 
 
@@ -363,7 +366,14 @@ def test_warehouse_weekly_stock_forward_fills():
         (datetime.date(2024, 1, 15), 250.0),
     ]
     df = _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week", kind="stock")
-    assert df["m"].tolist() == [100.0, 100.0, 250.0, 250.0]
+    assert df["m"].tolist() == [100.0, 100.0, 250.0]
+
+
+def test_warehouse_empty_result_keeps_full_zero_fill_for_flow():
+    """No rows at all is a legitimate all-quiet flow window (e.g. a coverage
+    cliff) — keep the full zero spine rather than trimming to nothing."""
+    df = _wh_fetcher([]).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week")
+    assert df["m"].tolist() == [0.0, 0.0, 0.0, 0.0]
 
 
 def test_warehouse_stock_leading_gap_raises():
@@ -373,9 +383,14 @@ def test_warehouse_stock_leading_gap_raises():
         _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week", kind="stock")
 
 
-def test_warehouse_rate_missing_period_raises():
+def test_warehouse_rate_missing_interior_period_raises():
     import datetime
-    rows = [(datetime.date(2024, 1, 1), 0.5)]
+    # Interior gap (Jan 8) between returned rows: a rate cannot be invented.
+    # (A trailing gap is trimmed like any other kind — data not loaded yet.)
+    rows = [
+        (datetime.date(2024, 1, 1), 0.5),
+        (datetime.date(2024, 1, 15), 0.6),
+    ]
     with pytest.raises(RuntimeError, match="Rate metric 'm' is missing week periods"):
         _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week", kind="rate")
 

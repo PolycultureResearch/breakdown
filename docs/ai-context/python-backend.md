@@ -33,7 +33,7 @@ Design rules:
 
 ## `parser.py`
 
-**`MetricDefinition`** — Pydantic model for one metric node. Fields: `name`, `source`, `grain` (`day`|`week`|`month`, default day), `kind` (`flow`|`stock`|`rate`, default flow), `description`, `sql` (warehouse provider only), `parents`, `formula`, `priors: Dict[str, Prior]`, `lags: Dict[str, int]` (grain steps at the node's grain), `seasonality: List[Seasonality]` (periods ≥ 2, in grain steps), `trend: Optional[TrendConfig]` (local-level random-walk step-size prior), `format: Optional[MetricFormat]` (UI display hint — presentation only, coerced from the `format: currency` string shorthand). Validators enforce: formula is arithmetic-only AST and references only parents; prior keys are `"coefficient"` or a parent name; lag keys are parents, values are ints ≥ 1 (with `formula`, lags declare a cohort-aligned lagged identity — `A[t] = f(parents shifted back by their lags)`); classic day-grain seasonality periods (7/30/365) on a non-day node warn.
+**`MetricDefinition`** — Pydantic model for one metric node. Fields: `name`, `source`, `grain` (`day`|`week`|`month`, default day), `kind` (`flow`|`stock`|`rate`, default flow), `description`, `sql` (warehouse provider only), `parents`, `formula`, `priors: Dict[str, Prior]`, `lags: Dict[str, int]` (grain steps at the node's grain), `seasonality: List[Seasonality]` (periods ≥ 2, in grain steps), `trend: Optional[TrendConfig]` (local-level random-walk step-size prior), `format: Optional[MetricFormat]` (UI display hint — presentation only, coerced from the `format: currency` string shorthand). Validators enforce: formula is arithmetic-only AST and references only parents; prior keys are `"coefficient"` or a parent name; lag keys are parents, values are ints ≥ 1 (with `formula`, lags declare a cohort-aligned lagged identity — `A[t] = f(parents shifted back by their lags)`); `expected_signs` keys are parents with values `positive`/`negative` and are rejected on formula nodes (no learned coefficients to check); classic day-grain seasonality periods (7/30/365) on a non-day node warn.
 
 **Cross-node grain rules** (`Parser._validate_grains`, needs both edge endpoints so it runs after the DAG is built): a parent may never be coarser than its child (downward disaggregation undefined); a finer parent must be an auto-aggregatable `flow`/`stock` whose grain **nests** in the child's (days tile weeks/months; weeks straddle month boundaries, so week-under-month is rejected); finer `rate` parents are rejected (declare the rate at the child's grain).
 
@@ -59,7 +59,7 @@ Returns a DataFrame with columns `["date", metric_name]`, sorted by date, no NaN
 Constructed with an optional metric DAG (`MockDataFetcher(dag=parser.dag)`). With a DAG, series are generated in topological order **at each node's declared grain** so they respect the tree: formula nodes satisfy their formula against parents aggregated to the node's grain plus ~2% noise, probabilistic nodes are a coefficient-weighted sum of aligned parents (coefficient from the `coefficient` prior's `mu` when available; lag-shifted parents when `lags` is set) plus ~5% noise, and roots are random walks with weekly seasonality on their native period spine. Finer rate parents resample by per-period mean (mock-only convenience). Without a DAG (or for names not in it), falls back to an independent random walk at the requested grain. Seeded per metric name — deterministic across calls; all-day trees are byte-identical to the pre-grain generator (pinned by golden tests). Per-metric series per window are cached.
 
 ### `WarehouseDataFetcher`
-Runs each metric's own `sql` against Databricks SQL. The SQL owns the aggregation to the declared grain (one row per period, period-start labels — misaligned labels error); the engine reindexes onto the spine of whole periods inside the window, drops partial edge periods, and fills gaps by kind.
+Runs each metric's own `sql` against Databricks SQL. The SQL owns the aggregation to the declared grain (one row per period, period-start labels — misaligned labels error); the engine reindexes onto the spine of whole periods inside the window, drops partial edge periods, fills **interior** gaps by kind, and **trims trailing** gaps (periods after the last returned row are not-yet-loaded data, not zeros — except when the query returns no rows at all, which keeps the full zero spine for flows).
 
 ### `LocalDataFetcher`
 Invokes `mf query --metrics <name> --group-by metric_time__<grain> --start-time ... --end-time ... --csv <tmpfile>` as a subprocess. `project_path` becomes the working directory. Raises `RuntimeError` on non-zero exit code or OS errors (e.g., path not found).
@@ -73,7 +73,7 @@ The correlated jaffle-shop dataset used by tests lives in `tests/synthetic.py` (
 
 ## `engine/model.py`
 
-### `fit_metric(dag, data, target, draws=1000, tune=1000, inference_method="nuts", fit_end=None, chains=4) -> FitResult`
+### `fit_metric(dag, data, target, draws=1000, tune=1000, inference_method="nuts", fit_end=None, chains=4, random_seed=None) -> FitResult`
 
 The single fitting entry point (stateless). `data` may be a `GrainedData` or a plain daily frame; the frame actually fitted is `ensure_grained(data).fit_frame(target, parents, grain)` — the target native at its own grain, finer flow/stock parents resampled up, aligned on whole periods — so `t`, lags, and seasonality periods are grain steps. `fit_end` keeps only whole periods that *end* on/before the cutoff (≡ `date < fit_end` for day grain). In normalized space the model is
 
@@ -85,6 +85,7 @@ trend = cumsum(HalfNormal(trend.sigma) * z), non-centered;  seasonal = Fourier p
 Internals are three helpers, each documented in-code:
 - `_prepare_series(defn, parents, data, target)` → `(y, X, scale, y_mean, y_std, x_stds, dates)`. Formula nodes fit the z-scored residual (X is None); probabilistic nodes get one z-scored regressor per parent, lag-shifted and trimmed by `max(lags)` (raises if < 10 rows remain); `scale[i] = x_std_i / y_std`.
 - `_seasonal_component(seasonality, t)` — Fourier terms. Unidentifiable periods (`len(y) < 2·period`) land in `diagnostics["seasonality_warnings"]`.
+- After fitting, `expected_signs` declarations are checked against the `beta_raw` posterior: < 10% mass on the declared side → `diagnostics["sign_warnings"]` (passed through per-node in RCA responses and shown in the UI). Not a constraint — a diagnostic.
 - `_regression_component(defn, parents, X, scale)` — one `beta_{parent}` RV per parent (parent-specific prior → shared `coefficient` prior → `Normal(0, 1)`), stacked into `beta = Deterministic(...)` plus `beta_raw = beta / scale` (business units). Priors are stated in business units and rescaled via `scale_prior_params(distribution, params, scale)`; unknown distributions raise.
 
 Inference: `nuts` → `pm.sample(draws, tune, target_accept=0.9, chains=chains)`; `advi` → `pm.fit(n=20_000).sample(draws)`. Returns a `FitResult` (trace + normalization constants + fitted period-start `dates` + `grain` + `fit_end` + diagnostics).
@@ -143,13 +144,13 @@ Dates are validated (ISO format, start ≤ end) both at the CLI and in `lifespan
 |-----------------|------|-------------|
 | `parser` | `Parser` | Parsed metric tree |
 | `fetcher` | `BaseDataFetcher` | Fetcher matching the provider type |
-| `data` | `GrainedData` | Per-grain frames + `grain_of`/`kind_of` maps |
+| `data` | `GrainedData` | Per-grain frames + `grain_of`/`kind_of`/`last_observed` maps (`last_observed` is captured per metric before the within-grain join; `data_through(m)` converts it to the inclusive last covered date) |
 | `traces` | `Dict[Tuple[str, Optional[str]], FitResult]` | **The** trace cache, keyed `(name, fit_end)` (single source of truth) |
 | `lock` | `asyncio.Lock` | Serializes sampling (analyze + RCA fits) |
 
 ### Routes
 
-**`GET /meta`** — metrics, data window, provider, per-metric `grains`/`kinds` maps, fitted list (UI bootstrap).
+**`GET /meta`** — metrics, data window, provider, per-metric `grains`/`kinds`/`data_through` maps (`data_through` = each metric's honest data edge, which may lag the requested window), fitted list (UI bootstrap).
 
 **`GET /dag`** — nodes (`[name, definition.model_dump()]`) and edges.
 

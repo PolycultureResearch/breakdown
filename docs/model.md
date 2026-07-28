@@ -105,6 +105,26 @@ Two consequences worth knowing:
   an RCA node with NUTS on exactly the data RCA used, pass
   `?fit_end=<analysis_start>&inference_method=nuts`.
 
+## Declared signs and scale confounding
+
+`expected_signs` on a probabilistic node declares the direction you believe an
+effect runs. It is deliberately **not** a prior: the fit stays unconstrained,
+and when the `beta_raw` posterior puts less than 10% of its mass on the
+declared side, the fit carries a `sign_warnings` diagnostic instead of quietly
+shipping a coefficient that means something else.
+
+Take a contradicted sign seriously as a *modeling* signal, not a fitting
+error. The most common cause is **scale confounding** in a level-on-level
+edge: a dollar flow regressed on a user count, where both series grow with
+the business. The dominant covariance is "bigger base → more of both," and
+the learned coefficient answers that question — not the per-user propensity
+question the author meant. What-if simulations then move the child in the
+"wrong" direction with full statistical justification. The cure is to make
+both sides scale-free (regress the churn *rate* on the active *share*, at a
+grain where those ratios are stable) or to control for the base explicitly —
+not to clamp the sign with a constrained prior, which just forces the model
+to fight data that genuinely contradicts the edge as defined.
+
 ## Reading coefficients: `beta` vs `beta_raw`
 
 The posterior contains both. `beta` is in z-scored units ("a 1-sd move in the

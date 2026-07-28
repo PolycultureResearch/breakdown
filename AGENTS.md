@@ -79,6 +79,7 @@ Point at your own tree with `--tree path/to/tree.yml --start-date … --end-date
 - **Python:** ruff-formatted (config in `pyproject.toml`); type hints throughout;
   Pydantic models for all external config.
 - **Tests:** pytest with deterministic, seeded mock data (`tests/synthetic.py`).
-  NUTS-based tests are inherently stochastic — an occasional diagnostic flake
-  passes on re-run in isolation.
+  Sampler-based tests should pass `random_seed` to `fit_metric` when they
+  assert on diagnostics or coefficient values — an unseeded NUTS run can flake
+  by chance. RCA/simulate seed their on-demand fits internally.
 - **Commits / PRs:** small and focused; the message explains the _why_.

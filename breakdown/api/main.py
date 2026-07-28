@@ -140,6 +140,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="breakdown API", lifespan=lifespan)
 
+
+@app.middleware("http")
+async def ui_no_cache(request: Request, call_next):
+    """Make browsers revalidate the no-build-step UI on every load.
+
+    StaticFiles sends ETag/Last-Modified but no Cache-Control, so browsers
+    heuristically cache /ui assets and keep showing a stale app.js/index.html
+    after an upgrade. `no-cache` forces a conditional request each time —
+    unchanged files still come back as cheap 304s."""
+    response = await call_next(request)
+    if request.url.path.startswith("/ui"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 static_dir = os.path.join(BASE_DIR, "static")
 app.mount("/ui", StaticFiles(directory=static_dir, html=True), name="ui")
 
@@ -154,6 +169,11 @@ async def get_meta(request: Request):
     """Bootstrap info for the UI: metrics, data window, provider, fit status."""
     parser = request.app.state.parser
     data = request.app.state.data
+    data_through = {}
+    for name in data.grain_of:
+        through = data.data_through(name)
+        if through is not None:
+            data_through[name] = str(through.date())
     return {
         "provider": parser.config.provider.type,
         "metrics": [m.name for m in parser.config.metrics],
@@ -161,6 +181,10 @@ async def get_meta(request: Request):
         "date_end": str(data.date_end.date()),
         "grains": dict(data.grain_of),
         "kinds": dict(data.kind_of),
+        # Inclusive last covered date per metric (end of its last observed
+        # period) — the honest data edge, which may lag the requested window
+        # when a source mart is behind.
+        "data_through": data_through,
         "fitted": sorted({name for (name, _) in request.app.state.traces}),
     }
 
@@ -216,6 +240,7 @@ async def get_metric(name: str, request: Request):
         raise HTTPException(status_code=404, detail=f"No data found for metric '{name}'")
 
     summary = None
+    diagnostics = None
     fit = _pick_fit(traces, name)
     if fit is not None:
         # NaN/inf (e.g. r_hat on single-chain ADVI traces) are not valid JSON
@@ -223,11 +248,13 @@ async def get_metric(name: str, request: Request):
             col: {k: (float(v) if math.isfinite(v) else None) for k, v in vals.items()}
             for col, vals in summarize_trace(fit.trace).to_dict().items()
         }
+        diagnostics = fit.diagnostics
 
     return {
         "definition": metric.model_dump(),
         "time_series": time_series,
         "summary": summary,
+        "diagnostics": diagnostics,
     }
 
 

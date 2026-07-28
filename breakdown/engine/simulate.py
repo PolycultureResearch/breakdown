@@ -260,6 +260,7 @@ def run_scenario(
                 traces[(node, fit_end_key)] = fit_metric(
                     dag, data, node, draws=advi_draws,
                     inference_method="advi", fit_end=fit_end_key,
+                    random_seed=0,
                 )
 
     # Draw posterior coefficients and assumption effects up front, in a fixed

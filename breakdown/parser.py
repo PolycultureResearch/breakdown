@@ -155,6 +155,11 @@ class MetricDefinition(BaseModel):
     parents: List[str] = Field(default_factory=list)
     priors: Dict[str, Prior] = Field(default_factory=dict)
     lags: Dict[str, int] = Field(default_factory=dict)
+    # Declared direction of each parent's learned coefficient
+    # (positive|negative). NOT a prior: the fit is unconstrained, but a
+    # posterior that contradicts the declaration raises a diagnostic warning —
+    # the classic failure being a scale-confounded level-on-level edge.
+    expected_signs: Dict[str, str] = Field(default_factory=dict)
     seasonality: List[Seasonality] = Field(default_factory=list)
     trend: Optional[TrendConfig] = None
     # UI display hint for the node card's big number; does not affect modeling.
@@ -173,6 +178,30 @@ class MetricDefinition(BaseModel):
         if v not in ("flow", "stock", "rate"):
             raise ValueError(f"kind must be one of ['flow', 'stock', 'rate'], got '{v}'")
         return v
+
+    @model_validator(mode="after")
+    def check_expected_signs(self) -> "MetricDefinition":
+        if not self.expected_signs:
+            return self
+        if self.formula is not None:
+            raise ValueError(
+                f"Metric '{self.name}' declares `expected_signs` on a formula "
+                "node; a formula is an exact identity with no learned "
+                "coefficients to check."
+            )
+        parent_set = set(self.parents)
+        for key, value in self.expected_signs.items():
+            if key not in parent_set:
+                raise ValueError(
+                    f"expected_signs key '{key}' on metric '{self.name}' must be "
+                    f"one of the metric's parents {self.parents}."
+                )
+            if value not in ("positive", "negative"):
+                raise ValueError(
+                    f"expected_signs['{key}'] on metric '{self.name}' must be "
+                    f"'positive' or 'negative', got '{value}'."
+                )
+        return self
 
     @model_validator(mode="after")
     def warn_grain_relative_seasonality(self) -> "MetricDefinition":

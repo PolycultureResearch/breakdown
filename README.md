@@ -173,6 +173,7 @@ Each metric entry supports the following fields:
 | `formula` | string | Arithmetic expression over parent names (e.g., `"order_count * average_order_value"`). Enables Shapley attribution. |
 | `priors` | dict | Bayesian priors for the causal coefficients (see below) |
 | `lags` | dict | Per-parent time lag in grain steps **at the node's grain** (days for a daily node, weeks for a weekly one). On a probabilistic node, regresses the child on each parent's value `N` steps earlier; combined with `formula`, declares a cohort-aligned lagged identity. See [Lagged regressors](#lagged-regressors). |
+| `expected_signs` | dict | Per-parent declared coefficient direction (`positive` \| `negative`) on a probabilistic node. **Not a prior** — the fit is unconstrained, but a posterior that contradicts the declaration raises a `sign_warnings` diagnostic (surfaced in `/analyze`, `/metrics`, RCA responses, and the UI). |
 | `seasonality` | list | Periodic components to include in the BSTS model. Periods are in grain steps at the node's grain. |
 | `trend` | string or dict | Local-level (random-walk) trend. `trend: linear` uses the default step-size prior HalfNormal(0.05); `trend: {type: linear, sigma: 0.1}` widens it so the trend may absorb faster drift. Only `type: linear` is supported. |
 | `format` | string or dict | UI display hint for the node card's big number — presentation only, no effect on modeling. See [Display format](#display-format). |
@@ -210,6 +211,16 @@ priors:
 ```
 
 Every key under `priors` must be either `coefficient` or the name of a parent; any other key is rejected at parse time. Each parent's prior is scaled into normalized space using that parent's own units.
+
+**Declared signs (`expected_signs`).** When you *know* which direction an effect should run ("more engagement → less churn"), declare it instead of forcing it:
+
+```yaml
+- name: churn_mrr
+  parents: [paid_cmau]
+  expected_signs: { paid_cmau: positive }   # churn_mrr is stored negative: more actives should mean less-negative churn
+```
+
+Unlike a `HalfNormal` prior, this never constrains the fit. After fitting, the engine checks the `beta_raw` posterior: if less than 10% of its mass lies on the declared side, the fit carries a `sign_warnings` diagnostic naming the parent, the posterior probability, and the mean. A contradicted sign is usually not a bug in the fit — it means the edge as defined answers a different question than you meant. The classic case is **scale confounding**: regressing a dollar flow on a user count when both grow with the business — the learned sign reflects "bigger base → more of both," swamping the per-user effect you intended. The fix is to redefine the edge as **rates on rates** (e.g. churn *rate* on active *share*), not to constrain the sign.
 
 ### Seasonality
 
@@ -302,7 +313,9 @@ Metrics have different natural time grains: signups are daily events, a cohort c
 
 **Windows snap per node.** RCA windows stay day-resolution dates in the API; each node interprets them as the whole periods fully inside. A node whose window holds no whole period reports `"status": "window_shorter_than_grain"` instead of failing the RCA, and every node reports its `grain` and `effective_windows`. Windows that snap to a single period suppress the bootstrap CI (`ci_status: "degenerate_single_period"`) rather than reporting a falsely-precise interval.
 
-**Warehouse SQL contract per grain.** The SQL owns the aggregation: return one row per period at the declared grain, labeled by period start. Gaps are filled by kind — flow → 0, stock → forward-fill (a gap before the first period is an error), rate → any missing period is an error.
+**Warehouse SQL contract per grain.** The SQL owns the aggregation: return one row per period at the declared grain, labeled by period start. **Interior** gaps are filled by kind — flow → 0, stock → forward-fill (a gap before the first period is an error), rate → any missing period is an error. **Trailing** gaps are trimmed, not filled: periods after the last row the SQL returned are treated as not-yet-loaded, so a lagging mart ends the series early instead of manufacturing zeros at the tail. (A query returning no rows at all keeps the full zero spine for flows — an all-quiet window is legitimate.)
+
+**Data freshness.** Each metric's true data edge is tracked as it is fetched and exposed as `data_through` in `GET /meta` — the inclusive last date its last observed period covers. When sources disagree (one mart lags the others), the UI anchors every card's headline number, delta, and sparkline at the tree-wide edge via the **As of** selector (toolbar), which defaults to the oldest `data_through` across metrics and counts only periods *fully completed* by that date — so a calendar week the data edge cuts in half never becomes a headline number. The one case this cannot catch is a partially loaded most-recent period (the mart wrote *some* rows for it): detecting that needs load-completeness metadata on the mart side.
 
 **Data-length guidance.** Fits need at least 10 whole periods at the node's grain — coarser grains need proportionally longer windows (a monthly node wants roughly a year of history). Seasonality periods and lags are in grain steps: `period: 7` means weekly on a daily node and seven *months* on a monthly one (the parser warns about that).
 
@@ -324,6 +337,8 @@ Metrics have different natural time grains: signups are daily events, a cohort c
 ```
 
 Delta values (period-over-period change) always render as a percent; `format` applies to the big number only.
+
+**Display defaults.** When a metric declares no `format`, the UI guesses one from naming conventions — names containing tokens like `mrr`, `arr`, `revenue`, `arpu`, `aov`, `usd`, `cost`, `spend` render as currency; `rate`, `pct`, `percent`, `share`, `ratio` render as percent; everything else as a plain number. This is presentation-only and an explicit `format` always wins — declare one whenever the guess would be wrong.
 
 ---
 

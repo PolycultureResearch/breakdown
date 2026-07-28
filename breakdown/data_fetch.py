@@ -144,9 +144,14 @@ class WarehouseDataFetcher(BaseDataFetcher):
     Currently targets Databricks SQL warehouses. The SQL must return one row
     per period at the metric's declared grain, with period-start dates (weeks
     start Monday, months on the 1st). Returned series are reindexed onto the
-    spine of whole periods inside the window and gap-filled by `kind`:
-    flow → 0, stock → forward-fill (a leading gap is an error), rate → any
-    missing period is an error (a rate cannot be invented).
+    spine of whole periods inside the window; **interior** gaps are filled by
+    `kind` — flow → 0, stock → forward-fill (a leading gap is an error),
+    rate → any missing period is an error (a rate cannot be invented) — while
+    **trailing** gaps are trimmed, not filled: periods after the last row the
+    SQL returned are treated as not-yet-loaded, so a lagging mart ends the
+    series early instead of manufacturing fake zeros at the tail. (A query
+    returning no rows at all keeps the old full-window fill for flows — an
+    all-quiet window is a legitimate flow series.)
 
     Authentication is either a personal access token (`token`) or a Databricks
     CLI OAuth `profile` created by ``databricks auth login --profile <name>``.
@@ -255,10 +260,15 @@ class WarehouseDataFetcher(BaseDataFetcher):
 
         # Reindex onto the spine of whole periods inside the window (rows for
         # partial edge periods are dropped) so missing periods become explicit
-        # rather than dropping rows from the tree-wide join.
+        # rather than dropping rows from the tree-wide join. Trailing periods
+        # with no returned row are trimmed, not filled: they mean "not loaded
+        # yet" far more often than "genuinely zero", and filling them would
+        # bake a lying tail into every headline number downstream.
         spine = period_spine(start_date, end_date, grain)
         s = df.set_index("date")["value"]
         s = s[s.index.isin(spine)].reindex(spine)
+        if s.notna().any():
+            s = s.loc[: s.last_valid_index()]
         if kind == "flow":
             s = s.fillna(0.0)
         elif kind == "stock":

@@ -594,11 +594,12 @@ metrics:
 
 def test_nuts_diagnostics_ok_on_well_behaved_data():
     """A NUTS fit of the (post-T3, non-centered) model on clean synthetic data
-    must self-report as healthy."""
+    must self-report as healthy. Seeded: an unseeded marginal run can trip the
+    diagnostic thresholds by chance, which made this the suite's one flake."""
     parser = Parser(SIMPLE_YAML)
     data = generate_mock_data(n_days=50)
 
-    result = fit_metric(parser.dag, data, "order_count", draws=300, tune=300)
+    result = fit_metric(parser.dag, data, "order_count", draws=300, tune=300, random_seed=42)
 
     d = result.diagnostics
     assert d["method"] == "nuts"
@@ -709,3 +710,47 @@ metrics:
 
     warnings = result.diagnostics.get("seasonality_warnings", [])
     assert len(warnings) == 1 and "unidentifiable" in warnings[0]
+
+
+# --- expected_signs diagnostic ---
+
+SIGNED_YAML = """
+metrics:
+  - name: x
+    source: dbt.metric.x
+  - name: y
+    source: dbt.metric.y
+    parents: [x]
+    expected_signs: { x: positive }
+"""
+
+
+def _negative_edge_data(seed=13, n=120):
+    """y falls when x rises: the true coefficient is decisively negative."""
+    rng = np.random.default_rng(seed)
+    x = 100.0 + rng.normal(0, 5.0, n)
+    y = 500.0 - 2.0 * x + rng.normal(0, 1.0, n)
+    dates = pd.date_range("2024-01-01", periods=n)
+    return pd.DataFrame({"date": dates, "x": x, "y": y})
+
+
+def test_contradicted_expected_sign_warns():
+    parser = Parser(SIGNED_YAML)
+    data = _negative_edge_data()
+
+    result = fit_metric(parser.dag, data, "y", draws=300, inference_method="advi")
+
+    warnings = result.diagnostics.get("sign_warnings", [])
+    assert len(warnings) == 1
+    assert "declared positive effect" in warnings[0]
+    assert "contradicts" in warnings[0]
+
+
+def test_supported_expected_sign_stays_quiet():
+    yaml_flipped = SIGNED_YAML.replace("positive", "negative")
+    parser = Parser(yaml_flipped)
+    data = _negative_edge_data()
+
+    result = fit_metric(parser.dag, data, "y", draws=300, inference_method="advi")
+
+    assert "sign_warnings" not in result.diagnostics

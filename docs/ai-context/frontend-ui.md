@@ -18,20 +18,20 @@ The breakdown UI is a single-page app served by FastAPI at `/ui`, in the spirit 
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│ breakdown   Target [revenue ▾]  Ref [date]–[date]  Analysis [date]–  │
-│             [date]   (Run RCA) (Clear)                 status text   │
+│ breakdown   Target [revenue ▾]   As of [date]          status text   │
 ├────────────────────────────────────────────┬─────────────────────────┤
-│                                            │  [Metric] [Root cause]  │
-│              DAG canvas                    │                         │
-│   (Cytoscape + dagre, KPIs at top,         │  sidebar content        │
-│    sources at bottom — rankDir BT)         │  (scrolls)              │
-│                                            │                         │
-│  legend (bottom-left overlay)              │                         │
+│ (Display ▸)                                │  [Metric] [Root cause]  │
+│              DAG canvas                    │  RCA tab: setup panel   │
+│   (Cytoscape + dagre, KPIs at top,         │  (windows preset, ref/  │
+│    sources at bottom — rankDir BT)         │  analysis dates, Run/   │
+│                                            │  Clear) above results   │
+│  legend (bottom-left overlay)              │  (scrolls)              │
 └────────────────────────────────────────────┴─────────────────────────┘
 ```
 
-- **Header** holds the RCA controls: target select, two date-range pairs (prefilled from `/meta`: reference = first 60% of the data window, analysis = the rest), Run/Clear, and a status area for progress ("Fitting upstream models…") and errors.
-- **Canvas** is the primary surface; the graph is the product. Dagre layered layout with `rankDir: 'BT'` so the tree reads like a KPI tree: outcome metrics on top, drivers below.
+- **Header** holds only the globals: the target select (the tree-wide focus metric), the **As of** anchor date, a **Share** menu (Copy link — the deep-link URL restoring the exact view: selected metric, RCA run, or what-if scenario — and Download RCA result as JSON, enabled after a run; the future home of the exportable RCA report, roadmap 1.5), and a status area for progress ("Fitting upstream models…") and errors.
+- **RCA setup lives in the Root cause tab** (`#rca-setup`, persistent markup above the `#rca-results` render target): windows preset + two date-range pairs (prefilled from `/meta`: reference = first 60% of the data window, analysis = the rest) + Run/Clear. Setup sits with its results, so the windows are unambiguously RCA parameters rather than global filters.
+- **Canvas** is the primary surface; the graph is the product. Dagre layered layout with `rankDir: 'BT'` so the tree reads like a KPI tree: outcome metrics on top, drivers below. The card display options (variant / sparkline length / delta length) collapse behind a quiet **Display** toggle in the top-left toolbar.
 - **Sidebar** (410px) has three tabs: **Metric** (UC3/UC4), **Root cause** (UC1), and **What-if** (UC5). Clicking a node opens Metric — unless the What-if tab is active, in which case it opens that node's adjust panel. Finishing an RCA run switches to Root cause.
 - **Overlay exclusivity**: the RCA and what-if overlays never coexist; the active tab owns the canvas (switching to Root cause or What-if re-applies that tab's overlay via a shared `clearOverlays()`), and the Metric tab keeps whichever overlay was last showing.
 
@@ -61,6 +61,7 @@ background**, so the node's own border and `background-color` still render behin
 keep working unchanged.
 
 - **Variants** (increasing detail): `num` (big number only) · `delta` (+ period-over-period delta pill) · `spark` (+ trailing sparkline) · `full` (both). Set canvas-wide via the floating toolbar (top-left), or overridden per node from the Metric tab (an indigo dot marks an overridden node). Config + overrides persist to `localStorage` under `breakdown.cardConfig`.
+- **As-of anchor.** The toolbar's **As of** date input anchors every card's headline/delta/sparkline: only periods *fully completed* by the date count (a weekly point needs its Sunday ≤ as-of). Defaults to the tree-wide data edge — the min of `/meta`'s per-metric `data_through` — so a lagging source mart shows its true last day instead of a zero-filled tail, and a half-loaded calendar week never becomes a weekly headline. Not persisted (freshness moves daily); the header status line appends `data → <date>` when the edge lags the window end, and the Metric tab shows each metric's own `Data through` (with a "lags window end" chip when behind).
 - **Numbers.** Big number = latest value. Delta = latest vs `deltaLen` points earlier (both lengths are canvas-wide controls). Sparkline = trailing `sparkLen` points, thin line + area fill + endpoint dot, colored by direction (semantic green/red, never the indigo brand hue).
 - **Formatting** comes from the metric definition's optional `format` (`{style, unit, decimals, compact, symbol}`); a `unit` renders a small caption under the value and grows the card one line.
 - **Overlay-aware.** While an RCA or what-if overlay is active the card folds in that overlay's numbers (RCA gap %, what-if simulated value) with `◌` / `⊙` / `⚠` marks, so a node never shows two conflicting deltas. State lives in `state.cardOverlay`; the renderer is `renderNodeCard` / `buildCardSVG` in `static/app.js`.

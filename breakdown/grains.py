@@ -15,7 +15,7 @@ months, but weeks straddle month boundaries, so week → month is rejected
 rather than approximated.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Iterable, Optional, Union
 
 import numpy as np
@@ -253,6 +253,20 @@ class GrainedData:
     frames: Dict[str, pd.DataFrame]
     grain_of: Dict[str, str]
     kind_of: Dict[str, str]
+    # Per-metric freshness: the start label of the last period the provider
+    # actually returned (before any within-grain join). Providers trim
+    # trailing unloaded periods, so this is the honest data edge per metric.
+    last_observed: Dict[str, pd.Timestamp] = field(default_factory=dict)
+
+    def data_through(self, metric: str) -> Optional[pd.Timestamp]:
+        """Inclusive last covered date for `metric`: the END of its last
+        observed period (the period-start label for day grain, the Sunday for
+        a week, the month's last day for a month). None if unknown."""
+        if metric not in self.last_observed:
+            return None
+        return next_start(self.last_observed[metric], self.grain_of[metric]) - pd.Timedelta(
+            days=1
+        )
 
     def frame(self, grain: str) -> pd.DataFrame:
         _check_grain(grain)
@@ -308,10 +322,12 @@ class GrainedData:
         df = df.copy()
         df["date"] = pd.to_datetime(df["date"])
         metrics = [c for c in df.columns if c != "date"]
+        last = df["date"].max() if len(df) else None
         return cls(
             frames={"day": df},
             grain_of={m: "day" for m in metrics},
             kind_of={m: "flow" for m in metrics},
+            last_observed={m: last for m in metrics} if last is not None else {},
         )
 
 
@@ -321,7 +337,12 @@ def build_grained(
     kind_of: Dict[str, str],
 ) -> GrainedData:
     """Assemble per-grain frames from per-metric `["date", name]` frames,
-    inner-joining within each grain only."""
+    inner-joining within each grain only. Each metric's `last_observed` is
+    captured from its own frame BEFORE the join, so freshness survives even
+    when a less-fresh sibling trims the shared grain frame."""
+    last_observed = {
+        m: pd.to_datetime(df["date"]).max() for m, df in per_metric.items() if len(df)
+    }
     frames: Dict[str, pd.DataFrame] = {}
     for grain in GRAINS:
         names = [m for m, g in grain_of.items() if g == grain]
@@ -341,7 +362,12 @@ def build_grained(
         frames[grain] = (
             joined.rename_axis("date").reset_index().sort_values("date").reset_index(drop=True)
         )
-    return GrainedData(frames=frames, grain_of=dict(grain_of), kind_of=dict(kind_of))
+    return GrainedData(
+        frames=frames,
+        grain_of=dict(grain_of),
+        kind_of=dict(kind_of),
+        last_observed=last_observed,
+    )
 
 
 def ensure_grained(data: Union[pd.DataFrame, GrainedData]) -> GrainedData:

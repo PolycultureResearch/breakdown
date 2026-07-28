@@ -378,6 +378,7 @@ def fit_metric(
     inference_method: str = "nuts",
     fit_end: Optional[str] = None,
     chains: int = 4,
+    random_seed: Optional[int] = None,
 ) -> FitResult:
     """
     Fit the Bayesian structural time series for one metric.
@@ -419,7 +420,10 @@ def fit_metric(
 
     Inference: "nuts" (exact MCMC, use when accuracy matters) or "advi"
     (variational approximation, ~5-10x faster, use for triage). `tune` and
-    `chains` apply to NUTS only.
+    `chains` apply to NUTS only. `random_seed` makes the fit reproducible on
+    a given platform/dependency set (RCA and simulate pass a fixed seed so
+    their on-demand fits — and hence API responses — are deterministic even
+    across empty trace caches; tests seed to kill stochastic flakes).
 
     Returns a `FitResult`. Its trace's posterior includes `beta_raw`
     (= beta / scale): the coefficient on each parent in business units,
@@ -485,17 +489,50 @@ def fit_metric(
             target, inference_method, draws, tune, fit_end,
         )
         if inference_method == "advi":
-            approx = pm.fit(n=20_000, method="advi", progressbar=False)
-            trace = approx.sample(draws=draws)
+            approx = pm.fit(
+                n=20_000, method="advi", progressbar=False, random_seed=random_seed
+            )
+            trace = approx.sample(draws=draws, random_seed=random_seed)
             diagnostics = _advi_diagnostics(approx)
         else:
-            trace = pm.sample(draws=draws, tune=tune, target_accept=0.9, chains=chains)
+            trace = pm.sample(
+                draws=draws, tune=tune, target_accept=0.9, chains=chains,
+                random_seed=random_seed,
+            )
             diagnostics = _nuts_diagnostics(trace, draws, chains)
 
     if diagnostics["fit_quality"] == "suspect":
         logger.warning("Fit for '%s' is suspect: %s", target, diagnostics)
     if seasonality_warnings:
         diagnostics["seasonality_warnings"] = seasonality_warnings
+
+    # Declared-direction check: expected_signs is not a prior, so the fit is
+    # free to contradict it — but when it does, say so loudly. The classic
+    # cause is a scale-confounded level-on-level edge (both series grow with
+    # the business), where the learned sign answers a different question than
+    # the author meant.
+    if defn.expected_signs and X is not None:
+        arr = trace.posterior["beta_raw"].values.reshape(-1, len(parents))
+        sign_warnings = []
+        for i, p in enumerate(parents):
+            expected = defn.expected_signs.get(p)
+            if expected is None:
+                continue
+            samples = arr[:, i]
+            p_expected = float((samples > 0).mean() if expected == "positive" else (samples < 0).mean())
+            if p_expected < 0.10:
+                msg = (
+                    f"Parent '{p}' on '{target}': declared {expected} effect, but "
+                    f"P(beta_raw {'>' if expected == 'positive' else '<'} 0) = "
+                    f"{p_expected:.2f} (posterior mean {float(samples.mean()):.4g}) — "
+                    "the learned direction contradicts the declaration. Check for "
+                    "scale confounding (e.g. regress rates on rates instead of "
+                    "levels on levels; see docs/model.md)."
+                )
+                sign_warnings.append(msg)
+                logger.warning(msg)
+        if sign_warnings:
+            diagnostics["sign_warnings"] = sign_warnings
 
     return FitResult(
         trace=trace,
