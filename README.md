@@ -165,13 +165,15 @@ Each metric entry supports the following fields:
 |-------|------|-------------|
 | `name` | string | Unique identifier used throughout the tree |
 | `source` | string | dbt Semantic Layer metric path (e.g., `jaffle_shop.metrics.revenue`) |
-| `sql` | string | For the `warehouse` provider: a SQL query returning columns `date` and `value`, with `:start_date` / `:end_date` named parameters. Ignored by other providers. |
+| `grain` | string | The metric's natural grain: `day` (default), `week`, or `month`. It is fetched, fitted, and attributed at this grain, never below it. See [Grains](#grains). |
+| `kind` | string | Temporal aggregation kind: `flow` (default — sums over time), `stock` (point-in-time level — takes the last value), or `rate` (a ratio — can never be auto-aggregated). See [Grains](#grains). |
+| `sql` | string | For the `warehouse` provider: a SQL query returning columns `date` and `value`, with `:start_date` / `:end_date` named parameters — one row per period at the metric's `grain`. Ignored by other providers. |
 | `description` | string | Optional human-readable description |
 | `parents` | list | Names of metrics that causally influence this one |
 | `formula` | string | Arithmetic expression over parent names (e.g., `"order_count * average_order_value"`). Enables Shapley attribution. |
 | `priors` | dict | Bayesian priors for the causal coefficients (see below) |
-| `lags` | dict | Per-parent time lag in grain units (days). Regresses the child on each parent's value `N` steps earlier. Mutually exclusive with `formula`. |
-| `seasonality` | list | Periodic components to include in the BSTS model |
+| `lags` | dict | Per-parent time lag in grain steps **at the node's grain** (days for a daily node, weeks for a weekly one). Regresses the child on each parent's value `N` steps earlier. Mutually exclusive with `formula`. |
+| `seasonality` | list | Periodic components to include in the BSTS model. Periods are in grain steps at the node's grain. |
 | `trend` | string or dict | Local-level (random-walk) trend. `trend: linear` uses the default step-size prior HalfNormal(0.05); `trend: {type: linear, sigma: 0.1}` widens it so the trend may absorb faster drift. Only `type: linear` is supported. |
 | `format` | string or dict | UI display hint for the node card's big number — presentation only, no effect on modeling. See [Display format](#display-format). |
 
@@ -243,19 +245,55 @@ When a formula is defined, the BSTS model fits the **residual** (`y - formula(pa
 
 ### Lagged regressors
 
-Some causal effects show up with a delay — the README's motivating example is support tickets driving churn *weeks later*. A `lags` dict regresses the child on each parent's value `N` grain-steps (days) earlier:
+Some causal effects show up with a delay — the README's motivating example is support tickets driving churn *weeks later*. A `lags` dict regresses the child on each parent's value `N` grain steps earlier, at the **child's** grain (days for a daily child, weeks for a weekly one):
 
 ```yaml
 - name: churn_rate
   source: my.metrics.churn_rate
   parents: [support_tickets]
-  lags: { support_tickets: 21 }   # churn responds to tickets from 3 weeks earlier
+  lags: { support_tickets: 21 }   # churn responds to tickets from 3 weeks earlier (daily node)
 ```
 
 Rules:
-- Every `lags` key must be a parent; every value must be an integer ≥ 1 (grain units, days).
+- Every `lags` key must be a parent; every value must be an integer ≥ 1 (grain steps at the node's grain).
 - `lags` and `formula` are mutually exclusive — a formula is a contemporaneous identity.
 - The engine shifts each parent by its lag and trims the leading `max(lags)` rows so all series align with no NaNs. It raises if fewer than 10 rows remain.
+
+### Grains
+
+Metrics have different natural time grains: signups are daily events, a cohort conversion rate is only meaningful per week, MRR is a monthly snapshot. Forcing everything onto a daily spine manufactures fake sample size (a monthly value repeated 30 times is still one observation) and makes per-day ratios degenerate on low-volume days. Instead, each node declares its natural `grain` and is **fetched, fitted, and attributed at that grain, never below it**:
+
+```yaml
+- name: trial_starts            # daily flow (defaults: grain day, kind flow)
+  source: my.metrics.trial_starts
+
+- name: trial_conversion_rate   # weekly cohort rate
+  source: my.metrics.trial_conversion_rate
+  grain: week
+  kind: rate
+
+- name: conversions             # weekly identity over a daily flow and a weekly rate
+  source: my.metrics.conversions
+  grain: week
+  formula: "trial_starts * trial_conversion_rate"
+  parents: [trial_starts, trial_conversion_rate]
+```
+
+**Kinds determine aggregation.** Resampling a series upward is only well-defined once you know how it aggregates: `flow` metrics **sum** (orders, new MRR), `stock` metrics take the **last value** (total MRR, account balances), and `rate` metrics can never be auto-aggregated — the average of daily ratios is not the coarser ratio, so a rate must be *declared* at the grain it's consumed at, recomputed from its components.
+
+**Mixed-grain rules** (enforced at parse time):
+- A parent may never be **coarser** than its child — downward disaggregation is undefined.
+- A **finer flow/stock** parent is automatically resampled up to the child's grain (sum / last). In the example above, `conversions` at week grain sees the *weekly sum* of `trial_starts`.
+- A **finer rate** parent is an error — declare the rate at the child's grain.
+- The finer grain must nest in the coarser: days tile weeks and months, but weeks straddle month boundaries, so a weekly parent under a monthly child is an error.
+
+**Period labels are period starts** everywhere: days at midnight, weeks on Monday (ISO), months on the 1st. Partial edge periods are dropped, never zero-filled — a coarse metric's series may therefore end a few days before the raw data window does.
+
+**Windows snap per node.** RCA windows stay day-resolution dates in the API; each node interprets them as the whole periods fully inside. A node whose window holds no whole period reports `"status": "window_shorter_than_grain"` instead of failing the RCA, and every node reports its `grain` and `effective_windows`. Windows that snap to a single period suppress the bootstrap CI (`ci_status: "degenerate_single_period"`) rather than reporting a falsely-precise interval.
+
+**Warehouse SQL contract per grain.** The SQL owns the aggregation: return one row per period at the declared grain, labeled by period start. Gaps are filled by kind — flow → 0, stock → forward-fill (a gap before the first period is an error), rate → any missing period is an error.
+
+**Data-length guidance.** Fits need at least 10 whole periods at the node's grain — coarser grains need proportionally longer windows (a monthly node wants roughly a year of history). Seasonality periods and lags are in grain steps: `period: 7` means weekly on a daily node and seven *months* on a monthly one (the parser warns about that).
 
 ### Display format
 
@@ -329,6 +367,11 @@ Example response:
 {
   "target": "revenue",
   "formula": "order_count * average_order_value",
+  "grain": "day",
+  "effective_windows": {
+    "reference": {"start": "2024-01-01", "end": "2024-02-15", "n_periods": 46},
+    "analysis": {"start": "2024-02-16", "end": "2024-04-09", "n_periods": 54}
+  },
   "baseline": 50000.0,
   "actual": 42000.0,
   "gap": -8000.0,
@@ -343,7 +386,7 @@ Example response:
 }
 ```
 
-`baseline` and `actual` are each the **mean of the formula evaluated day by day** over the reference and analysis windows respectively (so both windows' within-window co-movement of the parents is included); `gap = actual − baseline`. Each `attribution` value is the sum of three exact Shapley games, reported per parent in `decomposition`: `attribution = means + covariance_analysis − covariance_reference` (the window-means bridge plus the parent's share of each window's within-window co-movement term). The attributions are guaranteed to sum to `gap`.
+`baseline` and `actual` are each the **mean of the formula evaluated period by period** (at the target's grain) over the reference and analysis windows respectively (so both windows' within-window co-movement of the parents is included); `gap = actual − baseline`. Each `attribution` value is the sum of three exact Shapley games, reported per parent in `decomposition`: `attribution = means + covariance_analysis − covariance_reference` (the window-means bridge plus the parent's share of each window's within-window co-movement term). The attributions are guaranteed to sum to `gap`. Windows are snapped to whole periods at the target's grain (`effective_windows`); a window with no whole period is a 422.
 
 ### `POST /rca/{name}`
 
@@ -364,8 +407,14 @@ Trimmed response:
   "analysis_window": {"start": "2024-02-16", "end": "2024-04-09"},
   "nodes": {
     "revenue": {
+      "status": "ok", "grain": "day",
+      "effective_windows": {
+        "reference": {"start": "2024-01-01", "end": "2024-02-15", "n_periods": 46},
+        "analysis": {"start": "2024-02-16", "end": "2024-04-09", "n_periods": 54}
+      },
       "baseline": 25000.0, "actual": 27000.0, "gap": 2000.0, "relative_change": 0.08,
       "attribution_method": "shapley",
+      "ci_status": "ok",
       "unexplained": 12.0,
       "components": null,
       "contributions": [
@@ -376,8 +425,14 @@ Trimmed response:
       ]
     },
     "order_count": {
+      "status": "ok", "grain": "day",
+      "effective_windows": {
+        "reference": {"start": "2024-01-01", "end": "2024-02-15", "n_periods": 46},
+        "analysis": {"start": "2024-02-16", "end": "2024-04-09", "n_periods": 54}
+      },
       "baseline": 500.0, "actual": 540.0, "gap": 40.0, "relative_change": 0.08,
       "attribution_method": "posterior",
+      "ci_status": "ok",
       "unexplained": 1.4,
       "components": {
         "trend": {"estimate": 0.5, "ci_95": [-1.1, 2.2]},
@@ -395,6 +450,8 @@ Trimmed response:
   ]
 }
 ```
+
+Per-node fields added by grain support: `grain` (the grain the node was analyzed at), `effective_windows` (the whole periods the requested windows snapped to at that grain), `status` (`"ok"`, or `"window_shorter_than_grain"` when the windows contain no whole period — the node is reported without attribution instead of failing the RCA), and `ci_status` (`"ok"`, `"degenerate_single_period"` for formula nodes whose window snapped to one period — bootstrap CIs are withheld — or `"posterior_only_single_period"` for posterior nodes, whose coefficient uncertainty remains but whose window-sampling component is absent). Gaps are mean-per-period at each node's own grain, so compare nodes via `share_of_gap` and `ranked_causes` scores, not raw gaps, in mixed-grain trees.
 
 ### Root cause analysis
 

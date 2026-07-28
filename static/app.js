@@ -5,7 +5,7 @@
 const state = {
   meta: null,          // GET /meta
   dag: null,           // GET /dag
-  series: null,        // GET /series -> {dates:[], columns:{name:[values]}}
+  series: null,        // GET /series -> {metrics:{name:{grain, dates:[], values:[]}}}
   cy: null,
   selected: null,      // selected metric name
   metricCache: {},     // name -> GET /metrics/{name} response
@@ -267,12 +267,14 @@ function fmtCardValue(name, value) {
   return s;
 }
 
-/* Derive the card's numbers from a metric's daily series + the current config.
-   Big number = latest value; delta = latest vs `deltaLen` points earlier;
-   sparkline = trailing `sparkLen` points. */
+/* Derive the card's numbers from a metric's native-grain series + the current
+   config. Big number = latest value; delta = latest vs `deltaLen` points
+   earlier; sparkline = trailing `sparkLen` points. Points are grain periods
+   (days for daily metrics, weeks/months for coarser ones). */
 function deriveCardData(name) {
   const cfg = state.cardConfig;
-  const s = (state.series && state.series.columns[name]) || [];
+  const m = state.series && state.series.metrics && state.series.metrics[name];
+  const s = (m && m.values) || [];
   let lastIdx = -1;
   for (let i = s.length - 1; i >= 0; i--) {
     if (s[i] != null) { lastIdx = i; break; }
@@ -757,10 +759,12 @@ function renderMetricTab(name, data) {
   const typeLabel = { source: "Source", prob: "Probabilistic", formula: "Formula" }[type];
   const fitted = state.meta.fitted.includes(name);
 
+  const grain = def.grain || "day";
+  const lagUnit = grain === "day" ? "d" : ` ${grain}(s)`;
   const parentChips = (def.parents || [])
     .map((p) => {
       const lag = def.lags && def.lags[p];
-      return `<code>${esc(p)}</code>${lag ? ` <span class="chip lag">lag ${lag}d</span>` : ""}`;
+      return `<code>${esc(p)}</code>${lag ? ` <span class="chip lag">lag ${lag}${lagUnit}</span>` : ""}`;
     })
     .join(", ") || "<span style='color:var(--muted)'>none (source)</span>";
 
@@ -773,6 +777,7 @@ function renderMetricTab(name, data) {
     ${def.description ? `<p class="desc">${esc(def.description)}</p>` : ""}
     <table class="kv">
       <tr><td>Source</td><td><code>${esc(def.source)}</code></td></tr>
+      <tr><td>Grain</td><td><code>${esc(grain)}</code> · ${esc(def.kind || "flow")}</td></tr>
       <tr><td>Parents</td><td>${parentChips}</td></tr>
       ${def.formula ? `<tr><td>Formula</td><td><code>${esc(def.formula)}</code></td></tr>` : ""}
     </table>
@@ -1141,7 +1146,26 @@ function highlightCause(causeName) {
 function renderRcaTab() {
   const res = state.rca;
   const target = res.nodes[res.target];
+
+  if (target.status === "window_shorter_than_grain") {
+    $("tab-rca").innerHTML = `
+      <div class="rca-card">
+        <div class="sub">${esc(res.target)}</div>
+        <p class="placeholder">The requested windows contain no whole
+        <strong>${esc(target.grain)}</strong> period, so this
+        ${esc(target.grain)}-grain metric cannot be analyzed. Widen the
+        windows to at least one full ${esc(target.grain)}.</p>
+      </div>`;
+    return;
+  }
+
   const dirCls = target.gap >= 0 ? "up" : "down";
+  const skipped = Object.entries(res.nodes)
+    .filter(([, n]) => n.status === "window_shorter_than_grain")
+    .map(([name, n]) => `<code>${esc(name)}</code> (${esc(n.grain)})`);
+  const skippedNote = skipped.length
+    ? `<p class="inline-status">Not analyzed — window shorter than grain: ${skipped.join(", ")}.</p>`
+    : "";
 
   const maxScore = Math.max(...res.ranked_causes.map((c) => c.score), 1e-9);
   const causeRows = res.ranked_causes
@@ -1163,14 +1187,23 @@ function renderRcaTab() {
     .map((name) => {
       const node = res.nodes[name];
       const method = node.attribution_method === "shapley" ? "Shapley (exact)" : "posterior";
+      const ew = node.effective_windows;
+      const snapNote =
+        node.grain && node.grain !== "day" && ew
+          ? ` · ${esc(node.grain)} grain, snapped to ${ew.reference.n_periods}+${ew.analysis.n_periods} whole ${esc(node.grain)}s`
+          : "";
+      const ciNote =
+        node.ci_status === "degenerate_single_period"
+          ? ` · single-period window: no bootstrap CI`
+          : "";
       const rows = node.contributions
         .map(
           (c) => `<tr>
             <td><code>${esc(c.parent)}</code></td>
             <td class="num">${fmt(c.estimate)}</td>
             <td class="num">${c.share_of_gap === null ? "—" : pct(c.share_of_gap)}</td>
-            <td class="num">${c.ci_95 ? `[${fmt(c.ci_95[0])}, ${fmt(c.ci_95[1])}]` : "exact"}</td>
-            <td class="num">${c.prob_same_direction === null ? "—" : pct(c.prob_same_direction)}</td>
+            <td class="num">${c.ci_95 ? `[${fmt(c.ci_95[0])}, ${fmt(c.ci_95[1])}]` : "—"}</td>
+            <td class="num">${c.prob_same_direction == null ? "—" : pct(c.prob_same_direction)}</td>
           </tr>`,
         )
         .join("");
@@ -1182,7 +1215,7 @@ function renderRcaTab() {
           : "";
       return `
         <div class="attr-block">
-          <h4>${esc(name)} <span class="method">· ${method}</span></h4>
+          <h4>${esc(name)} <span class="method">· ${method}${snapNote}${ciNote}</span></h4>
           <table class="data-table">
             <tr><th>Parent</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>
             ${rows}
@@ -1197,7 +1230,8 @@ function renderRcaTab() {
       <div class="sub">${esc(res.target)} · ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)} vs ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}</div>
       <div class="gap-line ${dirCls}">${target.gap >= 0 ? "+" : ""}${fmt(target.gap)} <span style="font-size:14px">(${signedPct(target.relative_change)})</span></div>
       <div id="rca-strip"></div>
-      <div class="sub">${fmt(target.baseline)} → ${fmt(target.actual)} (window means)</div>
+      <div class="sub">${fmt(target.baseline)} → ${fmt(target.actual)} (window means${target.grain && target.grain !== "day" ? ` per ${esc(target.grain)}` : ""})</div>
+      ${skippedNote}
     </div>
 
     <section>

@@ -42,10 +42,45 @@ The three node types use this differently:
   which captures whatever the identity doesn't explain (data noise, definition
   drift).
 
+## Grain: what one observation is
+
+Every node declares a natural `grain` (`day`, `week`, `month`; default day)
+and a `kind` (`flow` sums over time, `stock` takes the last value, `rate`
+recomputes from components). **A node is fetched, fitted, and attributed at
+its own grain, never below it.** This is a statistical statement, not a
+formatting one: a monthly snapshot forced onto a daily spine is 30 identical
+rows carrying one observation of information — the posterior it produces is
+spuriously tight, and per-day ratios on low-volume days are noise the
+bootstrap then has to paper over. At the natural grain, fewer observations
+per fit is the *honest* posterior width.
+
+Consequences to keep in mind when reading results:
+
+- `t`, lags, and seasonality periods are all **grain steps** of the node
+  (`period: 7` is weekly on a daily node and seven months on a monthly one).
+- Finer **flow/stock parents are resampled up** to the node's grain (sum /
+  last) before fitting or attribution; a weekly identity over a daily flow
+  uses the weekly *sum*. Rates never auto-resample — declare them at the
+  grain they're consumed at.
+- **Windows snap per node** to the whole periods fully inside the requested
+  dates; each node reports its `effective_windows`, and a node whose window
+  holds no whole period is reported with `status: "window_shorter_than_grain"`
+  rather than failing the analysis. Fits need ≥ 10 whole periods, so monthly
+  nodes want roughly a year of history.
+- **Gaps are mean-per-period at each node's own grain.** In a mixed-grain
+  tree, raw gaps of different-grain nodes are not comparable — compare
+  `share_of_gap` and `ranked_causes` scores instead.
+- Partial edge periods are dropped, never zero-filled, so a coarse metric's
+  series can end before the raw data window does; the trend's flat forecast
+  for a monthly node sits at the last *whole month* before the analysis
+  window, which can be weeks before the anomaly.
+
 ## What data the fit sees
 
 RCA fits each node on data **strictly before the analysis window** (`fit_end =
-analysis_start`, an exclusive cutoff). This matters: if the anomalous window were
+analysis_start`, an exclusive cutoff; only whole periods that *end* by the
+cutoff are used, so a coarse period straddling the anomaly can't train the
+model). This matters: if the anomalous window were
 included in the training data, the flexible trend could absorb the anomaly as
 "drift" and the parent coefficients would be dragged toward a compromise between
 the normal regime and the incident. Fitting on the pre-anomaly period only means
@@ -111,18 +146,25 @@ of zero). These intervals reflect **two** sources of uncertainty:
 
 1. **Coefficient uncertainty** (probabilistic nodes): the `beta_raw` posterior.
 2. **Window-sampling uncertainty** (all nodes): a window mean over a handful of
-   days is itself a noisy estimate (its sd shrinks only like 1/√days — brutal
-   for a 2–3 day "what happened this weekend?" window). RCA resamples each
-   window's rows with a **circular moving-block bootstrap** (blocks of up to 7
-   consecutive days, resampled jointly across all metrics so cross-metric
-   correlation within the window is preserved) and composes the resampled
-   window-mean differences with the coefficient posterior. Formula-node
-   contributions get their CIs entirely from this bootstrap — the *relationship*
-   is exact, but the window means feeding it are not.
+   periods is itself a noisy estimate (its sd shrinks only like 1/√periods —
+   brutal for a 2–3 day "what happened this weekend?" window). RCA resamples
+   each window's rows with a **circular moving-block bootstrap** (block length
+   per grain: up to 7 days, 4 weeks, or 2 months, resampled jointly across the
+   node's parents so cross-metric correlation within the window is preserved)
+   and composes the resampled window-mean differences with the coefficient
+   posterior. Formula-node contributions get their CIs entirely from this
+   bootstrap — the *relationship* is exact, but the window means feeding it
+   are not.
 
 The bootstrap assumes the series is roughly stationary within each window with
-serial dependence of at most about a week. Replicates are seeded per RCA call,
-so identical requests return identical numbers.
+serial dependence of at most about a block. Replicates are seeded per RCA
+call, so identical requests return identical numbers. A window that snaps to
+a **single period** degenerates the bootstrap to identical replicates, so the
+CI is withheld instead of reported as zero-width: formula nodes get
+`ci_status: "degenerate_single_period"` with `ci_95: null` on their
+contributions; posterior nodes keep their coefficient-posterior CI but are
+flagged `"posterior_only_single_period"` because the window-sampling
+component is absent.
 
 ### `components`: trend and seasonal, made explicit
 
