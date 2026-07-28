@@ -31,11 +31,11 @@ def test_lifespan_fetches_data_via_provider():
     """Startup should populate app.state.data from the configured provider,
     with one column per metric in the tree."""
     with TestClient(app) as client:
-        data = app.state.data
+        frame = app.state.data.frame("day")
         metric_names = [m.name for m in app.state.parser.config.metrics]
-        assert list(data.columns) == ["date"] + metric_names
-        assert len(data) == 100  # default window 2024-01-01..2024-04-09
-        assert not data.isna().any().any()
+        assert list(frame.columns) == ["date"] + metric_names
+        assert len(frame) == 100  # default window 2024-01-01..2024-04-09
+        assert not frame.isna().any().any()
 
         resp = client.get("/dag")
         assert resp.status_code == 200
@@ -56,8 +56,9 @@ def test_lifespan_respects_env_config(tmp_path, monkeypatch):
     monkeypatch.setenv("BREAKDOWN_END_DATE", "2024-06-30")
 
     with TestClient(app) as client:
-        assert list(app.state.data.columns) == ["date", "signups", "activations"]
-        assert len(app.state.data) == 30
+        frame = app.state.data.frame("day")
+        assert list(frame.columns) == ["date", "signups", "activations"]
+        assert len(frame) == 30
 
         resp = client.get("/metrics/signups")
         assert resp.status_code == 200
@@ -74,7 +75,23 @@ def test_meta_endpoint():
         assert body["metrics"] == [m.name for m in app.state.parser.config.metrics]
         assert body["date_start"] == "2024-01-01"
         assert body["date_end"] == "2024-04-09"
+        assert body["grains"]["revenue"] == "day"
+        assert body["kinds"]["revenue"] == "flow"
         assert body["fitted"] == []
+
+
+def test_series_endpoint_per_metric_grain():
+    """GET /series returns per-metric {grain, dates, values} — mixed grains
+    mean there is no single shared date axis."""
+    with TestClient(app) as client:
+        resp = client.get("/series")
+        assert resp.status_code == 200
+        metrics = resp.json()["metrics"]
+        assert set(metrics) == {m.name for m in app.state.parser.config.metrics}
+        rev = metrics["revenue"]
+        assert rev["grain"] == "day"
+        assert len(rev["dates"]) == len(rev["values"]) == 100
+        assert rev["dates"][0] == "2024-01-01"
 
 
 def test_metrics_summary_json_safe_after_advi():

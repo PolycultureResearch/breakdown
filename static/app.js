@@ -5,7 +5,7 @@
 const state = {
   meta: null,          // GET /meta
   dag: null,           // GET /dag
-  series: null,        // GET /series -> {dates:[], columns:{name:[values]}}
+  series: null,        // GET /series -> {metrics:{name:{grain, dates:[], values:[]}}}
   cy: null,
   selected: null,      // selected metric name
   metricCache: {},     // name -> GET /metrics/{name} response
@@ -17,6 +17,7 @@ const state = {
   },
   cardOverlay: {},     // metric name -> {value,dpct,dir,mark} while RCA / what-if is active (transient)
   rca: null,           // last POST /rca response
+  rcaView: "headline", // formula-node attribution view: "headline" | "detailed"
   activeCause: null,   // highlighted ranked cause
   whatif: {            // what-if scenario builder + last POST /simulate result
     baseline: { start: null, end: null },
@@ -267,12 +268,14 @@ function fmtCardValue(name, value) {
   return s;
 }
 
-/* Derive the card's numbers from a metric's daily series + the current config.
-   Big number = latest value; delta = latest vs `deltaLen` points earlier;
-   sparkline = trailing `sparkLen` points. */
+/* Derive the card's numbers from a metric's native-grain series + the current
+   config. Big number = latest value; delta = latest vs `deltaLen` points
+   earlier; sparkline = trailing `sparkLen` points. Points are grain periods
+   (days for daily metrics, weeks/months for coarser ones). */
 function deriveCardData(name) {
   const cfg = state.cardConfig;
-  const s = (state.series && state.series.columns[name]) || [];
+  const m = state.series && state.series.metrics && state.series.metrics[name];
+  const s = (m && m.values) || [];
   let lastIdx = -1;
   for (let i = s.length - 1; i >= 0; i--) {
     if (s[i] != null) { lastIdx = i; break; }
@@ -757,10 +760,12 @@ function renderMetricTab(name, data) {
   const typeLabel = { source: "Source", prob: "Probabilistic", formula: "Formula" }[type];
   const fitted = state.meta.fitted.includes(name);
 
+  const grain = def.grain || "day";
+  const lagUnit = grain === "day" ? "d" : ` ${grain}(s)`;
   const parentChips = (def.parents || [])
     .map((p) => {
       const lag = def.lags && def.lags[p];
-      return `<code>${esc(p)}</code>${lag ? ` <span class="chip lag">lag ${lag}d</span>` : ""}`;
+      return `<code>${esc(p)}</code>${lag ? ` <span class="chip lag">lag ${lag}${lagUnit}</span>` : ""}`;
     })
     .join(", ") || "<span style='color:var(--muted)'>none (source)</span>";
 
@@ -773,6 +778,7 @@ function renderMetricTab(name, data) {
     ${def.description ? `<p class="desc">${esc(def.description)}</p>` : ""}
     <table class="kv">
       <tr><td>Source</td><td><code>${esc(def.source)}</code></td></tr>
+      <tr><td>Grain</td><td><code>${esc(grain)}</code> · ${esc(def.kind || "flow")}</td></tr>
       <tr><td>Parents</td><td>${parentChips}</td></tr>
       ${def.formula ? `<tr><td>Formula</td><td><code>${esc(def.formula)}</code></td></tr>` : ""}
     </table>
@@ -1141,7 +1147,26 @@ function highlightCause(causeName) {
 function renderRcaTab() {
   const res = state.rca;
   const target = res.nodes[res.target];
+
+  if (target.status === "window_shorter_than_grain") {
+    $("tab-rca").innerHTML = `
+      <div class="rca-card">
+        <div class="sub">${esc(res.target)}</div>
+        <p class="placeholder">The requested windows contain no whole
+        <strong>${esc(target.grain)}</strong> period, so this
+        ${esc(target.grain)}-grain metric cannot be analyzed. Widen the
+        windows to at least one full ${esc(target.grain)}.</p>
+      </div>`;
+    return;
+  }
+
   const dirCls = target.gap >= 0 ? "up" : "down";
+  const skipped = Object.entries(res.nodes)
+    .filter(([, n]) => n.status === "window_shorter_than_grain")
+    .map(([name, n]) => `<code>${esc(name)}</code> (${esc(n.grain)})`);
+  const skippedNote = skipped.length
+    ? `<p class="inline-status">Not analyzed — window shorter than grain: ${skipped.join(", ")}.</p>`
+    : "";
 
   const maxScore = Math.max(...res.ranked_causes.map((c) => c.score), 1e-9);
   const causeRows = res.ranked_causes
@@ -1158,33 +1183,101 @@ function renderRcaTab() {
 
   // attribution detail: target first, then ranked order
   const order = [res.target, ...res.ranked_causes.map((c) => c.metric)];
+  const view = state.rcaView;
+  const shareOf = (v, gap) => (Math.abs(gap) > 1e-12 ? pct(v / gap) : "—");
+  const ciCell = (ci) => (ci ? `[${fmt(ci[0])}, ${fmt(ci[1])}]` : "—");
+  const anyTwoLevel = order.some((name) => {
+    const n = res.nodes[name];
+    return n && n.contributions.some((c) => c.decomposition);
+  });
   const blocks = order
     .filter((name) => res.nodes[name] && res.nodes[name].contributions.length)
     .map((name) => {
       const node = res.nodes[name];
       const method = node.attribution_method === "shapley" ? "Shapley (exact)" : "posterior";
-      const rows = node.contributions
-        .map(
-          (c) => `<tr>
-            <td><code>${esc(c.parent)}</code></td>
-            <td class="num">${fmt(c.estimate)}</td>
-            <td class="num">${c.share_of_gap === null ? "—" : pct(c.share_of_gap)}</td>
-            <td class="num">${c.ci_95 ? `[${fmt(c.ci_95[0])}, ${fmt(c.ci_95[1])}]` : "exact"}</td>
-            <td class="num">${c.prob_same_direction === null ? "—" : pct(c.prob_same_direction)}</td>
-          </tr>`,
-        )
-        .join("");
-      const unexplained =
-        node.unexplained !== null
-          ? `<tr class="dim"><td>unexplained</td><td class="num">${fmt(node.unexplained)}</td><td class="num">${
-              Math.abs(node.gap) > 1e-12 ? pct(node.unexplained / node.gap) : "—"
-            }</td><td class="num">—</td><td class="num">—</td></tr>`
+      const ew = node.effective_windows;
+      const snapNote =
+        node.grain && node.grain !== "day" && ew
+          ? ` · ${esc(node.grain)} grain, snapped to ${ew.reference.n_periods}+${ew.analysis.n_periods} whole ${esc(node.grain)}s`
           : "";
+      const ciNote =
+        node.ci_status === "degenerate_single_period"
+          ? ` · single-period window: no bootstrap CI`
+          : "";
+      const twoLevel = node.contributions.some((c) => c.decomposition);
+      let header, rows, nCols;
+
+      if (twoLevel && view === "headline") {
+        // Headline: the window-means bridge per parent plus one explicit
+        // co-movement (interaction) row — the price/volume/mix view.
+        nCols = 4;
+        header = `<tr><th>Driver</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th></tr>`;
+        rows = node.contributions
+          .map((c) => {
+            const m = c.decomposition.means;
+            return `<tr>
+              <td><code>${esc(c.parent)}</code></td>
+              <td class="num">${fmt(m.estimate)}</td>
+              <td class="num">${shareOf(m.estimate, node.gap)}</td>
+              <td class="num">${ciCell(m.ci_95)}</td>
+            </tr>`;
+          })
+          .join("");
+        if (node.interaction) {
+          rows += `<tr class="interaction-row">
+            <td>co-movement shift <span class="hint" title="How much of the gap comes from the parents moving together within the window (their covariance) changing between the two windows — rather than from their individual averages moving. Switch to Detailed to see how it splits across parents.">?</span></td>
+            <td class="num">${fmt(node.interaction.estimate)}</td>
+            <td class="num">${shareOf(node.interaction.estimate, node.gap)}</td>
+            <td class="num">${ciCell(node.interaction.ci_95)}</td>
+          </tr>`;
+        }
+      } else if (twoLevel) {
+        // Detailed: full per-parent split — means + co-movement = total.
+        nCols = 6;
+        header = `<tr><th>Parent</th><th class="num">means</th><th class="num">co-movement</th><th class="num">total Δ</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>`;
+        rows = node.contributions
+          .map(
+            (c) => `<tr>
+              <td><code>${esc(c.parent)}</code></td>
+              <td class="num">${fmt(c.decomposition.means.estimate)}</td>
+              <td class="num">${fmt(c.decomposition.comovement.estimate)}</td>
+              <td class="num">${fmt(c.estimate)}</td>
+              <td class="num">${ciCell(c.ci_95)}</td>
+              <td class="num">${c.prob_same_direction == null ? "—" : pct(c.prob_same_direction)}</td>
+            </tr>`,
+          )
+          .join("");
+      } else {
+        nCols = 5;
+        header = `<tr><th>Parent</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>`;
+        rows = node.contributions
+          .map(
+            (c) => `<tr>
+              <td><code>${esc(c.parent)}</code></td>
+              <td class="num">${fmt(c.estimate)}</td>
+              <td class="num">${c.share_of_gap === null ? "—" : pct(c.share_of_gap)}</td>
+              <td class="num">${ciCell(c.ci_95)}</td>
+              <td class="num">${c.prob_same_direction == null ? "—" : pct(c.prob_same_direction)}</td>
+            </tr>`,
+          )
+          .join("");
+      }
+
+      let unexplained = "";
+      if (node.unexplained !== null) {
+        const dash = '<td class="num">—</td>';
+        if (nCols === 6) {
+          // Detailed view: unexplained sits in the "total Δ" column.
+          unexplained = `<tr class="dim"><td>unexplained</td>${dash}${dash}<td class="num">${fmt(node.unexplained)}</td>${dash}${dash}</tr>`;
+        } else {
+          unexplained = `<tr class="dim"><td>unexplained</td><td class="num">${fmt(node.unexplained)}</td><td class="num">${shareOf(node.unexplained, node.gap)}</td>${dash.repeat(nCols - 3)}</tr>`;
+        }
+      }
       return `
         <div class="attr-block">
-          <h4>${esc(name)} <span class="method">· ${method}</span></h4>
+          <h4>${esc(name)} <span class="method">· ${method}${snapNote}${ciNote}</span></h4>
           <table class="data-table">
-            <tr><th>Parent</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>
+            ${header}
             ${rows}
             ${unexplained}
           </table>
@@ -1192,12 +1285,20 @@ function renderRcaTab() {
     })
     .join("");
 
+  const viewToggle = anyTwoLevel
+    ? `<div class="rca-view-toggle">
+         <button class="rca-view-btn${view === "headline" ? " active" : ""}" data-view="headline" title="Window-means bridge per parent, with the co-movement shift as its own row">Headline</button>
+         <button class="rca-view-btn${view === "detailed" ? " active" : ""}" data-view="detailed" title="Full per-parent split: means + co-movement = total">Detailed</button>
+       </div>`
+    : "";
+
   $("tab-rca").innerHTML = `
     <div class="rca-card">
       <div class="sub">${esc(res.target)} · ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)} vs ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}</div>
       <div class="gap-line ${dirCls}">${target.gap >= 0 ? "+" : ""}${fmt(target.gap)} <span style="font-size:14px">(${signedPct(target.relative_change)})</span></div>
       <div id="rca-strip"></div>
-      <div class="sub">${fmt(target.baseline)} → ${fmt(target.actual)} (window means)</div>
+      <div class="sub">${fmt(target.baseline)} → ${fmt(target.actual)} (window means${target.grain && target.grain !== "day" ? ` per ${esc(target.grain)}` : ""})</div>
+      ${skippedNote}
     </div>
 
     <section>
@@ -1206,12 +1307,23 @@ function renderRcaTab() {
     </section>
 
     <section>
-      <h3>Attribution detail</h3>
+      <div class="attr-head">
+        <h3>Attribution detail</h3>
+        ${viewToggle}
+      </div>
       ${blocks || '<p class="placeholder">No attributable edges in scope.</p>'}
     </section>`;
 
   document.querySelectorAll(".cause-row").forEach((row) => {
     row.addEventListener("click", () => highlightCause(row.dataset.metric));
+  });
+  document.querySelectorAll(".rca-view-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (state.rcaView !== btn.dataset.view) {
+        state.rcaView = btn.dataset.view;
+        renderRcaTab();
+      }
+    });
   });
 
   renderRcaStrip(res);

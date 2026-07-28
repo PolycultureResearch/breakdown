@@ -257,3 +257,144 @@ def test_warehouse_fetcher_profile_uses_credentials_provider(monkeypatch):
     assert callable(kw["credentials_provider"])
     # host resolved from the profile, with scheme/trailing slash stripped
     assert kw["server_hostname"] == "dbc-fake.cloud.databricks.com"
+
+
+# --- grain-aware providers (1.7) ---
+
+MIXED_TREE = """
+metrics:
+  - name: trial_starts
+    source: dbt.metric.trial_starts
+  - name: trial_conversion_rate
+    source: dbt.metric.trial_conversion_rate
+    grain: week
+    kind: rate
+  - name: conversions
+    source: dbt.metric.conversions
+    grain: week
+    formula: "trial_starts * trial_conversion_rate"
+    parents: [trial_starts, trial_conversion_rate]
+"""
+
+
+def test_mock_all_day_tree_pinned_values():
+    """Grain-aware generation must leave all-day trees byte-identical: golden
+    values captured from the pre-grain generator."""
+    parser = Parser(TREE_YAML)
+    fetcher = MockDataFetcher(dag=parser.dag)
+    df = fetcher.fetch_metric("revenue", "2024-01-01", "2024-04-09")
+    assert len(df) == 100
+    np.testing.assert_allclose(
+        df["revenue"].head(3).to_numpy(),
+        [793860.4244541493, 959272.2559016624, 1017094.0476589967],
+        rtol=0, atol=1e-6,
+    )
+    np.testing.assert_allclose(df["revenue"].sum(), 79884063.93374, atol=1e-4)
+    sessions = fetcher.fetch_metric("daily_sessions", "2024-01-01", "2024-04-09")
+    np.testing.assert_allclose(
+        sessions["daily_sessions"].head(3).to_numpy(),
+        [1890.3967010755, 2019.680210048, 2028.7438671543],
+        rtol=0, atol=1e-6,
+    )
+
+
+def test_mock_mixed_grain_identity_holds_at_node_grain():
+    """A weekly formula node satisfies its formula against the daily flow
+    parent summed to weeks and the native weekly rate."""
+    parser = Parser(MIXED_TREE)
+    fetcher = MockDataFetcher(dag=parser.dag)
+    window = ("2024-01-01", "2024-03-31")
+
+    conv = fetcher.fetch_metric("conversions", *window, grain="week")
+    starts = fetcher.fetch_metric("trial_starts", *window)
+    rate = fetcher.fetch_metric("trial_conversion_rate", *window, grain="week", kind="rate")
+
+    weekly_starts = (
+        starts.set_index("date")["trial_starts"].resample("W-MON", label="left", closed="left").sum()
+    )
+    joined = conv.set_index("date").join(weekly_starts, how="inner").join(
+        rate.set_index("date"), how="inner"
+    )
+    expected = joined["trial_starts"] * joined["trial_conversion_rate"]
+    assert len(joined) >= 10
+    # Generator adds 2% noise to the identity; with ~13 weekly points assert
+    # a tight relative residual rather than a fragile correlation threshold.
+    rel_err = np.abs(joined["conversions"] - expected) / np.abs(expected)
+    assert rel_err.median() < 0.05
+    assert np.corrcoef(joined["conversions"], expected)[0, 1] > 0.95
+    # Weekly labels are period starts (Mondays).
+    assert all(d.dayofweek == 0 for d in conv["date"])
+
+
+def test_mock_fetcher_coarse_fallback_walk():
+    """Non-DAG metrics generate at the requested grain."""
+    fetcher = MockDataFetcher()
+    df = fetcher.fetch_metric("anything", "2024-01-01", "2024-03-31", grain="week")
+    assert all(d.dayofweek == 0 for d in df["date"])
+    assert len(df) == 13  # whole weeks fully inside Mon Jan 1 .. Sun Mar 31
+
+
+def _wh_fetcher(rows):
+    import datetime  # noqa: F401
+    cursor = _StubCursor(rows)
+    fetcher = WarehouseDataFetcher(
+        host="h", http_path="p", token="t",
+        metric_sql={"m": "SELECT ... :start_date ... :end_date"},
+    )
+    fetcher._cursor = lambda: cursor
+    return fetcher
+
+
+def test_warehouse_weekly_flow_zero_fills_missing_weeks():
+    import datetime
+    rows = [
+        (datetime.date(2024, 1, 1), 100.0),   # Monday
+        (datetime.date(2024, 1, 15), 250.0),  # Monday, gap week between
+    ]
+    df = _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week")
+    assert df["m"].tolist() == [100.0, 0.0, 250.0, 0.0]
+    assert all(d.dayofweek == 0 for d in df["date"])
+
+
+def test_warehouse_weekly_stock_forward_fills():
+    import datetime
+    rows = [
+        (datetime.date(2024, 1, 1), 100.0),
+        (datetime.date(2024, 1, 15), 250.0),
+    ]
+    df = _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week", kind="stock")
+    assert df["m"].tolist() == [100.0, 100.0, 250.0, 250.0]
+
+
+def test_warehouse_stock_leading_gap_raises():
+    import datetime
+    rows = [(datetime.date(2024, 1, 15), 250.0)]
+    with pytest.raises(RuntimeError, match="no value at or before the first week period"):
+        _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week", kind="stock")
+
+
+def test_warehouse_rate_missing_period_raises():
+    import datetime
+    rows = [(datetime.date(2024, 1, 1), 0.5)]
+    with pytest.raises(RuntimeError, match="Rate metric 'm' is missing week periods"):
+        _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week", kind="rate")
+
+
+def test_warehouse_misaligned_labels_raise():
+    import datetime
+    rows = [(datetime.date(2024, 1, 3), 100.0)]  # a Wednesday at week grain
+    with pytest.raises(RuntimeError, match="not aligned to period starts"):
+        _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week")
+
+
+def test_warehouse_partial_period_rows_dropped():
+    """Rows for periods only partially inside the window are dropped, not
+    zero-filled into fake periods."""
+    import datetime
+    rows = [
+        (datetime.date(2024, 1, 1), 100.0),
+        (datetime.date(2024, 1, 8), 200.0),
+    ]
+    # Window ends Wednesday Jan 10: the Jan-8 week is partial.
+    df = _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-10", grain="week")
+    assert df["m"].tolist() == [100.0]

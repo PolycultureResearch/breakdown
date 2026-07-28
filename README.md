@@ -165,13 +165,15 @@ Each metric entry supports the following fields:
 |-------|------|-------------|
 | `name` | string | Unique identifier used throughout the tree |
 | `source` | string | dbt Semantic Layer metric path (e.g., `jaffle_shop.metrics.revenue`) |
-| `sql` | string | For the `warehouse` provider: a SQL query returning columns `date` and `value`, with `:start_date` / `:end_date` named parameters. Ignored by other providers. |
+| `grain` | string | The metric's natural grain: `day` (default), `week`, or `month`. It is fetched, fitted, and attributed at this grain, never below it. See [Grains](#grains). |
+| `kind` | string | Temporal aggregation kind: `flow` (default — sums over time), `stock` (point-in-time level — takes the last value), or `rate` (a ratio — can never be auto-aggregated). See [Grains](#grains). |
+| `sql` | string | For the `warehouse` provider: a SQL query returning columns `date` and `value`, with `:start_date` / `:end_date` named parameters — one row per period at the metric's `grain`. Ignored by other providers. |
 | `description` | string | Optional human-readable description |
 | `parents` | list | Names of metrics that causally influence this one |
 | `formula` | string | Arithmetic expression over parent names (e.g., `"order_count * average_order_value"`). Enables Shapley attribution. |
 | `priors` | dict | Bayesian priors for the causal coefficients (see below) |
-| `lags` | dict | Per-parent time lag in grain units (days). Regresses the child on each parent's value `N` steps earlier. Mutually exclusive with `formula`. |
-| `seasonality` | list | Periodic components to include in the BSTS model |
+| `lags` | dict | Per-parent time lag in grain steps **at the node's grain** (days for a daily node, weeks for a weekly one). On a probabilistic node, regresses the child on each parent's value `N` steps earlier; combined with `formula`, declares a cohort-aligned lagged identity. See [Lagged regressors](#lagged-regressors). |
+| `seasonality` | list | Periodic components to include in the BSTS model. Periods are in grain steps at the node's grain. |
 | `trend` | string or dict | Local-level (random-walk) trend. `trend: linear` uses the default step-size prior HalfNormal(0.05); `trend: {type: linear, sigma: 0.1}` widens it so the trend may absorb faster drift. Only `type: linear` is supported. |
 | `format` | string or dict | UI display hint for the node card's big number — presentation only, no effect on modeling. See [Display format](#display-format). |
 
@@ -243,19 +245,66 @@ When a formula is defined, the BSTS model fits the **residual** (`y - formula(pa
 
 ### Lagged regressors
 
-Some causal effects show up with a delay — the README's motivating example is support tickets driving churn *weeks later*. A `lags` dict regresses the child on each parent's value `N` grain-steps (days) earlier:
+Some causal effects show up with a delay — the README's motivating example is support tickets driving churn *weeks later*. A `lags` dict regresses the child on each parent's value `N` grain steps earlier, at the **child's** grain (days for a daily child, weeks for a weekly one):
 
 ```yaml
 - name: churn_rate
   source: my.metrics.churn_rate
   parents: [support_tickets]
-  lags: { support_tickets: 21 }   # churn responds to tickets from 3 weeks earlier
+  lags: { support_tickets: 21 }   # churn responds to tickets from 3 weeks earlier (daily node)
 ```
 
 Rules:
-- Every `lags` key must be a parent; every value must be an integer ≥ 1 (grain units, days).
-- `lags` and `formula` are mutually exclusive — a formula is a contemporaneous identity.
+- Every `lags` key must be a parent; every value must be an integer ≥ 1 (grain steps at the node's grain).
 - The engine shifts each parent by its lag and trims the leading `max(lags)` rows so all series align with no NaNs. It raises if fewer than 10 rows remain.
+
+**Cohort-aligned lagged identities.** `lags` combines with `formula` to declare an *exact* identity over time-shifted parents: `A[t] = f(each parent shifted back by its lag)`. This is how cohort conversion gets a deterministic form instead of a blended same-period ratio or a fully probabilistic edge:
+
+```yaml
+- name: conversions
+  source: my.metrics.conversions
+  formula: "trial_starts * cohort_rate"
+  parents: [trial_starts, cohort_rate]
+  lags: { trial_starts: 14 }   # today's conversions come from the cohort that started 14 days ago
+```
+
+Shapley attribution and the residual fit both read each lagged parent from windows shifted back by its lag, so the identity — and its exact attribution — holds cohort-by-cohort.
+
+### Grains
+
+Metrics have different natural time grains: signups are daily events, a cohort conversion rate is only meaningful per week, MRR is a monthly snapshot. Forcing everything onto a daily spine manufactures fake sample size (a monthly value repeated 30 times is still one observation) and makes per-day ratios degenerate on low-volume days. Instead, each node declares its natural `grain` and is **fetched, fitted, and attributed at that grain, never below it**:
+
+```yaml
+- name: trial_starts            # daily flow (defaults: grain day, kind flow)
+  source: my.metrics.trial_starts
+
+- name: trial_conversion_rate   # weekly cohort rate
+  source: my.metrics.trial_conversion_rate
+  grain: week
+  kind: rate
+
+- name: conversions             # weekly identity over a daily flow and a weekly rate
+  source: my.metrics.conversions
+  grain: week
+  formula: "trial_starts * trial_conversion_rate"
+  parents: [trial_starts, trial_conversion_rate]
+```
+
+**Kinds determine aggregation.** Resampling a series upward is only well-defined once you know how it aggregates: `flow` metrics **sum** (orders, new MRR), `stock` metrics take the **last value** (total MRR, account balances), and `rate` metrics can never be auto-aggregated — the average of daily ratios is not the coarser ratio, so a rate must be *declared* at the grain it's consumed at, recomputed from its components.
+
+**Mixed-grain rules** (enforced at parse time):
+- A parent may never be **coarser** than its child — downward disaggregation is undefined.
+- A **finer flow/stock** parent is automatically resampled up to the child's grain (sum / last). In the example above, `conversions` at week grain sees the *weekly sum* of `trial_starts`.
+- A **finer rate** parent is an error — declare the rate at the child's grain.
+- The finer grain must nest in the coarser: days tile weeks and months, but weeks straddle month boundaries, so a weekly parent under a monthly child is an error.
+
+**Period labels are period starts** everywhere: days at midnight, weeks on Monday (ISO), months on the 1st. Partial edge periods are dropped, never zero-filled — a coarse metric's series may therefore end a few days before the raw data window does.
+
+**Windows snap per node.** RCA windows stay day-resolution dates in the API; each node interprets them as the whole periods fully inside. A node whose window holds no whole period reports `"status": "window_shorter_than_grain"` instead of failing the RCA, and every node reports its `grain` and `effective_windows`. Windows that snap to a single period suppress the bootstrap CI (`ci_status: "degenerate_single_period"`) rather than reporting a falsely-precise interval.
+
+**Warehouse SQL contract per grain.** The SQL owns the aggregation: return one row per period at the declared grain, labeled by period start. Gaps are filled by kind — flow → 0, stock → forward-fill (a gap before the first period is an error), rate → any missing period is an error.
+
+**Data-length guidance.** Fits need at least 10 whole periods at the node's grain — coarser grains need proportionally longer windows (a monthly node wants roughly a year of history). Seasonality periods and lags are in grain steps: `period: 7` means weekly on a daily node and seven *months* on a monthly one (the parser warns about that).
 
 ### Display format
 
@@ -329,17 +378,26 @@ Example response:
 {
   "target": "revenue",
   "formula": "order_count * average_order_value",
+  "grain": "day",
+  "effective_windows": {
+    "reference": {"start": "2024-01-01", "end": "2024-02-15", "n_periods": 46},
+    "analysis": {"start": "2024-02-16", "end": "2024-04-09", "n_periods": 54}
+  },
   "baseline": 50000.0,
   "actual": 42000.0,
   "gap": -8000.0,
   "attribution": {
     "order_count": -6200.0,
     "average_order_value": -1800.0
+  },
+  "decomposition": {
+    "order_count": {"means": -6100.0, "covariance_analysis": -80.0, "covariance_reference": 20.0},
+    "average_order_value": {"means": -1700.0, "covariance_analysis": -80.0, "covariance_reference": 20.0}
   }
 }
 ```
 
-`baseline` is the formula evaluated at the parents' reference-window means; `actual` is the **mean of the formula evaluated day by day** over the analysis window (so within-window co-movement of the parents is included); `gap = actual − baseline`. The `attribution` values are exact per-day Shapley values (averaged over the analysis window) and are guaranteed to sum to `gap`.
+`baseline` and `actual` are each the **mean of the formula evaluated period by period** (at the target's grain) over the reference and analysis windows respectively (so both windows' within-window co-movement of the parents is included); `gap = actual − baseline`. Each `attribution` value is the sum of three exact Shapley games, reported per parent in `decomposition`: `attribution = means + covariance_analysis − covariance_reference` (the window-means bridge plus the parent's share of each window's within-window co-movement term). The attributions are guaranteed to sum to `gap`. Windows are snapped to whole periods at the target's grain (`effective_windows`); a window with no whole period is a 422.
 
 ### `POST /rca/{name}`
 
@@ -360,8 +418,14 @@ Trimmed response:
   "analysis_window": {"start": "2024-02-16", "end": "2024-04-09"},
   "nodes": {
     "revenue": {
+      "status": "ok", "grain": "day",
+      "effective_windows": {
+        "reference": {"start": "2024-01-01", "end": "2024-02-15", "n_periods": 46},
+        "analysis": {"start": "2024-02-16", "end": "2024-04-09", "n_periods": 54}
+      },
       "baseline": 25000.0, "actual": 27000.0, "gap": 2000.0, "relative_change": 0.08,
       "attribution_method": "shapley",
+      "ci_status": "ok",
       "unexplained": 12.0,
       "components": null,
       "contributions": [
@@ -372,8 +436,14 @@ Trimmed response:
       ]
     },
     "order_count": {
+      "status": "ok", "grain": "day",
+      "effective_windows": {
+        "reference": {"start": "2024-01-01", "end": "2024-02-15", "n_periods": 46},
+        "analysis": {"start": "2024-02-16", "end": "2024-04-09", "n_periods": 54}
+      },
       "baseline": 500.0, "actual": 540.0, "gap": 40.0, "relative_change": 0.08,
       "attribution_method": "posterior",
+      "ci_status": "ok",
       "unexplained": 1.4,
       "components": {
         "trend": {"estimate": 0.5, "ci_95": [-1.1, 2.2]},
@@ -392,11 +462,15 @@ Trimmed response:
 }
 ```
 
+Per-node fields added by grain support: `grain` (the grain the node was analyzed at), `effective_windows` (the whole periods the requested windows snapped to at that grain), `status` (`"ok"`, or `"window_shorter_than_grain"` when the windows contain no whole period — the node is reported without attribution instead of failing the RCA), and `ci_status` (`"ok"`, `"degenerate_single_period"` for formula nodes whose window snapped to one period — bootstrap CIs are withheld — or `"posterior_only_single_period"` for posterior nodes, whose coefficient uncertainty remains but whose window-sampling component is absent). Gaps are mean-per-period at each node's own grain, so compare nodes via `share_of_gap` and `ranked_causes` scores, not raw gaps, in mixed-grain trees.
+
+**Two-level attribution (formula nodes).** Each formula-node contribution also carries a `decomposition` — `{"means": {estimate, ci_95}, "comovement": {estimate, ci_95}}` with `means + comovement = estimate` exactly per bootstrap replicate — and the node carries an `interaction` summary (the summed co-movement shift across parents, with its own CI). The UI's default **Headline** view is the classic price/volume/mix bridge built from these: one row per parent showing its means-bridge contribution, plus one explicit *co-movement shift* row, plus unexplained — rows total to the gap. The **Detailed** toggle expands each parent to its full split. The interaction is shown as its own labeled row rather than silently folded into the factors; for products it is exactly the parents' covariance delta, for other formulas the full within-window co-movement/Jensen shift.
+
 ### Root cause analysis
 
 `POST /rca/{name}` combines the two attribution methods across a metric tree:
 
-- **Formula nodes** get `attribution_method: "shapley"` — exact per-day Shapley values (each analysis-window day is one Shapley game against the parents' reference means, averaged over the window), so shifts in the parents' within-window co-movement are attributed to parents. `unexplained` is the part of the gap the arithmetic identity doesn't account for (the target's own noise around the formula).
+- **Formula nodes** get `attribution_method: "shapley"` — exact symmetric per-day Shapley values (a window-means bridge plus each parent's share of the within-window co-movement term of each window, analysis added and reference subtracted), so shifts in the parents' within-window co-movement are attributed to parents. `unexplained` is only the target's own measurement noise around the formula — for an exact identity it is zero.
 - **Probabilistic nodes** get `attribution_method: "posterior"` — each contribution is the posterior over the parent's raw-scale coefficient (`beta_raw`) times the parent's window-over-window change. Lagged parents are compared over windows shifted back by the lag. These nodes also report a `components` block: the fitted model's own trend and seasonal terms as window-over-window deltas with CIs, so they no longer hide inside `unexplained`.
 
 Every contribution is reported as an `estimate` (mean), a 95% interval (`ci_95`), and `prob_same_direction` (mass on the dominant side of zero). The intervals combine coefficient uncertainty (probabilistic nodes) with **window-sampling uncertainty** — the window means themselves are resampled with a circular moving-block bootstrap (≤7-day blocks, jointly across metrics, seeded so responses are deterministic). This is what keeps a 3-day analysis window honest: its CIs are visibly wider than a 4-week window's.
@@ -432,16 +506,20 @@ For metrics connected by a formula, Breakdown computes exact Shapley values to a
 
 **Why Shapley?** Simpler decompositions (e.g., holding one factor fixed while varying the other) produce different answers depending on the order of decomposition. Shapley values are the unique attribution method that is simultaneously: efficient (values sum to the gap), symmetric (order doesn't matter), and null (a parent that didn't move gets zero credit).
 
-**How it works:** The attribution is computed **per analysis-window day**: for each day, coalition members take their observed value on that day and non-members take their reference-window mean, and each parent's Shapley value is the weighted average of its marginal contribution across all coalitions. A parent's reported attribution is its per-day value averaged over the window, so the values sum exactly to `mean(formula evaluated daily over the analysis window) − formula(reference means)`. For a single day of a 2-parent multiplicative formula `A × B`:
+**How it works:** Each parent's attribution is the sum of **three exact Shapley games**, all computed by full coalition enumeration (2ⁿ coalitions, vectorized across days):
+
+1. **The window-means bridge** — one game from the parents' reference-window means to their analysis-window means.
+2. **The analysis window's co-movement share** — one game per analysis-window day, non-members held at the *analysis* means; averaged over the window it is the parent's share of `mean_an(formula daily) − formula(analysis means)`.
+3. **The reference window's co-movement share** — the same inside the reference window, *subtracted*.
+
+The parts telescope, so attributions sum exactly to `mean(formula daily over analysis) − mean(formula daily over reference)` — the formula's own gap. For a 2-parent multiplicative formula `A × B` this reduces to the closed form:
 
 ```
-φ(A) = ΔA × (baseline_B + actual_B) / 2
-φ(B) = ΔB × (baseline_A + actual_A) / 2
+φ(A) = Δmean(A) × (mean_ref(B) + mean_an(B)) / 2  +  (cov_an(A,B) − cov_ref(A,B)) / 2
+φ(B) = Δmean(B) × (mean_ref(A) + mean_an(A)) / 2  +  (cov_an(A,B) − cov_ref(A,B)) / 2
 ```
 
-This generalizes to arbitrary formulas and any number of parents via exact enumeration (2ⁿ coalitions per day, vectorized across days).
-
-**Why per-day?** For any nonlinear formula, `mean(A × B)` differs from `mean(A) × mean(B)` by the within-window covariance of A and B. Attributing on window means would silently drop that term — a real behavioral change like "the large orders disappeared" (an orders–AOV covariance shift) would be reported as noise. Per-day attribution hands it to the parents where it belongs.
+**Why per-day, in both windows?** For any nonlinear formula, `mean(A × B)` differs from `mean(A) × mean(B)` by the within-window covariance of A and B. Attributing on window means would silently drop that term — a real behavioral change like "the large orders disappeared" (an orders–AOV covariance shift) would be reported as noise. Treating **both** windows per-day means the covariance *delta* is handed to the parents where it belongs, while a covariance that exists but didn't change contributes nothing — and `unexplained` stays exactly zero for an exact identity instead of absorbing the reference window's covariance.
 
 ---
 

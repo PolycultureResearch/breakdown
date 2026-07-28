@@ -44,6 +44,7 @@ from pydantic import BaseModel, Field, model_validator
 from breakdown.engine.model import fit_metric
 from breakdown.engine.rca import window_mean
 from breakdown.formula import eval_formula
+from breakdown.grains import ensure_grained, fit_grain, snap_window
 
 _N_DRAWS = 2000
 _MAX_SOURCES = 10
@@ -165,8 +166,7 @@ def run_scenario(
     """
     assumptions = _validate_scenario(dag, scenario)
 
-    frame = data.copy()
-    frame["date"] = pd.to_datetime(frame["date"])
+    data = ensure_grained(data)
     b_start = pd.to_datetime(scenario.baseline_start)
     b_end = pd.to_datetime(scenario.baseline_end)
     if b_end < b_start:
@@ -176,7 +176,40 @@ def run_scenario(
         )
 
     rng = np.random.default_rng(0)
-    baselines = {n: window_mean(frame, n, b_start, b_end) for n in dag.nodes}
+
+    # Per-node baselines at each node's native grain over the whole periods
+    # inside the baseline window. Unlike RCA's per-node degrade, a node with
+    # no baseline cannot be simulated at all, so this errors loudly.
+    baselines: Dict[str, float] = {}
+    for n in dag.nodes:
+        g = fit_grain(dag, n)
+        snapped = snap_window(b_start, b_end, g)
+        if snapped is None:
+            raise ValueError(
+                f"Baseline window [{scenario.baseline_start}, "
+                f"{scenario.baseline_end}] contains no whole '{g}' period for "
+                f"metric '{n}' (grain '{g}')."
+            )
+        baselines[n] = window_mean(
+            data.series(n), n, snapped.first_start, snapped.last_start
+        )
+
+    # Steady-state deltas are in per-native-period units. A flow parent
+    # feeding a coarser child was fitted against its *sum* per child period,
+    # so its baseline/delta must be scaled by periods-per-child-period at
+    # that edge; stocks (last-value) and same-grain edges pass through.
+    _PERIODS_PER = {("day", "week"): 7.0, ("day", "month"): 365.25 / 12}
+    edge_scale: Dict[Tuple[str, str], float] = {}
+    for child in dag.nodes:
+        cg = fit_grain(dag, child)
+        for p in dag.predecessors(child):
+            pdefn = dag.nodes[p]["definition"]
+            pg = getattr(pdefn, "grain", "day")
+            pkind = getattr(pdefn, "kind", "flow")
+            if pg == cg or pkind != "flow":
+                edge_scale[(p, child)] = 1.0
+            else:
+                edge_scale[(p, child)] = _PERIODS_PER[(pg, cg)]
 
     # Resolve interventions to absolute steady-state targets.
     targets: Dict[str, float] = {}
@@ -213,7 +246,7 @@ def run_scenario(
     # a delta can actually reach it through a parent. fit_end is exclusive, so
     # baseline_end + 1 day fits through the baseline window; when the baseline
     # runs to the end of the data that is exactly the full-window fit.
-    data_end = frame["date"].max()
+    data_end = data.date_end
     fit_end_key: Optional[str] = (
         None if b_end >= data_end else (b_end + pd.Timedelta(days=1)).date().isoformat()
     )
@@ -277,8 +310,17 @@ def run_scenario(
             parents = list(dag.predecessors(node))
             d = np.zeros(size)
             if defn.formula:
-                base = {p: np.full(size, baselines[p]) for p in parents}
-                shifted = {p: base[p] + deltas.get(p, 0.0) for p in parents}
+                # The identity holds at the node's grain: finer flow parents
+                # enter as their per-child-period sum (baseline and delta
+                # alike scaled by the edge's periods-per-period factor).
+                base = {
+                    p: np.full(size, baselines[p] * edge_scale[(p, node)])
+                    for p in parents
+                }
+                shifted = {
+                    p: base[p] + deltas.get(p, 0.0) * edge_scale[(p, node)]
+                    for p in parents
+                }
                 d = d + np.asarray(
                     eval_formula(defn.formula, shifted) - eval_formula(defn.formula, base),
                     dtype=float,
@@ -288,7 +330,10 @@ def run_scenario(
                 for i, p in enumerate(parents):
                     dp = deltas.get(p)
                     if dp is not None:
-                        d = d + betas[:, i] * dp
+                        # beta_raw was fitted against the parent aggregated to
+                        # this node's grain — scale the per-native-period
+                        # delta accordingly.
+                        d = d + betas[:, i] * (dp * edge_scale[(p, node)])
             for a in assumptions_by_target.get(node, []):
                 if a.id in active:
                     d = d + (effect_draws[a.id] if use_draws else effect_means[a.id])
@@ -323,15 +368,15 @@ def run_scenario(
                         with_sid[node][0] - without[node][0]
                     )
 
-    hist_stats = {
-        n: {
-            "hist_min": float(np.min(frame[n].values)),
-            "hist_max": float(np.max(frame[n].values)),
-            "hist_mean": float(np.mean(frame[n].values)),
-            "hist_std": float(np.std(frame[n].values)),
+    hist_stats = {}
+    for n in dag.nodes:
+        vals = data.series(n)[n].to_numpy()
+        hist_stats[n] = {
+            "hist_min": float(np.min(vals)),
+            "hist_max": float(np.max(vals)),
+            "hist_mean": float(np.mean(vals)),
+            "hist_std": float(np.std(vals)),
         }
-        for n in dag.nodes
-    }
 
     nodes_out: Dict[str, Any] = {}
     for node in dag.nodes:

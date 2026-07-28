@@ -237,7 +237,8 @@ metrics:
 def test_per_day_shapley_attributes_covariance_shift():
     """Marginal window means of orders and aov are identical in both windows,
     but their within-window correlation flips sign. Shapley on window means sees
-    gap = 0; per-day Shapley attributes the covariance-driven revenue change."""
+    gap = 0; symmetric per-day Shapley attributes the covariance *delta*
+    between the windows to the parents."""
     n = 60
     dates = pd.date_range("2024-01-01", periods=n)
     f = np.tile([5.0, -5.0], n // 2)             # zero-mean shared factor
@@ -269,9 +270,12 @@ metrics:
     )
 
     gap = result["actual"] - result["baseline"]
-    # cov flips from +12.5 to -12.5 -> mean daily revenue moves by -12.5
-    assert abs(gap - (-12.5)) < 1e-9
+    # cov flips from +12.5 to -12.5: both windows are evaluated per-day, so
+    # the gap is the full covariance delta, split evenly for a product.
+    assert abs(gap - (-25.0)) < 1e-9
     assert abs(sum(result["attribution"].values()) - gap) < 1e-6
+    for phi in result["attribution"].values():
+        assert abs(phi - (-12.5)) < 1e-9
 
 
 # --- Window bootstrap (T7) ---
@@ -345,3 +349,24 @@ def test_rca_deterministic():
         assert r1["nodes"][node]["contributions"] == r2["nodes"][node]["contributions"]
         assert r1["nodes"][node]["components"] == r2["nodes"][node]["components"]
         assert r1["nodes"][node]["unexplained"] == r2["nodes"][node]["unexplained"]
+
+
+def test_rca_day_grain_golden_pinned():
+    """The grain refactor must leave the day-grain path bit-for-bit
+    identical: golden numbers captured before per-node grain landed. Only the
+    formula node is pinned — its contributions come solely from the seeded
+    bootstrap, independent of the ADVI posterior."""
+    dag, data = make_tree()
+    result = rca_on(dag, data, {}, "revenue")
+
+    rev = result["nodes"]["revenue"]
+    assert rev["status"] == "ok"
+    assert rev["grain"] == "day"
+    assert rev["effective_windows"]["reference"] == {
+        "start": "2024-01-01", "end": "2024-02-15", "n_periods": 46,
+    }
+    assert abs(rev["gap"] - 943.1485825183736) < 1e-9
+    assert abs(rev["unexplained"] - (-8.603117931383167)) < 1e-9
+    contribs = {c["parent"]: c["estimate"] for c in rev["contributions"]}
+    assert abs(contribs["order_count"] - 715.6923261624328) < 1e-9
+    assert abs(contribs["average_order_value"] - 239.8411235487748) < 1e-9

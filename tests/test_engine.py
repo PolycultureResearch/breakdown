@@ -618,3 +618,94 @@ def test_advi_diagnostics_present():
     assert d["method"] == "advi"
     assert d["fit_quality"] in ("ok", "suspect")
     assert "elbo_drop" in d and isinstance(d["elbo_drop"], float)
+
+
+# --- Grain-aware fitting (1.7 phase 3) ---
+
+MIXED_GRAIN_YAML = """
+metrics:
+  - name: daily_starts
+    source: dbt.metric.daily_starts
+  - name: weekly_total
+    source: dbt.metric.weekly_total
+    grain: week
+    parents: [daily_starts]
+"""
+
+
+def _mixed_grain_data(n_weeks=30, seed=7, beta=0.5):
+    """Daily flow parent; weekly child = beta * (weekly sum of parent) + noise."""
+    from breakdown.grains import build_grained
+
+    rng = np.random.default_rng(seed)
+    n_days = n_weeks * 7
+    days = pd.date_range("2024-01-01", periods=n_days)  # Monday start
+    starts = 100.0 + rng.normal(0, 8.0, n_days)
+    weekly_sum = starts.reshape(n_weeks, 7).sum(axis=1)
+    weeks = pd.date_range("2024-01-01", periods=n_weeks, freq="W-MON")
+    total = beta * weekly_sum + rng.normal(0, 5.0, n_weeks)
+    return build_grained(
+        {
+            "daily_starts": pd.DataFrame({"date": days, "daily_starts": starts}),
+            "weekly_total": pd.DataFrame({"date": weeks, "weekly_total": total}),
+        },
+        {"daily_starts": "day", "weekly_total": "week"},
+        {"daily_starts": "flow", "weekly_total": "flow"},
+    )
+
+
+def test_fit_metric_weekly_node_with_daily_parent():
+    """A native-weekly node fits at week grain against the summed daily
+    parent, recovering the planted coefficient."""
+    parser = Parser(MIXED_GRAIN_YAML)
+    data = _mixed_grain_data()
+
+    result = fit_metric(parser.dag, data, "weekly_total",
+                        draws=300, inference_method="advi")
+
+    assert result.grain == "week"
+    assert len(result.dates) == 30
+    assert all(d.dayofweek == 0 for d in result.dates)
+    beta_raw = result.trace.posterior["beta_raw"].values.reshape(-1)
+    assert abs(np.mean(beta_raw) - 0.5) < 0.1
+
+
+def test_fit_end_cuts_whole_periods():
+    """A weekly node with a mid-week fit_end excludes the straddling week."""
+    parser = Parser(MIXED_GRAIN_YAML)
+    data = _mixed_grain_data()
+
+    # 2024-07-25 is a Thursday: the week starting Mon 2024-07-22 must be cut.
+    result = fit_metric(parser.dag, data, "weekly_total",
+                        draws=200, inference_method="advi", fit_end="2024-07-25")
+
+    assert result.dates.max() == pd.Timestamp("2024-07-15")
+
+
+def test_fit_end_too_few_periods_message_is_grain_aware():
+    parser = Parser(MIXED_GRAIN_YAML)
+    data = _mixed_grain_data()
+
+    with pytest.raises(ValueError, match="whole week periods before fit_end"):
+        fit_metric(parser.dag, data, "weekly_total",
+                   draws=100, inference_method="advi", fit_end="2024-02-15")
+
+
+def test_unidentifiable_seasonality_warns_in_diagnostics():
+    yaml_content = """
+metrics:
+  - name: dau
+    source: dbt.metric.dau
+    seasonality:
+      - period: 60
+        name: bimonthly
+"""
+    parser = Parser(yaml_content)
+    data = generate_mock_data(n_days=80)[["date", "daily_sessions"]].rename(
+        columns={"daily_sessions": "dau"}
+    )
+
+    result = fit_metric(parser.dag, data, "dau", draws=200, inference_method="advi")
+
+    warnings = result.diagnostics.get("seasonality_warnings", [])
+    assert len(warnings) == 1 and "unidentifiable" in warnings[0]

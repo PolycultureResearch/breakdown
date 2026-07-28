@@ -40,12 +40,49 @@ The three node types use this differently:
 - **Formula metrics**: the formula is treated as exact, so there are no β's to
   learn. The BSTS is fitted to the **residual** `observed − formula(parents)`,
   which captures whatever the identity doesn't explain (data noise, definition
-  drift).
+  drift). With `lags`, the identity is cohort-aligned — `A[t] = f(parents
+  shifted back by their lags)` — and both the residual and the Shapley
+  attribution read each lagged parent from correspondingly shifted windows.
+
+## Grain: what one observation is
+
+Every node declares a natural `grain` (`day`, `week`, `month`; default day)
+and a `kind` (`flow` sums over time, `stock` takes the last value, `rate`
+recomputes from components). **A node is fetched, fitted, and attributed at
+its own grain, never below it.** This is a statistical statement, not a
+formatting one: a monthly snapshot forced onto a daily spine is 30 identical
+rows carrying one observation of information — the posterior it produces is
+spuriously tight, and per-day ratios on low-volume days are noise the
+bootstrap then has to paper over. At the natural grain, fewer observations
+per fit is the *honest* posterior width.
+
+Consequences to keep in mind when reading results:
+
+- `t`, lags, and seasonality periods are all **grain steps** of the node
+  (`period: 7` is weekly on a daily node and seven months on a monthly one).
+- Finer **flow/stock parents are resampled up** to the node's grain (sum /
+  last) before fitting or attribution; a weekly identity over a daily flow
+  uses the weekly *sum*. Rates never auto-resample — declare them at the
+  grain they're consumed at.
+- **Windows snap per node** to the whole periods fully inside the requested
+  dates; each node reports its `effective_windows`, and a node whose window
+  holds no whole period is reported with `status: "window_shorter_than_grain"`
+  rather than failing the analysis. Fits need ≥ 10 whole periods, so monthly
+  nodes want roughly a year of history.
+- **Gaps are mean-per-period at each node's own grain.** In a mixed-grain
+  tree, raw gaps of different-grain nodes are not comparable — compare
+  `share_of_gap` and `ranked_causes` scores instead.
+- Partial edge periods are dropped, never zero-filled, so a coarse metric's
+  series can end before the raw data window does; the trend's flat forecast
+  for a monthly node sits at the last *whole month* before the analysis
+  window, which can be weeks before the anomaly.
 
 ## What data the fit sees
 
 RCA fits each node on data **strictly before the analysis window** (`fit_end =
-analysis_start`, an exclusive cutoff). This matters: if the anomalous window were
+analysis_start`, an exclusive cutoff; only whole periods that *end* by the
+cutoff are used, so a coarse period straddling the anomaly can't train the
+model). This matters: if the anomalous window were
 included in the training data, the flexible trend could absorb the anomaly as
 "drift" and the parent coefficients would be dragged toward a compromise between
 the normal regime and the incident. Fitting on the pre-anomaly period only means
@@ -82,16 +119,21 @@ are stated in business units and translated internally, so `mu: 0.1` on
 Given a reference window and an analysis window, each metric's change is its
 **window-mean difference**: `gap = mean(analysis) − mean(reference)`.
 
-- **Formula nodes** get exact **per-day** Shapley attribution: each
-  analysis-window day is one Shapley game in which coalition members take their
-  value on that day and non-members take their reference-window mean, and a
-  parent's contribution is its per-day value averaged over the window. The
-  contributions sum exactly to
-  `mean over analysis days of formula(parents that day) − formula(reference means)`.
-  Compared to Shapley on window means, this attributes changes in the parents'
-  *within-window covariance* to the parents — for `revenue = orders × aov`,
-  "the big orders disappeared" is exactly an orders–aov covariance shift, and
-  it now shows up in the attribution instead of in `unexplained`.
+- **Formula nodes** get exact **symmetric per-day** Shapley attribution. Both
+  windows are evaluated day by day, and each parent's contribution is the sum
+  of three exact Shapley games: a **window-means bridge** (reference means →
+  analysis means), plus the parent's share of the **within-analysis-window
+  co-movement term**, minus its share of the **within-reference-window**
+  counterpart. The parts telescope, so contributions sum exactly to
+  `mean over analysis days of formula(parents that day) − mean over reference
+  days of formula(parents that day)`. Compared to Shapley on window means,
+  this attributes *shifts* in the parents' within-window covariance to the
+  parents — for `revenue = orders × aov`, "the big orders disappeared" is
+  exactly an orders–aov covariance shift, and it shows up in the attribution
+  instead of in `unexplained` — while a covariance that is merely *present*
+  but unchanged in both windows contributes nothing. (For non-product
+  formulas the co-movement terms are each window's full Jensen gap
+  `mean f(daily) − f(means)`.)
 - **Probabilistic nodes** get posterior attribution: contribution of parent i
   is the distribution `beta_raw[i] × (parent's gap)`. For lagged parents, the
   parent's gap is measured over windows shifted back by the lag — the parent
@@ -100,24 +142,45 @@ Given a reference window and an analysis window, each metric's change is its
   own trend and seasonal terms, as window-over-window deltas with credible
   intervals (see below).
 
+**Reading the two views (formula nodes).** The three games surface as two
+presentations. The **headline** is the window-aggregate bridge — each parent's
+means-bridge contribution plus one explicit *co-movement shift* row (the
+summed interaction term across parents, `interaction` in the response). This
+is the standard price/volume/mix decomposition, with the interaction shown as
+its own labeled line rather than silently split among the factors — a large
+co-movement row ("price and volume started moving together differently") is a
+finding, not a nuisance. The **detailed** view splits each parent into
+`means + comovement = total` (the `decomposition` on each contribution). For
+a product the co-movement term is exactly the parents' covariance delta,
+split evenly; for ratios and other formulas it is each window's full
+within-window Jensen term, so read it as "co-movement", not strictly
+"covariance".
+
 Every contribution is summarized as an `estimate` (mean), a 95% interval
 (`ci_95`), and `prob_same_direction` (the probability mass on the dominant side
 of zero). These intervals reflect **two** sources of uncertainty:
 
 1. **Coefficient uncertainty** (probabilistic nodes): the `beta_raw` posterior.
 2. **Window-sampling uncertainty** (all nodes): a window mean over a handful of
-   days is itself a noisy estimate (its sd shrinks only like 1/√days — brutal
-   for a 2–3 day "what happened this weekend?" window). RCA resamples each
-   window's rows with a **circular moving-block bootstrap** (blocks of up to 7
-   consecutive days, resampled jointly across all metrics so cross-metric
-   correlation within the window is preserved) and composes the resampled
-   window-mean differences with the coefficient posterior. Formula-node
-   contributions get their CIs entirely from this bootstrap — the *relationship*
-   is exact, but the window means feeding it are not.
+   periods is itself a noisy estimate (its sd shrinks only like 1/√periods —
+   brutal for a 2–3 day "what happened this weekend?" window). RCA resamples
+   each window's rows with a **circular moving-block bootstrap** (block length
+   per grain: up to 7 days, 4 weeks, or 2 months, resampled jointly across the
+   node's parents so cross-metric correlation within the window is preserved)
+   and composes the resampled window-mean differences with the coefficient
+   posterior. Formula-node contributions get their CIs entirely from this
+   bootstrap — the *relationship* is exact, but the window means feeding it
+   are not.
 
 The bootstrap assumes the series is roughly stationary within each window with
-serial dependence of at most about a week. Replicates are seeded per RCA call,
-so identical requests return identical numbers.
+serial dependence of at most about a block. Replicates are seeded per RCA
+call, so identical requests return identical numbers. A window that snaps to
+a **single period** degenerates the bootstrap to identical replicates, so the
+CI is withheld instead of reported as zero-width: formula nodes get
+`ci_status: "degenerate_single_period"` with `ci_95: null` on their
+contributions; posterior nodes keep their coefficient-posterior CI but are
+flagged `"posterior_only_single_period"` because the window-sampling
+component is absent.
 
 ### `components`: trend and seasonal, made explicit
 
@@ -149,12 +212,11 @@ remainder is reported as `unexplained`.
   `unexplained = gap − Σ parent contributions − trend − seasonal`: with the
   model's own components broken out, what remains is observation noise and
   genuine model misfit — an unmeasured driver, a wrong lag, a nonlinearity.
-- For **formula** nodes it is the part of the target's own window-mean change
-  the identity doesn't reproduce: measurement noise of the target around the
-  formula, plus the reference-window Jensen term (the within-*reference*-window
-  covariance of the parents — the analysis-window counterpart is attributed to
-  the parents by the per-day Shapley; the reference window is the stable regime
-  where this term is small and roughly constant).
+- For **formula** nodes it is only the target's own measurement noise around
+  the identity: both windows are reconstructed per-day from the parents, so an
+  exact identity has `unexplained = 0` up to floating point, and anything
+  nonzero means the target's own series genuinely disagrees with
+  `formula(parents)` inside one of the windows.
 
 A large `unexplained` is a finding, not an error — it says "neither the parents
 you modeled nor the fitted trend/seasonality account for this move."
