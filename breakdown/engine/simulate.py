@@ -42,7 +42,7 @@ import pandas as pd
 from pydantic import BaseModel, Field, model_validator
 
 from breakdown.engine.model import fit_metric
-from breakdown.engine.rca import window_mean
+from breakdown.engine.rca import _day_frame, window_mean
 from breakdown.formula import eval_formula
 
 _N_DRAWS = 2000
@@ -165,6 +165,7 @@ def run_scenario(
     """
     assumptions = _validate_scenario(dag, scenario)
 
+    data = _day_frame(data)
     frame = data.copy()
     frame["date"] = pd.to_datetime(frame["date"])
     b_start = pd.to_datetime(scenario.baseline_start)

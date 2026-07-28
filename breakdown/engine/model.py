@@ -22,6 +22,7 @@ import pymc as pm
 import pytensor.tensor as pt
 
 from breakdown.formula import eval_formula
+from breakdown.grains import GrainedData
 from breakdown.parser import MetricDefinition
 
 logger = logging.getLogger(__name__)
@@ -413,6 +414,14 @@ def fit_metric(
     """
     if inference_method not in ("nuts", "advi"):
         raise ValueError(f"inference_method must be 'nuts' or 'advi', got '{inference_method}'")
+
+    if isinstance(data, GrainedData):
+        # Transitional (1.7 phase 2): grain-aware fitting lands in phase 3.
+        if set(data.frames) != {"day"}:
+            raise NotImplementedError(
+                "Mixed-grain trees are not supported by fit_metric yet (1.7 phase 3)."
+            )
+        data = data.frame("day")
 
     if fit_end is not None:
         dates = pd.to_datetime(data["date"])

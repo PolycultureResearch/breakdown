@@ -41,6 +41,19 @@ import pandas as pd
 
 from breakdown.engine.model import compute_shapley, fit_metric, seasonal_window_delta
 from breakdown.formula import eval_formula
+from breakdown.grains import GrainedData
+
+
+def _day_frame(data):
+    """Transitional (1.7 phase 2): RCA still runs on a single daily frame;
+    grain-aware attribution lands in phase 4."""
+    if isinstance(data, GrainedData):
+        if set(data.frames) != {"day"}:
+            raise NotImplementedError(
+                "Mixed-grain trees are not supported by RCA yet (1.7 phase 4)."
+            )
+        return data.frame("day")
+    return data
 
 # Bootstrap replicates per window; fixed so contribution CIs are comparable
 # across nodes and runs.
@@ -138,6 +151,7 @@ def shapley_attribution(
     per-parent parts with `attribution = means + covariance_analysis −
     covariance_reference`.
     """
+    data = _day_frame(data)
     defn = dag.nodes[target]["definition"]
     if not defn.formula:
         raise ValueError(
@@ -218,6 +232,7 @@ def run_rca(
     if target not in dag:
         raise ValueError(f"Metric '{target}' not found in the metric tree.")
 
+    data = _day_frame(data)
     frame = data.copy()
     frame["date"] = pd.to_datetime(frame["date"])
     ref_start, ref_end = pd.to_datetime(reference_start), pd.to_datetime(reference_end)
