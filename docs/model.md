@@ -40,7 +40,9 @@ The three node types use this differently:
 - **Formula metrics**: the formula is treated as exact, so there are no β's to
   learn. The BSTS is fitted to the **residual** `observed − formula(parents)`,
   which captures whatever the identity doesn't explain (data noise, definition
-  drift).
+  drift). With `lags`, the identity is cohort-aligned — `A[t] = f(parents
+  shifted back by their lags)` — and both the residual and the Shapley
+  attribution read each lagged parent from correspondingly shifted windows.
 
 ## Grain: what one observation is
 

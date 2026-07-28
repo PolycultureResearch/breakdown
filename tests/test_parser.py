@@ -191,21 +191,24 @@ metrics:
         Parser(yaml_content)
 
 
-def test_lag_with_formula_raises():
+def test_lag_with_formula_accepted_as_cohort_identity():
+    """formula + lags declares a cohort-aligned lagged identity:
+    A[t] = f(parents shifted back by their lags)."""
     yaml_content = """
 metrics:
-  - name: order_count
-    source: dbt.metric.order_count
-  - name: average_order_value
-    source: dbt.metric.average_order_value
-  - name: revenue
-    source: dbt.metric.revenue
-    formula: "order_count * average_order_value"
-    parents: [order_count, average_order_value]
-    lags: { order_count: 3 }
+  - name: trial_starts
+    source: dbt.metric.trial_starts
+  - name: cohort_rate
+    source: dbt.metric.cohort_rate
+  - name: conversions
+    source: dbt.metric.conversions
+    formula: "trial_starts * cohort_rate"
+    parents: [trial_starts, cohort_rate]
+    lags: { trial_starts: 14 }
 """
-    with pytest.raises(ValueError, match="both `formula` and `lags`"):
-        Parser(yaml_content)
+    metric = Parser(yaml_content).get_metric("conversions")
+    assert metric.formula == "trial_starts * cohort_rate"
+    assert metric.lags == {"trial_starts": 14}
 
 
 def test_lagged_edge_accepted():

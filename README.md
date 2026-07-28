@@ -256,8 +256,19 @@ Some causal effects show up with a delay — the README's motivating example is 
 
 Rules:
 - Every `lags` key must be a parent; every value must be an integer ≥ 1 (grain steps at the node's grain).
-- `lags` and `formula` are mutually exclusive — a formula is a contemporaneous identity.
 - The engine shifts each parent by its lag and trims the leading `max(lags)` rows so all series align with no NaNs. It raises if fewer than 10 rows remain.
+
+**Cohort-aligned lagged identities.** `lags` combines with `formula` to declare an *exact* identity over time-shifted parents: `A[t] = f(each parent shifted back by its lag)`. This is how cohort conversion gets a deterministic form instead of a blended same-period ratio or a fully probabilistic edge:
+
+```yaml
+- name: conversions
+  source: my.metrics.conversions
+  formula: "trial_starts * cohort_rate"
+  parents: [trial_starts, cohort_rate]
+  lags: { trial_starts: 14 }   # today's conversions come from the cohort that started 14 days ago
+```
+
+Shapley attribution and the residual fit both read each lagged parent from windows shifted back by its lag, so the identity — and its exact attribution — holds cohort-by-cohort.
 
 ### Grains
 

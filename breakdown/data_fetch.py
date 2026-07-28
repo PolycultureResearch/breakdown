@@ -339,7 +339,18 @@ class MockDataFetcher(BaseDataFetcher):
                 arrs = {p: aligned[p].loc[idx].to_numpy() for p in parents}
 
                 if defn.formula:
-                    base = eval_formula(defn.formula, arrs)
+                    # Cohort-aligned lagged identities: shift each lagged
+                    # parent back, edge-padding with its first value.
+                    shifted = {}
+                    for p in parents:
+                        vals_p = arrs[p]
+                        lag = defn.lags.get(p, 0)
+                        if lag > 0:
+                            vals_p = np.concatenate(
+                                [np.full(lag, vals_p[0]), vals_p[:-lag]]
+                            )
+                        shifted[p] = vals_p
+                    base = eval_formula(defn.formula, shifted)
                     noise_scale = 0.02 * float(np.abs(base).mean()) or 1.0
                     vals = base + rng.normal(0, noise_scale, n)
                 else:

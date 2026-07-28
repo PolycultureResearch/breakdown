@@ -230,13 +230,11 @@ class MetricDefinition(BaseModel):
 
     @model_validator(mode="after")
     def check_lags(self) -> "MetricDefinition":
+        # With `formula`, lags declare a cohort-aligned lagged identity:
+        # A[t] = f(each parent shifted back by its lag, in grain steps) —
+        # e.g. conversions[t] = trial_starts[t-14] * cohort_rate[t].
         if not self.lags:
             return self
-        if self.formula is not None:
-            raise ValueError(
-                f"Metric '{self.name}' declares both `formula` and `lags`; a formula "
-                "is a contemporaneous identity and cannot use time-lagged parents."
-            )
         parent_set = set(self.parents)
         for key, value in self.lags.items():
             if key not in parent_set:

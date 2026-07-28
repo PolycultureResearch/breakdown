@@ -180,8 +180,16 @@ def shapley_attribution(
     ref_start, ref_end = snapped_ref.first_start, snapped_ref.last_start
     an_start, an_end = snapped_an.first_start, snapped_an.last_start
 
-    ref_daily = {p: _window_values(frame, p, ref_start, ref_end) for p in parents}
-    an_daily = {p: _window_values(frame, p, an_start, an_end) for p in parents}
+    def lagged_window(p, start, end):
+        # Cohort-aligned lagged identities (formula + lags): a parent's
+        # values are read from windows shifted back by its lag.
+        lag = defn.lags.get(p, 0)
+        return _window_values(
+            frame, p, shift_periods(start, -lag, grain), shift_periods(end, -lag, grain)
+        )
+
+    ref_daily = {p: lagged_window(p, ref_start, ref_end) for p in parents}
+    an_daily = {p: lagged_window(p, an_start, an_end) for p in parents}
     ref_means = {p: float(ref_daily[p].mean()) for p in parents}
     an_means = {p: float(an_daily[p].mean()) for p in parents}
 
@@ -340,8 +348,22 @@ def run_rca(
             # means, and each window's per-day co-movement game against that
             # replicate's own resampled means (replicate b occupies positions
             # [b*n, (b+1)*n) of the flattened per-day games).
-            ref_vals = {p: _window_values(frame, p, ref_start, ref_end) for p in parents}
-            an_vals = {p: _window_values(frame, p, an_start, an_end) for p in parents}
+            ref_vals = {
+                p: _window_values(
+                    frame, p,
+                    shift_periods(ref_start, -defn.lags.get(p, 0), grain),
+                    shift_periods(ref_end, -defn.lags.get(p, 0), grain),
+                )
+                for p in parents
+            }
+            an_vals = {
+                p: _window_values(
+                    frame, p,
+                    shift_periods(an_start, -defn.lags.get(p, 0), grain),
+                    shift_periods(an_end, -defn.lags.get(p, 0), grain),
+                )
+                for p in parents
+            }
             n_an = len(next(iter(an_vals.values())))
             n_ref = len(next(iter(ref_vals.values())))
             ref_idx = _block_bootstrap_indices(n_ref, _N_BOOT, rng, block=block)

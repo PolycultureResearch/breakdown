@@ -234,3 +234,76 @@ def test_simulate_scales_flow_delta_across_grains():
     assert node["status"] == "affected"
     # 0.5 * 7 * 10 = 35 per week; generous band for posterior noise.
     assert 25.0 < node["delta"]["estimate"] < 45.0
+
+
+# --- Cohort-aligned lagged identities (formula + lags, 1.7 phase 6) ---
+
+COHORT_YAML = """
+metrics:
+  - name: starts
+    source: dbt.metric.starts
+  - name: cohort_rate
+    source: dbt.metric.cohort_rate
+  - name: conversions
+    source: dbt.metric.conversions
+    formula: "starts * cohort_rate"
+    parents: [starts, cohort_rate]
+    lags: { starts: 3 }
+"""
+
+
+def cohort_frame(n=100, seed=11, step_day=60, step=40.0, rate=0.25, noise=0.0):
+    """conversions[t] = starts[t-3] * rate exactly (+ optional noise);
+    starts steps up by `step` from `step_day` onward."""
+    rng = np.random.default_rng(seed)
+    dates = pd.date_range("2024-01-01", periods=n)
+    starts = 100.0 + rng.normal(0, 3.0, n)
+    starts[step_day:] += step
+    lagged = np.concatenate([np.full(3, starts[0]), starts[:-3]])
+    conversions = lagged * rate + (rng.normal(0, noise, n) if noise else 0.0)
+    return pd.DataFrame({
+        "date": dates,
+        "starts": starts,
+        "cohort_rate": np.full(n, rate),
+        "conversions": conversions,
+    })
+
+
+def test_lagged_identity_rca_recovers_lagged_change():
+    """conversions[t] = starts[t-3] * rate: RCA reads the parent from the
+    lag-shifted windows, so the starts step is fully attributed, the constant
+    rate is a null player, and the exact identity leaves no unexplained."""
+    dag = Parser(COHORT_YAML).dag
+    frame = cohort_frame()
+    # ref: pre-step; an: post-step even after the 3-day shift back.
+    ref = ("2024-01-11", "2024-02-09")
+    an = ("2024-03-04", "2024-04-02")
+
+    result = run_rca(dag, frame, {}, "conversions", *ref, *an)
+
+    node = result["nodes"]["conversions"]
+    assert abs(node["unexplained"]) < 1e-9
+    contribs = {c["parent"]: c["estimate"] for c in node["contributions"]}
+    # Gap is ~ rate * step = 10; starts carries it, the constant rate none.
+    assert abs(node["gap"] - 10.0) < 1.0
+    assert abs(contribs["starts"] - node["gap"]) < 0.5
+    assert abs(contribs["cohort_rate"]) < 1e-6
+
+    sh = shapley_attribution(dag, frame, "conversions", *ref, *an)
+    assert abs(sum(sh["attribution"].values()) - sh["gap"]) < 1e-9
+
+
+def test_lagged_identity_residual_fit_trims_rows():
+    """fit_metric on a lagged identity fits the residual of the *lagged*
+    reconstruction and trims the leading max-lag rows."""
+    from breakdown.engine.model import fit_metric
+
+    dag = Parser(COHORT_YAML).dag
+    frame = cohort_frame(noise=0.5)
+
+    result = fit_metric(dag, frame, "conversions", draws=200, inference_method="advi")
+
+    assert result.dates[0] == pd.Timestamp("2024-01-04")  # 3 rows trimmed
+    assert len(result.dates) == 97
+    # The lagged identity explains the series; the residual is just noise.
+    assert result.y_std < 1.0

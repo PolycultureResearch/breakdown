@@ -258,12 +258,6 @@ def _prepare_series(
     """
     all_dates = pd.DatetimeIndex(pd.to_datetime(data["date"]))
 
-    if defn.formula and parents:
-        parent_arrays = {p: data[p].values.astype(float) for p in parents}
-        residual = data[target].values.astype(float) - eval_formula(defn.formula, parent_arrays)
-        y, y_mean, y_std = _normalize(pd.Series(residual, name=f"{target}_residual"))
-        return y, None, None, y_mean, y_std, None, all_dates
-
     lags = defn.lags
     max_lag = max(lags.values(), default=0)
     if max_lag > 0 and len(data) - max_lag < 10:
@@ -272,6 +266,19 @@ def _prepare_series(
             f"{len(data)} rows minus max lag {max_lag} leaves "
             f"{len(data) - max_lag} (need >= 10)."
         )
+
+    if defn.formula and parents:
+        # With lags, the identity is cohort-aligned: A[t] = f(parents with
+        # each parent shifted back by its lag). Shift, trim the leading
+        # max-lag rows, and fit the residual of the lagged identity.
+        parent_arrays = {
+            p: data[p].shift(lags.get(p, 0)).values.astype(float)[max_lag:]
+            for p in parents
+        }
+        target_vals = data[target].values.astype(float)[max_lag:]
+        residual = target_vals - eval_formula(defn.formula, parent_arrays)
+        y, y_mean, y_std = _normalize(pd.Series(residual, name=f"{target}_residual"))
+        return y, None, None, y_mean, y_std, None, all_dates[max_lag:]
 
     y_series = data[target].iloc[max_lag:] if max_lag > 0 else data[target]
     y, y_mean, y_std = _normalize(y_series)

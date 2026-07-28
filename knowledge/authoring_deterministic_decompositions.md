@@ -7,14 +7,15 @@ provider. The canonical field reference is [`../README.md`](../README.md); this
 doc is the *how to not get it subtly wrong* companion. Most of it generalizes to
 any provider; a few notes are warehouse-SQL specific.
 
-## The one thing to get right: the identity holds **per day**, not per window
+## The one thing to get right: the identity holds **per period**, not per window
 
-The engine runs **one Shapley game per analysis-window day**
-(`engine/rca.py::shapley_attribution`): it pulls each parent's *daily* series over
-the window, evaluates `formula` **element-wise on the daily arrays**, then takes
-`.mean()`. So a `formula` is a **contemporaneous per-day identity**, and every
-node it references must be a daily series for which the identity holds on each
-individual day.
+The engine runs **one Shapley game per window period** at the node's grain
+(`engine/rca.py::shapley_attribution`): it pulls each parent's per-period series
+over the window (finer flow/stock parents resampled up to the node's grain),
+evaluates `formula` **element-wise on the period arrays**, then takes `.mean()`.
+So a `formula` is a **per-period identity at the node's grain**, and every node
+it references must yield a series for which the identity holds on each
+individual period. (For an all-daily tree that means: per day.)
 
 Consequence for **rate/ratio factors** in a product `A = B × C`: you cannot
 define `C` as "window-numerator / window-denominator". `C` must be a **daily**
@@ -53,13 +54,23 @@ naturally drops them). Then:
   NULL on zero days and breaks the mean. The reindex-to-zero mechanism only works
   if the day is *absent*, not *NULL*.
 
-## `formula` and `lags` are mutually exclusive
+## `formula` + `lags`: cohort-aligned lagged identities
 
-The parser rejects a node with both: a formula is a contemporaneous identity and
-cannot have time-lagged parents. So a deterministic decomposition **replaces** a
-probabilistic lagged edge into the same node — it doesn't augment it. If you're
-turning a former BSTS leaf (e.g. `trial_starts → new_mrr` at lag 30) into a
-`formula` node, you must drop the old `parents`/`lags`/`priors` on that node.
+A formula node's identity is contemporaneous by default, but `lags` turns it
+into an **exact lagged identity**: `A[t] = f(each parent shifted back by its
+lag, in grain steps)`. Use this when the cohort structure is real —
+`conversions[t] = trial_starts[t−14] × cohort_rate[t]` — instead of settling
+for a blended same-period ratio or a fully probabilistic edge. The engine
+reads each lagged parent from correspondingly shifted windows in both the
+Shapley attribution and the residual fit, so the identity (and its exact
+attribution) holds cohort by cohort. The per-period identity rule above still
+applies after the shift: `A[t]` must equal `f(shifted parents at t)` on each
+individual period.
+
+A deterministic decomposition still **replaces** a probabilistic edge into the
+same node — when converting a former BSTS edge (e.g. `trial_starts → new_mrr`
+at lag 30) into a `formula` node, drop the old `priors`, keep `parents`, and
+keep the lag only if the identity is genuinely cohort-aligned at that lag.
 Probabilistic edges elsewhere in the tree are untouched.
 
 ## Validate before trusting attribution
