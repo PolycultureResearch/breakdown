@@ -29,7 +29,7 @@ The breakdown UI is a single-page app served by FastAPI at `/ui`, in the spirit 
 └────────────────────────────────────────────┴─────────────────────────┘
 ```
 
-- **Header** holds only the globals: the target select (the tree-wide focus metric), the **As of** anchor date, Copy link, and a status area for progress ("Fitting upstream models…") and errors.
+- **Header** holds only the globals: the target select (the tree-wide focus metric), the **As of** anchor date, a **Share** menu (Copy link — the deep-link URL restoring the exact view: selected metric, RCA run, or what-if scenario — and Download RCA result as JSON, enabled after a run; the future home of the exportable RCA report, roadmap 1.5), and a status area for progress ("Fitting upstream models…") and errors.
 - **RCA setup lives in the Root cause tab** (`#rca-setup`, persistent markup above the `#rca-results` render target): windows preset + two date-range pairs (prefilled from `/meta`: reference = first 60% of the data window, analysis = the rest) + Run/Clear. Setup sits with its results, so the windows are unambiguously RCA parameters rather than global filters.
 - **Canvas** is the primary surface; the graph is the product. Dagre layered layout with `rankDir: 'BT'` so the tree reads like a KPI tree: outcome metrics on top, drivers below. The card display options (variant / sparkline length / delta length) collapse behind a quiet **Display** toggle in the top-left toolbar.
 - **Sidebar** (410px) has three tabs: **Metric** (UC3/UC4), **Root cause** (UC1), and **What-if** (UC5). Clicking a node opens Metric — unless the What-if tab is active, in which case it opens that node's adjust panel. Finishing an RCA run switches to Root cause.

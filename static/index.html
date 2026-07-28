@@ -24,7 +24,19 @@
                    title="Anchor headline numbers, deltas, and sparklines at this date. Only periods fully completed by it count — defaults to the oldest 'data through' across the tree (the tree-wide data edge).">
         </div>
 
-        <button id="copy-link" style="display:none">Copy link</button>
+        <div id="share-wrap">
+            <button id="share-toggle">Share <span class="share-caret">▾</span></button>
+            <div id="share-menu" style="display:none">
+                <button class="share-item" id="share-copy-link">
+                    <span class="share-title">Copy link</span>
+                    <span class="share-sub">URL restores this exact view — selected metric, RCA run, or what-if scenario</span>
+                </button>
+                <button class="share-item" id="share-rca-json" disabled>
+                    <span class="share-title">Download RCA result (.json)</span>
+                    <span class="share-sub">The last run's full attribution response</span>
+                </button>
+            </div>
+        </div>
 
         <div id="status"></div>
     </header>

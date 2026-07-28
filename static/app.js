@@ -198,9 +198,9 @@ function validateWindows() {
   return true;
 }
 
-/* Copy-link button is visible whenever a deep-linkable state (hash) exists. */
-function updateCopyLink() {
-  $("copy-link").style.display = location.hash ? "" : "none";
+/* Keep the Share menu's items in sync with what is currently shareable. */
+function updateShareMenu() {
+  $("share-rca-json").disabled = !state.rca;
 }
 
 function nodeType(def) {
@@ -785,7 +785,7 @@ function labelBetaEdges(name, metricData) {
 async function selectMetric(name) {
   state.selected = name;
   history.replaceState(null, "", `#metric=${encodeURIComponent(name)}`);
-  updateCopyLink();
+  updateShareMenu();
   state.cy.$("node:selected").unselect();
   state.cy.getElementById(name).select();
   switchTab("metric");
@@ -1048,7 +1048,7 @@ async function runRCA() {
     const qs = new URLSearchParams(win).toString();
     state.rca = await api(`/rca/${encodeURIComponent(target)}?${qs}`, { method: "POST" });
     history.replaceState(null, "", `#rca=${encodeURIComponent(target)}&${qs}`);
-    updateCopyLink();
+    updateShareMenu();
     state.meta = await api("/meta"); // on-demand fits may have been cached
     state.metricCache = {};
     markFitted();
@@ -1164,7 +1164,7 @@ async function clearRCA() {
   $("rca-results").innerHTML = '<p class="placeholder">Set the two windows and run.</p>';
   $("clear-rca").style.display = "none";
   setStatus("");
-  updateCopyLink();
+  updateShareMenu();
 }
 
 function highlightCause(causeName) {
@@ -1781,7 +1781,7 @@ async function runWhatif() {
       body: JSON.stringify(scenario),
     });
     history.replaceState(null, "", `#whatif=${encodeURIComponent(JSON.stringify(scenario))}`);
-    updateCopyLink();
+    updateShareMenu();
     state.meta = await api("/meta"); // on-demand fits may have been cached
     markFitted();
     renderWhatifTab();
@@ -1808,7 +1808,7 @@ function clearWhatif() {
   if (location.hash.startsWith("#whatif=")) {
     history.replaceState(null, "", location.pathname + location.search);
   }
-  updateCopyLink();
+  updateShareMenu();
   renderWhatifTab();
   setStatus("");
 }
@@ -2085,11 +2085,32 @@ function initControls() {
 
   $("run-rca").addEventListener("click", runRCA);
   $("clear-rca").addEventListener("click", clearRCA);
-  $("copy-link").addEventListener("click", () => {
+  // Share menu: copy the deep link, download the last RCA response.
+  const shareMenu = $("share-menu");
+  const closeShare = () => { shareMenu.style.display = "none"; };
+  $("share-toggle").addEventListener("click", (e) => {
+    e.stopPropagation();
+    updateShareMenu();
+    shareMenu.style.display = shareMenu.style.display === "none" ? "" : "none";
+  });
+  document.addEventListener("click", (e) => {
+    if (!$("share-wrap").contains(e.target)) closeShare();
+  });
+  $("share-copy-link").addEventListener("click", () => {
     navigator.clipboard.writeText(location.href);
-    const btn = $("copy-link");
-    btn.textContent = "Copied ✓";
-    setTimeout(() => { btn.textContent = "Copy link"; }, 1500);
+    const title = $("share-copy-link").querySelector(".share-title");
+    title.textContent = "Copied ✓";
+    setTimeout(() => { title.textContent = "Copy link"; closeShare(); }, 900);
+  });
+  $("share-rca-json").addEventListener("click", () => {
+    if (!state.rca) return;
+    const blob = new Blob([JSON.stringify(state.rca, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `rca_${state.rca.target}_${state.rca.analysis_window.start}_${state.rca.analysis_window.end}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    closeShare();
   });
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
 
@@ -2155,7 +2176,7 @@ async function init() {
     const edgeNote = state.asOf < state.meta.date_end ? ` · data → ${state.asOf}` : "";
     setStatus(`${state.meta.metrics.length} metrics · provider: ${state.meta.provider} · ${state.meta.date_start} → ${state.meta.date_end}${edgeNote}`);
     applyDeepLink();
-    updateCopyLink();
+    updateShareMenu();
   } catch (err) {
     setStatus(`Failed to load: ${err.message}`, "error");
   }
