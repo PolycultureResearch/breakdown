@@ -485,6 +485,15 @@ function initCardControls() {
     renderAllCards();
     runLayout(false);
   });
+  // Collapsible display menu: card options are occasional-use, so they live
+  // behind one quiet button instead of a permanent four-row panel.
+  const displayToggle = $("display-toggle");
+  const displayMenu = $("display-menu");
+  displayToggle.addEventListener("click", () => {
+    const open = displayMenu.style.display !== "none";
+    displayMenu.style.display = open ? "none" : "";
+    $("display-caret").textContent = open ? "▸" : "▾";
+  });
   const clampInt = (el, lo, hi, fallback) => {
     let v = parseInt(el.value, 10);
     if (!Number.isFinite(v)) v = fallback;
@@ -1152,7 +1161,7 @@ async function clearRCA() {
       labelBetaEdges(name, data);
     } catch { /* skip metrics that fail to load */ }
   }
-  $("tab-rca").innerHTML = '<p class="placeholder">Pick a target and two windows above, then Run RCA.</p>';
+  $("rca-results").innerHTML = '<p class="placeholder">Set the two windows and run.</p>';
   $("clear-rca").style.display = "none";
   setStatus("");
   updateCopyLink();
@@ -1193,7 +1202,7 @@ function renderRcaTab() {
   const target = res.nodes[res.target];
 
   if (target.status === "window_shorter_than_grain") {
-    $("tab-rca").innerHTML = `
+    $("rca-results").innerHTML = `
       <div class="rca-card">
         <div class="sub">${esc(res.target)}</div>
         <p class="placeholder">The requested windows contain no whole
@@ -1336,7 +1345,7 @@ function renderRcaTab() {
        </div>`
     : "";
 
-  $("tab-rca").innerHTML = `
+  $("rca-results").innerHTML = `
     <div class="rca-card">
       <div class="sub">${esc(res.target)} · ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)} vs ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}</div>
       <div class="gap-line ${dirCls}">${target.gap >= 0 ? "+" : ""}${fmt(target.gap)} <span style="font-size:14px">(${signedPct(target.relative_change)})</span></div>

@@ -140,6 +140,17 @@ button:disabled { opacity: 0.5; cursor: default; }
   flex-direction: column;
   gap: 6px;
 }
+#display-toggle {
+  font-size: 12px;
+  padding: 4px 10px;
+  color: var(--muted);
+  border: none;
+  background: transparent;
+}
+#display-toggle:hover { color: var(--fg); background: transparent; }
+#display-caret { font-size: 10px; }
+#display-menu { display: flex; flex-direction: column; gap: 6px; padding: 2px 4px 4px; }
+
 .ct-row { display: flex; align-items: center; gap: 6px; }
 .ct-row label {
   font-size: 11px;
@@ -329,6 +340,30 @@ details .data-table { margin-top: 8px; }
 .attr-block { margin-bottom: 6px; }
 .attr-block h4 { font-size: 13px; margin: 12px 0 6px; }
 .attr-block h4 .method { font-weight: 400; font-size: 11px; color: var(--muted); }
+
+#rca-setup {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rca-ctl { display: flex; align-items: center; gap: 6px; }
+.rca-ctl label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  width: 76px;
+  flex-shrink: 0;
+}
+.rca-ctl select { flex: 1; }
+.rca-ctl input[type="date"] { flex: 1; width: auto; min-width: 0; }
+.rca-actions { display: flex; gap: 8px; margin-top: 2px; }
+#rca-setup .inline-status { margin: 0; }
 
 .attr-head { display: flex; align-items: center; justify-content: space-between; }
 .rca-view-toggle { display: inline-flex; border: 1px solid #d8dde4; border-radius: 6px; overflow: hidden; }
