@@ -59,7 +59,7 @@ Returns a DataFrame with columns `["date", metric_name]`, sorted by date, no NaN
 Constructed with an optional metric DAG (`MockDataFetcher(dag=parser.dag)`). With a DAG, series are generated in topological order **at each node's declared grain** so they respect the tree: formula nodes satisfy their formula against parents aggregated to the node's grain plus ~2% noise, probabilistic nodes are a coefficient-weighted sum of aligned parents (coefficient from the `coefficient` prior's `mu` when available; lag-shifted parents when `lags` is set) plus ~5% noise, and roots are random walks with weekly seasonality on their native period spine. Finer rate parents resample by per-period mean (mock-only convenience). Without a DAG (or for names not in it), falls back to an independent random walk at the requested grain. Seeded per metric name — deterministic across calls; all-day trees are byte-identical to the pre-grain generator (pinned by golden tests). Per-metric series per window are cached.
 
 ### `WarehouseDataFetcher`
-Runs each metric's own `sql` against Databricks SQL. The SQL owns the aggregation to the declared grain (one row per period, period-start labels — misaligned labels error); the engine reindexes onto the spine of whole periods inside the window, drops partial edge periods, and fills gaps by kind.
+Runs each metric's own `sql` against Databricks SQL. The SQL owns the aggregation to the declared grain (one row per period, period-start labels — misaligned labels error); the engine reindexes onto the spine of whole periods inside the window, drops partial edge periods, fills **interior** gaps by kind, and **trims trailing** gaps (periods after the last returned row are not-yet-loaded data, not zeros — except when the query returns no rows at all, which keeps the full zero spine for flows).
 
 ### `LocalDataFetcher`
 Invokes `mf query --metrics <name> --group-by metric_time__<grain> --start-time ... --end-time ... --csv <tmpfile>` as a subprocess. `project_path` becomes the working directory. Raises `RuntimeError` on non-zero exit code or OS errors (e.g., path not found).
@@ -143,13 +143,13 @@ Dates are validated (ISO format, start ≤ end) both at the CLI and in `lifespan
 |-----------------|------|-------------|
 | `parser` | `Parser` | Parsed metric tree |
 | `fetcher` | `BaseDataFetcher` | Fetcher matching the provider type |
-| `data` | `GrainedData` | Per-grain frames + `grain_of`/`kind_of` maps |
+| `data` | `GrainedData` | Per-grain frames + `grain_of`/`kind_of`/`last_observed` maps (`last_observed` is captured per metric before the within-grain join; `data_through(m)` converts it to the inclusive last covered date) |
 | `traces` | `Dict[Tuple[str, Optional[str]], FitResult]` | **The** trace cache, keyed `(name, fit_end)` (single source of truth) |
 | `lock` | `asyncio.Lock` | Serializes sampling (analyze + RCA fits) |
 
 ### Routes
 
-**`GET /meta`** — metrics, data window, provider, per-metric `grains`/`kinds` maps, fitted list (UI bootstrap).
+**`GET /meta`** — metrics, data window, provider, per-metric `grains`/`kinds`/`data_through` maps (`data_through` = each metric's honest data edge, which may lag the requested window), fitted list (UI bootstrap).
 
 **`GET /dag`** — nodes (`[name, definition.model_dump()]`) and edges.
 

@@ -154,6 +154,11 @@ async def get_meta(request: Request):
     """Bootstrap info for the UI: metrics, data window, provider, fit status."""
     parser = request.app.state.parser
     data = request.app.state.data
+    data_through = {}
+    for name in data.grain_of:
+        through = data.data_through(name)
+        if through is not None:
+            data_through[name] = str(through.date())
     return {
         "provider": parser.config.provider.type,
         "metrics": [m.name for m in parser.config.metrics],
@@ -161,6 +166,10 @@ async def get_meta(request: Request):
         "date_end": str(data.date_end.date()),
         "grains": dict(data.grain_of),
         "kinds": dict(data.kind_of),
+        # Inclusive last covered date per metric (end of its last observed
+        # period) — the honest data edge, which may lag the requested window
+        # when a source mart is behind.
+        "data_through": data_through,
         "fitted": sorted({name for (name, _) in request.app.state.traces}),
     }
 

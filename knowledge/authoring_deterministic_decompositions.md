@@ -52,9 +52,12 @@ A node may have multiple children (fan-out is fine).
 ## Zero-denominator periods: what happens depends on `kind`
 
 The warehouse fetcher reindexes each series onto the spine of whole periods at
-the metric's grain and gap-fills **by `kind`** (`data_fetch.py`): `flow` → 0,
-`stock` → forward-fill, `rate` → **a missing period is a hard fetch error** (a
-rate cannot be invented). A **present** period with a NULL/NaN value stays NaN
+the metric's grain and fills **interior** gaps **by `kind`** (`data_fetch.py`):
+`flow` → 0, `stock` → forward-fill, `rate` → **a missing period is a hard
+fetch error** (a rate cannot be invented). **Trailing** gaps — periods after
+the last row the SQL returned — are trimmed as not-yet-loaded data rather than
+filled, and each metric's honest edge is exposed as `data_through` in
+`GET /meta`. A **present** period with a NULL/NaN value stays NaN
 (`astype(float)`), and one NaN poisons the whole window mean. So:
 
 - **Never** write `num / NULLIF(denom, 0)` and let a NULL pass through — a NULL

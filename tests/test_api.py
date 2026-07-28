@@ -77,6 +77,9 @@ def test_meta_endpoint():
         assert body["date_end"] == "2024-04-09"
         assert body["grains"]["revenue"] == "day"
         assert body["kinds"]["revenue"] == "flow"
+        # Mock data covers the full window, so every metric is fresh through
+        # the window end.
+        assert body["data_through"]["revenue"] == "2024-04-09"
         assert body["fitted"] == []
 
 

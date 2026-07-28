@@ -63,6 +63,11 @@
                     <label for="card-delta">Δ vs</label>
                     <input type="number" id="card-delta" min="1" max="365" value="7"><span class="ct-unit">pts ago</span>
                 </div>
+                <div class="ct-row">
+                    <label for="card-asof">As of</label>
+                    <input type="date" id="card-asof"
+                           title="Anchor headline numbers, deltas, and sparklines at this date. Only periods fully completed by it count — defaults to the oldest 'data through' across the tree (the tree-wide data edge).">
+                </div>
             </div>
             <div id="legend">
                 <div class="legend-row"><span class="swatch source"></span> source metric</div>

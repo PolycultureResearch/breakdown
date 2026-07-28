@@ -16,6 +16,7 @@ const state = {
     overrides: {},     // metric name -> variant (per-node override of `variant`)
   },
   cardOverlay: {},     // metric name -> {value,dpct,dir,mark} while RCA / what-if is active (transient)
+  asOf: null,          // ISO date anchoring card headlines; defaults to the tree-wide data edge
   rca: null,           // last POST /rca response
   rcaView: "headline", // formula-node attribution view: "headline" | "detailed"
   activeCause: null,   // highlighted ranked cause
@@ -268,14 +269,33 @@ function fmtCardValue(name, value) {
   return s;
 }
 
+/* Inclusive end date of the period starting at `iso` for a grain. */
+function periodEndISO(iso, grain) {
+  if (grain === "day") return iso;
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (grain === "week") dt.setUTCDate(dt.getUTCDate() + 6);
+  else { dt.setUTCMonth(dt.getUTCMonth() + 1); dt.setUTCDate(0); }  // month: last day
+  return dt.toISOString().slice(0, 10);
+}
+
 /* Derive the card's numbers from a metric's native-grain series + the current
-   config. Big number = latest value; delta = latest vs `deltaLen` points
-   earlier; sparkline = trailing `sparkLen` points. Points are grain periods
-   (days for daily metrics, weeks/months for coarser ones). */
+   config. Big number = latest value at the as-of anchor; delta = that vs
+   `deltaLen` points earlier; sparkline = trailing `sparkLen` points. Points
+   are grain periods (days for daily metrics, weeks/months for coarser ones).
+   Only periods FULLY completed by `state.asOf` count, so a calendar week the
+   data edge cuts in half never becomes a headline number. */
 function deriveCardData(name) {
   const cfg = state.cardConfig;
   const m = state.series && state.series.metrics && state.series.metrics[name];
-  const s = (m && m.values) || [];
+  let s = (m && m.values) || [];
+  if (m && state.asOf) {
+    let cut = -1;
+    for (let i = m.dates.length - 1; i >= 0; i--) {
+      if (periodEndISO(m.dates[i], m.grain) <= state.asOf) { cut = i; break; }
+    }
+    s = s.slice(0, cut + 1);
+  }
   let lastIdx = -1;
   for (let i = s.length - 1; i >= 0; i--) {
     if (s[i] != null) { lastIdx = i; break; }
@@ -482,6 +502,24 @@ function initCardControls() {
     saveCardConfig();
     renderAllCards();
   });
+
+  // As-of anchor. Defaults to the tree-wide data edge (min data_through
+  // across metrics); deliberately NOT persisted — freshness moves daily.
+  const asofInp = $("card-asof");
+  if (asofInp) {
+    asofInp.min = state.meta.date_start;
+    asofInp.max = state.meta.date_end;
+    if (state.asOf) asofInp.value = state.asOf;
+    asofInp.addEventListener("change", () => {
+      let v = asofInp.value;
+      if (!v) v = state.meta.date_end;
+      if (v < asofInp.min) v = asofInp.min;
+      if (v > asofInp.max) v = asofInp.max;
+      asofInp.value = v;
+      state.asOf = v;
+      renderAllCards();
+    });
+  }
 }
 
 /* ---------- graph ---------- */
@@ -779,6 +817,12 @@ function renderMetricTab(name, data) {
     <table class="kv">
       <tr><td>Source</td><td><code>${esc(def.source)}</code></td></tr>
       <tr><td>Grain</td><td><code>${esc(grain)}</code> · ${esc(def.kind || "flow")}</td></tr>
+      ${state.meta.data_through && state.meta.data_through[name]
+        ? `<tr><td>Data through</td><td>${esc(state.meta.data_through[name])}${
+            state.meta.data_through[name] < state.meta.date_end
+              ? ' <span class="chip lag">lags window end</span>' : ""
+          }</td></tr>`
+        : ""}
       <tr><td>Parents</td><td>${parentChips}</td></tr>
       ${def.formula ? `<tr><td>Formula</td><td><code>${esc(def.formula)}</code></td></tr>` : ""}
     </table>
@@ -2089,12 +2133,18 @@ async function init() {
       state.series = null;
       console.warn("card series unavailable:", err.message);
     }
+    // Anchor headlines at the tree-wide data edge: the oldest data_through
+    // across metrics. A source mart lagging the requested window then shows
+    // its true last day instead of a zero-filled or half-loaded tail.
+    const edges = Object.values(state.meta.data_through || {});
+    state.asOf = edges.length ? edges.reduce((a, b) => (a < b ? a : b)) : state.meta.date_end;
     loadCardConfig();
     initControls();
     buildGraph();
     initCardControls();
     initWhatif();
-    setStatus(`${state.meta.metrics.length} metrics · provider: ${state.meta.provider} · ${state.meta.date_start} → ${state.meta.date_end}`);
+    const edgeNote = state.asOf < state.meta.date_end ? ` · data → ${state.asOf}` : "";
+    setStatus(`${state.meta.metrics.length} metrics · provider: ${state.meta.provider} · ${state.meta.date_start} → ${state.meta.date_end}${edgeNote}`);
     applyDeepLink();
     updateCopyLink();
   } catch (err) {
