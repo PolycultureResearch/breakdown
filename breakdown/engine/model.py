@@ -497,6 +497,34 @@ def fit_metric(
     if seasonality_warnings:
         diagnostics["seasonality_warnings"] = seasonality_warnings
 
+    # Declared-direction check: expected_signs is not a prior, so the fit is
+    # free to contradict it — but when it does, say so loudly. The classic
+    # cause is a scale-confounded level-on-level edge (both series grow with
+    # the business), where the learned sign answers a different question than
+    # the author meant.
+    if defn.expected_signs and X is not None:
+        arr = trace.posterior["beta_raw"].values.reshape(-1, len(parents))
+        sign_warnings = []
+        for i, p in enumerate(parents):
+            expected = defn.expected_signs.get(p)
+            if expected is None:
+                continue
+            samples = arr[:, i]
+            p_expected = float((samples > 0).mean() if expected == "positive" else (samples < 0).mean())
+            if p_expected < 0.10:
+                msg = (
+                    f"Parent '{p}' on '{target}': declared {expected} effect, but "
+                    f"P(beta_raw {'>' if expected == 'positive' else '<'} 0) = "
+                    f"{p_expected:.2f} (posterior mean {float(samples.mean()):.4g}) — "
+                    "the learned direction contradicts the declaration. Check for "
+                    "scale confounding (e.g. regress rates on rates instead of "
+                    "levels on levels; see docs/model.md)."
+                )
+                sign_warnings.append(msg)
+                logger.warning(msg)
+        if sign_warnings:
+            diagnostics["sign_warnings"] = sign_warnings
+
     return FitResult(
         trace=trace,
         target=target,

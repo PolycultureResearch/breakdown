@@ -311,6 +311,7 @@ def run_rca(
                 "attribution_method": None,
                 "inference_method": None,
                 "fit_quality": None,
+                "sign_warnings": None,
                 "ci_status": None,
                 "unexplained": None,
                 "components": None,
@@ -332,6 +333,7 @@ def run_rca(
         components = None
         inference_method = None
         fit_quality = None
+        sign_warnings = None
         interaction = None
         if not parents:
             attribution_method = None
@@ -438,6 +440,7 @@ def run_rca(
             fit = traces[(node, analysis_start)]
             inference_method = fit.inference_method
             fit_quality = fit.diagnostics.get("fit_quality")
+            sign_warnings = fit.diagnostics.get("sign_warnings")
             arr = fit.trace.posterior["beta_raw"].values.reshape(-1, len(parents))
             n_post = arr.shape[0]
 
@@ -552,6 +555,7 @@ def run_rca(
             "attribution_method": attribution_method,
             "inference_method": inference_method,
             "fit_quality": fit_quality,
+            "sign_warnings": sign_warnings,
             "ci_status": ci_status,
             "unexplained": unexplained,
             "components": components,

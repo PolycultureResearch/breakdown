@@ -240,6 +240,7 @@ async def get_metric(name: str, request: Request):
         raise HTTPException(status_code=404, detail=f"No data found for metric '{name}'")
 
     summary = None
+    diagnostics = None
     fit = _pick_fit(traces, name)
     if fit is not None:
         # NaN/inf (e.g. r_hat on single-chain ADVI traces) are not valid JSON
@@ -247,11 +248,13 @@ async def get_metric(name: str, request: Request):
             col: {k: (float(v) if math.isfinite(v) else None) for k, v in vals.items()}
             for col, vals in summarize_trace(fit.trace).to_dict().items()
         }
+        diagnostics = fit.diagnostics
 
     return {
         "definition": metric.model_dump(),
         "time_series": time_series,
         "summary": summary,
+        "diagnostics": diagnostics,
     }
 
 

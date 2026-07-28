@@ -961,6 +961,11 @@ function renderPosterior(name, data) {
     : `<p style="color:var(--muted);font-size:12.5px;margin:4px 0">
          ${def.formula ? "Formula node — the structural relationship is exact; the model fits the residual." : "No causal parents — trend and seasonality only."}</p>`;
 
+  const signWarnings = (data.diagnostics && data.diagnostics.sign_warnings) || [];
+  const signWarningHtml = signWarnings
+    .map((w) => `<p class="sign-warning">⚠ ${esc(w)}</p>`)
+    .join("");
+
   // diagnostics: worst r_hat across all parameters (NUTS only; ADVI has none)
   let diag = "";
   const rhats = Object.values(summary.r_hat || {}).filter((v) => v !== null && !Number.isNaN(v));
@@ -984,6 +989,7 @@ function renderPosterior(name, data) {
 
   box.innerHTML = `
     ${coefTable}
+    ${signWarningHtml}
     ${diag}
     <details>
       <summary>All parameters (${params.length})</summary>
@@ -1257,6 +1263,10 @@ function renderRcaTab() {
         node.ci_status === "degenerate_single_period"
           ? ` · single-period window: no bootstrap CI`
           : "";
+      const signNote =
+        node.sign_warnings && node.sign_warnings.length
+          ? ` · <span class="sign-flag" title="${esc(node.sign_warnings.join("\n\n"))}">⚠ learned sign contradicts expectation</span>`
+          : "";
       const twoLevel = node.contributions.some((c) => c.decomposition);
       let header, rows, nCols;
 
@@ -1328,7 +1338,7 @@ function renderRcaTab() {
       }
       return `
         <div class="attr-block">
-          <h4>${esc(name)} <span class="method">· ${method}${snapNote}${ciNote}</span></h4>
+          <h4>${esc(name)} <span class="method">· ${method}${snapNote}${ciNote}${signNote}</span></h4>
           <table class="data-table">
             ${header}
             ${rows}

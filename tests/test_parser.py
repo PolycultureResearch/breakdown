@@ -407,3 +407,64 @@ metrics:
     with caplog.at_level(logging.WARNING, logger="breakdown.parser"):
         Parser(yaml_content)
     assert any("grain steps" in r.message for r in caplog.records)
+
+
+# --- expected_signs validation tests ---
+
+def test_expected_signs_parsed():
+    yaml_content = """
+metrics:
+  - name: paid_cmau
+    source: dbt.metric.paid_cmau
+  - name: churn_mrr
+    source: dbt.metric.churn_mrr
+    parents: [paid_cmau]
+    expected_signs: { paid_cmau: positive }
+"""
+    metric = Parser(yaml_content).get_metric("churn_mrr")
+    assert metric.expected_signs == {"paid_cmau": "positive"}
+
+
+def test_expected_signs_key_not_parent_raises():
+    yaml_content = """
+metrics:
+  - name: paid_cmau
+    source: dbt.metric.paid_cmau
+  - name: churn_mrr
+    source: dbt.metric.churn_mrr
+    parents: [paid_cmau]
+    expected_signs: { nope: positive }
+"""
+    with pytest.raises(ValueError, match="expected_signs key 'nope'"):
+        Parser(yaml_content)
+
+
+def test_expected_signs_bad_value_raises():
+    yaml_content = """
+metrics:
+  - name: paid_cmau
+    source: dbt.metric.paid_cmau
+  - name: churn_mrr
+    source: dbt.metric.churn_mrr
+    parents: [paid_cmau]
+    expected_signs: { paid_cmau: up }
+"""
+    with pytest.raises(ValueError, match="must be 'positive' or 'negative'"):
+        Parser(yaml_content)
+
+
+def test_expected_signs_on_formula_raises():
+    yaml_content = """
+metrics:
+  - name: orders
+    source: dbt.metric.orders
+  - name: aov
+    source: dbt.metric.aov
+  - name: revenue
+    source: dbt.metric.revenue
+    formula: "orders * aov"
+    parents: [orders, aov]
+    expected_signs: { orders: positive }
+"""
+    with pytest.raises(ValueError, match="expected_signs.*formula"):
+        Parser(yaml_content)
