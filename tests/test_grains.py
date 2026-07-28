@@ -5,7 +5,6 @@ import pandas as pd
 import pytest
 
 from breakdown.grains import (
-    GrainedData,
     build_grained,
     coarsest,
     ensure_grained,
@@ -19,7 +18,6 @@ from breakdown.grains import (
     snap_window,
     steps_between,
 )
-
 
 # --- ordering & nesting ---
 
