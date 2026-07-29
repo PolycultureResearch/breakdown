@@ -7,10 +7,16 @@ services:
       # Your metric tree. Reference secrets from it as ${DATABRICKS_TOKEN}
       # etc. — the values below pass through from the host environment.
       - ./tree.yml:/config/tree.yml:ro
+      # Parquet snapshot cache: restarts refit from here instead of
+      # re-hitting the warehouse. (/config is read-only, so the default
+      # tree-adjacent location won't work in this container.)
+      - ./snapshots:/snapshots
     environment:
       - DATABRICKS_TOKEN
       - BREAKDOWN_START_DATE
       - BREAKDOWN_END_DATE
+      - BREAKDOWN_SNAPSHOT_DIR=/snapshots
+      - BREAKDOWN_REFRESH
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9090/health')"]
       interval: 30s

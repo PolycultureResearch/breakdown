@@ -23,6 +23,7 @@ from breakdown.engine.simulate import ScenarioRequest, run_scenario
 from breakdown.grains import GrainedData, build_grained
 from breakdown.mcp.server import mcp
 from breakdown.parser import Parser
+from breakdown.snapshots import SnapshotFetcher, SnapshotStore
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,28 @@ def _build_fetcher(provider_cfg, dag, metrics=None):
             profile=provider_cfg.profile,
         )
     return MockDataFetcher(dag=dag)
+
+
+def _wrap_snapshots(fetcher, provider_type: str, tree_path: str):
+    """Wrap the fetcher in the snapshot read-through cache (roadmap 2.4).
+
+    Mock data is already deterministic and free, so only real providers are
+    cached. Default directory is tree-adjacent (`.breakdown/snapshots`) so a
+    partner repo can commit its snapshots and re-run RCAs from a fresh clone;
+    BREAKDOWN_SNAPSHOT_DIR overrides, "off" disables, BREAKDOWN_REFRESH=1
+    forces one refetch pass."""
+    if provider_type == "mock":
+        return fetcher
+    snapshot_dir = os.environ.get("BREAKDOWN_SNAPSHOT_DIR", "")
+    if snapshot_dir == "off":
+        return fetcher
+    if not snapshot_dir:
+        snapshot_dir = os.path.join(os.path.dirname(tree_path), ".breakdown", "snapshots")
+    return SnapshotFetcher(
+        fetcher,
+        SnapshotStore(snapshot_dir),
+        refresh=os.environ.get("BREAKDOWN_REFRESH") == "1",
+    )
 
 
 def _fetch_all_metrics(parser, fetcher, provider_type, start_date, end_date) -> GrainedData:
@@ -182,6 +205,7 @@ async def lifespan(app: FastAPI):
         parser = Parser(yaml_config)
         provider_cfg = parser.config.provider
         fetcher = _build_fetcher(provider_cfg, parser.dag, parser.config.metrics)
+        fetcher = _wrap_snapshots(fetcher, provider_cfg.type, tree_path)
         data = _fetch_all_metrics(parser, fetcher, provider_cfg.type, start_date, end_date)
 
         app.state.parser = parser

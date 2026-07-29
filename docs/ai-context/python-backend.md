@@ -25,6 +25,7 @@ breakdown/
     shaping.py     # MCP response compaction, how_to_read caveats, UI deep links
   cli.py           # Console entry point (`breakdown serve` / `breakdown doctor`)
   doctor.py        # Provider connectivity checks — reuses the real fetchers
+  snapshots.py     # Parquet read-through cache at the fetcher boundary (roadmap 2.4)
   static/          # UI files (inside the package so the wheel ships them)
   examples/        # Bundled default tree (jaffle_shop_tree.yml)
 ```
@@ -75,6 +76,10 @@ Invokes `mf query --metrics <name> --group-by metric_time__<grain> --start-time 
 Uses the `dbtsl.SemanticLayerClient` sync API; the Arrow result is converted to pandas and the `metric_time__<grain>` column renamed to `date`.
 
 The correlated jaffle-shop dataset used by tests lives in `tests/synthetic.py` (`generate_mock_data`), not in production code.
+
+### `snapshots.py` — `SnapshotStore` + `SnapshotFetcher`
+
+A read-through cache **at the `BaseDataFetcher` boundary**: `SnapshotFetcher` wraps the real fetcher; a hit returns the stored frame without touching the provider, a miss fetches, writes, and returns. One parquet file per `(metric, grain, kind, window)` plus a human-facing `manifest.json` (provider class, fetched_at, rows). Wiring lives in `api/main.py:_wrap_snapshots`, called in `lifespan` after `_build_fetcher`: mock is never wrapped; directory = `BREAKDOWN_SNAPSHOT_DIR` (`"off"` disables) or tree-adjacent `.breakdown/snapshots`; `BREAKDOWN_REFRESH=1` skips reads but still writes (one forced refetch pass). Failure-soft by design: an unwritable directory logs one warning and serves uncached (`/config` is read-only in the container, so `compose.yaml` mounts `./snapshots` and points `BREAKDOWN_SNAPSHOT_DIR` at it). Snapshots capture the **normalized** post-gap-fill frame, so what refits is byte-identical to what was originally served — and a tree whose metrics all have snapshots boots with the warehouse down. The doctor deliberately bypasses snapshots (it constructs raw fetchers) — its job is proving the provider path.
 
 ---
 
