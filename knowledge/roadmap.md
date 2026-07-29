@@ -45,9 +45,13 @@ strip, certainty channels, component rows, unexplained badges); what-if tab; nod
 **stat cards** (big number + delta + sparkline, configurable, format-aware);
 deep-linkable RCA / metric / what-if views. *(UI plan U1–U4 + node cards.)*
 
+**MCP server.** Four tools (`get_tree`, `explain_metric`, `run_rca`, `run_whatif`)
+over streamable HTTP at `/mcp`, sharing the API process and trace cache; analysis
+responses carry `how_to_read` caveats and deep links back into the UI. *(2.5.)*
+
 **Not yet built** (the roadmap below): remaining statistical rigor (T9–T11), UI trust
 finish (U5–U6), the connectivity kit, and the market-driven items (report export,
-MCP server, scheduled monitoring, dimensional slicing).
+scheduled monitoring, dimensional slicing).
 
 ---
 
@@ -136,7 +140,7 @@ Goal: onboarding a new tree costs a day, not a week.
 | 2.2 | **CSV ingest + per-metric provider mixing** — a tree where some nodes come from the SL and some from direct SQL/CSV is a normal migration state (`source:` already carries a provider-qualified path) | ◑ | direct-SQL/warehouse provider exists; CSV ingest and per-metric mixing remain. The zero-integration on-ramp: "send a CSV, get an RCA," then migrate node-by-node to governed metrics |
 | 2.3 | **Tree scaffolder** — enumerate SL metrics; turn `derived`/`ratio` `input_metrics` into formula edges; LLM-assisted import of latent trees (canvas exports, metric docs → draft YAML) | ○ | Blank-YAML is the adoption killer; trees already exist in fragments |
 | 2.4 | **Snapshot store** (parquet/DuckDB) — fetch once per (metric, window, grain), refit from snapshots | ○ | Reproducibility, provider-migration invisibility, warehouse politeness, and the foundation for scheduling |
-| 2.5 | **MCP server** — expose `run_rca`, `get_tree`, `explain_metric` as tools | ○ | AI analysts guess at "why"; breakdown is the grounded causal tool they should call. Cheap (endpoints exist), differentiating, and meets users where they already ask why-questions |
+| 2.5 | **MCP server** — expose `run_rca`, `get_tree`, `explain_metric` as tools | ✅ | AI analysts guess at "why"; breakdown is the grounded causal tool they should call. Cheap (endpoints exist), differentiating, and meets users where they already ask why-questions. Shipped as streamable HTTP at `/mcp` with a fourth tool beyond the original scope (`run_whatif`); analysis responses carry `how_to_read` caveats and `report_url` deep links into the UI |
 | 2.6 | **Outsider docs pass** — install guide + first-tree tutorial on public data | ○ | First impressions for anyone arriving cold |
 
 **Exit:** a new tree onboards in < 1 day; an external tool runs an RCA against a demo tree via MCP.
