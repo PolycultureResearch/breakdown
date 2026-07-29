@@ -497,6 +497,46 @@ See [docs/model.md](docs/model.md) for how to read `components`, `unexplained`, 
 
 ---
 
+## MCP server (AI assistants)
+
+The server exposes the engine to AI assistants over [MCP](https://modelcontextprotocol.io) at `http://127.0.0.1:9090/mcp` (streamable HTTP; started automatically by `serve`). A chat assistant connected to it can answer "why was revenue down last week?" by running a real RCA — Shapley attributions, credible intervals, the honest `unexplained` remainder — instead of guessing, and "what if we raise marketing spend 10%?" with a posterior from the what-if engine.
+
+Four tools:
+
+| Tool | Backed by | Description |
+|------|-----------|-------------|
+| `get_tree` | `/meta` + `/dag` | Metric DAG, grains, kinds, and the loaded data window — assistants call this first |
+| `explain_metric` | `/metrics/{name}` | One metric's definition, neighbors, recent series, and fit status |
+| `run_rca` | `/rca/{name}` | Full root-cause analysis between two windows |
+| `run_whatif` | `/simulate` | Do-operator what-if scenario with posterior deltas |
+
+Analysis responses are compacted for token economy (rounded floats, decompositions dropped) and carry two extra fields: `how_to_read` — the interpretation rules from [docs/model.md](docs/model.md) (what `unexplained` means, why `share_of_gap` can exceed 100%, ADVI vs NUTS), so the narrating model states caveats instead of flattening them — and `report_url`, a deep link that replays the exact analysis in the UI (the engine is seeded, so the link reproduces the numbers).
+
+Connect from Claude Code:
+
+```bash
+claude mcp add --transport http breakdown http://127.0.0.1:9090/mcp
+```
+
+or from Claude Desktop via `claude_desktop_config.json` (stdio bridge):
+
+```json
+{
+  "mcpServers": {
+    "breakdown": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://127.0.0.1:9090/mcp"]
+    }
+  }
+}
+```
+
+Then, with the demo tree served, ask: *"why was revenue down in the last two weeks of March 2024?"*
+
+Notes: the first `run_rca`/`run_whatif` on a tree fits models on demand (ADVI) and can take a minute; fits are cached and shared with the UI. The cache resets when `--reload` restarts the process. Set `BREAKDOWN_PUBLIC_URL` if the server is reached at anything other than `http://127.0.0.1:<port>` so `report_url` links resolve.
+
+---
+
 ## Inference methods
 
 ### NUTS (default)
@@ -552,6 +592,9 @@ breakdown/
     rca.py           # run_rca() + shapley_attribution() — root cause analysis
   api/
     main.py          # FastAPI app
+  mcp/
+    server.py        # MCP tools for AI assistants (get_tree, explain_metric, run_rca, run_whatif)
+    shaping.py       # MCP response compaction + how_to_read caveats + UI deep links
 static/
   index.html         # UI: Cytoscape DAG + RCA workflow (app.js, style.css)
 docs/
@@ -576,6 +619,7 @@ tests/
 | Graph modeling | [NetworkX](https://networkx.org/) |
 | dbt Semantic Layer | [dbt-sl-sdk](https://github.com/dbt-labs/semantic-layer-sdk-python) + [dbt-metricflow](https://github.com/dbt-labs/metricflow) |
 | API | [FastAPI](https://fastapi.tiangolo.com/) + [Uvicorn](https://www.uvicorn.org/) |
+| AI assistants | [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) (streamable HTTP at `/mcp`) |
 | Visualization | [Cytoscape.js](https://js.cytoscape.org/) |
 | Config / validation | [Pydantic](https://docs.pydantic.dev/) v2 |
 

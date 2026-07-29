@@ -20,6 +20,9 @@ breakdown/
     rca.py         # run_rca() + shapley_attribution() — all window-over-window attribution
   api/
     main.py        # FastAPI app — routes, lifespan, state (owns the trace cache)
+  mcp/
+    server.py      # MCP server — 4 tools over the same engine/state (mounted at /mcp)
+    shaping.py     # MCP response compaction, how_to_read caveats, UI deep links
 ```
 
 Design rules:
@@ -163,6 +166,16 @@ Dates are validated (ISO format, start ≤ end) both at the CLI and in `lifespan
 **`GET /shapley/{name}`** — window params; thin wrapper over `rca.shapley_attribution`. 422 if no formula or bad windows.
 
 **`POST /rca/{name}`** — window params (required). Runs `run_rca` via `asyncio.to_thread` under the lock, passing `app.state.traces` directly — on-demand fits land in the cache with no copying. 404 unknown metric; `ValueError` → 422.
+
+---
+
+## `mcp/` — MCP server for AI assistants
+
+`mcp/server.py` defines an `MCPServer` ("breakdown") with four async tools — `get_tree` (compact `/meta` + `/dag`), `explain_metric` (definition + neighbors + series summary + fit status), `run_rca`, and `run_whatif` (`/simulate`'s engine with `Intervention`/`Assumption` as typed params). Tools own no state: they read the FastAPI `app.state` (lazy import to avoid the cycle — `api/main.py` imports `server.mcp` to mount it) and run engine calls exactly like the endpoints do: `async with state.lock: await asyncio.to_thread(...)`. Engine `ValueError`s propagate as MCP tool errors so the calling model can self-correct windows.
+
+`mcp/shaping.py` shapes engine results for LLM consumption: `round_floats` (4 significant figures, non-finite → null), `compact_rca` (drops per-contribution `decomposition` and window detail, collapses `components` to point estimates, shrinks skipped nodes, omits null node fields — but keeps a null `ci_95` inside contributions: withheld-interval semantics), `compact_scenario` (baseline nodes shrink to `{status, baseline}`, extrapolation stats collapse to the flag), `RCA_HOW_TO_READ`/`WHATIF_HOW_TO_READ` (docs/model.md caveats attached to every analysis response), and `rca_link`/`whatif_link`/`metric_link` (UI deep links matching `applyDeepLink()`'s hash params in `static/app.js`; base URL from `BREAKDOWN_PUBLIC_URL`, default `http://127.0.0.1:$BREAKDOWN_PORT`).
+
+Transport: streamable HTTP mounted at `/mcp`, stateless with plain-JSON responses. Two SDK quirks the wiring handles: a mounted sub-app's lifespan never runs, so the host `lifespan` drives `mcp.session_manager.run()`; and the SDK's session manager is single-use per instance, so the mount is a shim (`_McpMount`) and each lifespan startup rebuilds the transport app (tests open several `TestClient`s per process).
 
 ---
 
