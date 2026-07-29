@@ -240,3 +240,47 @@ async def test_analyze_does_not_block_event_loop():
 
             # The root request must not have waited for sampling to finish.
             assert timings["root"] < timings["analyze"]
+
+
+DEGRADED_TREE = """
+provider:
+  type: warehouse
+  host: example.cloud.databricks.com
+  token: tok
+  http_path: /sql/1.0/warehouses/abc
+metrics:
+  - name: revenue
+    source: cat.sch.revenue
+"""
+
+
+def test_health_ok():
+    with TestClient(app) as client:
+        body = client.get("/health").json()
+        assert body["status"] == "ok"
+        assert body["provider"] == "mock"
+        assert body["metrics"] == len(app.state.parser.config.metrics)
+
+
+def test_degraded_startup_serves_instead_of_crashing(tmp_path, monkeypatch):
+    """A bad provider config (here: warehouse metrics without `sql`, caught
+    before any connection attempt) must not kill startup — the process
+    serves, /health carries the error, data endpoints 503, the UI loads."""
+    tree_file = tmp_path / "degraded_tree.yml"
+    tree_file.write_text(DEGRADED_TREE)
+    monkeypatch.setenv("BREAKDOWN_TREE", str(tree_file))
+
+    with TestClient(app) as client:
+        health = client.get("/health").json()
+        assert health["status"] == "degraded"
+        assert "sql" in health["error"]
+
+        resp = client.get("/dag")
+        assert resp.status_code == 503
+        assert "doctor" in resp.json()["detail"]
+        for path in ("/meta", "/series", "/metrics/revenue"):
+            assert client.get(path).status_code == 503
+        assert client.post("/rca/revenue?reference_start=2024-01-01&reference_end=2024-01-07&analysis_start=2024-01-08&analysis_end=2024-01-14").status_code == 503
+
+        assert client.get("/ui/").status_code == 200
+        assert client.get("/").status_code == 200

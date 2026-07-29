@@ -99,12 +99,13 @@ Name + type chip (Source / Probabilistic / Formula) + fitted chip. Description, 
 
 - **Cytoscape.js + cytoscape-dagre** (CDN) for the graph. Kept over React Flow: already in use, zero build step, dagre gives proper layered DAG layout. This doc supersedes the earlier React Flow plan.
 - **Plotly.js** (CDN) for time series — window shading via layout shapes, good hover for free.
-- **Vanilla JS** (`static/app.js`), one stylesheet (`static/style.css`), one `index.html`. No framework until the UI outgrows a single file.
+- **Vanilla JS** (`breakdown/static/app.js`), one stylesheet (`breakdown/static/style.css`), one `index.html`. No framework until the UI outgrows a single file. The files live *inside* the package so the wheel ships them (served via `importlib.resources`, still no build step).
 
 ## API surface consumed
 
 | Endpoint | Used for |
 |---|---|
+| `GET /health` | first request in `init()`; on `status: "degraded"` show `#degraded-banner` with the startup error + a `breakdown doctor` hint and skip loading the DAG |
 | `GET /meta` | metric names, data date range, provider, fitted list — bootstraps header controls |
 | `GET /dag` | nodes + edges |
 | `GET /series` | every metric's native-grain series, per-metric `{grain, dates, values}` (one call) — hydrates the node cards |

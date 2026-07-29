@@ -21,6 +21,13 @@ dependencies = [
     "uvicorn>=0.42.0",
 ]
 
+[project.scripts]
+breakdown = "breakdown.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",

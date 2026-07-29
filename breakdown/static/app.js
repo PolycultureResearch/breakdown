@@ -2373,9 +2373,28 @@ function applyDeepLink() {
   }
 }
 
+function showDegradedBanner(error) {
+  const banner = document.createElement("div");
+  banner.id = "degraded-banner";
+  banner.innerHTML =
+    `<strong>breakdown started without data.</strong> ${esc(error)}<br>` +
+    `Fix the tree or provider config, then restart. ` +
+    `Diagnose with <code>breakdown doctor --tree &lt;tree.yml&gt;</code>.`;
+  document.body.prepend(banner);
+}
+
 async function init() {
   setStatus("Loading…", "busy");
   try {
+    // The server keeps serving when the startup data load fails (bad
+    // credentials, unreachable warehouse); surface that instead of eight
+    // opaque 503s.
+    const health = await api("/health");
+    if (health.status !== "ok") {
+      showDegradedBanner(health.error);
+      setStatus("No data loaded", "error");
+      return;
+    }
     [state.meta, state.dag] = await Promise.all([api("/meta"), api("/dag")]);
     // Series hydrates every node card in one request; degrade to name-only
     // nodes if it fails rather than blocking the whole graph.

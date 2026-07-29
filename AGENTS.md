@@ -32,24 +32,27 @@ between them. The stance is **probabilistic and causal**, never frequentist:
 
 - [`README.md`](README.md) — quickstart, the canonical YAML/tree-authoring reference, API reference, UI walkthrough
 - [`docs/model.md`](docs/model.md) — statistical assumptions and how to read results; **read this before trusting output**
-- [`examples/`](examples/), [`knowledge/b2b_mrr_tree.yml`](knowledge/b2b_mrr_tree.yml) — a runnable example and a full worked-reference tree
+- [`breakdown/examples/`](breakdown/examples/), [`knowledge/b2b_mrr_tree.yml`](knowledge/b2b_mrr_tree.yml) — the bundled runnable example and a full worked-reference tree
 
 **Building breakdown** — contributing to the code:
 
 - [`docs/ai-context/python-backend.md`](docs/ai-context/python-backend.md) — backend architecture (parser → engine → API, data flow)
 - [`docs/ai-context/frontend-ui.md`](docs/ai-context/frontend-ui.md) — frontend architecture (canvas, tabs, overlays, node cards)
-- `breakdown/` (engine) · `static/` (UI) · `tests/`
+- `breakdown/` (engine) · `breakdown/static/` (UI) · `tests/`
 - [`knowledge/`](knowledge/) — product & design specs, roadmap, and historical design docs
 
 ## Run & test
 
 ```bash
 uv sync
-uv run python main.py serve            # UI at http://localhost:9090/ui
+uv run breakdown serve --reload        # UI at http://localhost:9090/ui
 uv run pytest tests/ -v
 ```
 
 Point at your own tree with `--tree path/to/tree.yml --start-date … --end-date …`.
+`--reload` is opt-in (the installed CLI defaults to no reload, loopback bind);
+`breakdown doctor --tree …` checks provider connectivity. Deployment (uvx, Docker)
+is covered in the [README](README.md#deploying).
 
 ## Working agreements
 
@@ -68,8 +71,9 @@ Point at your own tree with `--tree path/to/tree.yml --start-date … --end-date
   validated `MetricDefinition` and the single source of truth downstream (attribute
   access, not dict `.get`).
 - **Frontend stays a single file each, no build step.**
-  `static/{index.html,app.js,style.css}`, dependencies from CDN. Keep it vanilla
-  until the UI genuinely outgrows one file.
+  `breakdown/static/{index.html,app.js,style.css}`, dependencies from CDN. Keep it
+  vanilla until the UI genuinely outgrows one file. (The files live inside the
+  package so the wheel ships them.)
 - **Docs travel with the code.** When you change the API surface, the YAML schema,
   or UI behavior, update the [README](README.md) (user-facing) and the relevant
   `docs/ai-context/` doc (architecture) in the same change.

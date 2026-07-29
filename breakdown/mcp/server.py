@@ -47,6 +47,11 @@ def _state():
     # MCP app, so a module-level import back would be a cycle.
     from breakdown.api.main import app
 
+    if app.state.startup_error is not None:
+        raise RuntimeError(
+            f"breakdown started without data: {app.state.startup_error}. "
+            "Run `breakdown doctor --tree <tree.yml>` to diagnose."
+        )
     return app.state
 
 

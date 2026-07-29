@@ -4,6 +4,7 @@ import logging
 import math
 import os
 from contextlib import asynccontextmanager
+from importlib.resources import files
 from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
@@ -25,8 +26,9 @@ from breakdown.parser import Parser
 
 logger = logging.getLogger(__name__)
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DEFAULT_TREE_PATH = os.path.join(BASE_DIR, "examples", "jaffle_shop_tree.yml")
+# Package-relative so the wheel install works the same as a repo checkout;
+# static/ and examples/ ship inside the `breakdown` package.
+DEFAULT_TREE_PATH = str(files("breakdown").joinpath("examples/jaffle_shop_tree.yml"))
 DEFAULT_START_DATE = "2024-01-01"
 DEFAULT_END_DATE = "2024-04-09"
 
@@ -92,6 +94,18 @@ def _validate_date(value: str, label: str) -> str:
     return value
 
 
+def _require_ready(request: Request) -> None:
+    """503 on data endpoints while the app is serving degraded (startup
+    data load failed); the detail carries the original error."""
+    error = request.app.state.startup_error
+    if error is not None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"breakdown started without data: {error}. "
+            "Run `breakdown doctor --tree <tree.yml>` to diagnose.",
+        )
+
+
 def _pick_fit(traces: Dict[Tuple[str, Optional[str]], Any], name: str):
     """Best cached fit to summarize for a metric: prefer the full-window fit,
     else the one with the latest fit_end, else None."""
@@ -116,9 +130,17 @@ class _McpMount:
         # Stateless + plain-JSON: tools carry no per-session state, clients
         # survive --reload restarts, and the transport stays curlable. The
         # default transport security admits localhost hosts only — correct
-        # for a loopback-bound server.
+        # for a loopback-bound server, but a non-loopback bind (`serve
+        # --host 0.0.0.0`, containers) is reached under arbitrary Host
+        # headers, so DNS-rebinding protection must come off there.
+        security = None
+        if os.environ.get("BREAKDOWN_HOST", "127.0.0.1") not in ("127.0.0.1", "localhost"):
+            from mcp.server.transport_security import TransportSecuritySettings
+
+            security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
         self.asgi = mcp.streamable_http_app(
-            streamable_http_path="/", stateless_http=True, json_response=True
+            streamable_http_path="/", stateless_http=True, json_response=True,
+            transport_security=security,
         )
 
     async def __call__(self, scope, receive, send):
@@ -131,36 +153,53 @@ _mcp_mount = _McpMount()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     tree_path = os.environ.get("BREAKDOWN_TREE", DEFAULT_TREE_PATH)
-    start_date = _validate_date(
-        os.environ.get("BREAKDOWN_START_DATE", DEFAULT_START_DATE), "start date"
-    )
-    end_date = _validate_date(
-        os.environ.get("BREAKDOWN_END_DATE", DEFAULT_END_DATE), "end date"
-    )
-    if end_date < start_date:
-        raise RuntimeError(f"end date '{end_date}' is before start date '{start_date}'")
-
-    with open(tree_path, "r") as f:
-        yaml_config = f.read()
-
-    parser = Parser(yaml_config)
-    provider_cfg = parser.config.provider
-    fetcher = _build_fetcher(provider_cfg, parser.dag, parser.config.metrics)
-    data = _fetch_all_metrics(parser, fetcher, provider_cfg.type, start_date, end_date)
-
-    app.state.parser = parser
-    app.state.fetcher = fetcher
-    app.state.data = data
+    app.state.parser = None
+    app.state.fetcher = None
+    app.state.data = None
+    # A startup failure (bad tree, unset ${VAR}, unreachable warehouse) must
+    # not kill the process — a container would crash-loop with no way to see
+    # why. Serve degraded instead: /health carries the error, data endpoints
+    # return 503, and the UI shows a banner pointing at `breakdown doctor`.
+    app.state.startup_error = None
     # Keyed by (metric name, fit_end): a full-window fit (fit_end=None) and a
     # pre-anomaly RCA fit are different objects and must not shadow each other.
     app.state.traces: Dict[Tuple[str, Optional[str]], Any] = {}
     app.state.lock = asyncio.Lock()
 
-    logger.info(
-        "breakdown API started: tree=%s provider=%s window=[%s, %s] rows=%s",
-        tree_path, provider_cfg.type, start_date, end_date,
-        ", ".join(f"{g}:{len(f)}" for g, f in data.frames.items()),
-    )
+    try:
+        start_date = _validate_date(
+            os.environ.get("BREAKDOWN_START_DATE", DEFAULT_START_DATE), "start date"
+        )
+        end_date = _validate_date(
+            os.environ.get("BREAKDOWN_END_DATE", DEFAULT_END_DATE), "end date"
+        )
+        if end_date < start_date:
+            raise RuntimeError(f"end date '{end_date}' is before start date '{start_date}'")
+
+        with open(tree_path, "r") as f:
+            yaml_config = f.read()
+
+        parser = Parser(yaml_config)
+        provider_cfg = parser.config.provider
+        fetcher = _build_fetcher(provider_cfg, parser.dag, parser.config.metrics)
+        data = _fetch_all_metrics(parser, fetcher, provider_cfg.type, start_date, end_date)
+
+        app.state.parser = parser
+        app.state.fetcher = fetcher
+        app.state.data = data
+
+        logger.info(
+            "breakdown API started: tree=%s provider=%s window=[%s, %s] rows=%s",
+            tree_path, provider_cfg.type, start_date, end_date,
+            ", ".join(f"{g}:{len(f)}" for g, f in data.frames.items()),
+        )
+    except Exception as e:
+        app.state.startup_error = f"{type(e).__name__}: {e}"
+        logger.error(
+            "Startup data load failed for tree=%s; serving degraded. "
+            "Run `breakdown doctor --tree %s` to diagnose. %s",
+            tree_path, tree_path, e,
+        )
     # The MCP sub-app's own lifespan never runs under a Starlette mount, so
     # its session manager must be driven from here.
     _mcp_mount.rebuild()
@@ -185,7 +224,7 @@ async def ui_no_cache(request: Request, call_next):
     return response
 
 
-static_dir = os.path.join(BASE_DIR, "static")
+static_dir = str(files("breakdown").joinpath("static"))
 app.mount("/ui", StaticFiles(directory=static_dir, html=True), name="ui")
 
 # MCP for AI assistants, at /mcp. The transport app is rebuilt by each
@@ -199,9 +238,25 @@ async def root():
     return {"message": "breakdown API is running. Visit /ui for the visualization."}
 
 
+@app.get("/health")
+async def health(request: Request):
+    """Liveness + readiness in one: always 200 (the process is up), with
+    `status` distinguishing ok from degraded so orchestrators and the UI can
+    react without treating a bad data source as a dead container."""
+    state = request.app.state
+    if state.startup_error is not None:
+        return {"status": "degraded", "error": state.startup_error}
+    return {
+        "status": "ok",
+        "provider": state.parser.config.provider.type,
+        "metrics": len(state.parser.config.metrics),
+    }
+
+
 @app.get("/meta")
 async def get_meta(request: Request):
     """Bootstrap info for the UI: metrics, data window, provider, fit status."""
+    _require_ready(request)
     parser = request.app.state.parser
     data = request.app.state.data
     data_through = {}
@@ -226,6 +281,7 @@ async def get_meta(request: Request):
 
 @app.get("/dag")
 async def get_dag(request: Request):
+    _require_ready(request)
     parser = request.app.state.parser
     return {
         "nodes": [
@@ -241,6 +297,7 @@ async def get_series(request: Request):
     """Every metric's series at its native grain, for the node cards. Mixed
     grains mean there is no single shared date axis: each metric carries its
     own period-start dates. NaN -> null for valid JSON."""
+    _require_ready(request)
     parser = request.app.state.parser
     data = request.app.state.data
     metrics = {}
@@ -261,6 +318,7 @@ async def get_series(request: Request):
 
 @app.get("/metrics/{name}")
 async def get_metric(name: str, request: Request):
+    _require_ready(request)
     parser = request.app.state.parser
     data = request.app.state.data
     traces = request.app.state.traces
@@ -303,6 +361,7 @@ async def analyze_metric(
     chains: int = Query(default=4, ge=1, le=8),
     fit_end: Optional[str] = Query(default=None),
 ):
+    _require_ready(request)
     parser = request.app.state.parser
     data = request.app.state.data
 
@@ -341,6 +400,7 @@ async def get_shapley(
     analysis_start: str = Query(..., description="Start of analysis window (YYYY-MM-DD)"),
     analysis_end: str = Query(..., description="End of analysis window (YYYY-MM-DD)"),
 ):
+    _require_ready(request)
     parser = request.app.state.parser
     data = request.app.state.data
 
@@ -370,6 +430,7 @@ async def root_cause_analysis(
     analysis_start: str = Query(..., description="Start of analysis window (YYYY-MM-DD)"),
     analysis_end: str = Query(..., description="End of analysis window (YYYY-MM-DD)"),
 ):
+    _require_ready(request)
     parser = request.app.state.parser
     data = request.app.state.data
 
@@ -394,6 +455,7 @@ async def root_cause_analysis(
 async def simulate(scenario: ScenarioRequest, request: Request):
     """Steady-state what-if simulation. Stateless: the client owns the
     scenario; on-demand fits land in the shared trace cache."""
+    _require_ready(request)
     parser = request.app.state.parser
     data = request.app.state.data
 

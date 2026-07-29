@@ -527,3 +527,12 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   margin-top: 14px; padding-top: 10px; line-height: 1.5;
 }
 .wf-ci { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+#degraded-banner {
+  background: #fef2f2; border-bottom: 1px solid #fecaca; color: #991b1b;
+  padding: 10px 16px; font-size: 13px; line-height: 1.5;
+}
+#degraded-banner code {
+  background: #fee2e2; border-radius: 3px; padding: 1px 4px;
+  font-size: 12px;
+}
