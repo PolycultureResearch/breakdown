@@ -201,6 +201,151 @@ function validateWindows() {
 /* Keep the Share menu's items in sync with what is currently shareable. */
 function updateShareMenu() {
   $("share-rca-json").disabled = !state.rca;
+  const rep = $("share-rca-report");
+  if (rep) rep.disabled = !state.rca;
+}
+
+/* ---------- exportable RCA report (roadmap 1.5) ----------
+   Self-contained HTML built entirely client-side: the browser already holds
+   the full RCA response, Cytoscape snapshots the annotated tree, Plotly
+   rasterizes the target strip. Inline styles, embedded PNGs, no external
+   requests — printable straight to PDF. */
+
+async function downloadRcaReport() {
+  if (!state.rca) return;
+  const res = state.rca;
+  let treePng = "";
+  try {
+    treePng = state.cy.png({ full: true, scale: 2, bg: "#f7f8fa", maxWidth: 2400 });
+  } catch { /* snapshot is best-effort */ }
+  let stripPng = "";
+  try {
+    // Plotly.newPlot targets #rca-strip itself, so the strip div IS the plot.
+    const stripDiv = $("rca-strip");
+    if (stripDiv && stripDiv.classList.contains("js-plotly-plot")) {
+      stripPng = await Plotly.toImage(stripDiv, { format: "png", width: 1080, height: 240, scale: 2 });
+    }
+  } catch { /* chart is best-effort */ }
+  const blob = new Blob([buildRcaReportHtml(res, treePng, stripPng)], { type: "text/html" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `rca_report_${res.target}_${res.analysis_window.start}_${res.analysis_window.end}.html`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function buildRcaReportHtml(res, treePng, stripPng) {
+  const target = res.nodes[res.target];
+  const now = new Date();
+  const ciCell = (ci) => (ci ? `[${fmt(ci[0])}, ${fmt(ci[1])}]` : "—");
+  const shareOf = (v, gap) => (Math.abs(gap) > 1e-12 ? pct(v / gap) : "—");
+  const num = (v) => `<td class="num">${v}</td>`;
+
+  const grainNote = (node) => {
+    const bits = [];
+    if (node.grain && node.grain !== "day" && node.effective_windows) {
+      const ew = node.effective_windows;
+      bits.push(`${node.grain} grain, snapped to ${ew.reference.n_periods}+${ew.analysis.n_periods} whole ${node.grain}s`);
+    }
+    if (node.ci_status === "degenerate_single_period") bits.push("single-period window: no bootstrap CI");
+    if (node.sign_warnings && node.sign_warnings.length) bits.push("⚠ learned sign contradicts declared expectation");
+    return bits.length ? ` · ${esc(bits.join(" · "))}` : "";
+  };
+
+  const order = [res.target, ...res.ranked_causes.map((c) => c.metric)];
+  const blocks = order
+    .filter((name) => res.nodes[name] && res.nodes[name].contributions.length)
+    .map((name) => {
+      const node = res.nodes[name];
+      const twoLevel = node.contributions.some((c) => c.decomposition);
+      const unexpl = node.unexplained !== null
+        ? `<tr class="dim"><td>unexplained</td>${num(fmt(node.unexplained))}${num(shareOf(node.unexplained, node.gap))}<td class="num">—</td></tr>`
+        : "";
+      let tables;
+      if (twoLevel) {
+        const headRows = node.contributions.map((c) => `<tr><td><code>${esc(c.parent)}</code></td>${num(fmt(c.decomposition.means.estimate))}${num(shareOf(c.decomposition.means.estimate, node.gap))}${num(ciCell(c.decomposition.means.ci_95))}</tr>`).join("");
+        const interaction = node.interaction
+          ? `<tr class="em"><td>co-movement shift</td>${num(fmt(node.interaction.estimate))}${num(shareOf(node.interaction.estimate, node.gap))}${num(ciCell(node.interaction.ci_95))}</tr>`
+          : "";
+        const detRows = node.contributions.map((c) => `<tr><td><code>${esc(c.parent)}</code></td>${num(fmt(c.decomposition.means.estimate))}${num(fmt(c.decomposition.comovement.estimate))}${num(fmt(c.estimate))}${num(ciCell(c.ci_95))}${num(c.prob_same_direction == null ? "—" : pct(c.prob_same_direction))}</tr>`).join("");
+        tables = `
+          <h4>Headline — window-means bridge</h4>
+          <table><tr><th>Driver</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th></tr>${headRows}${interaction}${unexpl}</table>
+          <h4>Detailed — per-parent split (means + co-movement = total)</h4>
+          <table><tr><th>Parent</th><th class="num">means</th><th class="num">co-movement</th><th class="num">total Δ</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>${detRows}</table>`;
+      } else {
+        const rows = node.contributions.map((c) => `<tr><td><code>${esc(c.parent)}</code></td>${num(fmt(c.estimate))}${num(c.share_of_gap === null ? "—" : pct(c.share_of_gap))}${num(ciCell(c.ci_95))}${num(c.prob_same_direction == null ? "—" : pct(c.prob_same_direction))}</tr>`).join("");
+        const comps = node.components
+          ? `<tr class="dim"><td>trend</td>${num(fmt(node.components.trend.estimate))}<td class="num">—</td>${num(ciCell(node.components.trend.ci_95))}<td class="num">—</td></tr>
+             <tr class="dim"><td>seasonal</td>${num(fmt(node.components.seasonal.estimate))}<td class="num">—</td>${num(ciCell(node.components.seasonal.ci_95))}<td class="num">—</td></tr>`
+          : "";
+        const unexpl5 = node.unexplained !== null
+          ? `<tr class="dim"><td>unexplained</td>${num(fmt(node.unexplained))}${num(shareOf(node.unexplained, node.gap))}<td class="num">—</td><td class="num">—</td></tr>`
+          : "";
+        tables = `<table><tr><th>Parent</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>${rows}${comps}${unexpl5}</table>`;
+      }
+      const signWarn = (node.sign_warnings || []).map((w) => `<p class="warn">⚠ ${esc(w)}</p>`).join("");
+      return `<section>
+        <h3><code>${esc(name)}</code> <span class="meta">${node.attribution_method === "shapley" ? "Shapley (exact)" : "posterior"}${grainNote(node)}</span></h3>
+        <p class="meta">gap ${fmt(node.gap)} (${node.relative_change == null ? "—" : signedPct(node.relative_change)}) · ${fmt(node.baseline)} → ${fmt(node.actual)} window means${node.grain && node.grain !== "day" ? ` per ${esc(node.grain)}` : ""}</p>
+        ${signWarn}${tables}
+      </section>`;
+    })
+    .join("");
+
+  const skipped = Object.entries(res.nodes)
+    .filter(([, n]) => n.status === "window_shorter_than_grain")
+    .map(([n, node]) => `<code>${esc(n)}</code> (${esc(node.grain)})`);
+
+  const ranked = res.ranked_causes
+    .map((c, i) => `<tr><td>${i + 1}</td><td><code>${esc(c.metric)}</code></td>${num(c.score.toFixed(2))}<td>via ${esc(c.via || "—")}</td></tr>`)
+    .join("");
+
+  const dataThrough = state.meta && state.meta.data_through
+    ? Object.values(state.meta.data_through).reduce((a, b) => (a < b ? a : b), "9999")
+    : null;
+
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>RCA — ${esc(res.target)} · ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; color: #1a202c; max-width: 960px; margin: 32px auto; padding: 0 20px; line-height: 1.45; }
+  h1 { font-size: 22px; margin-bottom: 2px; } h3 { font-size: 15px; margin: 22px 0 4px; } h4 { font-size: 12.5px; margin: 12px 0 4px; color: #475569; text-transform: uppercase; letter-spacing: 0.4px; }
+  .meta { color: #64748b; font-size: 12.5px; font-weight: 400; }
+  .gap { font-size: 26px; font-weight: 700; margin: 6px 0 14px; }
+  .gap.up { color: #16a34a; } .gap.down { color: #dc2626; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin: 4px 0 10px; }
+  th { text-align: left; color: #64748b; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; padding: 4px 6px; border-bottom: 1px solid #e2e8f0; }
+  td { padding: 4px 6px; border-bottom: 1px solid #f0f2f5; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.dim td { color: #94a3b8; } tr.em td { font-style: italic; }
+  img { max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; margin: 8px 0; }
+  code { background: #f1f5f9; padding: 1px 4px; border-radius: 4px; font-size: 12px; }
+  .warn { font-size: 12px; color: #92400e; background: #fef3c7; border: 1px solid #fde68a; border-radius: 6px; padding: 6px 8px; }
+  .footnote { margin-top: 28px; padding-top: 12px; border-top: 1px solid #e2e8f0; font-size: 11.5px; color: #64748b; }
+  @media print { body { margin: 8px auto; } section { break-inside: avoid; } }
+</style></head><body>
+  <h1>Root cause analysis — <code>${esc(res.target)}</code></h1>
+  <p class="meta">reference ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)} vs analysis ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}${dataThrough ? ` · data through ${esc(dataThrough)}` : ""}${state.meta ? ` · provider: ${esc(state.meta.provider)}` : ""} · generated ${now.toISOString().slice(0, 16).replace("T", " ")} UTC</p>
+  <div class="gap ${goodDir(res.target, target.gap >= 0 ? "up" : "down")}">${target.gap >= 0 ? "+" : ""}${fmt(target.gap)} (${signedPct(target.relative_change)})</div>
+  ${stripPng ? `<img src="${stripPng}" alt="target series with reference and analysis windows shaded">` : ""}
+  ${treePng ? `<h3>Metric tree</h3><img src="${treePng}" alt="metric tree with RCA overlay">` : ""}
+  <h3>Ranked causes <span class="meta">(triage heuristic, not rigorous multi-hop attribution)</span></h3>
+  <table><tr><th>#</th><th>Metric</th><th class="num">score</th><th>via</th></tr>${ranked}</table>
+  ${skipped.length ? `<p class="meta">Not analyzed — window shorter than grain: ${skipped.join(", ")}.</p>` : ""}
+  <h3 style="margin-top:24px">Attribution detail</h3>
+  ${blocks}
+  <div class="footnote">
+    <strong>Methods.</strong> Changes are window-mean differences at each node's grain, over the whole periods inside the
+    requested windows. Formula (identity) nodes use exact symmetric per-period Shapley attribution — a window-means bridge
+    plus each parent's share of each window's within-window co-movement term — so attributions sum exactly to the gap and
+    <em>unexplained</em> is measurement residual only. Probabilistic nodes multiply the fitted <code>beta_raw</code>
+    posterior (BSTS, fit strictly before the analysis window) by the parent's window delta, with trend and seasonal
+    components reported separately. Intervals combine coefficient posteriors with a circular moving-block bootstrap of
+    the window rows; fits and bootstraps are seeded, so identical requests reproduce identical numbers. Full assumptions:
+    docs/model.md in the <a href="https://github.com/PolycultureResearch/breakdown">breakdown</a> repository.
+  </div>
+</body></html>`;
 }
 
 function nodeType(def) {
@@ -251,6 +396,25 @@ function guessFormat(name) {
 function metricFormat(name) {
   const declared = state.defs && state.defs[name] && state.defs[name].format;
   return declared ? normalizeFormat(declared) : guessFormat(name);
+}
+
+/* Map a MOVEMENT direction ("up"/"down") to a COLOR direction through the
+   metric's declared `direction` (display-only): for down_is_good metrics an
+   upward move colors red, a downward move green; neutral always colors gray.
+   Arrows and labels stay directional — only the good/bad coloring flips. */
+function goodDir(name, dir) {
+  if (dir !== "up" && dir !== "down") return dir;
+  const decl = (state.defs && state.defs[name] && state.defs[name].direction) || "up_is_good";
+  if (decl === "neutral") return "flat";
+  if (decl === "down_is_good") return dir === "up" ? "down" : "up";
+  return dir;
+}
+
+/* Goodness-mapped overlay class ("<prefix>-up" green / "<prefix>-down" red),
+   or null for neutral metrics — they get no judgmental tint at all. */
+function goodClass(name, dir, prefix) {
+  const g = goodDir(name, dir);
+  return g === "up" ? `${prefix}-up` : g === "down" ? `${prefix}-down` : null;
 }
 
 /* Card height grows by one line when the metric shows a unit caption. Used for
@@ -354,12 +518,12 @@ function sparkPaths(data, x0, x1, y0, y1, col) {
 /* Delta as a colored pill centered on (cx, baseline). `mark` is an optional
    trailing glyph (◌ unexplained, ⊙ set by scenario, ⚠ extrapolated). Width is
    estimated from the text length — good enough at this size. */
-function deltaSvg(dpct, dir, mark, cx, baseline) {
+function deltaSvg(dpct, dir, mark, cx, baseline, colorDir = dir) {
   const hasVal = dpct != null;
   if (!hasVal && !mark) {
     return `<text x="${cx}" y="${baseline}" text-anchor="middle" font-size="12.5" fill="#8a94a6" font-family="${CARD_FONT}">—</text>`;
   }
-  const col = CARD_COL[dir] || CARD_COL.flat, bg = CARD_COL_SOFT[dir] || CARD_COL_SOFT.flat;
+  const col = CARD_COL[colorDir] || CARD_COL.flat, bg = CARD_COL_SOFT[colorDir] || CARD_COL_SOFT.flat;
   const tri = dir === "up" ? "▲" : dir === "down" ? "▼" : "▬";
   let txt = hasVal ? `${tri} ${signedPct(dpct)}` : "—";
   if (mark) txt += ` ${mark}`;
@@ -399,8 +563,9 @@ function buildCardSVG(name, d, variant, isOverride, overlay) {
     inner += `<text x="${cx}" y="66" text-anchor="middle" font-size="11" fill="#8a94a6" font-family="${CARD_FONT}">${esc(u)}</text>`;
   }
 
+  const colorDir = goodDir(name, dir);
   if (showSpark && d.spark.length >= 2) {
-    const col = CARD_COL[dir] || CARD_COL.flat;
+    const col = CARD_COL[colorDir] || CARD_COL.flat;
     defs =
       `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">` +
       `<stop offset="0" stop-color="${col}" stop-opacity="0.15"/>` +
@@ -412,9 +577,9 @@ function buildCardSVG(name, d, variant, isOverride, overlay) {
   if (showDelta) {
     if (showSpark) {
       inner += `<line x1="16" y1="${110 + uOff}" x2="${CARD_W - 16}" y2="${110 + uOff}" stroke="#eef1f6" stroke-width="1"/>`;
-      inner += deltaSvg(dpct, dir, mark, cx, 130 + uOff);
+      inner += deltaSvg(dpct, dir, mark, cx, 130 + uOff, colorDir);
     } else {
-      inner += deltaSvg(dpct, dir, mark, cx, 82 + uOff);
+      inner += deltaSvg(dpct, dir, mark, cx, 82 + uOff, colorDir);
     }
   }
 
@@ -1100,7 +1265,8 @@ function applyRcaOverlay() {
 
   Object.entries(res.nodes).forEach(([name, node]) => {
     const n = cy.getElementById(name);
-    n.addClass(node.gap >= 0 ? "rca-up" : "rca-down");
+    const tint = goodClass(name, node.gap >= 0 ? "up" : "down", "rca");
+    if (tint) n.addClass(tint);
     // large-unexplained badge: dashed amber border + ◌ glyph on the card
     let mark = null;
     if (
@@ -1127,7 +1293,9 @@ function applyRcaOverlay() {
       // certainty channel: opacity from prob_same_direction (null -> solid)
       e.data("op", c.prob_same_direction == null ? 1 : Math.max(0.35, 2 * (c.prob_same_direction - 0.5)));
       e.data("label", c.share_of_gap === null ? "" : pct(Math.abs(c.share_of_gap)));
-      e.addClass(c.estimate >= 0 ? "rca-up" : "rca-down");
+      // Edge color = the effect's goodness for the CHILD it lands on.
+      const edgeTint = goodClass(name, c.estimate >= 0 ? "up" : "down", "rca");
+      if (edgeTint) e.addClass(edgeTint);
     });
   });
 
@@ -1234,7 +1402,7 @@ function renderRcaTab() {
     return;
   }
 
-  const dirCls = target.gap >= 0 ? "up" : "down";
+  const dirCls = goodDir(res.target, target.gap >= 0 ? "up" : "down");
   const skipped = Object.entries(res.nodes)
     .filter(([, n]) => n.status === "window_shorter_than_grain")
     .map(([name, n]) => `<code>${esc(name)}</code> (${esc(n.grain)})`);
@@ -1884,8 +2052,10 @@ function applyWhatifOverlay() {
     const n = cy.getElementById(name);
     if (!n.length) return;
     const est = node.delta.estimate;
-    if (est > 0) n.addClass("sim-up");
-    else if (est < 0) n.addClass("sim-down");
+    if (est !== 0) {
+      const tint = goodClass(name, est > 0 ? "up" : "down", "sim");
+      if (tint) n.addClass(tint);
+    }
     // certainty channel: background opacity from P(direction)
     n.data("bgop", node.prob_direction == null ? 1 : Math.max(0.35, 2 * (node.prob_direction - 0.5)));
     let mark = null;
@@ -1910,8 +2080,10 @@ function applyWhatifOverlay() {
       t = res.nodes[e.target().id()];
     if (!s || !t || s.status === "baseline" || t.status === "baseline") return;
     if (t.status === "intervened") return;
-    if (t.delta.estimate > 0) e.addClass("sim-up");
-    else if (t.delta.estimate < 0) e.addClass("sim-down");
+    if (t.delta.estimate !== 0) {
+      const tint = goodClass(e.target().id(), t.delta.estimate > 0 ? "up" : "down", "sim");
+      if (tint) e.addClass(tint);
+    }
     e.data("op", t.prob_direction == null ? 1 : Math.max(0.35, 2 * (t.prob_direction - 0.5)));
   });
 
@@ -1990,7 +2162,7 @@ function renderWhatifResults() {
   const cards = sinks
     .map((name) => {
       const node = res.nodes[name];
-      const dirCls = node.delta.estimate >= 0 ? "up" : "down";
+      const dirCls = goodDir(name, node.delta.estimate >= 0 ? "up" : "down");
       const ci = node.delta.ci_95;
       return `
       <div class="rca-card">
@@ -1998,7 +2170,7 @@ function renderWhatifResults() {
         <div class="gap-line ${dirCls}">${fmt(node.baseline)} → ${fmt(node.simulated)}
           <span style="font-size:14px">(${signedPct(node.relative_delta)})</span></div>
         <div class="wf-ci">Δ ${fmt(node.delta.estimate)} · 95% CI [${fmt(ci[0])}, ${fmt(ci[1])}] · P(direction) ${pct(node.prob_direction)}</div>
-        ${waterfallHtml(node, labelFor)}
+        ${waterfallHtml(name, node, labelFor)}
       </div>`;
     })
     .join("");
@@ -2043,14 +2215,14 @@ function renderWhatifResults() {
     <div class="wf-caveats">${(res.caveats || []).map((c) => esc(c)).join("<br>")}</div>`;
 }
 
-function waterfallHtml(node, labelFor) {
+function waterfallHtml(name, node, labelFor) {
   const contribs = node.contributions || [];
   if (!contribs.length) return "";
   const maxAbs = Math.max(...contribs.map((c) => Math.abs(c.estimate)), 1e-9);
   const rows = contribs
     .map((c) => {
       const width = (50 * Math.abs(c.estimate)) / maxAbs;
-      const cls = c.estimate >= 0 ? "up" : "down";
+      const cls = goodDir(name, c.estimate >= 0 ? "up" : "down");
       return `<div class="wf-bar-row">
       <span class="wf-src" title="${esc(labelFor(c.source))}">${esc(labelFor(c.source))}</span>
       <span class="wf-bar-wrap"><span class="wf-bar ${cls}" style="width:${width}%"></span></span>
@@ -2147,6 +2319,10 @@ function initControls() {
     const title = $("share-copy-link").querySelector(".share-title");
     title.textContent = "Copied ✓";
     setTimeout(() => { title.textContent = "Copy link"; closeShare(); }, 900);
+  });
+  $("share-rca-report").addEventListener("click", () => {
+    downloadRcaReport();
+    closeShare();
   });
   $("share-rca-json").addEventListener("click", () => {
     if (!state.rca) return;

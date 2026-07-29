@@ -164,6 +164,12 @@ class MetricDefinition(BaseModel):
     trend: Optional[TrendConfig] = None
     # UI display hint for the node card's big number; does not affect modeling.
     format: Optional[MetricFormat] = None
+    # Which way is good news, for UI coloring only (never affects modeling or
+    # attribution): "up_is_good" (default — growth metrics), "down_is_good"
+    # (costs, tickets, time-to-X), or "neutral" (no judgment, gray). Note a
+    # stored-negative flow like churn_mrr is up_is_good: moving toward zero
+    # means less churn.
+    direction: str = "up_is_good"
 
     @field_validator("grain")
     @classmethod
@@ -177,6 +183,15 @@ class MetricDefinition(BaseModel):
     def check_kind(cls, v: str) -> str:
         if v not in ("flow", "stock", "rate"):
             raise ValueError(f"kind must be one of ['flow', 'stock', 'rate'], got '{v}'")
+        return v
+
+    @field_validator("direction")
+    @classmethod
+    def check_direction(cls, v: str) -> str:
+        if v not in ("up_is_good", "down_is_good", "neutral"):
+            raise ValueError(
+                f"direction must be one of ['up_is_good', 'down_is_good', 'neutral'], got '{v}'"
+            )
         return v
 
     @model_validator(mode="after")

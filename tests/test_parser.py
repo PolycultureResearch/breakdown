@@ -468,3 +468,30 @@ metrics:
 """
     with pytest.raises(ValueError, match="expected_signs.*formula"):
         Parser(yaml_content)
+
+
+# --- direction (display goodness) validation tests ---
+
+def test_direction_default_and_parsed():
+    yaml_content = """
+metrics:
+  - name: dau
+    source: dbt.metric.dau
+  - name: support_tickets
+    source: dbt.metric.support_tickets
+    direction: down_is_good
+"""
+    parser = Parser(yaml_content)
+    assert parser.get_metric("dau").direction == "up_is_good"
+    assert parser.get_metric("support_tickets").direction == "down_is_good"
+
+
+def test_direction_invalid_raises():
+    yaml_content = """
+metrics:
+  - name: dau
+    source: dbt.metric.dau
+    direction: sideways
+"""
+    with pytest.raises(ValueError, match="direction must be one of"):
+        Parser(yaml_content)

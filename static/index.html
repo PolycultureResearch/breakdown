@@ -31,6 +31,10 @@
                     <span class="share-title">Copy link</span>
                     <span class="share-sub">URL restores this exact view — selected metric, RCA run, or what-if scenario</span>
                 </button>
+                <button class="share-item" id="share-rca-report" disabled>
+                    <span class="share-title">Download RCA report (.html)</span>
+                    <span class="share-sub">Self-contained, printable: tree snapshot, ranked causes, attribution tables, methods</span>
+                </button>
                 <button class="share-item" id="share-rca-json" disabled>
                     <span class="share-title">Download RCA result (.json)</span>
                     <span class="share-sub">The last run's full attribution response</span>
@@ -73,12 +77,12 @@
                 <div class="legend-row"><span class="swatch fitted"></span> model fitted</div>
                 <div class="legend-row"><span class="edge-swatch formula"></span> deterministic edge</div>
                 <div class="legend-row"><span class="edge-swatch dashed"></span> learned edge</div>
-                <div class="legend-row rca-only" style="display:none"><span class="swatch up"></span> ▲ moved up</div>
-                <div class="legend-row rca-only" style="display:none"><span class="swatch down"></span> ▼ moved down</div>
+                <div class="legend-row rca-only" style="display:none"><span class="swatch up"></span> improved (▲▼ = direction)</div>
+                <div class="legend-row rca-only" style="display:none"><span class="swatch down"></span> worsened</div>
                 <div class="legend-row rca-only" style="display:none"><span class="swatch unexp"></span> ◌ large unexplained share</div>
                 <div class="legend-row sim-only" style="display:none"><span class="swatch pinned"></span> ⊙ set by scenario</div>
-                <div class="legend-row sim-only" style="display:none"><span class="swatch up"></span> ▲ simulated up</div>
-                <div class="legend-row sim-only" style="display:none"><span class="swatch down"></span> ▼ simulated down</div>
+                <div class="legend-row sim-only" style="display:none"><span class="swatch up"></span> simulated better (▲▼ = direction)</div>
+                <div class="legend-row sim-only" style="display:none"><span class="swatch down"></span> simulated worse</div>
                 <div class="legend-row sim-only" style="display:none"><span class="edge-swatch assume"></span> assumption link</div>
                 <div class="legend-row sim-only" style="display:none"><span class="swatch unexp"></span> ⚠ outside historical range</div>
             </div>
