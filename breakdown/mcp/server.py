@@ -177,7 +177,11 @@ async def run_rca(
     = the period in question; reference window = an equal-length window
     immediately before it (or a comparable earlier period). Prefer
     whole-week spans (7/14/28 days) so weekday mix doesn't manufacture
-    seasonal gaps; trees with monthly metrics need windows covering whole
+    seasonal gaps. For windows shorter than a week, compare like with
+    like: pick a reference covering the same days of the week — a weekend
+    vs. the prior weekend, a Monday vs. recent Mondays — or the gap will
+    be dominated by weekday-mix seasonality rather than anything
+    actionable. Trees with monthly metrics need windows covering whole
     months. The first call fits models on demand and can take a minute or
     two; repeat calls on the same tree are fast (fits are cached)."""
     state = _state()
