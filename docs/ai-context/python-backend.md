@@ -23,6 +23,10 @@ breakdown/
   mcp/
     server.py      # MCP server — 4 tools over the same engine/state (mounted at /mcp)
     shaping.py     # MCP response compaction, how_to_read caveats, UI deep links
+  cli.py           # Console entry point (`breakdown serve` / `breakdown doctor`)
+  doctor.py        # Provider connectivity checks — reuses the real fetchers
+  static/          # UI files (inside the package so the wheel ships them)
+  examples/        # Bundled default tree (jaffle_shop_tree.yml)
 ```
 
 Design rules:
@@ -129,29 +133,44 @@ Response contract: `{"target", "reference_window", "analysis_window", "nodes", "
 
 ---
 
+## `cli.py` (+ `doctor.py`)
+
+`cli.py` is the console entry point (`[project.scripts] breakdown = "breakdown.cli:main"`; repo-root `main.py` is a shim to it). `serve` translates flags to the env vars below and calls `uvicorn.run` — host defaults to `127.0.0.1` and reload is **off** unless `--reload` (dev). It also exports `BREAKDOWN_PORT`/`BREAKDOWN_HOST` (MCP deep links + transport security). `doctor` runs `doctor.run_doctor(tree)` → `print_report` → exit code.
+
+`doctor.py` walks the provider auth chain as `CheckResult`s (`pass`/`fail`/`skip` + copy-paste remediation): tree file → raw YAML → unset `${VAR}` scan (via `parser._ENV_REF`, before the full parse would abort on the first one) → `Parser` parse → per-provider chain (`warehouse`: auth mode / CLI / profile host / `_connect()` + `USE` / per-metric `fetch_metric` over a 7-day probe window; `cloud`: config fields, `client.metrics()` inside a session — one call that proves token + cell host + environment + SL credential mapping — then tree `source`s ⊆ SL metrics; `local`: `mf` on PATH, `dbt_project.yml`, `mf list metrics`). All checks run; failed prerequisites mark dependents `skip`. Connection logic is the real fetchers' — never a duplicate.
+
+---
+
 ## `api/main.py`
 
-### Startup configuration (env vars, set by `main.py serve` flags)
+### Startup configuration (env vars, set by `breakdown serve` flags)
 
 | Env var | CLI flag | Default |
 |---------|----------|---------|
-| `BREAKDOWN_TREE` | `--tree` | `examples/jaffle_shop_tree.yml` |
+| `BREAKDOWN_TREE` | `--tree` | bundled `breakdown/examples/jaffle_shop_tree.yml` |
 | `BREAKDOWN_START_DATE` | `--start-date` | `2024-01-01` |
 | `BREAKDOWN_END_DATE` | `--end-date` | `2024-04-09` |
 
 Dates are validated (ISO format, start ≤ end) both at the CLI and in `lifespan`. `lifespan` builds the fetcher from the tree's `provider` config and fetches every metric for the window **at its declared grain/kind**, assembling per-grain frames via `build_grained` (inner join on `date` within each grain only — a monthly metric no longer drops daily rows tree-wide). For `local`/`cloud` the queried metric name is the last segment of `source`, renamed to the tree `name`; mock generates by tree name directly.
 
+**Degraded startup:** the whole parse/build/fetch is wrapped in one try/except. On failure the app still serves — `app.state.startup_error` holds `"ExcType: message"`, `parser`/`fetcher`/`data` stay `None`, data routes reject via `_require_ready` (503 with the error + a `breakdown doctor` hint), MCP tools reject the same way in `_state()`, and the UI shows a banner. `/ui`, `/`, and `/health` keep working; a container never crash-loops on a bad token. Per-metric diagnosis is deliberately not here — that's `doctor.py`'s job.
+
+Static files and the default tree resolve via `importlib.resources` (`files("breakdown")`), not repo-relative paths, so an installed wheel behaves like a checkout.
+
 ### State (set in `lifespan`)
 
 | `app.state` key | Type | Description |
 |-----------------|------|-------------|
-| `parser` | `Parser` | Parsed metric tree |
-| `fetcher` | `BaseDataFetcher` | Fetcher matching the provider type |
-| `data` | `GrainedData` | Per-grain frames + `grain_of`/`kind_of`/`last_observed` maps (`last_observed` is captured per metric before the within-grain join; `data_through(m)` converts it to the inclusive last covered date) |
+| `parser` | `Parser \| None` | Parsed metric tree (`None` while degraded) |
+| `fetcher` | `BaseDataFetcher \| None` | Fetcher matching the provider type |
+| `data` | `GrainedData \| None` | Per-grain frames + `grain_of`/`kind_of`/`last_observed` maps (`last_observed` is captured per metric before the within-grain join; `data_through(m)` converts it to the inclusive last covered date) |
+| `startup_error` | `str \| None` | Set when the startup data load failed; gates every data route |
 | `traces` | `Dict[Tuple[str, Optional[str]], FitResult]` | **The** trace cache, keyed `(name, fit_end)` (single source of truth) |
 | `lock` | `asyncio.Lock` | Serializes sampling (analyze + RCA fits) |
 
 ### Routes
+
+**`GET /health`** — always 200: `{status: "ok", provider, metrics}` or `{status: "degraded", error}`. Liveness for orchestrators (the body, not the code, carries degraded-ness) and the UI's first request.
 
 **`GET /meta`** — metrics, data window, provider, per-metric `grains`/`kinds`/`data_through` maps (`data_through` = each metric's honest data edge, which may lag the requested window), fitted list (UI bootstrap).
 
@@ -175,7 +194,7 @@ Dates are validated (ISO format, start ≤ end) both at the CLI and in `lifespan
 
 `mcp/shaping.py` shapes engine results for LLM consumption: `round_floats` (4 significant figures, non-finite → null), `compact_rca` (drops per-contribution `decomposition` and window detail, collapses `components` to point estimates, shrinks skipped nodes, omits null node fields — but keeps a null `ci_95` inside contributions: withheld-interval semantics), `compact_scenario` (baseline nodes shrink to `{status, baseline}`, extrapolation stats collapse to the flag), `RCA_HOW_TO_READ`/`WHATIF_HOW_TO_READ` (docs/model.md caveats attached to every analysis response), and `rca_link`/`whatif_link`/`metric_link` (UI deep links matching `applyDeepLink()`'s hash params in `static/app.js`; base URL from `BREAKDOWN_PUBLIC_URL`, default `http://127.0.0.1:$BREAKDOWN_PORT`).
 
-Transport: streamable HTTP mounted at `/mcp`, stateless with plain-JSON responses. Two SDK quirks the wiring handles: a mounted sub-app's lifespan never runs, so the host `lifespan` drives `mcp.session_manager.run()`; and the SDK's session manager is single-use per instance, so the mount is a shim (`_McpMount`) and each lifespan startup rebuilds the transport app (tests open several `TestClient`s per process).
+Transport: streamable HTTP mounted at `/mcp`, stateless with plain-JSON responses. Two SDK quirks the wiring handles: a mounted sub-app's lifespan never runs, so the host `lifespan` drives `mcp.session_manager.run()`; and the SDK's session manager is single-use per instance, so the mount is a shim (`_McpMount`) and each lifespan startup rebuilds the transport app (tests open several `TestClient`s per process). The SDK's default Host-header validation admits localhost only; when `BREAKDOWN_HOST` (set by `serve --host`) is non-loopback, `rebuild()` disables DNS-rebinding protection so containers/shared hosts can reach `/mcp`.
 
 ---
 

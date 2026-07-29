@@ -76,20 +76,30 @@ The YAML is validated and compiled into a directed acyclic graph using NetworkX.
 
 **Requirements:** Python 3.11+, [uv](https://github.com/astral-sh/uv)
 
+Run straight from git without cloning:
+
+```bash
+uvx --from git+https://github.com/your-org/breakdown breakdown serve
+```
+
+Or work from a checkout:
+
 ```bash
 git clone https://github.com/your-org/breakdown
 cd breakdown
 uv sync
-uv run python main.py serve
+uv run breakdown serve            # or: uv run python main.py serve
 ```
 
 Open `http://localhost:9090/ui` to explore the metric tree. The UI shows the DAG (formula vs learned edges, fit status), per-metric time series and posteriors in business units, and a full point-and-click RCA workflow: pick a target and two windows, run it, and read the answer off the graph — nodes tinted by direction of change, edges weighted by share of the gap explained, ranked causes with credible intervals in the sidebar. RCA runs and metric views are deep-linkable (`#rca=…`, `#metric=…`) so an analysis can be shared as a URL.
 
-By default the server loads `examples/jaffle_shop_tree.yml` with mock data. Point it at your own tree and data window:
+By default the server loads the bundled `breakdown/examples/jaffle_shop_tree.yml` with mock data. Point it at your own tree and data window:
 
 ```bash
-uv run python main.py serve --tree path/to/my_tree.yml --start-date 2025-01-01 --end-date 2025-06-30
+uv run breakdown serve --tree path/to/my_tree.yml --start-date 2025-01-01 --end-date 2025-06-30
 ```
+
+`serve` binds to `127.0.0.1` without hot reload by default; use `--host 0.0.0.0` to accept outside connections (containers) and `--reload` while developing breakdown itself.
 
 At startup, breakdown fetches the time series for every metric in the tree from the configured provider (mock, local MetricFlow, dbt Cloud Semantic Layer, or warehouse-direct SQL) and aligns them on date.
 
@@ -113,9 +123,38 @@ uv run pytest tests/ -v
 
 ---
 
+## Deploying
+
+### A shared instance with Docker
+
+```bash
+cp path/to/my_tree.yml tree.yml
+export DATABRICKS_TOKEN=...        # whatever ${VARS} your tree references
+docker compose up --build
+```
+
+The [`compose.yaml`](compose.yaml) mounts `./tree.yml` read-only at `/config/tree.yml`, passes provider credentials through as environment variables, and healthchecks `GET /health`. The image is large (~2.5–3 GB — PyMC and its compiler toolchain); the first build takes a while.
+
+Two things differ from a laptop run:
+
+- **Credentials must be headless.** The Databricks CLI OAuth `profile:` flow opens a browser, which a container can't. Use `token: ${DATABRICKS_TOKEN}` in the tree's provider block instead (see [`provider`](#provider) for `${VAR}` interpolation). If you must reuse a profile, mount both `~/.databrickscfg` and `~/.databricks/token-cache.json` read-only into the container.
+- **Startup failures degrade, not crash.** If the provider can't be reached (bad token, warehouse down), the server still starts: `GET /health` returns `{"status": "degraded", "error": …}`, data endpoints return 503, and the UI shows the error with a pointer to `breakdown doctor`. Fix the config and restart — no crash-loop to debug through.
+
+### Checking connectivity: `breakdown doctor`
+
+Before the first `serve` against real data — or whenever startup reports `degraded` — run:
+
+```bash
+uv run breakdown doctor --tree path/to/my_tree.yml
+```
+
+It walks the provider's auth chain step by step (tree parses → env vars set → CLI/profile/token valid → connection opens → every metric's query actually runs) and prints `[PASS]`/`[FAIL]` per step with copy-paste remediation for each failure. Exit code is non-zero if anything failed. Probes run over the last 7 days by default; override with `--start-date`/`--end-date`.
+
+---
+
 ## Driving the UI
 
-Start the server and open `http://localhost:9090/ui`. Breakdown fetches every metric's series from the provider at startup, so the first load takes a few seconds. The steps below use the default `examples/jaffle_shop_tree.yml` and its `2024-01-01`–`2024-04-09` window; substitute your own target and dates. The header date pickers are bounded to the loaded `--start-date`/`--end-date` window.
+Start the server and open `http://localhost:9090/ui`. Breakdown fetches every metric's series from the provider at startup, so the first load takes a few seconds. The steps below use the bundled default `breakdown/examples/jaffle_shop_tree.yml` and its `2024-01-01`–`2024-04-09` window; substitute your own target and dates. The header date pickers are bounded to the loaded `--start-date`/`--end-date` window.
 
 **1. Inspect a metric — and fit its model.** Click any node in the graph to open the **Metric** tab (right sidebar) with its time series. Nodes that have a probabilistic parent (e.g. `order_count`) show an **Analyze** section: pick **ADVI (fast)** or **NUTS (accurate)** and click **Run** to fit the BSTS. The posterior — trend, seasonality, and the `beta` / `beta_raw` coefficient on each parent — fills in, and the node picks up the "fitted" tint. Leaf and formula nodes just show their series.
 
@@ -531,7 +570,28 @@ or from Claude Desktop via `claude_desktop_config.json` (stdio bridge):
 }
 ```
 
-Then, with the demo tree served, ask: *"why was revenue down in the last two weeks of March 2024?"*
+### What it looks like
+
+A real, unedited exchange against the bundled demo tree (Claude with the MCP server connected):
+
+**Prompt:** *"Why was revenue down the last two weeks?"*
+
+> Revenue was down because average order value dropped, not because of traffic or order volume — those actually improved and partially masked a bigger AOV problem.
+>
+> Comparing the last two weeks of data (Mar 27 – Apr 9, 2024) to the two weeks before:
+>
+> - Revenue fell ~1.4%, from about $735.7K to $725.2K per day (a gap of roughly –$10.4K/day).
+> - Average order value is the culprit: it dropped ~4.9% ($5,132 → $4,879), contributing about –$36K/day to revenue. The model is essentially certain about this (95% credible interval of –$50.9K to –$20.5K, with the direction certain).
+> - Order count rose ~3.8% (142.7 → 148 orders/day), contributing about +$27K/day — offsetting most of the AOV damage. Without that lift, the revenue decline would have been ~3.5× larger.
+> - Sessions were up ~2.2% and explain about half of the order-count gain; the rest is a modest underlying trend.
+>
+> The unexplained remainder is small (~$583/day), so the AOV-vs-volume story accounts for nearly the whole move. Note this tree can't say why AOV fell — that's outside the modeled drivers — so the next step would be checking things like discounting/promos, product mix, or a shift toward cheaper SKUs in that window.
+>
+> One caveat on the question: the loaded data only covers Jan 1 – Apr 9, 2024, so "last two weeks" here means the most recent two weeks of available data, not the end of the year.
+>
+> Interactive report: `http://127.0.0.1:9090/ui/#rca=revenue&reference_start=2024-03-13&reference_end=2024-03-26&analysis_start=2024-03-27&analysis_end=2024-04-09`
+
+Every claim in that answer traces back to a field in the tool response: the offsetting order-count lift is the unclamped `share_of_gap` design at work, "essentially certain" is `ci_95` + `prob_same_direction` read as confidence language, the small `unexplained` is cited as evidence the story is complete, and "this tree can't say why AOV fell" is the DAG-is-a-hypothesis caveat from `how_to_read` — applied where it matters instead of flattened into a disclaimer. The closing link replays the exact analysis in the UI.
 
 Notes: the first `run_rca`/`run_whatif` on a tree fits models on demand (ADVI) and can take a minute; fits are cached and shared with the UI. The cache resets when `--reload` restarts the process. Set `BREAKDOWN_PUBLIC_URL` if the server is reached at anything other than `http://127.0.0.1:<port>` so `report_url` links resolve.
 
@@ -595,15 +655,19 @@ breakdown/
   mcp/
     server.py        # MCP tools for AI assistants (get_tree, explain_metric, run_rca, run_whatif)
     shaping.py       # MCP response compaction + how_to_read caveats + UI deep links
-static/
-  index.html         # UI: Cytoscape DAG + RCA workflow (app.js, style.css)
+  cli.py             # `breakdown serve` / `breakdown doctor` console entry point
+  doctor.py          # Provider connectivity checks with copy-paste remediation
+  static/
+    index.html       # UI: Cytoscape DAG + RCA workflow (app.js, style.css)
+  examples/
+    jaffle_shop_tree.yml   # The bundled default (mock) tree
 docs/
   model.md           # Model assumptions & how to interpret results — start here
   ai-context/        # Architecture deep-dives (backend, frontend) for contributors
-examples/
-  jaffle_shop_tree.yml
 knowledge/           # Product & design specs, roadmap, reference trees
 tests/
+Dockerfile           # Container image (see "Deploying")
+compose.yaml
 ```
 
 **If you're going to interpret breakdown's output, read [docs/model.md](docs/model.md)** — it explains what the model assumes, what `unexplained` means, why shares can exceed 100%, and when to trust (or distrust) a credible interval. **If you're going to work on the codebase, read [AGENTS.md](AGENTS.md)** — the project's invariants and where everything lives.

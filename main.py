@@ -1,66 +1,6 @@
-import argparse
-import datetime
-import os
+"""Repo-checkout shim; the real CLI is `breakdown.cli` (installed as `breakdown`)."""
 
-import uvicorn
-
-
-def serve(port: int = 9090, tree: str = None, start_date: str = None, end_date: str = None):
-    # Config flows to the app via env vars so it survives uvicorn's
-    # reload subprocess.
-    if tree:
-        tree_path = os.path.abspath(tree)
-        if not os.path.isfile(tree_path):
-            raise SystemExit(f"Metric tree file not found: {tree_path}")
-        os.environ["BREAKDOWN_TREE"] = tree_path
-    for flag, value, env in (
-        ("--start-date", start_date, "BREAKDOWN_START_DATE"),
-        ("--end-date", end_date, "BREAKDOWN_END_DATE"),
-    ):
-        if value:
-            try:
-                datetime.date.fromisoformat(value)
-            except ValueError:
-                raise SystemExit(f"{flag} must be a valid YYYY-MM-DD date, got '{value}'")
-            os.environ[env] = value
-
-    # Report links in MCP tool responses need the real port.
-    os.environ["BREAKDOWN_PORT"] = str(port)
-
-    print(f"Starting breakdown server on http://127.0.0.1:{port}")
-    print(f"UI available at http://127.0.0.1:{port}/ui")
-    print(f"MCP endpoint at http://127.0.0.1:{port}/mcp")
-    if tree:
-        print(f"Metric tree: {os.environ['BREAKDOWN_TREE']}")
-    uvicorn.run("breakdown.api.main:app", host="127.0.0.1", port=port, reload=True)
-
-
-def main():
-    parser = argparse.ArgumentParser(description="breakdown: Open-Source Bayesian Metric Trees")
-    subparsers = parser.add_subparsers(dest="command")
-
-    serve_parser = subparsers.add_parser("serve", help="Start the API and UI server")
-    serve_parser.add_argument("--port", type=int, default=9090, help="Port to run on")
-    serve_parser.add_argument(
-        "--tree", type=str, default=None,
-        help="Path to a metric tree YAML (default: examples/jaffle_shop_tree.yml)",
-    )
-    serve_parser.add_argument(
-        "--start-date", type=str, default=None,
-        help="Start of the data window, YYYY-MM-DD (default: 2024-01-01)",
-    )
-    serve_parser.add_argument(
-        "--end-date", type=str, default=None,
-        help="End of the data window, YYYY-MM-DD (default: 2024-04-09)",
-    )
-
-    args = parser.parse_args()
-
-    if args.command == "serve":
-        serve(args.port, tree=args.tree, start_date=args.start_date, end_date=args.end_date)
-    else:
-        parser.print_help()
-
+from breakdown.cli import main
 
 if __name__ == "__main__":
     main()

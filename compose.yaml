@@ -1,0 +1,18 @@
+services:
+  breakdown:
+    build: .
+    ports:
+      - "9090:9090"
+    volumes:
+      # Your metric tree. Reference secrets from it as ${DATABRICKS_TOKEN}
+      # etc. — the values below pass through from the host environment.
+      - ./tree.yml:/config/tree.yml:ro
+    environment:
+      - DATABRICKS_TOKEN
+      - BREAKDOWN_START_DATE
+      - BREAKDOWN_END_DATE
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9090/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

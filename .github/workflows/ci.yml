@@ -24,3 +24,18 @@ jobs:
 
       - name: Test
         run: uv run pytest tests/ -q
+
+      # Keep the install story honest: the wheel must build, expose the
+      # console script, and ship the UI + bundled example tree.
+      - name: Build wheel
+        run: uv build
+
+      - name: Smoke-test wheel
+        run: |
+          uv run --isolated --no-project --with dist/*.whl breakdown --help
+          uv run --isolated --no-project --with dist/*.whl python -c "
+          from importlib.resources import files
+          pkg = files('breakdown')
+          assert pkg.joinpath('static/index.html').is_file(), 'UI missing from wheel'
+          assert pkg.joinpath('examples/jaffle_shop_tree.yml').is_file(), 'example tree missing from wheel'
+          "
