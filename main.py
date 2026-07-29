@@ -24,8 +24,12 @@ def serve(port: int = 9090, tree: str = None, start_date: str = None, end_date: 
                 raise SystemExit(f"{flag} must be a valid YYYY-MM-DD date, got '{value}'")
             os.environ[env] = value
 
+    # Report links in MCP tool responses need the real port.
+    os.environ["BREAKDOWN_PORT"] = str(port)
+
     print(f"Starting breakdown server on http://127.0.0.1:{port}")
     print(f"UI available at http://127.0.0.1:{port}/ui")
+    print(f"MCP endpoint at http://127.0.0.1:{port}/mcp")
     if tree:
         print(f"Metric tree: {os.environ['BREAKDOWN_TREE']}")
     uvicorn.run("breakdown.api.main:app", host="127.0.0.1", port=port, reload=True)

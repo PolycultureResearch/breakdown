@@ -20,6 +20,7 @@ from breakdown.engine.model import fit_metric, summarize_trace
 from breakdown.engine.rca import run_rca, shapley_attribution
 from breakdown.engine.simulate import ScenarioRequest, run_scenario
 from breakdown.grains import GrainedData, build_grained
+from breakdown.mcp.server import mcp
 from breakdown.parser import Parser
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,31 @@ def _pick_fit(traces: Dict[Tuple[str, Optional[str]], Any], name: str):
     return max(dated, key=lambda item: item[0])[1]
 
 
+class _McpMount:
+    """ASGI shim for the MCP transport. The SDK's session manager is
+    single-use per instance, but a process can run the lifespan more than
+    once (tests open several TestClients), so each startup builds a fresh
+    transport app and points the mounted shim at it."""
+
+    def __init__(self):
+        self.asgi = None
+
+    def rebuild(self):
+        # Stateless + plain-JSON: tools carry no per-session state, clients
+        # survive --reload restarts, and the transport stays curlable. The
+        # default transport security admits localhost hosts only — correct
+        # for a loopback-bound server.
+        self.asgi = mcp.streamable_http_app(
+            streamable_http_path="/", stateless_http=True, json_response=True
+        )
+
+    async def __call__(self, scope, receive, send):
+        await self.asgi(scope, receive, send)
+
+
+_mcp_mount = _McpMount()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     tree_path = os.environ.get("BREAKDOWN_TREE", DEFAULT_TREE_PATH)
@@ -135,7 +161,11 @@ async def lifespan(app: FastAPI):
         tree_path, provider_cfg.type, start_date, end_date,
         ", ".join(f"{g}:{len(f)}" for g, f in data.frames.items()),
     )
-    yield
+    # The MCP sub-app's own lifespan never runs under a Starlette mount, so
+    # its session manager must be driven from here.
+    _mcp_mount.rebuild()
+    async with mcp.session_manager.run():
+        yield
 
 
 app = FastAPI(title="breakdown API", lifespan=lifespan)
@@ -157,6 +187,11 @@ async def ui_no_cache(request: Request, call_next):
 
 static_dir = os.path.join(BASE_DIR, "static")
 app.mount("/ui", StaticFiles(directory=static_dir, html=True), name="ui")
+
+# MCP for AI assistants, at /mcp. The transport app is rebuilt by each
+# lifespan run (see _McpMount), so the mount is a shim that delegates to
+# the current one.
+app.mount("/mcp", _mcp_mount)
 
 
 @app.get("/")
