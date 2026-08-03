@@ -52,6 +52,40 @@ One consequence worth knowing: this must come before any `uv run`, which
 prepends Breakdown's own venv and would shadow it. That is why the Makefile
 invokes `.venv/bin/breakdown` directly rather than through `uv run`.
 
+## Deploying
+
+```bash
+fly launch --no-deploy --copy-config --name white-cube-demo   # from the repo root
+fly secrets set BREAKDOWN_API_TOKEN=$(openssl rand -hex 24)
+fly deploy --dockerfile demo/Dockerfile
+uv run python demo/prewarm.py --rcas --url https://white-cube-demo.fly.dev
+```
+
+[`fly.toml`](fly.toml) explains the settings; the load-bearing one is
+`auto_stop_machines = "suspend"`, which snapshots RAM so an idle machine wakes in
+about a second with the pre-warmed trace cache intact. The prewarm run is what
+keeps the first prospect of the day from paying for the model fits — fits are
+serialized behind a single lock, so a cold multi-node RCA is the one real
+latency risk in a live pitch.
+
+Give clients the plain URL. Give them the token only if you want them driving it
+from Claude:
+
+```bash
+claude mcp add --transport http breakdown https://white-cube-demo.fly.dev/mcp \
+  --header "Authorization: Bearer <token>"
+```
+
+`/mcp` is closed whenever `BREAKDOWN_API_TOKEN` is set; `/ui` and `/health` stay
+open, because the demo still has to serve anyone with the link.
+
+**Several clients at once** already works — the only shared mutable state is the
+trace cache, which is a pure cache, so concurrent analyses get identical seeded
+results and warm each other. Per-client *state* lives in each browser's
+localStorage via **Share → Save this view**, so nobody sees anyone else's work.
+For a prospect who should see their own branded tree, run a second machine or app
+with a different tree file; no code change.
+
 ## Regenerating when the data looks stale
 
 The scenario runs `2024-06-01` → `2026-07-30`. When that starts to read as
