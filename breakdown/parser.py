@@ -92,7 +92,7 @@ def _expand_env(value: Optional[str]) -> Optional[str]:
 
 
 class DataProviderConfig(BaseModel):
-    type: str = "mock" # "mock", "local", "cloud", "warehouse"
+    type: str = "mock" # "mock", "local", "cloud", "warehouse", "none" (alias "assumed")
     project_path: Optional[str] = None
     environment_id: Optional[str] = None
     host: Optional[str] = None
@@ -113,8 +113,12 @@ class DataProviderConfig(BaseModel):
     @field_validator("type")
     @classmethod
     def validate_type(cls, v: str) -> str:
-        if v not in ["mock", "local", "cloud", "warehouse"]:
-            raise ValueError("type must be one of: mock, local, cloud, warehouse")
+        # `none` declares a cold-start tree (no data is ever fetched);
+        # `assumed` is the same thing said from the tree author's seat.
+        if v == "assumed":
+            return "none"
+        if v not in ["mock", "local", "cloud", "warehouse", "none"]:
+            raise ValueError("type must be one of: mock, local, cloud, warehouse, none")
         return v
 
     @field_validator(

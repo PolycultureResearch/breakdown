@@ -16,6 +16,7 @@ from typing import List, Literal, Optional, Tuple
 
 import yaml
 
+from breakdown.engine.simulate import validate_cold_start
 from breakdown.parser import _ENV_REF, MetricTreeConfig, Parser
 
 
@@ -43,6 +44,7 @@ class CheckResult:
 class _TreeCheck:
     results: List[CheckResult] = field(default_factory=list)
     config: Optional[MetricTreeConfig] = None
+    parser: Optional[Parser] = None
 
 
 def _check_tree(tree_path: str) -> _TreeCheck:
@@ -87,7 +89,8 @@ def _check_tree(tree_path: str) -> _TreeCheck:
 
     try:
         with open(tree_path) as f:
-            out.config = Parser(f.read()).config
+            out.parser = Parser(f.read())
+        out.config = out.parser.config
     except Exception as e:
         out.results.append(CheckResult.fail("tree parses", str(e)))
         return out
@@ -344,6 +347,28 @@ def run_doctor(
         results += check_cloud(tree.config)
     elif provider == "local":
         results += check_local(tree.config)
+    elif provider == "none":
+        # Cold-start tree: no connection to prove — readiness means every
+        # belief the what-if engine needs is declared. Same check the server
+        # runs at startup.
+        problems = validate_cold_start(tree.parser.dag)
+        if problems:
+            results.append(
+                CheckResult.fail(
+                    "cold-start declarations",
+                    f"{len(problems)} missing: " + "; ".join(problems),
+                    "Declare `baseline` on every non-formula metric and an "
+                    "explicit prior on every probabilistic edge (see README "
+                    "'Cold-start mode').",
+                )
+            )
+        else:
+            results.append(
+                CheckResult.ok(
+                    "cold-start declarations",
+                    "no data provider — every baseline and edge prior is declared",
+                )
+            )
     else:
         results.append(CheckResult.ok("mock provider", "nothing to check — data is synthetic"))
     return results

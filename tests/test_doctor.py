@@ -147,3 +147,38 @@ def test_local_missing_mf_cli(monkeypatch):
     assert results["metricflow CLI"].status == "fail"
     assert "dbt-metricflow" in results["metricflow CLI"].remediation
     assert results["metrics listable"].status == "skip"
+
+
+NONE_TREE = """
+provider:
+  type: none
+metrics:
+  - name: sessions
+    source: assumed
+    baseline: {low: 800, high: 1600}
+  - name: signups
+    source: assumed
+    parents: [sessions]
+    baseline: 40
+    priors:
+      sessions:
+        distribution: "Normal"
+        params: {mu: 0.03, sigma: 0.01}
+"""
+
+
+def test_doctor_cold_start_ready(tmp_path):
+    tree = tmp_path / "tree.yml"
+    tree.write_text(NONE_TREE)
+    results = {r.name: r for r in run_doctor(str(tree))}
+    assert results["cold-start declarations"].status == "pass"
+
+
+def test_doctor_cold_start_missing_declarations(tmp_path):
+    tree = tmp_path / "tree.yml"
+    tree.write_text(NONE_TREE.replace("    baseline: 40\n", ""))
+    results = {r.name: r for r in run_doctor(str(tree))}
+    check = results["cold-start declarations"]
+    assert check.status == "fail"
+    assert "signups" in check.detail
+    assert "baseline" in check.remediation

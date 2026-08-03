@@ -152,3 +152,66 @@ def test_run_whatif():
         )
         assert res["isError"] is True
         assert "at least one intervention" in res["content"][0]["text"]
+
+
+# ---------------------------------------------------------------------------
+# Cold start mode over the wire
+
+COLD_START_TREE = """
+provider:
+  type: none
+
+metrics:
+  - name: sessions
+    source: assumed
+    baseline: {low: 800, high: 1600}
+    plausible: {min: 0}
+  - name: signups
+    source: assumed
+    parents: [sessions]
+    baseline: 40
+    priors:
+      sessions:
+        distribution: "Normal"
+        params: {mu: 0.03, sigma: 0.01}
+"""
+
+
+@pytest.fixture
+def cold_start_env(tmp_path, monkeypatch):
+    tree_file = tmp_path / "cold_start_tree.yml"
+    tree_file.write_text(COLD_START_TREE)
+    monkeypatch.setenv("BREAKDOWN_TREE", str(tree_file))
+
+
+def test_cold_start_get_tree_and_whatif(cold_start_env):
+    with _client() as client:
+        res = _call_tool(client, "get_tree", {})
+        assert res["isError"] is False
+        tree = res["structuredContent"]["result"]
+        assert tree["mode"] == "cold_start"
+        assert tree["date_start"] is None
+        by_name = {m["name"]: m for m in tree["metrics"]}
+        assert by_name["sessions"]["baseline"] == {"low": 800.0, "high": 1600.0}
+
+        res = _call_tool(
+            client, "run_whatif",
+            {"interventions": [{"metric": "sessions", "mode": "pct", "value": 0.10}]},
+            id=3,
+        )
+        assert res["isError"] is False
+        out = res["structuredContent"]["result"]
+        assert out["mode"] == "cold_start"
+        assert out["nodes"]["sessions"]["baseline_ci_95"] is not None
+        # the how_to_read gains the cold-start block so the model narrates
+        # beliefs, not evidence
+        assert "COLD START" in out["how_to_read"]
+
+
+def test_cold_start_rca_refused_with_pointer(cold_start_env):
+    with _client() as client:
+        res = _call_tool(client, "run_rca", {"target": "signups", **WINDOWS})
+        assert res["isError"] is True
+        text = res["content"][0]["text"]
+        assert "no data provider" in text
+        assert "run_whatif" in text

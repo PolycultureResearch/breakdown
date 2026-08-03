@@ -17,12 +17,12 @@ from breakdown.engine.rca import run_rca as _engine_run_rca
 from breakdown.engine.simulate import Assumption, Intervention, ScenarioRequest, run_scenario
 from breakdown.mcp.shaping import (
     RCA_HOW_TO_READ,
-    WHATIF_HOW_TO_READ,
     compact_rca,
     compact_scenario,
     metric_link,
     rca_link,
     round_floats,
+    whatif_how_to_read,
     whatif_link,
 )
 
@@ -61,11 +61,25 @@ def _known_metric(state, name: str) -> None:
         raise ValueError(f"Metric '{name}' not found. Known metrics: {known}")
 
 
+def _require_data(state) -> None:
+    """Mirror of the API's cold-start guard: analyses that consume history
+    cannot exist on a tree that declares no data provider."""
+    if state.data is None:
+        raise RuntimeError(
+            "This tree declares no data provider (cold start mode); this tool "
+            "needs time-series data. run_whatif works — it simulates over the "
+            "tree's declared beliefs."
+        )
+
+
 @mcp.tool()
 async def get_tree() -> Dict[str, Any]:
     """Get the metric tree: every metric with its grain, kind, parents, and
     formula, plus the DAG edges and the loaded data window. Call this first,
     before run_rca or run_whatif, to learn valid metric names and dates.
+    `mode` is "fitted" (data-backed) or "cold_start" (the tree declares no
+    data provider: only run_whatif applies, simulating over declared
+    beliefs — asserted baselines and YAML priors — with no dates involved).
     Kinds: 'flow' metrics sum over time, 'stock' metrics take the last value,
     'rate' metrics are recomputed from components. Formula metrics decompose
     exactly (Shapley); metrics with parents but no formula are learned
@@ -83,14 +97,18 @@ async def get_tree() -> Dict[str, Any]:
             entry["description"] = m.description
         if m.lags:
             entry["lags"] = m.lags
-        through = data.data_through(m.name)
-        if through is not None:
-            entry["data_through"] = str(through.date())
+        if m.baseline is not None:
+            entry["baseline"] = {"low": m.baseline.low, "high": m.baseline.high}
+        if data is not None:
+            through = data.data_through(m.name)
+            if through is not None:
+                entry["data_through"] = str(through.date())
         metrics.append(entry)
     return {
+        "mode": "cold_start" if data is None else "fitted",
         "provider": parser.config.provider.type,
-        "date_start": str(data.date_start.date()),
-        "date_end": str(data.date_end.date()),
+        "date_start": None if data is None else str(data.date_start.date()),
+        "date_end": None if data is None else str(data.date_end.date()),
         "metrics": metrics,
         "edges": [list(e) for e in parser.dag.edges()],
     }
@@ -116,25 +134,34 @@ async def explain_metric(name: str) -> Dict[str, Any]:
         definition["parents"] = metric.parents
     if metric.lags:
         definition["lags"] = metric.lags
+    if metric.baseline is not None:
+        definition["baseline"] = {"low": metric.baseline.low, "high": metric.baseline.high}
+    if metric.plausible is not None:
+        definition["plausible"] = {"min": metric.plausible.min, "max": metric.plausible.max}
 
-    s = data.series(name)
-    values = [
-        None if (v is None or (isinstance(v, float) and math.isnan(v))) else float(v)
-        for v in s[name].tolist()
-    ]
-    finite = [v for v in values if v is not None]
-    recent = [
-        {"date": str(d.date()), "value": v}
-        for d, v in list(zip(s["date"], values))[-_RECENT_PERIODS:]
-    ]
-    series_summary = {
-        "grain": data.grain_of[name],
-        "n_periods": len(values),
-        "mean": sum(finite) / len(finite) if finite else None,
-        "min": min(finite) if finite else None,
-        "max": max(finite) if finite else None,
-        "recent": recent,
-    }
+    if data is None:
+        # Cold-start tree: no series exists; the asserted baseline above is
+        # the metric's operating point.
+        series_summary = None
+    else:
+        s = data.series(name)
+        values = [
+            None if (v is None or (isinstance(v, float) and math.isnan(v))) else float(v)
+            for v in s[name].tolist()
+        ]
+        finite = [v for v in values if v is not None]
+        recent = [
+            {"date": str(d.date()), "value": v}
+            for d, v in list(zip(s["date"], values))[-_RECENT_PERIODS:]
+        ]
+        series_summary = {
+            "grain": data.grain_of[name],
+            "n_periods": len(values),
+            "mean": sum(finite) / len(finite) if finite else None,
+            "min": min(finite) if finite else None,
+            "max": max(finite) if finite else None,
+            "recent": recent,
+        }
 
     from breakdown.api.main import _pick_fit
 
@@ -185,6 +212,7 @@ async def run_rca(
     months. The first call fits models on demand and can take a minute or
     two; repeat calls on the same tree are fast (fits are cached)."""
     state = _state()
+    _require_data(state)
     _known_metric(state, target)
     async with state.lock:
         result = await asyncio.to_thread(
@@ -208,8 +236,8 @@ async def run_rca(
 
 @mcp.tool()
 async def run_whatif(
-    baseline_start: str,
-    baseline_end: str,
+    baseline_start: Optional[str] = None,
+    baseline_end: Optional[str] = None,
     interventions: Optional[List[Intervention]] = None,
     assumptions: Optional[List[Assumption]] = None,
 ) -> Dict[str, Any]:
@@ -226,8 +254,11 @@ async def run_whatif(
     {kind: absolute|relative, low, high}} where [low, high] is your central
     90% belief about the effect on target. `baseline_start`/`baseline_end`
     (YYYY-MM-DD, inside the loaded data window — see get_tree) define the
-    baseline the scenario is compared against. The first call may fit models
-    on demand and take a minute; repeat calls are fast (fits are cached)."""
+    baseline the scenario is compared against; required on a fitted tree,
+    and must be OMITTED on a cold-start tree (get_tree says `mode:
+    "cold_start"`), where operating points come from the tree's declared
+    baselines. The first call may fit models on demand and take a minute;
+    repeat calls are fast (fits are cached)."""
     state = _state()
     scenario = ScenarioRequest(
         baseline_start=baseline_start,
@@ -240,6 +271,6 @@ async def run_whatif(
             run_scenario, state.parser.dag, state.data, state.traces, scenario
         )
     out = round_floats(compact_scenario(result))
-    out["how_to_read"] = WHATIF_HOW_TO_READ
+    out["how_to_read"] = whatif_how_to_read(result["mode"])
     out["report_url"] = whatif_link(scenario.model_dump(exclude_defaults=True))
     return out

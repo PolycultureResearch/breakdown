@@ -3,6 +3,7 @@
 from urllib.parse import quote
 
 from breakdown.mcp.shaping import (
+    COLD_START_HOW_TO_READ,
     RCA_HOW_TO_READ,
     WHATIF_HOW_TO_READ,
     compact_rca,
@@ -10,6 +11,7 @@ from breakdown.mcp.shaping import (
     metric_link,
     rca_link,
     round_floats,
+    whatif_how_to_read,
     whatif_link,
 )
 
@@ -150,6 +152,7 @@ def test_compact_rca_keeps_withheld_ci():
 
 def test_compact_scenario():
     fixture = {
+        "mode": "fitted",
         "baseline_window": {"start": "2024-03-01", "end": "2024-04-09"},
         "n_draws": 2000,
         "seed": 0,
@@ -197,6 +200,8 @@ def test_compact_scenario():
     }
     out = compact_scenario(fixture)
 
+    # mode passes through so a client can label the result
+    assert out["mode"] == "fitted"
     # extrapolation stats collapse to the flag; detail lives in warnings
     assert out["nodes"]["daily_sessions"]["extrapolation"] is True
     # unaffected nodes shrink to their baseline
@@ -212,3 +217,59 @@ def test_how_to_read_guides():
         assert 400 < len(guide) < 2500  # substantial but token-bounded
     assert "unexplained" in RCA_HOW_TO_READ
     assert "prob_direction" in WHATIF_HOW_TO_READ
+
+
+def test_compact_scenario_cold_start_keeps_belief_intervals():
+    fixture = {
+        "mode": "cold_start",
+        "baseline_window": None,
+        "n_draws": 2000,
+        "seed": 0,
+        "sources": [{"id": "i:sessions", "kind": "intervention", "label": "sessions +10.0%"}],
+        "nodes": {
+            "sessions": {
+                "status": "intervened",
+                "baseline": 1200.0,
+                "baseline_ci_95": [830.0, 1570.0],
+                "simulated": 1320.0,
+                "delta": {"estimate": 120.0, "ci_95": [83.0, 157.0]},
+                "relative_delta": 0.10,
+                "prob_direction": 1.0,
+                "fit_quality": None,
+                "extrapolation": {"flag": False, "plausible_min": 0.0, "plausible_max": None},
+                "contributions": [{"source": "i:sessions", "estimate": 120.0}],
+            },
+            "aov": {
+                # point-asserted baseline: no belief interval to report
+                "status": "baseline",
+                "baseline": 50.0,
+                "baseline_ci_95": None,
+                "simulated": 50.0,
+                "delta": {"estimate": 0.0, "ci_95": [0.0, 0.0]},
+                "relative_delta": 0.0,
+                "prob_direction": None,
+                "fit_quality": None,
+                "extrapolation": {"flag": False, "plausible_min": None, "plausible_max": None},
+                "contributions": [],
+            },
+        },
+        "warnings": [],
+        "caveats": ["stated beliefs"],
+    }
+    out = compact_scenario(fixture)
+
+    assert out["mode"] == "cold_start"
+    assert out["baseline_window"] is None
+    # the belief interval around an uncertain operating point survives compaction
+    assert out["nodes"]["sessions"]["baseline_ci_95"] == [830.0, 1570.0]
+    # a point baseline stays compact: null interval is omitted, not emitted
+    assert out["nodes"]["aov"] == {"status": "baseline", "baseline": 50.0}
+
+
+def test_whatif_how_to_read_modes():
+    assert whatif_how_to_read("fitted") == WHATIF_HOW_TO_READ
+    cold = whatif_how_to_read("cold_start")
+    assert cold.startswith(WHATIF_HOW_TO_READ)
+    assert COLD_START_HOW_TO_READ in cold
+    assert "COLD START" in cold
+    assert "never as evidence" in cold

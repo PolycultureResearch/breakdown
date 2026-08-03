@@ -186,7 +186,7 @@ Controls how metric time-series data is fetched.
 
 ```yaml
 provider:
-  type: mock           # mock | local | cloud | warehouse
+  type: mock           # mock | local | cloud | warehouse | none
   project_path: "..."  # required for type: local
   environment_id: "..."  # required for type: cloud
   host: "..."            # required for type: cloud; optional for warehouse (read from profile)
@@ -203,6 +203,7 @@ provider:
 | `local` | Queries a dbt project on disk via the MetricFlow CLI (`mf query`). Requires `project_path`. |
 | `cloud` | Queries the dbt Semantic Layer API via the `dbt-sl-sdk`. Requires `environment_id`, `host`, and `token`. |
 | `warehouse` | Runs each metric's own `sql` directly against a warehouse (currently Databricks SQL). Use when the semantic layer isn't queryable — the analyst mirrors governed definitions in SQL. Requires `http_path` plus **one of**: a PAT `token` (with `host`), or a Databricks CLI OAuth `profile` created by `databricks auth login --profile <name>` (host is read from the profile). |
+| `none` | No data is ever fetched — a **cold-start tree** of declared beliefs (`assumed` is an accepted alias). Only what-if simulation is available; every non-formula node needs a `baseline` and every probabilistic edge an explicit prior. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
 
 For `local` and `cloud`, the metric queried from the semantic layer is the last segment of `source` (e.g., `source: jaffle_shop.metrics.revenue` queries the metric `revenue`); the result is exposed in the tree under `name`. For `warehouse`, each metric carries its own `sql` (see the `metrics` table) and is keyed by `name`. The data window defaults to `2024-01-01`–`2024-04-09` and is set with `--start-date` / `--end-date` (or the `BREAKDOWN_START_DATE` / `BREAKDOWN_END_DATE` / `BREAKDOWN_TREE` environment variables).
 
@@ -422,7 +423,7 @@ A cold-start tree declares beliefs everywhere:
 
 Propagation, do-operator semantics, draw alignment, and the Shapley source decomposition are identical to fitted mode. The response is labeled `mode: "cold_start"`, adds a per-node `baseline_ci_95` where the asserted baseline is a range, and carries cold-start caveats so the output can't be mistaken for estimates from data. When data arrives, the same YAML priors feed the fit — posteriors replace priors with zero config changes.
 
-**Status:** cold-start mode is engine-level today — `run_scenario(dag, data=None, …)` with no baseline window (operating points come from the tree, so a scenario passing `baseline_start`/`baseline_end` is rejected). Serving a dataless tree (`provider: none`) and the UI surface are next; see `knowledge/cold_start_design.md` for the full design.
+**Serving a cold-start tree.** Declare `provider: type: none` and `breakdown serve` boots without fetching anything — not a degraded start; the tree simply has no data. Startup validates the declarations and fails loudly with the full list of blockers if any are missing (`breakdown doctor` runs the same check). `GET /meta` reports `"mode": "cold_start"`; endpoints that consume history (`/series`, `/analyze`, `/shapley`, `/rca`) return 422 pointing at `POST /simulate`, which runs scenarios with **no baseline window** — operating points come from the tree, so a scenario passing `baseline_start`/`baseline_end` is rejected. The MCP `run_whatif` tool works the same way (omit the baseline dates). The dedicated UI surface is still to come; see `knowledge/cold_start_design.md` for the full design.
 
 ---
 
@@ -430,12 +431,13 @@ Propagation, do-operator semantics, draw alignment, and the Shapley source decom
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/meta` | Metric names, data window, provider type, fitted models (UI bootstrap) |
+| `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), fitted models (UI bootstrap) |
 | `GET` | `/dag` | Full metric DAG (nodes + edges) |
 | `GET` | `/metrics/{name}` | Metric definition, time series, and posterior summary |
 | `POST` | `/analyze/{name}` | Run Bayesian sampling for a metric |
 | `GET` | `/shapley/{name}` | Shapley attribution for a formula metric |
 | `POST` | `/rca/{name}` | Root cause analysis over the metric's ancestors |
+| `POST` | `/simulate` | Do-operator what-if scenario (fitted posteriors, or declared beliefs on a cold-start tree) |
 | `GET` | `/ui` | Interactive DAG visualization |
 
 ### `POST /analyze/{name}`
