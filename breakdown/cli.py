@@ -12,6 +12,9 @@ def serve(
     start_date: str | None = None,
     end_date: str | None = None,
     reload: bool = False,
+    snapshot_dir: str | None = None,
+    no_snapshots: bool = False,
+    refresh: bool = False,
 ) -> None:
     import uvicorn
 
@@ -37,6 +40,12 @@ def serve(
     # sense (it doesn't off-loopback).
     os.environ["BREAKDOWN_PORT"] = str(port)
     os.environ["BREAKDOWN_HOST"] = host
+    if no_snapshots:
+        os.environ["BREAKDOWN_SNAPSHOT_DIR"] = "off"
+    elif snapshot_dir:
+        os.environ["BREAKDOWN_SNAPSHOT_DIR"] = os.path.abspath(snapshot_dir)
+    if refresh:
+        os.environ["BREAKDOWN_REFRESH"] = "1"
 
     display_host = "127.0.0.1" if host == "0.0.0.0" else host
     print(f"Starting breakdown server on http://{display_host}:{port}")
@@ -81,6 +90,19 @@ def main(argv: list[str] | None = None) -> None:
         "--reload", action="store_true",
         help="Restart on code changes (development only)",
     )
+    serve_parser.add_argument(
+        "--snapshot-dir", type=str, default=None,
+        help="Where to cache fetched series as parquet snapshots "
+        "(default: .breakdown/snapshots next to the tree)",
+    )
+    serve_parser.add_argument(
+        "--no-snapshots", action="store_true",
+        help="Always fetch from the provider; never read or write snapshots",
+    )
+    serve_parser.add_argument(
+        "--refresh", action="store_true",
+        help="Refetch every metric from the provider and overwrite its snapshot",
+    )
 
     doctor_parser = subparsers.add_parser(
         "doctor", help="Check a tree's data-provider connectivity and print remediation"
@@ -101,6 +123,8 @@ def main(argv: list[str] | None = None) -> None:
         serve(
             args.port, host=args.host, tree=args.tree,
             start_date=args.start_date, end_date=args.end_date, reload=args.reload,
+            snapshot_dir=args.snapshot_dir, no_snapshots=args.no_snapshots,
+            refresh=args.refresh,
         )
     elif args.command == "doctor":
         raise SystemExit(doctor(args.tree, start_date=args.start_date, end_date=args.end_date))
