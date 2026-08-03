@@ -71,7 +71,9 @@ def test_mock_tree_all_pass(tmp_path):
     tree = tmp_path / "tree.yml"
     tree.write_text(MOCK_TREE)
     results = run_doctor(str(tree))
-    assert all(r.status == "pass" for r in results)
+    # fit readiness skips without an explicit window; everything else passes
+    assert all(r.status in ("pass", "skip") for r in results)
+    assert any(r.status == "pass" for r in results)
     assert print_report(results) == 0
 
 
@@ -182,3 +184,36 @@ def test_doctor_cold_start_missing_declarations(tmp_path):
     assert check.status == "fail"
     assert "signups" in check.detail
     assert "baseline" in check.remediation
+
+
+def test_doctor_fit_readiness_with_explicit_window(tmp_path):
+    tree = tmp_path / "tree.yml"
+    tree.write_text(MOCK_TREE)
+    # 31 whole day periods >= the fit minimum -> pass, with per-metric counts
+    results = {r.name: r for r in run_doctor(str(tree), "2024-01-01", "2024-01-31")}
+    check = results["fit readiness"]
+    assert check.status == "pass"
+    assert "revenue: 31/10 whole day periods" in check.detail
+
+    # 5 days < minimum -> fail naming the short metric
+    results = {r.name: r for r in run_doctor(str(tree), "2024-01-01", "2024-01-05")}
+    check = results["fit readiness"]
+    assert check.status == "fail"
+    assert "revenue" in check.remediation
+    assert "not fittable yet" in check.detail
+
+
+def test_doctor_fit_readiness_skips_without_window(tmp_path):
+    tree = tmp_path / "tree.yml"
+    tree.write_text(MOCK_TREE)
+    results = {r.name: r for r in run_doctor(str(tree))}
+    assert results["fit readiness"].status == "skip"
+    assert "--start-date" in results["fit readiness"].detail
+
+
+def test_doctor_fit_readiness_skips_cold_start(tmp_path):
+    tree = tmp_path / "tree.yml"
+    tree.write_text(NONE_TREE)
+    results = {r.name: r for r in run_doctor(str(tree), "2024-01-01", "2024-01-31")}
+    assert results["fit readiness"].status == "skip"
+    assert "nothing is ever fitted" in results["fit readiness"].detail

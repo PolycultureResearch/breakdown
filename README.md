@@ -150,6 +150,8 @@ uv run breakdown doctor --tree path/to/my_tree.yml
 
 It walks the provider's auth chain step by step (tree parses → env vars set → CLI/profile/token valid → connection opens → every metric's query actually runs) and prints `[PASS]`/`[FAIL]` per step with copy-paste remediation for each failure. Exit code is non-zero if anything failed. Probes run over the last 7 days by default; override with `--start-date`/`--end-date`.
 
+Two mode-specific checks ride along: a cold-start tree (`provider: none`) gets its declarations validated instead of a connection probe, and when you pass an explicit `--start-date`/`--end-date` window the doctor adds a **fit readiness** report — each metric's whole-period count against the 10-period fit minimum, the graduation check for a tree [moving from cold start to fitted mode](#cold-start-mode-what-if-with-no-data).
+
 ### Snapshots: fetch once, refit forever
 
 For non-mock providers, every fetched series is cached as a parquet snapshot keyed on `(metric, grain, kind, window)` — by default in `.breakdown/snapshots/` next to the tree. Later startups with the same window read from disk instead of the warehouse, which makes restarts fast, keeps re-runs reproducible (commit the snapshots next to the tree and an RCA re-runs from a fresh clone), and lets the server boot even when the warehouse is unreachable, as long as every metric has a snapshot.
@@ -432,6 +434,20 @@ uv run breakdown serve --tree breakdown/examples/cold_start_tree.yml
 ```
 
 See [`docs/model.md`](docs/model.md) ("Reading cold-start output") before presenting results, and `knowledge/cold_start_design.md` for the full design.
+
+**Graduating from cold start.** The tree you build pre-data *is* the tree you fit once data exists — the Bayesian promise is literal. When real numbers start flowing:
+
+1. Swap the provider block (`type: none` → `local` / `cloud` / `warehouse`) and give each metric a real `source` (or `sql`). Nothing else in the tree changes.
+2. Your `priors` carry over untouched — the same declarations that were sampled directly in cold start become the Bayesian priors of the BSTS fit, and the data updates them into posteriors. What-if flips from prior draws to posterior draws automatically; RCA becomes available.
+3. `baseline` and `plausible` are ignored by fitted mode and stay in the YAML as a record of what you believed before the data arrived — worth keeping.
+
+Two things to plan for. Each node needs at least **10 whole periods at its grain** before it can be fitted — a monthly tree waits most of a year for its first fit, so author cold-start trees at the finest grain you'll actually measure (weekly for most funnels; edge priors are per-parent-unit and carry over, but per-period `baseline` values would need rescaling). And check where you stand at any point with the doctor's **fit readiness** report:
+
+```bash
+uv run breakdown doctor --tree my_tree.yml --start-date 2026-01-01 --end-date 2026-08-01
+```
+
+It reports every metric's whole-period count against the fit minimum (`signups: 30/10 whole day periods` … `churn_rate: 4/10 — not fittable yet`), so you can watch the tree graduate metric by metric.
 
 ---
 

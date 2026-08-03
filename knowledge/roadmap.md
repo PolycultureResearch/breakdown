@@ -34,7 +34,13 @@ with explicit **trend/seasonal component** decomposition and **block-bootstrap**
 uncertainty on window means. Fits run on data strictly **before** the analysis window
 (uncontaminated by the anomaly). Convergence diagnostics (`fit_quality`) on every fit.
 Steady-state **what-if simulation** (interventions, assumption links, Shapley source
-attribution). *(statistical plan T1–T8; what-if design spec.)*
+attribution). **Cold start mode** (`provider: none`): the full what-if machine on a
+tree with zero data — asserted `baseline` operating points, coefficients sampled
+directly from the YAML priors, declared `plausible` honesty bounds; served end to
+end (API mode label, guarded routes, MCP caveats, belief-first UI surface, bundled
+`cold_start_tree.yml` example). The same priors feed `fit_metric` when data
+arrives, so graduation is a provider swap. *(statistical plan T1–T8; what-if design
+spec; cold_start_design.md P1–P5.)*
 
 **Providers.** `mock`, `local` (MetricFlow), `cloud` (dbt Cloud Semantic Layer),
 `warehouse` (direct SQL). Provider config supports `${ENV}` secret references.
@@ -142,6 +148,7 @@ Goal: onboarding a new tree costs a day, not a week.
 | 2.4 | **Snapshot store** (parquet/DuckDB) — fetch once per (metric, window, grain), refit from snapshots. Shipped as a parquet read-through cache at the fetcher boundary (`snapshots.py`): tree-adjacent `.breakdown/snapshots/` (committable → RCAs re-run from a fresh clone), `--refresh`/`--no-snapshots`/`--snapshot-dir` controls, failure-soft on read-only mounts, and a warehouse outage is survivable when every metric has a snapshot. DuckDB deferred until scheduling (3.1) needs cross-snapshot queries | ✅ | Reproducibility, provider-migration invisibility, warehouse politeness, and the foundation for scheduling |
 | 2.5 | **MCP server** — expose `run_rca`, `get_tree`, `explain_metric` as tools | ✅ | AI analysts guess at "why"; breakdown is the grounded causal tool they should call. Cheap (endpoints exist), differentiating, and meets users where they already ask why-questions. Shipped as streamable HTTP at `/mcp` with a fourth tool beyond the original scope (`run_whatif`); analysis responses carry `how_to_read` caveats and `report_url` deep links into the UI |
 | 2.6 | **Outsider docs pass** — install guide + first-tree tutorial on public data | ○ | First impressions for anyone arriving cold |
+| 2.7 | **Hybrid mode** — per-node graceful graduation from cold start to fitted (`cold_start_design.md` §5.3): a node with ≥ `MIN_FIT_PERIODS` whole periods uses its posterior and measured baseline, every other node falls back to prior draws and asserted baselines, and each node's response says which basis it used (`"basis": "posterior" \| "prior"`), with matching UI badges. Needs a policy for partially-fitted paths — worth its own small spec | ○ | Turns the 10-period cliff into a ramp: beliefs update one metric at a time as data arrives, starting with the first week of signups — the founder-story version of the Bayesian promise, and the natural sequel to cold start + fit-readiness doctoring. Watching intervals shrink node by node *is* the early learning of the company, made visible |
 
 **Exit:** a new tree onboards in < 1 day; an external tool runs an RCA against a demo tree via MCP.
 

@@ -328,11 +328,54 @@ def check_local(config: MetricTreeConfig) -> List[CheckResult]:
     return results
 
 
+def check_fit_readiness(parser, start_date: str, end_date: str) -> CheckResult:
+    """Per-metric whole periods over the window vs the fit minimum — the
+    graduation check for a tree migrating from cold start to fitted mode.
+    Fetches through the real provider path (never a lookalike), so it also
+    exercises every metric's query end to end."""
+    from breakdown.api.main import _build_fetcher  # lazy: pulls FastAPI
+    from breakdown.engine.model import MIN_FIT_PERIODS
+
+    cfg = parser.config.provider
+    try:
+        fetcher = _build_fetcher(cfg, parser.dag, parser.config.metrics)
+    except Exception as e:
+        return CheckResult.fail("fit readiness", f"could not build fetcher: {e}")
+
+    lines, short = [], []
+    for m in parser.config.metrics:
+        query_name = m.name if cfg.type in ("mock", "warehouse") else m.source.split(".")[-1]
+        try:
+            df = fetcher.fetch_metric(query_name, start_date, end_date, grain=m.grain, kind=m.kind)
+            n = len(df)
+        except Exception as e:
+            lines.append(f"{m.name}: fetch failed ({e})")
+            short.append(m.name)
+            continue
+        ready = n >= MIN_FIT_PERIODS
+        lines.append(f"{m.name}: {n}/{MIN_FIT_PERIODS} whole {m.grain} periods{'' if ready else ' — not fittable yet'}")
+        if not ready:
+            short.append(m.name)
+
+    detail = "; ".join(lines)
+    if short:
+        return CheckResult.fail(
+            "fit readiness",
+            detail,
+            f"Metrics below {MIN_FIT_PERIODS} periods cannot be fitted: "
+            f"{', '.join(short)}. Widen --start-date/--end-date to cover more "
+            "history, or wait for it to accumulate — what-if and RCA fit on "
+            "demand and will fail on these nodes until then.",
+        )
+    return CheckResult.ok("fit readiness", detail)
+
+
 def run_doctor(
     tree_path: str,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ) -> List[CheckResult]:
+    explicit_window = start_date is not None and end_date is not None
     start_date, end_date = _probe_window(start_date, end_date)
 
     tree = _check_tree(tree_path)
@@ -371,6 +414,26 @@ def run_doctor(
             )
     else:
         results.append(CheckResult.ok("mock provider", "nothing to check — data is synthetic"))
+
+    # Fit readiness: periods-per-metric vs the fit minimum. Only meaningful
+    # over the tree's real analysis window (the default probe window is a
+    # deliberately tiny 7 days), so it runs when both dates are explicit.
+    if provider == "none":
+        results.append(
+            CheckResult.skip("fit readiness", "cold-start tree — nothing is ever fitted")
+        )
+    elif not explicit_window:
+        results.append(
+            CheckResult.skip(
+                "fit readiness",
+                "pass --start-date/--end-date covering your data window to "
+                "check per-metric history against the fit minimum",
+            )
+        )
+    elif any(r.status == "fail" for r in results):
+        results.append(CheckResult.skip("fit readiness", "provider checks failed above"))
+    else:
+        results.append(check_fit_readiness(tree.parser, start_date, end_date))
     return results
 
 
