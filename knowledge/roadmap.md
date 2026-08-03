@@ -166,6 +166,7 @@ Gate: real, recurring usage asking for these.
 | 3.4 | **Counterfactual RCA** (T11: posterior-predictive forecast) — "the drop was X units below what the normal regime predicts (95% CI …)" | ○ | Upgrades the flat-trend approximation; strong headline number. Distinct from the existing steady-state what-if |
 | 3.5 | **Hosted mode** — auth, scheduled refresh, fit queue + warm cache | ○ | The operational product layer; PyMC fits are CPU-heavy, so a queue + cache is required |
 | 3.6 | **Domain template packs** — worked example trees + methodology for specific domains (e.g. emissions/impact driver-tree decomposition) | ○ | Content that doubles as onboarding examples and demonstrates breadth |
+| 3.7 | **Deployable demo instance** — a hosted Breakdown over synthetic B2C SaaS data ("White Cube") with planted, ground-truth-labeled anomalies, per [`white_cube_demo_plan.md`](white_cube_demo_plan.md) | ◑ | The pitch artifact: a link a prospect can actually use. Pulls three engine items forward as a side effect — the slicing **UI** and **sliced snapshots** (both 3.2 "Remaining"), and a bearer-token gate on `/mcp` (a down payment on 3.5) |
 
 ---
 

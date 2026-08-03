@@ -27,6 +27,11 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
   slicing inside the tree (roadmap 3.2): declared `dimensions`, exact
   sum/Bennet slice attribution, excess-concentration ranking, on-demand
   fetch that never touches the fit path
+- [`white_cube_demo_plan.md`](white_cube_demo_plan.md) — the deployable
+  synthetic-data demo: the White Cube scenario and its four planted stories, the
+  demo metric tree, build-live/serve-hermetic runtime shape, and the Fly.io
+  deployment. Companion: [`demo_guided_tour.md`](demo_guided_tour.md), the
+  client-facing script (exact RCA windows and what each should conclude)
 - [`rca_lag_assessment.md`](rca_lag_assessment.md) — how RCA handles time lags
   today (declared lags shift fit and attribution windows correctly), and the
   planned improvements: surfacing lag-shifted parent windows, a Bayesian lag
