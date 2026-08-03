@@ -157,7 +157,12 @@ Given a reference window and an analysis window, each metric's change is its
 - **Probabilistic nodes** get posterior attribution: contribution of parent i
   is the distribution `beta_raw[i] × (parent's gap)`. For lagged parents, the
   parent's gap is measured over windows shifted back by the lag — the parent
-  values that actually influenced the analysis window.
+  values that actually influenced the analysis window. Every lagged
+  contribution (both attribution methods) reports which windows those were:
+  `lag` and `parent_windows` `{reference, analysis}`, the node's snapped
+  windows shifted back by the lag. Narrate a lagged parent with *its* dates,
+  and reuse them as the windows for any follow-up analysis of that parent
+  (drill-down RCA, slicing). Unlagged contributions omit both keys.
 - **Probabilistic nodes also report a `components` block** — the fitted model's
   own trend and seasonal terms, as window-over-window deltas with credible
   intervals (see below).

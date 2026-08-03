@@ -113,3 +113,16 @@ class SnapshotFetcher(BaseDataFetcher):
                 metric_name, e,
             )
         return df
+
+    def fetch_metric_sliced(
+        self, metric_name: str, dimension_source: str,
+        start_date: str, end_date: str,
+        grain: str = "day", kind: str = "flow",
+    ) -> pd.DataFrame:
+        # Sliced frames are analysis-time queries and not snapshot-persisted
+        # yet (deferred); delegate straight to the inner provider so slicing
+        # works identically with and without the snapshot wrapper.
+        return self.inner.fetch_metric_sliced(
+            metric_name, dimension_source, start_date, end_date,
+            grain=grain, kind=kind,
+        )

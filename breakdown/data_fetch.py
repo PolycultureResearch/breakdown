@@ -29,6 +29,10 @@ def _floor_labels(df: pd.DataFrame, metric_name: str, grain: str) -> pd.DataFram
     return df
 
 
+class SliceNotSupported(RuntimeError):
+    """The provider cannot fetch a metric grouped by a business dimension."""
+
+
 class BaseDataFetcher(ABC):
     """
     Abstract Base Class for metric data fetching.
@@ -44,6 +48,58 @@ class BaseDataFetcher(ABC):
         grain: str = "day", kind: str = "flow",
     ) -> pd.DataFrame:
         pass
+
+    def fetch_metric_sliced(
+        self, metric_name: str, dimension_source: str,
+        start_date: str, end_date: str,
+        grain: str = "day", kind: str = "flow",
+    ) -> pd.DataFrame:
+        """The metric grouped by one business dimension, long format
+        `[date, slice, value]` — one row per (period, dimension value).
+
+        Analysis-time only: sliced frames never enter the startup data or the
+        fit path. Providers that can't slice raise `SliceNotSupported`.
+        """
+        raise SliceNotSupported(
+            f"The {type(self).__name__} provider does not support dimensional "
+            f"slicing (requested '{metric_name}' by '{dimension_source}')."
+        )
+
+
+def _sliced_long(df: pd.DataFrame, metric_name: str, grain: str) -> pd.DataFrame:
+    """Reshape a semantic-layer result (metric_time, dimension, value) into the
+    long `[date, slice, value]` contract. The dimension column is identified as
+    the one that is neither the time column nor the metric value column."""
+    date_col = next((c for c in df.columns if "metric_time" in c.lower()), None)
+    if date_col is None:
+        raise RuntimeError(
+            f"No metric_time column in sliced result for '{metric_name}'. "
+            f"Columns: {list(df.columns)}"
+        )
+    value_col = next(
+        (c for c in df.columns if c.lower() == metric_name.lower()), None
+    )
+    if value_col is None:
+        raise RuntimeError(
+            f"No '{metric_name}' value column in sliced result. "
+            f"Columns: {list(df.columns)}"
+        )
+    dim_cols = [c for c in df.columns if c not in (date_col, value_col)]
+    if len(dim_cols) != 1:
+        raise RuntimeError(
+            f"Expected exactly one dimension column in sliced result for "
+            f"'{metric_name}'; got {dim_cols or 'none'}."
+        )
+    out = df.rename(
+        columns={date_col: "date", dim_cols[0]: "slice", value_col: "value"}
+    )[["date", "slice", "value"]].copy()
+    out["date"] = pd.to_datetime(out["date"])
+    out = _floor_labels(out, metric_name, grain)
+    out["slice"] = out["slice"].map(
+        lambda v: "__null__" if pd.isna(v) else str(v)
+    )
+    out["value"] = out["value"].astype(float)
+    return out.sort_values(["date", "slice"]).reset_index(drop=True)
 
 
 class CloudDataFetcher(BaseDataFetcher):
@@ -77,6 +133,23 @@ class CloudDataFetcher(BaseDataFetcher):
         df = _floor_labels(df, metric_name, grain)
         return df[["date", metric_name]].sort_values("date").reset_index(drop=True)
 
+    def fetch_metric_sliced(
+        self, metric_name: str, dimension_source: str,
+        start_date: str, end_date: str,
+        grain: str = "day", kind: str = "flow",
+    ) -> pd.DataFrame:
+        grain_dim = f"metric_time__{grain}"
+        with self.client.session():
+            table = self.client.query(
+                metrics=[metric_name],
+                group_by=[grain_dim, dimension_source],
+                where=[
+                    f"metric_time >= '{start_date}'",
+                    f"metric_time <= '{end_date}'",
+                ],
+            )
+        return _sliced_long(table.to_pandas(), metric_name, grain)
+
 
 class LocalDataFetcher(BaseDataFetcher):
     """Fetches data from a local dbt project by invoking the MetricFlow CLI."""
@@ -84,9 +157,8 @@ class LocalDataFetcher(BaseDataFetcher):
         self.project_path = project_path
         logger.info("Initialized LocalDataFetcher for project at %s", project_path)
 
-    def fetch_metric(
-        self, metric_name: str, start_date: str, end_date: str,
-        grain: str = "day", kind: str = "flow",
+    def _run_mf_query(
+        self, metric_name: str, group_by: str, start_date: str, end_date: str
     ) -> pd.DataFrame:
         import os
         import subprocess
@@ -101,7 +173,7 @@ class LocalDataFetcher(BaseDataFetcher):
                     [
                         "mf", "query",
                         "--metrics", metric_name,
-                        "--group-by", f"metric_time__{grain}",
+                        "--group-by", group_by,
                         "--start-time", start_date,
                         "--end-time", end_date,
                         "--csv", tmp_path,
@@ -117,11 +189,18 @@ class LocalDataFetcher(BaseDataFetcher):
                 raise RuntimeError(
                     f"mf query failed for metric '{metric_name}':\n{result.stderr.strip()}"
                 )
-            df = pd.read_csv(tmp_path)
+            return pd.read_csv(tmp_path)
         finally:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
+    def fetch_metric(
+        self, metric_name: str, start_date: str, end_date: str,
+        grain: str = "day", kind: str = "flow",
+    ) -> pd.DataFrame:
+        df = self._run_mf_query(
+            metric_name, f"metric_time__{grain}", start_date, end_date
+        )
         date_col = next((c for c in df.columns if "metric_time" in c.lower()), None)
         if date_col is None:
             raise RuntimeError(f"No metric_time column found in mf output. Columns: {list(df.columns)}")
@@ -129,6 +208,18 @@ class LocalDataFetcher(BaseDataFetcher):
         df["date"] = pd.to_datetime(df["date"])
         df = _floor_labels(df, metric_name, grain)
         return df[["date", metric_name]].sort_values("date").reset_index(drop=True)
+
+    def fetch_metric_sliced(
+        self, metric_name: str, dimension_source: str,
+        start_date: str, end_date: str,
+        grain: str = "day", kind: str = "flow",
+    ) -> pd.DataFrame:
+        df = self._run_mf_query(
+            metric_name,
+            f"metric_time__{grain},{dimension_source}",
+            start_date, end_date,
+        )
+        return _sliced_long(df, metric_name, grain)
 
 
 class WarehouseDataFetcher(BaseDataFetcher):
@@ -412,3 +503,92 @@ class MockDataFetcher(BaseDataFetcher):
         rng = self._rng_for(metric_name)
         values = 1000 + np.cumsum(rng.normal(0, 10, len(spine)))
         return pd.DataFrame({"date": spine, metric_name: values})
+
+    _SLICE_SUFFIXES = ("a", "b", "c", "d")
+    _EPOCH = pd.Timestamp("2020-01-01")
+
+    def _covering_series(
+        self, metric_name: str, start_date: str, end_date: str
+    ) -> Optional[pd.Series]:
+        """A cached tree series covering [start, end], subset to it — so slice
+        fetches split the very numbers the startup fetch produced and slices
+        reconcile exactly against the served data."""
+        s_ts, e_ts = pd.to_datetime(start_date), pd.to_datetime(end_date)
+        for (cs, ce), series in self._cache.items():
+            if (
+                pd.to_datetime(cs) <= s_ts
+                and pd.to_datetime(ce) >= e_ts
+                and metric_name in series
+            ):
+                s = series[metric_name]
+                return s[(s.index >= s_ts) & (s.index <= e_ts)]
+        return None
+
+    def _share_curves(
+        self, dimension_source: str, dates: pd.DatetimeIndex
+    ) -> Tuple[list, np.ndarray]:
+        """Deterministic smooth slice-share curves, softmax across slices per
+        date. Purely date-anchored (fixed epoch), so a date's shares are
+        identical across metrics and fetch windows — which is what makes a
+        mock rate blend reconcile exactly against its weight metric's slices.
+        The drift term gives demos genuine mix shifts."""
+        label = dimension_source.split("__")[-1]
+        names = [f"{label}_{sfx}" for sfx in self._SLICE_SUFFIXES]
+        t = (dates - self._EPOCH).days.to_numpy(dtype=float)
+        logits = []
+        for name in names:
+            rng = self._rng_for(f"dim:{dimension_source}:{name}")
+            base = rng.uniform(-0.5, 1.5)
+            amp = rng.uniform(0.1, 0.4)
+            period = rng.uniform(60.0, 240.0)
+            phase = rng.uniform(0, 2 * np.pi)
+            drift = rng.uniform(-0.0008, 0.0008)
+            logits.append(base + amp * np.sin(2 * np.pi * t / period + phase) + drift * t)
+        L = np.stack(logits)
+        L -= L.max(axis=0, keepdims=True)
+        shares = np.exp(L) / np.exp(L).sum(axis=0, keepdims=True)
+        return names, shares
+
+    def fetch_metric_sliced(
+        self, metric_name: str, dimension_source: str,
+        start_date: str, end_date: str,
+        grain: str = "day", kind: str = "flow",
+    ) -> pd.DataFrame:
+        s = None
+        if self.dag is not None and metric_name in self.dag:
+            s = self._covering_series(metric_name, start_date, end_date)
+        if s is None:
+            df = self.fetch_metric(metric_name, start_date, end_date, grain, kind)
+            s = pd.Series(
+                df[metric_name].to_numpy(), index=pd.DatetimeIndex(df["date"])
+            )
+        dates = pd.DatetimeIndex(s.index)
+        names, shares = self._share_curves(dimension_source, dates)
+        total = s.to_numpy(dtype=float)
+
+        if kind == "rate":
+            # Slice rates deviate smoothly around the blended rate,
+            # orthogonalized against the shares so Σ s_g·r_g reproduces the
+            # metric exactly (Σ s_g = 1 makes the correction term vanish).
+            t = (dates - self._EPOCH).days.to_numpy(dtype=float)
+            devs = []
+            for name in names:
+                rng = self._rng_for(f"ratedev:{metric_name}:{dimension_source}:{name}")
+                amp = rng.uniform(0.02, 0.12)
+                period = rng.uniform(45.0, 180.0)
+                phase = rng.uniform(0, 2 * np.pi)
+                devs.append(amp * np.sin(2 * np.pi * t / period + phase))
+            D = np.stack(devs)
+            D = D - (shares * D).sum(axis=0, keepdims=True)
+            values = total[None, :] * (1.0 + D)
+        else:
+            values = total[None, :] * shares
+
+        out = pd.concat(
+            [
+                pd.DataFrame({"date": dates, "slice": name, "value": values[i]})
+                for i, name in enumerate(names)
+            ],
+            ignore_index=True,
+        )
+        return out.sort_values(["date", "slice"]).reset_index(drop=True)

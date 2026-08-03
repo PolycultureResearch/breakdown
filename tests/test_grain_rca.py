@@ -190,6 +190,13 @@ def test_monthly_lag_shifts_whole_months_across_year_boundary():
     # The lagged parent stepped up ~30; expect a positive contribution near
     # 0.4 * 30 = 12 (posterior + bootstrap tolerance).
     assert 6.0 < contrib["estimate"] < 18.0
+    # The surfaced parent windows are the node's snapped windows shifted back
+    # one whole month — landing on month starts across the year boundary.
+    assert contrib["lag"] == 1
+    assert contrib["parent_windows"] == {
+        "reference": {"start": "2023-12-01", "end": "2024-05-31"},
+        "analysis": {"start": "2024-10-01", "end": "2024-12-31"},
+    }
 
 
 SIM_YAML = """
@@ -289,8 +296,22 @@ def test_lagged_identity_rca_recovers_lagged_change():
     assert abs(contribs["starts"] - node["gap"]) < 0.5
     assert abs(contribs["cohort_rate"]) < 1e-6
 
+    # The lagged parent's contribution says which of *its* days were examined
+    # (3 days back); the unlagged parent carries no lag keys at all.
+    by_parent = {c["parent"]: c for c in node["contributions"]}
+    assert by_parent["starts"]["lag"] == 3
+    assert by_parent["starts"]["parent_windows"] == {
+        "reference": {"start": "2024-01-08", "end": "2024-02-06"},
+        "analysis": {"start": "2024-03-01", "end": "2024-03-30"},
+    }
+    assert "lag" not in by_parent["cohort_rate"]
+    assert "parent_windows" not in by_parent["cohort_rate"]
+
     sh = shapley_attribution(dag, frame, "conversions", *ref, *an)
     assert abs(sum(sh["attribution"].values()) - sh["gap"]) < 1e-9
+    # The standalone Shapley response carries the same map, lagged parents only.
+    assert set(sh["parent_windows"]) == {"starts"}
+    assert sh["parent_windows"]["starts"]["analysis"]["start"] == "2024-03-01"
 
 
 def test_lagged_identity_residual_fit_trims_rows():

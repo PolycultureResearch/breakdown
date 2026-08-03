@@ -5,9 +5,11 @@ from urllib.parse import quote
 from breakdown.mcp.shaping import (
     COLD_START_HOW_TO_READ,
     RCA_HOW_TO_READ,
+    SLICE_HOW_TO_READ,
     WHATIF_HOW_TO_READ,
     compact_rca,
     compact_scenario,
+    compact_slice,
     metric_link,
     rca_link,
     round_floats,
@@ -212,11 +214,13 @@ def test_compact_scenario():
 
 
 def test_how_to_read_guides():
-    for guide in (RCA_HOW_TO_READ, WHATIF_HOW_TO_READ):
+    for guide in (RCA_HOW_TO_READ, SLICE_HOW_TO_READ, WHATIF_HOW_TO_READ):
         assert guide.startswith("How to read")
         assert 400 < len(guide) < 2500  # substantial but token-bounded
     assert "unexplained" in RCA_HOW_TO_READ
     assert "prob_direction" in WHATIF_HOW_TO_READ
+    assert "excess" in SLICE_HOW_TO_READ
+    assert "reconciliation" in SLICE_HOW_TO_READ
 
 
 def test_compact_scenario_cold_start_keeps_belief_intervals():
@@ -273,3 +277,93 @@ def test_whatif_how_to_read_modes():
     assert COLD_START_HOW_TO_READ in cold
     assert "COLD START" in cold
     assert "never as evidence" in cold
+
+
+def test_compact_slice():
+    result = {
+        "metric": "signups",
+        "dimension": "region",
+        "dimension_source": "customer__region",
+        "grain": "day",
+        "kind": "flow",
+        "effective_windows": {
+            "reference": {"start": "2024-02-05", "end": "2024-03-03", "n_periods": 28},
+            "analysis": {"start": "2024-03-04", "end": "2024-03-10", "n_periods": 7},
+        },
+        "baseline": 1000.0,
+        "actual": 900.0,
+        "gap": -100.0,
+        "attribution_method": "slice_sum",
+        "mix_total": None,
+        "slices": [
+            {
+                "value": "emea",
+                "baseline": 220.0,
+                "actual": 140.0,
+                "contribution": -80.0,
+                "share_of_gap": 0.8,
+                "baseline_share": 0.22,
+                "excess": -58.0,
+                "ci_95": [-70.0, -45.0],
+                "prob_concentrated": 0.99,
+                "noise_level": False,
+            },
+            {
+                "value": "__other__",
+                "baseline": 780.0,
+                "actual": 760.0,
+                "contribution": -20.0,
+                "share_of_gap": 0.2,
+                "baseline_share": 0.78,
+                "excess": 58.0,
+                "ci_95": None,
+                "prob_concentrated": None,
+                "noise_level": None,
+                "n_values": 5,
+            },
+        ],
+        "reconciliation": {
+            "mean_residual": 0.1,
+            "max_abs_residual": 0.4,
+            "residual_share_of_baseline": 0.0001,
+            "status": "ok",
+        },
+        "ci_status": "ok",
+        "caveats": [],
+    }
+    out = compact_slice(result)
+    # window detail collapses to period counts
+    assert out["n_periods"] == {"reference": 28, "analysis": 7}
+    assert "effective_windows" not in out
+    # nulls trimmed: empty caveats and the flow's mix_total disappear; the
+    # __other__ row keeps only its populated fields (plus n_values)
+    assert "caveats" not in out and "mix_total" not in out
+    other = next(s for s in out["slices"] if s["value"] == "__other__")
+    assert "ci_95" not in other and other["n_values"] == 5
+    # meaningful falsy values survive the trim
+    emea = next(s for s in out["slices"] if s["value"] == "emea")
+    assert emea["noise_level"] is False
+    assert out["reconciliation"] == {
+        "status": "ok", "residual_share_of_baseline": 0.0001,
+    }
+
+
+def test_compact_rca_passes_lag_windows_through():
+    """A lagged contribution's `lag`/`parent_windows` survive compaction —
+    they are the dates a narrator (or a follow-up slice_metric call) needs —
+    while unlagged contributions gain no keys."""
+    fixture = _rca_fixture()
+    contribs = fixture["nodes"]["revenue"]["contributions"]
+    windows = {
+        "reference": {"start": "2024-01-08", "end": "2024-02-06"},
+        "analysis": {"start": "2024-03-01", "end": "2024-03-30"},
+    }
+    contribs[0]["lag"] = 3
+    contribs[0]["parent_windows"] = windows
+
+    out = compact_rca(fixture)
+    lagged = out["nodes"]["revenue"]["contributions"][0]
+    assert lagged["lag"] == 3
+    assert lagged["parent_windows"] == windows
+    for c in out["nodes"]["revenue"]["contributions"][1:]:
+        assert "lag" not in c and "parent_windows" not in c

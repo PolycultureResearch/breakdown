@@ -15,10 +15,12 @@ from breakdown.data_fetch import (
     CloudDataFetcher,
     LocalDataFetcher,
     MockDataFetcher,
+    SliceNotSupported,
     WarehouseDataFetcher,
 )
 from breakdown.engine.model import fit_metric, summarize_trace
 from breakdown.engine.rca import run_rca, shapley_attribution
+from breakdown.engine.slices import slice_attribution
 from breakdown.engine.simulate import ScenarioRequest, run_scenario, validate_cold_start
 from breakdown.grains import GrainedData, build_grained
 from breakdown.mcp.server import mcp
@@ -201,6 +203,10 @@ async def lifespan(app: FastAPI):
     # Keyed by (metric name, fit_end): a full-window fit (fit_end=None) and a
     # pre-anomaly RCA fit are different objects and must not shadow each other.
     app.state.traces: Dict[Tuple[str, Optional[str]], Any] = {}
+    # Sliced frames fetched on demand for slice attribution, keyed by
+    # (metric, dimension source, grain, start, end). Deliberately separate
+    # from the startup GrainedData — slices never enter the fit path.
+    app.state.slice_cache: Dict[Tuple[str, str, str, str, str], pd.DataFrame] = {}
     app.state.lock = asyncio.Lock()
 
     try:
@@ -523,6 +529,111 @@ async def root_cause_analysis(
                 reference_start, reference_end,
                 analysis_start, analysis_end,
             )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+    return result
+
+
+def _fetch_sliced_cached(state, parser, metric, dimension_source, start, end) -> pd.DataFrame:
+    """Read-through slice cache: one provider query per
+    (metric, dimension, grain, window), reused across requests."""
+    key = (metric.name, dimension_source, metric.grain, start, end)
+    cached = state.slice_cache.get(key)
+    if cached is not None:
+        return cached
+    provider_type = parser.config.provider.type
+    query_name = (
+        metric.name
+        if provider_type in ("mock", "warehouse")
+        else metric.source.split(".")[-1]
+    )
+    df = state.fetcher.fetch_metric_sliced(
+        query_name, dimension_source, start, end,
+        grain=metric.grain, kind=metric.kind,
+    )
+    state.slice_cache[key] = df
+    return df
+
+
+def _run_slice(
+    state, parser, data, defn, dimension,
+    reference_start, reference_end, analysis_start, analysis_end,
+):
+    """Fetch the sliced frames (and the weight's, for a rate) and attribute.
+    Sync — called via asyncio.to_thread under the app lock. The engine stays
+    pure: all I/O happens here."""
+    spec = defn.dimensions[dimension]
+    span_start = min(reference_start, analysis_start)
+    span_end = max(reference_end, analysis_end)
+    sliced = _fetch_sliced_cached(state, parser, defn, spec.source, span_start, span_end)
+    weight_sliced = None
+    if defn.kind == "rate":
+        weight_defn = parser.get_metric(spec.weight)
+        if weight_defn.grain != defn.grain:
+            raise ValueError(
+                f"Rate '{defn.name}' (grain '{defn.grain}') has weight "
+                f"'{spec.weight}' at grain '{weight_defn.grain}'; sliced weights "
+                "must share the rate's grain."
+            )
+        weight_sliced = _fetch_sliced_cached(
+            state, parser, weight_defn, spec.source, span_start, span_end
+        )
+    return slice_attribution(
+        defn, dimension, sliced, data.series(defn.name),
+        reference_start, reference_end, analysis_start, analysis_end,
+        weight_sliced=weight_sliced,
+    )
+
+
+@app.post("/rca/{name}/slices")
+async def slice_metric_gap(
+    name: str,
+    request: Request,
+    dimension: str = Query(..., description="Declared dimension name on the metric"),
+    reference_start: str = Query(..., description="Start of baseline window (YYYY-MM-DD)"),
+    reference_end: str = Query(..., description="End of baseline window (YYYY-MM-DD)"),
+    analysis_start: str = Query(..., description="Start of analysis window (YYYY-MM-DD)"),
+    analysis_end: str = Query(..., description="End of analysis window (YYYY-MM-DD)"),
+):
+    """Attribute `name`'s window-over-window gap across one dimension's slices.
+
+    The traverse-then-slice follow-up to POST /rca/{name}: tree RCA says which
+    upstream metric moved; this says where inside it. When slicing a lagged
+    parent, pass the parent's own lag-shifted windows.
+    """
+    _require_data(request)
+    parser = request.app.state.parser
+    data = request.app.state.data
+
+    if name not in parser.dag:
+        raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
+    defn = parser.get_metric(name)
+    if dimension not in defn.dimensions:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Metric '{name}' declares no dimension '{dimension}' "
+            f"(declared: {sorted(defn.dimensions) or 'none'}).",
+        )
+    for label, value in [
+        ("reference_start", reference_start), ("reference_end", reference_end),
+        ("analysis_start", analysis_start), ("analysis_end", analysis_end),
+    ]:
+        try:
+            datetime.date.fromisoformat(value)
+        except ValueError:
+            raise HTTPException(
+                status_code=422, detail=f"{label} must be YYYY-MM-DD, got '{value}'"
+            )
+
+    async with request.app.state.lock:
+        try:
+            result = await asyncio.to_thread(
+                _run_slice, request.app.state, parser, data, defn, dimension,
+                reference_start, reference_end, analysis_start, analysis_end,
+            )
+        except SliceNotSupported as e:
+            raise HTTPException(status_code=422, detail=str(e))
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
 
