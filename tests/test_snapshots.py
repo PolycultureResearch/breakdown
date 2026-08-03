@@ -27,6 +27,32 @@ class ExplodingFetcher(BaseDataFetcher):
     def fetch_metric(self, *args, **kwargs):
         raise RuntimeError("warehouse is down")
 
+    def fetch_metric_sliced(self, *args, **kwargs):
+        raise RuntimeError("warehouse is down")
+
+
+class CountingSlicedFetcher(BaseDataFetcher):
+    """Inner fetcher for the sliced path; records the windows it was asked for."""
+
+    def __init__(self):
+        self.windows = []
+
+    def fetch_metric(self, metric_name, start_date, end_date, grain="day", kind="flow"):
+        raise AssertionError("sliced tests should not hit the unsliced path")
+
+    def fetch_metric_sliced(
+        self, metric_name, dimension_source, start_date, end_date, grain="day", kind="flow"
+    ):
+        self.windows.append((start_date, end_date))
+        dates = pd.date_range(start_date, end_date, freq="D")
+        return pd.DataFrame(
+            {
+                "date": list(dates) * 2,
+                "slice": ["a"] * len(dates) + ["b"] * len(dates),
+                "value": [float(i) for i in range(len(dates))] * 2,
+            }
+        )
+
 
 def test_store_round_trip(tmp_path):
     store = SnapshotStore(str(tmp_path))
@@ -134,6 +160,63 @@ def test_wrap_snapshots_env_overrides(tmp_path, monkeypatch):
     wrapped = _wrap_snapshots(CountingFetcher(), "cloud", str(tmp_path / "t.yml"))
     assert wrapped.store.directory == str(tmp_path / "cache")
     assert wrapped.refresh is True
+
+
+def test_sliced_reads_through_once(tmp_path):
+    inner = CountingSlicedFetcher()
+    fetcher = SnapshotFetcher(inner, SnapshotStore(str(tmp_path)))
+    first = fetcher.fetch_metric_sliced("m", "customer__region", "2024-01-01", "2024-01-05")
+    second = fetcher.fetch_metric_sliced("m", "customer__region", "2024-01-01", "2024-01-05")
+    assert inner.windows == [("2024-01-01", "2024-01-05")]
+    pd.testing.assert_frame_equal(first, second)
+
+
+def test_sliced_span_serves_unseen_sub_windows(tmp_path):
+    """The property the hermetic deployment needs: one stored span answers
+    windows nobody ran at build time."""
+    inner = CountingSlicedFetcher()
+    fetcher = SnapshotFetcher(
+        inner, SnapshotStore(str(tmp_path)), slice_span=("2024-01-01", "2024-01-31")
+    )
+    fetcher.fetch_metric_sliced("m", "customer__region", "2024-01-10", "2024-01-12")
+    assert inner.windows == [("2024-01-01", "2024-01-31")]  # widened to the span
+
+    # A different window, never requested before, is still a snapshot hit.
+    offline = SnapshotFetcher(ExplodingFetcher(), SnapshotStore(str(tmp_path)))
+    df = offline.fetch_metric_sliced("m", "customer__region", "2024-01-20", "2024-01-22")
+    assert list(df["date"].dt.strftime("%Y-%m-%d").unique()) == [
+        "2024-01-20", "2024-01-21", "2024-01-22"
+    ]
+    assert set(df["slice"]) == {"a", "b"}
+
+
+def test_sliced_request_outside_span_is_not_widened(tmp_path):
+    inner = CountingSlicedFetcher()
+    fetcher = SnapshotFetcher(
+        inner, SnapshotStore(str(tmp_path)), slice_span=("2024-01-01", "2024-01-31")
+    )
+    fetcher.fetch_metric_sliced("m", "customer__region", "2024-02-01", "2024-02-03")
+    assert inner.windows == [("2024-02-01", "2024-02-03")]
+
+
+def test_sliced_key_separates_dimension_and_metric(tmp_path):
+    inner = CountingSlicedFetcher()
+    fetcher = SnapshotFetcher(inner, SnapshotStore(str(tmp_path)))
+    fetcher.fetch_metric_sliced("m", "customer__region", "2024-01-01", "2024-01-05")
+    fetcher.fetch_metric_sliced("m", "customer__plan", "2024-01-01", "2024-01-05")
+    fetcher.fetch_metric_sliced("other", "customer__region", "2024-01-01", "2024-01-05")
+    assert len(inner.windows) == 3
+    assert len(list(tmp_path.glob("*.parquet"))) == 3
+
+
+def test_sliced_refresh_refetches(tmp_path):
+    inner = CountingSlicedFetcher()
+    store = SnapshotStore(str(tmp_path))
+    SnapshotFetcher(inner, store).fetch_metric_sliced("m", "d", "2024-01-01", "2024-01-05")
+    SnapshotFetcher(inner, store, refresh=True).fetch_metric_sliced(
+        "m", "d", "2024-01-01", "2024-01-05"
+    )
+    assert len(inner.windows) == 2
 
 
 @pytest.mark.parametrize("kind", ["flow", "stock"])

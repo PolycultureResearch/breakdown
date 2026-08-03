@@ -64,14 +64,18 @@ def _build_fetcher(provider_cfg, dag, metrics=None):
     return MockDataFetcher(dag=dag)
 
 
-def _wrap_snapshots(fetcher, provider_type: str, tree_path: str):
+def _wrap_snapshots(fetcher, provider_type: str, tree_path: str, slice_span=None):
     """Wrap the fetcher in the snapshot read-through cache (roadmap 2.4).
 
     Mock data is already deterministic and free, so only real providers are
     cached. Default directory is tree-adjacent (`.breakdown/snapshots`) so a
     partner repo can commit its snapshots and re-run RCAs from a fresh clone;
     BREAKDOWN_SNAPSHOT_DIR overrides, "off" disables, BREAKDOWN_REFRESH=1
-    forces one refetch pass."""
+    forces one refetch pass.
+
+    `slice_span` is the loaded data window. Sliced fetches are widened to it
+    before being stored, so one snapshot per (metric, dimension) serves every
+    analysis window rather than only the ones already run."""
     if provider_type == "mock":
         return fetcher
     snapshot_dir = os.environ.get("BREAKDOWN_SNAPSHOT_DIR", "")
@@ -83,6 +87,7 @@ def _wrap_snapshots(fetcher, provider_type: str, tree_path: str):
         fetcher,
         SnapshotStore(snapshot_dir),
         refresh=os.environ.get("BREAKDOWN_REFRESH") == "1",
+        slice_span=slice_span,
     )
 
 
@@ -245,7 +250,9 @@ async def lifespan(app: FastAPI):
                 )
 
             fetcher = _build_fetcher(provider_cfg, parser.dag, parser.config.metrics)
-            fetcher = _wrap_snapshots(fetcher, provider_cfg.type, tree_path)
+            fetcher = _wrap_snapshots(
+                fetcher, provider_cfg.type, tree_path, slice_span=(start_date, end_date)
+            )
             data = _fetch_all_metrics(parser, fetcher, provider_cfg.type, start_date, end_date)
 
             app.state.parser = parser
