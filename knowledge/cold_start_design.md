@@ -1,8 +1,8 @@
-# Prior Mode — what-if with zero data (design spec)
+# Cold Start Mode — what-if with zero data (design spec)
 
 Status: draft (v1 scope: engine + parser; API/UI phased behind it). Companion to
 `what_if_design.md` (the fitted what-if machine this extends) and
-`prior_mode_founder_intro.md` (the audience-facing pitch).
+`cold_start_founder_intro.md` (the audience-facing pitch).
 
 ## 1. Product framing
 
@@ -12,7 +12,7 @@ its propagation core never touches a time series: it consumes **baselines**
 **assumption effects** (user-stated Normal ranges). Two of those three are
 derived from data today; none of them has to be.
 
-Prior mode replaces the data-derived inputs with declared ones, so a
+Cold-start mode replaces the data-derived inputs with declared ones, so a
 **pre-revenue company can use the what-if machine before the first row of data
 exists**. The Bayesian slogan is literal: the minimum sample size is zero. A
 founder states a tree, operating-point beliefs, and edge-slope beliefs as
@@ -41,8 +41,8 @@ founder/advisor authoring beliefs) and the **reader** receiving a deep link.
 
 ## 2. Tree contract (YAML)
 
-Prior mode is a property of the *tree*, not the scenario: a tree with no data
-provider and fully declared beliefs is a prior-mode tree. Three additions to
+Cold-start mode is a property of the *tree*, not the scenario: a tree with no data
+provider and fully declared beliefs is a cold-start tree. Three additions to
 `MetricDefinition`:
 
 ### 2.1 `baseline` — asserted operating point
@@ -58,7 +58,7 @@ provider and fully declared beliefs is a prior-mode tree. Three additions to
   baseline: {low: 0.01, high: 0.05}   # central 90% interval of a Normal
 ```
 
-- Required (in prior mode) on every **non-formula** node: sources and
+- Required (in cold-start mode) on every **non-formula** node: sources and
   probabilistic nodes. Formula nodes may **not** declare one — their baseline
   is derived per-draw as `f(parent baselines)`, so the identity holds by
   construction (parse-time error otherwise).
@@ -77,7 +77,7 @@ provider and fully declared beliefs is a prior-mode tree. Three additions to
 ```
 
 Optional on any node; either bound may be omitted. Fitted mode flags
-extrapolation against history (`hist_min/max`, ±2σ); prior mode has no
+extrapolation against history (`hist_min/max`, ±2σ); cold-start mode has no
 history, so `plausible` is the declared substitute: a simulated value outside
 the bounds flags the node and emits a warning, and `min: 0` recovers the
 non-physical (negative) check. No bounds → no flag (the response says so
@@ -90,7 +90,7 @@ historical band; out of scope here.)
 Every probabilistic edge on an affected path must carry an **explicit
 business-unit prior** — the parent-specific entry or the shared
 `coefficient` entry. The fitted-mode fallback (`Normal(0,1)` in normalized
-space) is meaningless without data to define the scale, so prior mode errors
+space) is meaningless without data to define the scale, so cold-start mode errors
 loudly, listing every missing edge.
 
 Two prior-authoring notes that differ from fitted mode:
@@ -101,7 +101,7 @@ Two prior-authoring notes that differ from fitted mode:
   supported by `scale_prior_params`) encode "surely positive" beliefs cleanly.
 - **The prior IS `beta_raw`.** YAML priors are already stated in business
   units; the data-dependent rescaling (`scale = x_std/y_std`) exists only to
-  move them into z-space for fitting. Prior mode skips it and samples the
+  move them into z-space for fitting. Cold-start mode skips it and samples the
   declared distribution directly.
 
 ## 3. Statistical design
@@ -142,7 +142,7 @@ Identical to fitted mode (`what_if_design.md` §3.1) with baselines as vectors:
 - Do-operator, assumption additivity, override warnings: unchanged.
 
 Trend and seasonality never appear: they cancel out of fitted-mode deltas and
-simply don't exist pre-data. Steady-state semantics only — prior mode changes
+simply don't exist pre-data. Steady-state semantics only — cold-start mode changes
 *what the inputs are*, not what a scenario means.
 
 ### 3.3 Decomposition
@@ -156,7 +156,7 @@ answer"), which is arguably its highest-value reading.
 
 ### 3.4 Honesty
 
-- **Response is labeled.** Top-level `"mode": "prior"`; per-node `fit_quality`
+- **Response is labeled.** Top-level `"mode": "cold_start"`; per-node `fit_quality`
   is `null`; `baseline_ci_95` accompanies each node's baseline point estimate
   when the baseline is uncertain. Nothing prior-derived masquerades as fitted.
 - **Extrapolation** flags against `plausible` bounds (absent bounds → no flag,
@@ -178,23 +178,23 @@ answer"), which is arguably its highest-value reading.
 
 ## 4. Engine contract
 
-`run_scenario` keeps one signature; **`data=None` selects prior mode**:
+`run_scenario` keeps one signature; **`data=None` selects cold-start mode**:
 
 ```python
 run_scenario(dag, data=None, traces=None, scenario, n_draws=2000)
 ```
 
 - `scenario.baseline_start/end` become optional: required in fitted mode
-  (unchanged behavior), rejected in prior mode (there is no data window to
+  (unchanged behavior), rejected in cold-start mode (there is no data window to
   mean over; the operating point comes from the YAML).
-- `traces` is ignored in prior mode (no fits exist or are created).
+- `traces` is ignored in cold-start mode (no fits exist or are created).
 - Prior-readiness validation is a public helper —
-  `validate_prior_mode(dag) -> list[str]` — returning every violation
+  `validate_cold_start(dag) -> list[str]` — returning every violation
   (non-formula node without `baseline`; probabilistic edge without an explicit
   prior), so `run_scenario` can raise a single aggregate `ValueError` and
   `breakdown doctor` can reuse it verbatim for a pre-flight check.
 - Response shape is the fitted shape plus `"mode"`, per-node
-  `baseline_ci_95` (nullable), and the prior-mode extrapolation block; minus
+  `baseline_ci_95` (nullable), and the cold-start extrapolation block; minus
   nothing. The UI overlay loop stays uniform.
 
 ## 5. Phasing beyond the engine
@@ -206,13 +206,13 @@ run_scenario(dag, data=None, traces=None, scenario, n_draws=2000)
   `/rca/*`, `/analyze/*`, `/shapley/*`) return 422 "this tree declares no data
   provider" — a stated mode, not an error banner.
 - `POST /simulate` branches on `app.state.data is None`. `/meta` carries
-  `"mode": "prior"` so the UI boots into the right surface.
+  `"mode": "cold_start"` so the UI boots into the right surface.
 - MCP `run_whatif` passes through unchanged; `WHATIF_HOW_TO_READ` gains the
-  prior-mode caveat block.
+  cold-start caveat block.
 
 ### 5.2 UI (after API)
 
-- Boot in what-if-first layout when `/meta` says prior mode: cards show
+- Boot in what-if-first layout when `/meta` says cold-start mode: cards show
   asserted baseline (± range) instead of sparklines; probabilistic edges label
   with the prior ("β ~ 0.02 [0.01, 0.03] · belief" chip) instead of fitted β.
 - The adjust panel's range strip renders from `plausible` bounds.
@@ -237,7 +237,7 @@ policy for partially-fitted paths — worth its own small spec.
   the priors so RCA/cards run pre-data. `MockDataFetcher` already covers the
   demo need (DAG-respecting series from `coefficient` prior means); note that
   *fitting* mock data yields spuriously tight pseudo-posteriors, which is
-  exactly what prior mode exists to avoid.
+  exactly what cold-start mode exists to avoid.
 - **Trajectory mode** — steady-state only, as in fitted what-if v1.
 - **Scenario-level baseline/prior overrides** — beliefs live in the tree
   YAML (the committed hypothesis), not the request. Revisit if the UI wants
@@ -250,14 +250,14 @@ policy for partially-fitted paths — worth its own small spec.
 - **P1** — this document.
 - **P2** — parser: `baseline` (shorthand + range), `plausible`, formula-node
   baseline rejection + tests.
-- **P3** — engine: prior-mode branch in `run_scenario` (baseline draws, prior
+- **P3** — engine: cold-start branch in `run_scenario` (baseline draws, prior
   beta sampling with analytic means, plausible-bounds flags, labeled
-  response), `validate_prior_mode`, + `tests/test_simulate_prior.py`
+  response), `validate_cold_start`, + `tests/test_simulate_cold_start.py`
   (fitted-mode suite must pass untouched).
 - **P4** — API: `provider: none`, dataless lifespan, route guards, `/simulate`
   branch, `/meta.mode`, MCP caveats + tests.
-- **P5** — UI: prior-mode boot surface, belief edge labels, plausible range
-  strips, docs (`docs/model.md` "reading prior-mode output" section,
+- **P5** — UI: cold-start boot surface, belief edge labels, plausible range
+  strips, docs (`docs/model.md` "reading cold-start output" section,
   `docs/ai-context/*` updates).
 
 P2+P3 ship together (this draft); P4 and P5 are sequential behind them.

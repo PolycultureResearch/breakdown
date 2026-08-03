@@ -1,8 +1,8 @@
-"""Tests for prior mode: `run_scenario` with data=None.
+"""Tests for cold-start mode: `run_scenario` with data=None.
 
 Degenerate priors (sigma 0) and point baselines make propagation exactly
 predictable; spread priors and baseline ranges exercise the draw-aligned
-uncertainty paths. No PyMC sampling runs anywhere in this file — prior mode
+uncertainty paths. No PyMC sampling runs anywhere in this file — cold-start mode
 fits nothing by construction.
 """
 import numpy as np
@@ -10,18 +10,18 @@ import pandas as pd
 import pytest
 
 from breakdown.engine.simulate import (
-    PRIOR_CAVEATS,
+    COLD_START_CAVEATS,
     Assumption,
     EffectRange,
     Intervention,
     ScenarioRequest,
     _prior_mean,
     run_scenario,
-    validate_prior_mode,
+    validate_cold_start,
 )
 from breakdown.parser import Parser, Prior
 
-PRIOR_YAML = """
+COLD_START_YAML = """
 metrics:
   - name: daily_sessions
     source: assumed
@@ -46,7 +46,7 @@ metrics:
 """
 
 
-def make_dag(yaml_src: str = PRIOR_YAML):
+def make_dag(yaml_src: str = COLD_START_YAML):
     return Parser(yaml_src).dag
 
 
@@ -55,15 +55,15 @@ def run(dag, **scenario_kwargs):
 
 
 def test_point_beliefs_propagate_exactly():
-    """Degenerate priors and point baselines: prior mode is exact arithmetic,
+    """Degenerate priors and point baselines: cold-start mode is exact arithmetic,
     and the response is labeled as beliefs, not fits."""
     result = run(dag := make_dag(), interventions=[
         Intervention(metric="daily_sessions", mode="delta", value=200.0),
     ])
-    assert result["mode"] == "prior"
+    assert result["mode"] == "cold_start"
     assert result["baseline_window"] is None
-    assert result["caveats"] == PRIOR_CAVEATS
-    assert validate_prior_mode(dag) == []
+    assert result["caveats"] == COLD_START_CAVEATS
+    assert validate_cold_start(dag) == []
 
     # asserted baselines pass through; the formula baseline is derived
     assert result["nodes"]["daily_sessions"]["baseline"] == pytest.approx(1000.0)
@@ -93,7 +93,7 @@ def test_spread_prior_widens_ci_draw_aligned():
     """A Normal prior's spread becomes the delta distribution, and the CI
     scales draw-aligned through the downstream formula node — the fitted-mode
     posterior test, with the prior in the posterior's seat."""
-    dag = make_dag(PRIOR_YAML.replace("sigma: 0.0", "sigma: 0.02"))
+    dag = make_dag(COLD_START_YAML.replace("sigma: 0.0", "sigma: 0.02"))
     result = run(dag, interventions=[
         Intervention(metric="daily_sessions", mode="delta", value=200.0),
     ])
@@ -119,7 +119,7 @@ def test_uncertain_baseline_composes_into_deltas():
     """A baseline range becomes baseline_ci_95, flows into the derived formula
     baseline, and widens deltas that consume it (revenue = orders x aov with
     uncertain aov)."""
-    dag = make_dag(PRIOR_YAML.replace("baseline: 50", "baseline: {low: 40, high: 60}"))
+    dag = make_dag(COLD_START_YAML.replace("baseline: 50", "baseline: {low: 40, high: 60}"))
     result = run(dag, interventions=[
         Intervention(metric="order_count", mode="delta", value=20.0),
     ])
@@ -148,7 +148,7 @@ def test_set_intervention_pins_level_not_delta():
     """`set` pins the LEVEL exactly under an uncertain baseline: the simulated
     value is the pinned value, while the delta honestly carries baseline
     uncertainty."""
-    dag = make_dag(PRIOR_YAML.replace("baseline: 1000", "baseline: {low: 800, high: 1200}"))
+    dag = make_dag(COLD_START_YAML.replace("baseline: 1000", "baseline: {low: 800, high: 1200}"))
     result = run(dag, interventions=[
         Intervention(metric="daily_sessions", mode="set", value=1500.0),
     ])
@@ -163,7 +163,7 @@ def test_set_intervention_pins_level_not_delta():
 def test_relative_assumption_scales_by_baseline_draws():
     """A relative assumption multiplies the target's baseline draws, staying
     draw-aligned with the uncertain worldview."""
-    dag = make_dag(PRIOR_YAML.replace("baseline: 50", "baseline: {low: 40, high: 60}"))
+    dag = make_dag(COLD_START_YAML.replace("baseline: 50", "baseline: {low: 40, high: 60}"))
     result = run(dag, assumptions=[
         Assumption(source="promo", target="average_order_value",
                    effect=EffectRange(kind="relative", low=0.1, high=0.1)),
@@ -211,7 +211,7 @@ def test_shapley_decomposition_uses_prior_means():
 def test_sign_constrained_prior_stays_positive():
     """HalfNormal encodes 'surely positive': every draw respects the sign and
     the point value is the analytic mean."""
-    dag = make_dag(PRIOR_YAML.replace(
+    dag = make_dag(COLD_START_YAML.replace(
         "distribution: Normal\n        params: {mu: 0.1, sigma: 0.0}",
         "distribution: HalfNormal\n        params: {sigma: 0.1}",
     ))
@@ -241,7 +241,7 @@ def test_prior_means_analytic():
 def test_validation_errors():
     iv = [Intervention(metric="daily_sessions", mode="delta", value=1.0)]
 
-    # prior mode rejects a baseline window — operating points come from YAML
+    # cold-start mode rejects a baseline window — operating points come from YAML
     with pytest.raises(ValueError, match="no baseline window"):
         run_scenario(make_dag(), None, None, ScenarioRequest(
             baseline_start="2024-01-01", baseline_end="2024-01-31", interventions=iv))
@@ -251,43 +251,43 @@ def test_validation_errors():
         run_scenario(make_dag(), pd.DataFrame(), {}, ScenarioRequest(interventions=iv))
 
     # missing prior on a probabilistic edge
-    no_prior = PRIOR_YAML.replace(
+    no_prior = COLD_START_YAML.replace(
         """    priors:
       daily_sessions:
         distribution: Normal
         params: {mu: 0.1, sigma: 0.0}
 """, "")
-    problems = validate_prior_mode(make_dag(no_prior))
+    problems = validate_cold_start(make_dag(no_prior))
     assert any("daily_sessions' -> 'order_count'" in p for p in problems)
-    with pytest.raises(ValueError, match="not prior-mode ready"):
+    with pytest.raises(ValueError, match="not cold-start ready"):
         run(make_dag(no_prior), interventions=iv)
 
     # missing baseline on a non-formula node
-    no_baseline = PRIOR_YAML.replace("    baseline: 50\n", "")
-    problems = validate_prior_mode(make_dag(no_baseline))
+    no_baseline = COLD_START_YAML.replace("    baseline: 50\n", "")
+    problems = validate_cold_start(make_dag(no_baseline))
     assert any("average_order_value" in p and "baseline" in p for p in problems)
-    with pytest.raises(ValueError, match="not prior-mode ready"):
+    with pytest.raises(ValueError, match="not cold-start ready"):
         run(make_dag(no_baseline), interventions=iv)
 
 
 def test_parser_contract():
     # shorthand coercion: `baseline: 1000` == {low: 1000, high: 1000}
-    defn = Parser(PRIOR_YAML).get_metric("daily_sessions")
+    defn = Parser(COLD_START_YAML).get_metric("daily_sessions")
     assert defn.baseline.low == defn.baseline.high == 1000.0
     assert defn.baseline.is_point and defn.baseline.mu == 1000.0
 
     # formula nodes derive their baseline; asserting one is rejected
     with pytest.raises(Exception, match="formula"):
-        Parser(PRIOR_YAML.replace(
+        Parser(COLD_START_YAML.replace(
             'formula: "order_count * average_order_value"',
             'formula: "order_count * average_order_value"\n    baseline: 4000',
         ))
 
     # malformed ranges are rejected
     with pytest.raises(Exception, match="low"):
-        Parser(PRIOR_YAML.replace("baseline: 50", "baseline: {low: 60, high: 40}"))
+        Parser(COLD_START_YAML.replace("baseline: 50", "baseline: {low: 60, high: 40}"))
     with pytest.raises(Exception, match="plausible"):
-        Parser(PRIOR_YAML.replace(
+        Parser(COLD_START_YAML.replace(
             "plausible: {min: 0, max: 150}", "plausible: {min: 150, max: 0}"))
     with pytest.raises(Exception, match="plausible"):
-        Parser(PRIOR_YAML.replace("plausible: {min: 0, max: 150}", "plausible: {}"))
+        Parser(COLD_START_YAML.replace("plausible: {min: 0, max: 150}", "plausible: {}"))

@@ -227,8 +227,8 @@ Each metric entry supports the following fields:
 | `expected_signs` | dict | Per-parent declared coefficient direction (`positive` \| `negative`) on a probabilistic node. **Not a prior** — the fit is unconstrained, but a posterior that contradicts the declaration raises a `sign_warnings` diagnostic (surfaced in `/analyze`, `/metrics`, RCA responses, and the UI). |
 | `seasonality` | list | Periodic components to include in the BSTS model. Periods are in grain steps at the node's grain. |
 | `trend` | string or dict | Local-level (random-walk) trend. `trend: linear` uses the default step-size prior HalfNormal(0.05); `trend: {type: linear, sigma: 0.1}` widens it so the trend may absorb faster drift. Only `type: linear` is supported. |
-| `baseline` | number or dict | **Prior mode only.** Asserted operating point for a tree with no data: `baseline: 1200` (point) or `baseline: {low: 800, high: 1600}` (central 90% interval of a Normal), in mean-per-period units at the node's grain. Rejected on formula nodes — theirs derive from parents so the identity holds. See [Prior mode](#prior-mode-what-if-with-no-data). |
-| `plausible` | dict | **Prior mode only.** Declared honesty band `{min, max}` (either bound may be omitted, at least one required) standing in for historical min/max in the what-if extrapolation flags; `min: 0` recovers the "can't go negative" check. See [Prior mode](#prior-mode-what-if-with-no-data). |
+| `baseline` | number or dict | **Cold-start mode only.** Asserted operating point for a tree with no data: `baseline: 1200` (point) or `baseline: {low: 800, high: 1600}` (central 90% interval of a Normal), in mean-per-period units at the node's grain. Rejected on formula nodes — theirs derive from parents so the identity holds. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
+| `plausible` | dict | **Cold-start mode only.** Declared honesty band `{min, max}` (either bound may be omitted, at least one required) standing in for historical min/max in the what-if extrapolation flags; `min: 0` recovers the "can't go negative" check. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
 | `format` | string or dict | UI display hint for the node card's big number — presentation only, no effect on modeling. See [Display format](#display-format). |
 | `direction` | string | Which way is good news, for UI coloring only: `up_is_good` (default), `down_is_good` (costs, tickets, time-to-X), or `neutral` (gray, no judgment). Arrows stay directional; only the green/red coloring follows the declaration. Note: a stored-negative flow like churn MRR is `up_is_good` — moving toward zero means less churn. |
 
@@ -394,11 +394,11 @@ Delta values (period-over-period change) always render as a percent; `format` ap
 
 **Display defaults.** When a metric declares no `format`, the UI guesses one from naming conventions — names containing tokens like `mrr`, `arr`, `revenue`, `arpu`, `aov`, `usd`, `cost`, `spend` render as currency; `rate`, `pct`, `percent`, `share`, `ratio` render as percent; everything else as a plain number. This is presentation-only and an explicit `format` always wins — declare one whenever the guess would be wrong.
 
-### Prior mode (what-if with no data)
+### Cold-start mode (what-if with no data)
 
-A tree with **no data provider** can still run what-if scenarios — on declared beliefs alone. The what-if engine's propagation core consumes operating points, edge slopes, and assumption effects; in prior mode all three are stated rather than fitted, so a pre-revenue company can simulate its business before the first row of data exists. The output quantifies the consequences of your assumptions — honestly wide intervals, never evidence.
+A tree with **no data provider** can still run what-if scenarios — on declared beliefs alone. The what-if engine's propagation core consumes operating points, edge slopes, and assumption effects; in cold-start mode all three are stated rather than fitted, so a pre-revenue company can simulate its business before the first row of data exists. The output quantifies the consequences of your assumptions — honestly wide intervals, never evidence.
 
-A prior-mode tree declares beliefs everywhere:
+A cold-start tree declares beliefs everywhere:
 
 - **`baseline` on every non-formula node** — the asserted operating point, as a point (`baseline: 1200`) or a central-90% interval (`baseline: {low: 800, high: 1600}`), in mean-per-period units at the node's grain. Formula nodes derive theirs per-draw from their parents so the arithmetic identity holds by construction — declaring one there is a parse error.
 - **An explicit prior on every probabilistic edge** (parent-specific or shared `coefficient`). Priors are already stated in business units, and with nothing to fit the prior *is* the coefficient distribution — coefficient draws are sampled from it directly. The fitted-mode fallback `Normal(0, 1)` is meaningless without data to set the scale, so it is not allowed here.
@@ -420,9 +420,9 @@ A prior-mode tree declares beliefs everywhere:
       params: { mu: 0.02, sigma: 0.01 } # ~2 signups per 100 sessions, stated as a belief
 ```
 
-Propagation, do-operator semantics, draw alignment, and the Shapley source decomposition are identical to fitted mode. The response is labeled `mode: "prior"`, adds a per-node `baseline_ci_95` where the asserted baseline is a range, and carries prior-specific caveats so the output can't be mistaken for estimates from data. When data arrives, the same YAML priors feed the fit — posteriors replace priors with zero config changes.
+Propagation, do-operator semantics, draw alignment, and the Shapley source decomposition are identical to fitted mode. The response is labeled `mode: "cold_start"`, adds a per-node `baseline_ci_95` where the asserted baseline is a range, and carries cold-start caveats so the output can't be mistaken for estimates from data. When data arrives, the same YAML priors feed the fit — posteriors replace priors with zero config changes.
 
-**Status:** prior mode is engine-level today — `run_scenario(dag, data=None, …)` with no baseline window (operating points come from the tree, so a scenario passing `baseline_start`/`baseline_end` is rejected). Serving a dataless tree (`provider: none`) and the UI surface are next; see `knowledge/prior_mode_design.md` for the full design.
+**Status:** cold-start mode is engine-level today — `run_scenario(dag, data=None, …)` with no baseline window (operating points come from the tree, so a scenario passing `baseline_start`/`baseline_end` is rejected). Serving a dataless tree (`provider: none`) and the UI surface are next; see `knowledge/cold_start_design.md` for the full design.
 
 ---
 

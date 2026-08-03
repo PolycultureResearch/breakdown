@@ -32,7 +32,7 @@ keyed by `(name, fit_end)`, and on-demand ADVI fits are added to it in place.
 The fit window runs through `baseline_end` — the baseline is "current normal",
 not an anomaly, so nothing is excluded.
 
-**Prior mode** (`data=None`): the same machinery with zero data — the minimum
+**Cold-start mode** (`data=None`): the same machinery with zero data — the minimum
 sample size is zero. Baselines come from each node's asserted `baseline`
 declaration (formula nodes derive theirs per-draw from parents, so the
 identity holds under the stated beliefs), and `beta_raw` is sampled directly
@@ -41,8 +41,8 @@ the `x_std/y_std` rescaling exists only to reach normalized space for
 fitting, so with nothing to fit the prior IS the coefficient distribution.
 Extrapolation flags come from declared `plausible` bounds instead of history.
 Propagation, do-operator semantics, draw alignment, and the Shapley source
-decomposition are identical; the response is labeled `mode: "prior"` and
-carries prior-specific caveats. See `knowledge/prior_mode_design.md`.
+decomposition are identical; the response is labeled `mode: "cold_start"` and
+carries cold-start caveats. See `knowledge/cold_start_design.md`.
 """
 import math
 from itertools import combinations
@@ -71,7 +71,7 @@ CAVEATS = [
     "Assumption-link effects are user-asserted beliefs, not fitted from data.",
 ]
 
-PRIOR_CAVEATS = [
+COLD_START_CAVEATS = [
     "All coefficients and baselines are stated beliefs (priors), not estimates "
     "from data — results quantify the consequences of your assumptions, not "
     "evidence.",
@@ -125,7 +125,7 @@ class Lever(BaseModel):
 
 class ScenarioRequest(BaseModel):
     # Required in fitted mode (the window that defines "current normal");
-    # rejected in prior mode, where operating points come from the tree's
+    # rejected in cold-start mode, where operating points come from the tree's
     # `baseline` declarations. Presence is validated per mode in run_scenario.
     baseline_start: Optional[str] = None
     baseline_end: Optional[str] = None
@@ -176,7 +176,7 @@ def _validate_scenario(
 
 
 def _sample_prior(prior: Any, size: int, rng: np.random.Generator) -> np.ndarray:
-    """Draw from a YAML `Prior` directly in business units (prior-mode
+    """Draw from a YAML `Prior` directly in business units (cold-start
     beta_raw). The distributions mirror `_PRIOR_DISTRIBUTIONS` in model.py and
     the parameter defaults mirror `scale_prior_params`."""
     d, p = prior.distribution, prior.params
@@ -196,7 +196,7 @@ def _sample_prior(prior: Any, size: int, rng: np.random.Generator) -> np.ndarray
 
 def _prior_mean(prior: Any) -> float:
     """Analytic mean of a YAML `Prior` — the point value the Shapley source
-    decomposition propagates (the prior-mode analog of the posterior mean)."""
+    decomposition propagates (the cold-start analog of the posterior mean)."""
     d, p = prior.distribution, prior.params
     if d == "Normal":
         return float(p.get("mu", 0.0))
@@ -212,10 +212,10 @@ def _prior_mean(prior: Any) -> float:
     )
 
 
-def validate_prior_mode(dag: nx.DiGraph) -> List[str]:
-    """Every violation keeping a tree from running prior-mode scenarios.
+def validate_cold_start(dag: nx.DiGraph) -> List[str]:
+    """Every violation keeping a tree from running cold-start scenarios.
 
-    A prior-mode tree declares beliefs everywhere: an asserted `baseline` on
+    A cold-start tree declares beliefs everywhere: an asserted `baseline` on
     every non-formula node (the response reports every node's baseline, and
     formula nodes derive theirs), and an explicit business-unit prior on every
     probabilistic edge — the fitted-mode fallback (Normal(0,1) in normalized
@@ -254,26 +254,26 @@ def run_scenario(
     FitResult. Probabilistic nodes on affected paths without a cached trace
     are fit with ADVI on data through `baseline_end` and added to it.
 
-    **`data=None` selects prior mode** (a tree with no data): baselines come
+    **`data=None` selects cold-start mode** (a tree with no data): baselines come
     from the YAML `baseline` declarations, coefficients are sampled from the
     YAML priors directly in business units, extrapolation flags come from
     declared `plausible` bounds, and `traces` is ignored. The scenario must
     then omit `baseline_start`/`baseline_end`. The response gains
-    `mode: "prior"`, per-node `baseline_ci_95`, and prior-specific caveats.
+    `mode: "cold_start"`, per-node `baseline_ci_95`, and cold-start caveats.
     """
     assumptions = _validate_scenario(dag, scenario)
-    prior_mode = data is None
+    cold_start = data is None
     rng = np.random.default_rng(0)
 
-    if prior_mode:
+    if cold_start:
         if scenario.baseline_start is not None or scenario.baseline_end is not None:
             raise ValueError(
-                "Prior mode (no data) takes no baseline window: operating "
+                "Cold-start mode (no data) takes no baseline window: operating "
                 "points come from the tree's `baseline` declarations."
             )
-        problems = validate_prior_mode(dag)
+        problems = validate_cold_start(dag)
         if problems:
-            raise ValueError("Tree is not prior-mode ready: " + "; ".join(problems))
+            raise ValueError("Tree is not cold-start ready: " + "; ".join(problems))
     else:
         if scenario.baseline_start is None or scenario.baseline_end is None:
             raise ValueError(
@@ -313,7 +313,7 @@ def run_scenario(
     # vectors). Unlike RCA's per-node degrade, a node with no baseline cannot
     # be simulated at all, so this errors loudly.
     #
-    # Prior mode: asserted Normals (the [low, high] central-90% convention)
+    # Cold-start mode: asserted Normals (the [low, high] central-90% convention)
     # for source/probabilistic nodes; formula nodes derive per-draw
     # f(scaled parent draws) in topological order, so the identity holds
     # under the stated beliefs and nonlinear composition (Jensen terms,
@@ -322,7 +322,7 @@ def run_scenario(
     # absorb the level in fitted mode, and only deltas propagate here.
     base_mu: Dict[str, float] = {}
     base_draws: Dict[str, np.ndarray] = {}
-    if prior_mode:
+    if cold_start:
         for n in nx.topological_sort(dag):
             defn = dag.nodes[n]["definition"]
             if defn.formula:
@@ -357,7 +357,7 @@ def run_scenario(
 
     # Resolve interventions to per-draw steady-state deltas, plus the point
     # deltas the Shapley decomposition propagates. With a certain baseline
-    # these are the constants they always were; with an uncertain (prior-mode)
+    # these are the constants they always were; with an uncertain (cold-start)
     # baseline, `set` pins the LEVEL exactly so its delta inherits baseline
     # uncertainty, `pct` scales the baseline draws, and `delta` stays exact.
     intervened = {iv.metric for iv in scenario.interventions}
@@ -399,10 +399,10 @@ def run_scenario(
     # actually reach it through a parent. Fitted mode fits on demand: fit_end
     # is exclusive, so baseline_end + 1 day fits through the baseline window;
     # when the baseline runs to the end of the data that is exactly the
-    # full-window fit. Prior mode fits nothing — validate_prior_mode already
+    # full-window fit. Cold-start mode fits nothing — validate_cold_start already
     # guaranteed an explicit prior on every probabilistic edge.
     fit_end_key: Optional[str] = None
-    if not prior_mode:
+    if not cold_start:
         data_end = data.date_end
         fit_end_key = (
             None if b_end >= data_end else (b_end + pd.Timedelta(days=1)).date().isoformat()
@@ -413,7 +413,7 @@ def run_scenario(
         parents = list(dag.predecessors(node))
         if parents and not defn.formula and set(parents) & affected:
             needs_beta.add(node)
-            if not prior_mode and (node, fit_end_key) not in traces:
+            if not cold_start and (node, fit_end_key) not in traces:
                 traces[(node, fit_end_key)] = fit_metric(
                     dag, data, node, draws=advi_draws,
                     inference_method="advi", fit_end=fit_end_key,
@@ -422,7 +422,7 @@ def run_scenario(
 
     # Draw coefficients and assumption effects up front, in a fixed order, so
     # identical calls consume the rng identically. Fitted mode indexes the
-    # beta_raw posterior; prior mode samples the YAML prior directly in
+    # beta_raw posterior; cold-start mode samples the YAML prior directly in
     # business units (independent across parents and nodes — priors carry no
     # cross-coefficient correlation) with the analytic prior mean as the
     # point value.
@@ -432,7 +432,7 @@ def run_scenario(
         if node not in needs_beta:
             continue
         parents = list(dag.predecessors(node))
-        if prior_mode:
+        if cold_start:
             defn = dag.nodes[node]["definition"]
             priors = [defn.priors.get(p) or defn.priors.get("coefficient") for p in parents]
             beta_draws[node] = np.column_stack(
@@ -481,7 +481,7 @@ def run_scenario(
 
         def base_vec(p: str, node: str) -> np.ndarray:
             # Draw-aligned baselines (constant vectors in fitted mode; sampled
-            # from asserted ranges in prior mode), scaled to the edge's grain.
+            # from asserted ranges in cold-start mode), scaled to the edge's grain.
             s = edge_scale[(p, node)]
             return (base_draws[p] if use_draws else np.array([base_mu[p]])) * s
 
@@ -553,10 +553,10 @@ def run_scenario(
                     )
 
     # Honesty stats: full-history bands in fitted mode; declared `plausible`
-    # bounds in prior mode (no bounds -> no flag, and the block says so
+    # bounds in cold-start mode (no bounds -> no flag, and the block says so
     # rather than inventing a band).
     hist_stats: Dict[str, Dict[str, Any]] = {}
-    if prior_mode:
+    if cold_start:
         for n in dag.nodes:
             pl = dag.nodes[n]["definition"].plausible
             hist_stats[n] = {
@@ -578,7 +578,7 @@ def run_scenario(
         base = base_mu[node]
         hist = hist_stats[node]
         baseline_ci = None
-        if prior_mode and float(base_draws[node].std()) > 0:
+        if cold_start and float(base_draws[node].std()) > 0:
             baseline_ci = [
                 float(np.percentile(base_draws[node], 2.5)),
                 float(np.percentile(base_draws[node], 97.5)),
@@ -595,7 +595,7 @@ def run_scenario(
                 "extrapolation": {"flag": False, **hist},
                 "contributions": [],
             }
-            if prior_mode:
+            if cold_start:
                 entry["baseline_ci_95"] = baseline_ci
             nodes_out[node] = entry
             continue
@@ -604,7 +604,7 @@ def run_scenario(
         estimate = float(d.mean())
         simulated = base + estimate
         flag = False
-        if prior_mode:
+        if cold_start:
             p_min, p_max = hist["plausible_min"], hist["plausible_max"]
             if p_max is not None and simulated > p_max:
                 flag = True
@@ -655,7 +655,7 @@ def run_scenario(
                 })
 
         fit_quality = None
-        if not prior_mode and node in needs_beta:
+        if not cold_start and node in needs_beta:
             fit_quality = traces[(node, fit_end_key)].diagnostics.get("fit_quality")
 
         contribs = [
@@ -682,7 +682,7 @@ def run_scenario(
             "extrapolation": {"flag": bool(flag), **hist},
             "contributions": contribs,
         }
-        if prior_mode:
+        if cold_start:
             entry["baseline_ci_95"] = baseline_ci
         nodes_out[node] = entry
 
@@ -695,9 +695,9 @@ def run_scenario(
     ]
 
     return {
-        "mode": "prior" if prior_mode else "fitted",
+        "mode": "cold_start" if cold_start else "fitted",
         "baseline_window": (
-            None if prior_mode
+            None if cold_start
             else {"start": scenario.baseline_start, "end": scenario.baseline_end}
         ),
         "n_draws": n_draws,
@@ -705,5 +705,5 @@ def run_scenario(
         "sources": sources,
         "nodes": nodes_out,
         "warnings": warnings,
-        "caveats": PRIOR_CAVEATS if prior_mode else CAVEATS,
+        "caveats": COLD_START_CAVEATS if cold_start else CAVEATS,
     }

@@ -26,7 +26,7 @@ class Prior(BaseModel):
         return v
 
 class AssertedBaseline(BaseModel):
-    """Declared operating point for prior mode (a tree with no data).
+    """Declared operating point for cold-start mode (a tree with no data).
 
     `[low, high]` is read as the central 90% interval of a Normal — the same
     elicitation convention as what-if assumption effects — with `low == high`
@@ -54,7 +54,7 @@ class AssertedBaseline(BaseModel):
 
 
 class PlausibleRange(BaseModel):
-    """Declared honesty band for prior mode: the substitute for historical
+    """Declared honesty band for cold-start mode: the substitute for historical
     min/max when there is no history. A simulated value outside the bounds
     flags the node; `min: 0` recovers the non-physical (negative) check.
     Either bound may be omitted; at least one must be present."""
@@ -208,7 +208,7 @@ class MetricDefinition(BaseModel):
     expected_signs: Dict[str, str] = Field(default_factory=dict)
     seasonality: List[Seasonality] = Field(default_factory=list)
     trend: Optional[TrendConfig] = None
-    # Prior-mode declarations (trees with no data provider). `baseline` is the
+    # Cold-start declarations (trees with no data provider). `baseline` is the
     # asserted operating point of a source/probabilistic node (formula nodes
     # derive theirs from parents — declaring one is rejected); `plausible` is
     # the declared honesty band standing in for historical min/max.
