@@ -17,8 +17,10 @@ from breakdown.engine.rca import run_rca as _engine_run_rca
 from breakdown.engine.simulate import Assumption, Intervention, ScenarioRequest, run_scenario
 from breakdown.mcp.shaping import (
     RCA_HOW_TO_READ,
+    SLICE_HOW_TO_READ,
     compact_rca,
     compact_scenario,
+    compact_slice,
     metric_link,
     rca_link,
     round_floats,
@@ -34,7 +36,9 @@ mcp = MCPServer(
         "breakdown is a Bayesian metric-tree engine for root-cause analysis and "
         "what-if simulation over a business's metric DAG. Call get_tree first to "
         "learn the metrics, their grains, and the loaded data window; then run_rca "
-        "to explain why a metric moved, or run_whatif to simulate an intervention. "
+        "to explain why a metric moved, slice_metric to localize a gap within a "
+        "metric's declared dimensions (geo, plan, …), or run_whatif to simulate "
+        "an intervention. "
         "Every analysis response includes a how_to_read block — follow it when "
         "narrating results, and include the report_url so users can open the "
         "interactive analysis."
@@ -97,6 +101,8 @@ async def get_tree() -> Dict[str, Any]:
             entry["description"] = m.description
         if m.lags:
             entry["lags"] = m.lags
+        if m.dimensions:
+            entry["dimensions"] = sorted(m.dimensions)
         if m.baseline is not None:
             entry["baseline"] = {"low": m.baseline.low, "high": m.baseline.high}
         if data is not None:
@@ -134,6 +140,8 @@ async def explain_metric(name: str) -> Dict[str, Any]:
         definition["parents"] = metric.parents
     if metric.lags:
         definition["lags"] = metric.lags
+    if metric.dimensions:
+        definition["dimensions"] = sorted(metric.dimensions)
     if metric.baseline is not None:
         definition["baseline"] = {"low": metric.baseline.low, "high": metric.baseline.high}
     if metric.plausible is not None:
@@ -210,7 +218,11 @@ async def run_rca(
     be dominated by weekday-mix seasonality rather than anything
     actionable. Trees with monthly metrics need windows covering whole
     months. The first call fits models on demand and can take a minute or
-    two; repeat calls on the same tree are fast (fits are cached)."""
+    two; repeat calls on the same tree are fast (fits are cached).
+
+    Follow-up: when a top cause declares dimensions (see get_tree), call
+    slice_metric on it to localize the gap within the metric. For a lagged
+    edge, the contribution's `parent_windows` are the windows to reuse."""
     state = _state()
     _require_data(state)
     _known_metric(state, target)
@@ -231,6 +243,53 @@ async def run_rca(
     out["report_url"] = rca_link(
         target, reference_start, reference_end, analysis_start, analysis_end
     )
+    return out
+
+
+@mcp.tool()
+async def slice_metric(
+    name: str,
+    dimension: str,
+    reference_start: str,
+    reference_end: str,
+    analysis_start: str,
+    analysis_end: str,
+) -> Dict[str, Any]:
+    """Localize a metric's window-over-window gap within one of its declared
+    dimensions (geo, plan tier, app version, …): the traverse-then-slice
+    follow-up to run_rca. Tree RCA says which upstream metric moved; this
+    says where inside it — which slices carry more of the gap than their
+    size predicts (`excess`), with credible intervals from a window
+    bootstrap. Flows/stocks decompose exactly as sums over slices; rates
+    split each slice into `within` (its own rate moved) and `mix` (traffic
+    shifted between slices).
+
+    `dimension` must be declared on the metric (get_tree lists each metric's
+    `dimensions`). Dates are YYYY-MM-DD, inclusive, snapped to whole periods
+    at the metric's grain — normally the same windows as the run_rca that
+    pointed here, but for a lagged parent use the `parent_windows` its
+    run_rca contribution carries. Slices are fetched on demand from the
+    provider; the first call for a (metric, dimension, window) queries the
+    data source, repeats are cached."""
+    state = _state()
+    _require_data(state)
+    _known_metric(state, name)
+    defn = state.parser.dag.nodes[name]["definition"]
+    if dimension not in defn.dimensions:
+        raise ValueError(
+            f"Metric '{name}' declares no dimension '{dimension}' "
+            f"(declared: {sorted(defn.dimensions) or 'none'})."
+        )
+
+    from breakdown.api.main import _run_slice
+
+    async with state.lock:
+        result = await asyncio.to_thread(
+            _run_slice, state, state.parser, state.data, defn, dimension,
+            reference_start, reference_end, analysis_start, analysis_end,
+        )
+    out = round_floats(compact_slice(result))
+    out["how_to_read"] = SLICE_HOW_TO_READ
     return out
 
 

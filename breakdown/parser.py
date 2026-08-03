@@ -163,6 +163,46 @@ class TrendConfig(BaseModel):
             raise ValueError("trend sigma must be > 0")
         return v
 
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SIMPLE_RATIO = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*/\s*([A-Za-z_][A-Za-z0-9_]*)\s*$")
+
+
+class DimensionSpec(BaseModel):
+    """A declared slicing dimension for a metric: the axis along which its
+    window-over-window gap can be attributed to slices (geo, plan, channel…).
+
+    `source` is the provider's dimension identifier — for the semantic-layer
+    providers a MetricFlow dimension like `customer__region`; the mock
+    provider synthesizes slices for any source. Written in YAML either as the
+    shorthand `region: customer__region` or as a mapping.
+
+    Slicing is analysis-time only: sliced series never enter the startup data
+    or the fit path, so a dimension declaration never changes modeling.
+    """
+
+    source: str
+    # Slices kept individually in responses; the rest fold into `__other__`.
+    top_k: int = 8
+    # Optional pin-list: exactly these slices are kept (rest -> __other__),
+    # overriding the volume-ranked top_k selection.
+    values: Optional[List[str]] = None
+    # Blend-weight metric for rate metrics: the shares of this metric's sliced
+    # series weight each slice's rate when recomposing the blended rate.
+    # Defaults to the denominator when the rate's formula is `num / den`.
+    weight: Optional[str] = None
+    # Reserved for the warehouse provider's sliced-SQL contract (a SELECT
+    # returning `date, slice, value` with :start_date/:end_date). Not yet
+    # consumed — declared here so the shape is stable.
+    sql: Optional[str] = None
+
+    @field_validator("top_k")
+    @classmethod
+    def check_top_k(cls, v: int) -> int:
+        if not (2 <= v <= 20):
+            raise ValueError(f"dimension top_k must be between 2 and 20, got {v}")
+        return v
+
+
 class MetricFormat(BaseModel):
     """How a metric's big number is displayed on its node card. Presentation
     only — never affects modeling. Written in YAML either as the shorthand
@@ -218,6 +258,10 @@ class MetricDefinition(BaseModel):
     # the declared honesty band standing in for historical min/max.
     baseline: Optional[AssertedBaseline] = None
     plausible: Optional[PlausibleRange] = None
+    # Declared slicing dimensions: name -> DimensionSpec (or the string
+    # shorthand `region: customer__region`). Analysis-time only — never
+    # affects fetching at startup, fitting, or tree attribution.
+    dimensions: Dict[str, DimensionSpec] = Field(default_factory=dict)
     # UI display hint for the node card's big number; does not affect modeling.
     format: Optional[MetricFormat] = None
     # Which way is good news, for UI coloring only (never affects modeling or
@@ -349,6 +393,48 @@ class MetricDefinition(BaseModel):
                 )
         return self
 
+    @field_validator("dimensions", mode="before")
+    @classmethod
+    def coerce_dimensions(cls, v: Any) -> Any:
+        # shorthand: `region: customer__region` is `region: {source: ...}`
+        if isinstance(v, dict):
+            return {
+                key: ({"source": val} if isinstance(val, str) else val)
+                for key, val in v.items()
+            }
+        return v
+
+    @model_validator(mode="after")
+    def check_dimensions(self) -> "MetricDefinition":
+        for key, spec in self.dimensions.items():
+            if not _IDENTIFIER.match(key):
+                raise ValueError(
+                    f"Dimension name '{key}' on metric '{self.name}' must be an "
+                    "identifier (letters, digits, underscores; not starting with "
+                    "a digit)."
+                )
+            if self.kind != "rate" and spec.weight is not None:
+                raise ValueError(
+                    f"Dimension '{key}' on metric '{self.name}' declares `weight`, "
+                    "which is only meaningful for rate metrics (it supplies the "
+                    "blend shares of the sliced rate)."
+                )
+            if self.kind == "rate" and spec.weight is None:
+                # A blended rate needs weights to recompose from slices. Default
+                # to the denominator of a simple `num / den` formula; otherwise
+                # the author must say what the rate is weighted by.
+                m = _SIMPLE_RATIO.match(self.formula or "")
+                if m and m.group(2) in self.parents:
+                    spec.weight = m.group(2)
+                else:
+                    raise ValueError(
+                        f"Dimension '{key}' on rate metric '{self.name}' needs a "
+                        "`weight` (the tree metric whose sliced shares weight each "
+                        "slice's rate). It defaults from a `num / den` formula's "
+                        "denominator, which this metric does not have."
+                    )
+        return self
+
     @model_validator(mode="after")
     def check_lags(self) -> "MetricDefinition":
         # With `formula`, lags declare a cohort-aligned lagged identity:
@@ -402,7 +488,22 @@ class Parser:
             raise ValueError(f"Metric tree contains cycles: {cycles}")
 
         self._validate_grains(G)
+        self._validate_dimension_weights(G)
         return G
+
+    @staticmethod
+    def _validate_dimension_weights(G: nx.DiGraph) -> None:
+        """A rate dimension's `weight` must name another tree metric (needs the
+        full node set, so it can't live on MetricDefinition)."""
+        for name in G.nodes:
+            defn = G.nodes[name]["definition"]
+            for dim_name, spec in defn.dimensions.items():
+                if spec.weight is not None and spec.weight not in G:
+                    raise ValueError(
+                        f"Dimension '{dim_name}' on metric '{name}' declares "
+                        f"weight '{spec.weight}', which is not a metric in the "
+                        "tree."
+                    )
 
     @staticmethod
     def _validate_grains(G: nx.DiGraph) -> None:

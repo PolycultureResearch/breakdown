@@ -497,6 +497,110 @@ metrics:
         Parser(yaml_content)
 
 
+# --- Dimension (slicing) validation tests ---
+
+def test_dimension_shorthand_and_full_form():
+    yaml_content = """
+metrics:
+  - name: signups
+    source: dbt.metric.signups
+    dimensions:
+      region: customer__region
+      plan:
+        source: subscription__plan_tier
+        top_k: 6
+        values: [pro, team, enterprise]
+"""
+    metric = Parser(yaml_content).get_metric("signups")
+    assert metric.dimensions["region"].source == "customer__region"
+    assert metric.dimensions["region"].top_k == 8
+    assert metric.dimensions["plan"].top_k == 6
+    assert metric.dimensions["plan"].values == ["pro", "team", "enterprise"]
+
+
+def test_dimension_top_k_out_of_bounds_raises():
+    yaml_content = """
+metrics:
+  - name: signups
+    source: dbt.metric.signups
+    dimensions:
+      region: { source: customer__region, top_k: 1 }
+"""
+    with pytest.raises(ValueError, match="top_k must be between 2 and 20"):
+        Parser(yaml_content)
+
+
+def test_dimension_name_must_be_identifier():
+    yaml_content = """
+metrics:
+  - name: signups
+    source: dbt.metric.signups
+    dimensions:
+      "app version": customer__app_version
+"""
+    with pytest.raises(ValueError, match="must be an identifier"):
+        Parser(yaml_content)
+
+
+def test_rate_dimension_requires_weight():
+    yaml_content = """
+metrics:
+  - name: conversion_rate
+    source: dbt.metric.conversion_rate
+    kind: rate
+    dimensions:
+      region: customer__region
+"""
+    with pytest.raises(ValueError, match="needs a `weight`"):
+        Parser(yaml_content)
+
+
+def test_rate_dimension_weight_defaults_to_formula_denominator():
+    yaml_content = """
+metrics:
+  - name: conversions
+    source: dbt.metric.conversions
+  - name: trial_starts
+    source: dbt.metric.trial_starts
+  - name: conversion_rate
+    source: dbt.metric.conversion_rate
+    kind: rate
+    formula: "conversions / trial_starts"
+    parents: [conversions, trial_starts]
+    dimensions:
+      region: customer__region
+"""
+    metric = Parser(yaml_content).get_metric("conversion_rate")
+    assert metric.dimensions["region"].weight == "trial_starts"
+
+
+def test_rate_dimension_explicit_weight_must_be_tree_metric():
+    yaml_content = """
+metrics:
+  - name: conversion_rate
+    source: dbt.metric.conversion_rate
+    kind: rate
+    dimensions:
+      region: { source: customer__region, weight: trial_starts }
+"""
+    with pytest.raises(ValueError, match="weight 'trial_starts', which is not a metric"):
+        Parser(yaml_content)
+
+
+def test_weight_on_non_rate_dimension_raises():
+    yaml_content = """
+metrics:
+  - name: trial_starts
+    source: dbt.metric.trial_starts
+  - name: signups
+    source: dbt.metric.signups
+    dimensions:
+      region: { source: customer__region, weight: trial_starts }
+"""
+    with pytest.raises(ValueError, match="only meaningful for rate metrics"):
+        Parser(yaml_content)
+
+
 def test_provider_type_none_and_assumed_alias():
     """`provider: none` declares a cold-start tree; `assumed` is an alias
     normalized to `none` so downstream code has one spelling to check."""

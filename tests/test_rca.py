@@ -58,6 +58,8 @@ def test_rca_formula_attribution():
 
     for c in rev["contributions"]:
         assert c["ci_95"] is not None and c["ci_95"][0] <= c["ci_95"][1]
+        # unlagged contributions carry no lag surfacing keys at all
+        assert "lag" not in c and "parent_windows" not in c
         assert 0.5 <= c["prob_same_direction"] <= 1.0
 
 
@@ -162,6 +164,8 @@ def test_shapley_attribution_sums_to_gap():
     assert set(result["attribution"].keys()) == {"order_count", "average_order_value"}
     assert abs(result["gap"] - (result["actual"] - result["baseline"])) < 1e-3
     assert abs(sum(result["attribution"].values()) - result["gap"]) < 1e-3
+    # no lagged parents -> the parent_windows key is absent entirely
+    assert "parent_windows" not in result
 
 
 def test_shapley_attribution_no_formula_raises():

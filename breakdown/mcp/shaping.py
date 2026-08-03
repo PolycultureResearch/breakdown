@@ -33,12 +33,43 @@ RCA_HOW_TO_READ = (
     "was honestly withheld (see `ci_status`), not that it is zero.\n"
     "- `gap` is mean-per-period at each node's own grain — never compare raw gaps across "
     "nodes with different grains; compare shares and ranked-cause scores instead.\n"
+    "- A contribution carrying `lag`/`parent_windows` was measured against the parent's "
+    "own earlier windows — the periods that actually influenced the child. Narrate the "
+    "parent using *its* dates ('trial starts Jul 11-17 explain conversions Jul 25-31'), "
+    "and reuse those windows for any follow-up analysis of that parent (drill-down "
+    "run_rca, slice_metric).\n"
     "- `components` (trend/seasonal) are model structure, not causes: a seasonal gap from an "
     "uneven weekday mix is nobody's fault.\n"
     "- `sign_warnings` mean a fitted slope contradicts its declared sign, the classic mark of "
     "scale confounding — do not narrate that edge causally.\n"
     "- Fits use ADVI, which can understate uncertainty; treat this as triage and confirm "
     "load-bearing findings with a NUTS fit before big decisions."
+)
+
+SLICE_HOW_TO_READ = (
+    "How to read this result:\n"
+    "- Slices localize; the tree explains. A concentrated slice says where to "
+    "look next, not why the metric moved — follow up with run_rca upstream or "
+    "with domain facts.\n"
+    "- `excess` is the localization signal: the slice's contribution minus its "
+    "baseline share of the gap. The biggest slice usually has the biggest raw "
+    "`contribution` — that alone is not news. Excesses sum to zero: "
+    "concentration is a reallocation of the gap, not extra gap.\n"
+    "- `prob_concentrated` near 1.0 means the concentration direction is "
+    "near-certain; `noise_level: true` means the bootstrap cannot distinguish "
+    "this slice from a proportional move — do not narrate it as localized.\n"
+    "- `__other__` folds the non-top slices (`n_values` of them) and can "
+    "itself be the finding — a long-tail move is real.\n"
+    "- For rates: `within` is the slice's own rate moving, `mix` is traffic "
+    "shifting between slices. `mix_total` is a composition effect — nobody's "
+    "fault, and often the whole story.\n"
+    "- `reconciliation.status: discrepant` means the slices do not sum/blend "
+    "back to the metric: the dimension does not cleanly partition it. Treat "
+    "attributions as approximate and say so.\n"
+    "- When slicing a lagged parent surfaced by run_rca, use the parent's own "
+    "lag-shifted windows: its run_rca contribution carries them as "
+    "`parent_windows` — those are the periods that actually influenced the "
+    "child."
 )
 
 WHATIF_HOW_TO_READ = (
@@ -151,8 +182,17 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
             "interaction": node["interaction"],
             "contributions": [
                 {
-                    k: c.get(k)
-                    for k in ("parent", "estimate", "share_of_gap", "ci_95", "prob_same_direction")
+                    # ci_95: null is meaningful (withheld interval) and stays;
+                    # lag/parent_windows appear only on lagged contributions.
+                    **{
+                        k: c.get(k)
+                        for k in ("parent", "estimate", "share_of_gap", "ci_95", "prob_same_direction")
+                    },
+                    **{
+                        k: c[k]
+                        for k in ("lag", "parent_windows")
+                        if c.get(k) is not None
+                    },
                 }
                 for c in node["contributions"]
             ],
@@ -167,6 +207,40 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
         "nodes": nodes,
         "ranked_causes": result["ranked_causes"][:_MAX_RANKED_CAUSES],
     }
+
+
+def compact_slice(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Compact a slice_attribution result: window detail collapses to period
+    counts, per-slice nulls are trimmed (a null CI on a single-period window
+    is conveyed once by ci_status), empty caveats are dropped."""
+    windows = result["effective_windows"]
+    out = {
+        "metric": result["metric"],
+        "dimension": result["dimension"],
+        "grain": result["grain"],
+        "kind": result["kind"],
+        "n_periods": {
+            "reference": windows["reference"]["n_periods"],
+            "analysis": windows["analysis"]["n_periods"],
+        },
+        "baseline": result["baseline"],
+        "actual": result["actual"],
+        "gap": result["gap"],
+        "attribution_method": result["attribution_method"],
+        "mix_total": result["mix_total"],
+        "slices": [
+            {k: v for k, v in row.items() if v is not None} for row in result["slices"]
+        ],
+        "reconciliation": {
+            "status": result["reconciliation"]["status"],
+            "residual_share_of_baseline": result["reconciliation"][
+                "residual_share_of_baseline"
+            ],
+        },
+        "ci_status": result["ci_status"],
+        "caveats": result["caveats"] or None,
+    }
+    return {k: v for k, v in out.items() if v is not None}
 
 
 def compact_scenario(result: Dict[str, Any]) -> Dict[str, Any]:

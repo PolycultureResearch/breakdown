@@ -45,6 +45,7 @@ from breakdown.grains import (
     BOOT_BLOCK,
     ensure_grained,
     fit_grain,
+    next_start,
     shift_periods,
     snap_window,
     steps_between,
@@ -114,6 +115,23 @@ def _window_info(snapped) -> Dict[str, Any]:
         "end": str(snapped.last_end.date()),
         "n_periods": snapped.n_periods,
     }
+
+
+def _lagged_windows(snapped_ref, snapped_an, lag: int, grain: str) -> Dict[str, Any]:
+    """The parent's own windows for a lagged contribution: the node's snapped
+    windows shifted back by the lag — the periods that actually influenced the
+    child. These are the dates to narrate the parent with, and the windows to
+    pass to any follow-up analysis of it (drill-down RCA, slicing)."""
+
+    def shifted(snapped) -> Dict[str, str]:
+        start = shift_periods(snapped.first_start, -lag, grain)
+        last = shift_periods(snapped.last_start, -lag, grain)
+        return {
+            "start": str(start.date()),
+            "end": str((next_start(last, grain) - pd.Timedelta(days=1)).date()),
+        }
+
+    return {"reference": shifted(snapped_ref), "analysis": shifted(snapped_an)}
 
 
 def shapley_attribution(
@@ -220,7 +238,7 @@ def shapley_attribution(
             "covariance_reference": cov_ref_part,
         }
 
-    return {
+    result = {
         "target": target,
         "formula": defn.formula,
         "grain": grain,
@@ -234,6 +252,16 @@ def shapley_attribution(
         "attribution": attribution,
         "decomposition": decomposition,
     }
+    # Cohort-aligned lagged identities read each lagged parent from shifted
+    # windows — say which ones. Key absent entirely for unlagged targets.
+    lagged = {
+        p: _lagged_windows(snapped_ref, snapped_an, defn.lags[p], grain)
+        for p in parents
+        if defn.lags.get(p, 0)
+    }
+    if lagged:
+        result["parent_windows"] = lagged
+    return result
 
 
 def run_rca(
@@ -411,7 +439,7 @@ def run_rca(
                 interaction_b = interaction_b + comovement_b
                 phi_b = means_b + comovement_b
                 estimate = float(phi_b.mean())
-                contributions.append({
+                contribution = {
                     "parent": p,
                     "estimate": estimate,
                     "share_of_gap": (estimate / gap) if abs(gap) >= 1e-12 else None,
@@ -429,7 +457,15 @@ def run_rca(
                         "means": _boot_summary(means_b),
                         "comovement": _boot_summary(comovement_b),
                     },
-                })
+                }
+                # Lagged parents were measured over their own earlier windows;
+                # surface which ones. Keys absent entirely when unlagged.
+                if defn.lags.get(p, 0):
+                    contribution["lag"] = defn.lags[p]
+                    contribution["parent_windows"] = _lagged_windows(
+                        snapped_ref, snapped_an, defn.lags[p], grain
+                    )
+                contributions.append(contribution)
             # The headline view's explicit interaction row: the total
             # within-window co-movement shift across parents, shown as its own
             # line instead of silently folded into the factors.
@@ -519,7 +555,7 @@ def run_rca(
                 samples = arr[:, i] * delta_samples[np.arange(n_post) % _N_BOOT]
                 estimate = float(samples.mean())
                 estimate_sum += estimate
-                contributions.append({
+                contribution = {
                     "parent": p,
                     "estimate": estimate,
                     "share_of_gap": (estimate / gap) if abs(gap) >= 1e-12 else None,
@@ -530,7 +566,15 @@ def run_rca(
                     "prob_same_direction": float(
                         max((samples > 0).mean(), (samples < 0).mean())
                     ),
-                })
+                }
+                # Lagged parents were measured over their own earlier windows;
+                # surface which ones. Keys absent entirely when unlagged.
+                if lag:
+                    contribution["lag"] = lag
+                    contribution["parent_windows"] = _lagged_windows(
+                        snapped_ref, snapped_an, lag, grain
+                    )
+                contributions.append(contribution)
             unexplained = (
                 gap
                 - estimate_sum

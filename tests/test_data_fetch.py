@@ -413,3 +413,37 @@ def test_warehouse_partial_period_rows_dropped():
     # Window ends Wednesday Jan 10: the Jan-8 week is partial.
     df = _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-10", grain="week")
     assert df["m"].tolist() == [100.0]
+
+
+# --- sliced-fetch reshape (_sliced_long) ---
+
+def test_sliced_long_reshapes_semantic_layer_frame():
+    import pandas as pd
+
+    from breakdown.data_fetch import _sliced_long
+
+    raw = pd.DataFrame({
+        "METRIC_TIME__DAY": ["2026-01-05", "2026-01-05", "2026-01-06"],
+        "CUSTOMER__REGION": ["emea", "amer", None],
+        "signups": [10.0, 20.0, 5.0],
+    })
+    out = _sliced_long(raw, "signups", "day")
+    assert list(out.columns) == ["date", "slice", "value"]
+    assert set(out["slice"]) == {"emea", "amer", "__null__"}
+    assert out["value"].dtype == float
+    assert out["date"].is_monotonic_increasing
+
+
+def test_sliced_long_ambiguous_columns_raise():
+    import pandas as pd
+
+    from breakdown.data_fetch import _sliced_long
+
+    raw = pd.DataFrame({
+        "METRIC_TIME__DAY": ["2026-01-05"],
+        "CUSTOMER__REGION": ["emea"],
+        "CUSTOMER__PLAN": ["pro"],
+        "signups": [10.0],
+    })
+    with pytest.raises(RuntimeError, match="exactly one dimension column"):
+        _sliced_long(raw, "signups", "day")

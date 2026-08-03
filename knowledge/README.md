@@ -23,6 +23,14 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
 - [`grain_research.md`](grain_research.md) — the external research behind the
   grain design: MetricFlow precedent, temporal-aggregation literature,
   Sun/Shapley/Bennet index theory, tool survey
+- [`dimensional_slicing_design.md`](dimensional_slicing_design.md) — dimensional
+  slicing inside the tree (roadmap 3.2): declared `dimensions`, exact
+  sum/Bennet slice attribution, excess-concentration ranking, on-demand
+  fetch that never touches the fit path
+- [`rca_lag_assessment.md`](rca_lag_assessment.md) — how RCA handles time lags
+  today (declared lags shift fit and attribution windows correctly), and the
+  planned improvements: surfacing lag-shifted parent windows, a Bayesian lag
+  scan, distributed lags assessed and deferred
 
 ## Archive
 

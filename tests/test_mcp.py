@@ -48,7 +48,9 @@ def test_list_tools():
     with _client() as client:
         result = _rpc(client, "tools/list", {})
         tools = {t["name"]: t for t in result["tools"]}
-        assert set(tools) == {"get_tree", "explain_metric", "run_rca", "run_whatif"}
+        assert set(tools) == {
+            "get_tree", "explain_metric", "run_rca", "slice_metric", "run_whatif"
+        }
         for tool in tools.values():
             assert tool["description"].strip()
         # window-selection guidance is part of the run_rca contract: it is
@@ -215,3 +217,69 @@ def test_cold_start_rca_refused_with_pointer(cold_start_env):
         text = res["content"][0]["text"]
         assert "no data provider" in text
         assert "run_whatif" in text
+
+
+SLICED_TREE = """
+provider:
+  type: mock
+
+metrics:
+  - name: signups
+    source: my_project.metrics.signups
+    dimensions:
+      region: customer__region
+  - name: activations
+    source: my_project.metrics.activations
+    parents: [signups]
+"""
+
+
+@pytest.fixture
+def sliced_env(tmp_path, monkeypatch):
+    tree_file = tmp_path / "sliced_tree.yml"
+    tree_file.write_text(SLICED_TREE)
+    monkeypatch.setenv("BREAKDOWN_TREE", str(tree_file))
+    monkeypatch.setenv("BREAKDOWN_START_DATE", "2024-01-01")
+    monkeypatch.setenv("BREAKDOWN_END_DATE", "2024-04-09")
+
+
+def test_slice_metric(sliced_env):
+    """Traverse-then-slice over MCP: get_tree advertises dimensions, and
+    slice_metric localizes with the excess/reconciliation contract."""
+    with _client() as client:
+        res = _call_tool(client, "get_tree", {})
+        by_name = {m["name"]: m for m in res["structuredContent"]["result"]["metrics"]}
+        assert by_name["signups"]["dimensions"] == ["region"]
+        assert "dimensions" not in by_name["activations"]
+
+        res = _call_tool(
+            client, "slice_metric",
+            {"name": "signups", "dimension": "region", **WINDOWS},
+            id=3,
+        )
+        assert res["isError"] is False
+        out = res["structuredContent"]["result"]
+        assert out["dimension"] == "region"
+        assert out["attribution_method"] == "slice_sum"
+        assert out["reconciliation"]["status"] == "ok"
+        assert out["slices"]
+        assert "excess" in out["slices"][0]
+        assert "how_to_read" in out
+        assert "localize" in out["how_to_read"]
+
+        # deterministic: identical call, identical answer
+        res2 = _call_tool(
+            client, "slice_metric",
+            {"name": "signups", "dimension": "region", **WINDOWS},
+            id=4,
+        )
+        assert res2["structuredContent"] == res["structuredContent"]
+
+        # undeclared dimension -> tool error naming what is declared
+        res = _call_tool(
+            client, "slice_metric",
+            {"name": "activations", "dimension": "region", **WINDOWS},
+            id=5,
+        )
+        assert res["isError"] is True
+        assert "declares no dimension" in res["content"][0]["text"]

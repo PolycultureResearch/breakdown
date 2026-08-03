@@ -402,3 +402,107 @@ def test_cold_start_not_ready_tree_serves_degraded(tmp_path, monkeypatch):
         assert health["status"] == "degraded"
         assert "not cold-start ready" in health["error"]
         assert "sessions" in health["error"]
+
+
+# --- dimensional slicing endpoint ---
+
+SLICED_TREE = """
+provider:
+  type: mock
+
+metrics:
+  - name: signups
+    source: my_project.metrics.signups
+    dimensions:
+      region: customer__region
+  - name: trial_starts
+    source: my_project.metrics.trial_starts
+    parents: [signups]
+    dimensions:
+      region: customer__region
+  - name: conversion_rate
+    source: my_project.metrics.conversion_rate
+    kind: rate
+    dimensions:
+      region: { source: customer__region, weight: trial_starts }
+"""
+
+_SLICE_WINDOWS = {
+    "dimension": "region",
+    "reference_start": "2024-02-05",
+    "reference_end": "2024-03-03",
+    "analysis_start": "2024-03-04",
+    "analysis_end": "2024-03-10",
+}
+
+
+@pytest.fixture
+def sliced_env(tmp_path, monkeypatch):
+    tree_file = tmp_path / "sliced_tree.yml"
+    tree_file.write_text(SLICED_TREE)
+    monkeypatch.setenv("BREAKDOWN_TREE", str(tree_file))
+
+
+def test_slice_endpoint_flow(sliced_env):
+    with TestClient(app) as client:
+        resp = client.post("/rca/signups/slices", params=_SLICE_WINDOWS)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["attribution_method"] == "slice_sum"
+        assert body["reconciliation"]["status"] == "ok"
+        total = sum(r["contribution"] for r in body["slices"])
+        assert abs(total - body["gap"]) < 1e-6
+        # zero-sum excess: concentration is a reallocation, not new gap
+        assert abs(sum(r["excess"] for r in body["slices"])) < 1e-6
+        # the fetched frame landed in the slice cache
+        assert len(app.state.slice_cache) == 1
+
+
+def test_slice_endpoint_rate_blend(sliced_env):
+    with TestClient(app) as client:
+        resp = client.post("/rca/conversion_rate/slices", params=_SLICE_WINDOWS)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["attribution_method"] == "slice_blend"
+        assert body["reconciliation"]["status"] == "ok"
+        assert body["mix_total"] is not None
+        total = sum(r["within"] + r["mix"] for r in body["slices"])
+        assert abs(total - body["gap"]) < 1e-6
+
+
+def test_slice_endpoint_unknown_dimension_422(sliced_env):
+    with TestClient(app) as client:
+        resp = client.post(
+            "/rca/signups/slices", params={**_SLICE_WINDOWS, "dimension": "geo"}
+        )
+        assert resp.status_code == 422
+        assert "declares no dimension 'geo'" in resp.json()["detail"]
+
+
+def test_slice_endpoint_unknown_metric_404(sliced_env):
+    with TestClient(app) as client:
+        resp = client.post("/rca/nope/slices", params=_SLICE_WINDOWS)
+        assert resp.status_code == 404
+
+
+def test_slice_endpoint_bad_date_422(sliced_env):
+    with TestClient(app) as client:
+        resp = client.post(
+            "/rca/signups/slices",
+            params={**_SLICE_WINDOWS, "analysis_end": "not-a-date"},
+        )
+        assert resp.status_code == 422
+        assert "analysis_end" in resp.json()["detail"]
+
+
+def test_slice_endpoint_provider_without_slicing_422(sliced_env):
+    from breakdown.data_fetch import WarehouseDataFetcher
+
+    with TestClient(app) as client:
+        app.state.fetcher = WarehouseDataFetcher(
+            host="h", http_path="p", token="t", metric_sql={}
+        )
+        app.state.slice_cache.clear()
+        resp = client.post("/rca/signups/slices", params=_SLICE_WINDOWS)
+        assert resp.status_code == 422
+        assert "does not support dimensional" in resp.json()["detail"]

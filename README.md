@@ -228,6 +228,7 @@ Each metric entry supports the following fields:
 | `priors` | dict | Bayesian priors for the causal coefficients (see below) |
 | `lags` | dict | Per-parent time lag in grain steps **at the node's grain** (days for a daily node, weeks for a weekly one). On a probabilistic node, regresses the child on each parent's value `N` steps earlier; combined with `formula`, declares a cohort-aligned lagged identity. See [Lagged regressors](#lagged-regressors). |
 | `expected_signs` | dict | Per-parent declared coefficient direction (`positive` \| `negative`) on a probabilistic node. **Not a prior** — the fit is unconstrained, but a posterior that contradicts the declaration raises a `sign_warnings` diagnostic (surfaced in `/analyze`, `/metrics`, RCA responses, and the UI). |
+| `dimensions` | dict | Declared slicing dimensions, `name: provider_dimension` shorthand (`region: customer__region`) or a mapping with `source`, `top_k`, `values`, `weight`. Enables `POST /rca/{name}/slices` and the MCP `slice_metric` tool — localizing a gap within the metric (which geo, plan, app version). Analysis-time only: never affects fetching at startup, fitting, or tree attribution. See [Dimensions (slicing)](#dimensions-slicing). |
 | `seasonality` | list | Periodic components to include in the BSTS model. Periods are in grain steps at the node's grain. |
 | `trend` | string or dict | Local-level (random-walk) trend. `trend: linear` uses the default step-size prior HalfNormal(0.05); `trend: {type: linear, sigma: 0.1}` widens it so the trend may absorb faster drift. Only `type: linear` is supported. |
 | `baseline` | number or dict | **Cold-start mode only.** Asserted operating point for a tree with no data: `baseline: 1200` (point) or `baseline: {low: 800, high: 1600}` (central 90% interval of a Normal), in mean-per-period units at the node's grain. Rejected on formula nodes — theirs derive from parents so the identity holds. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
@@ -375,6 +376,50 @@ Metrics have different natural time grains: signups are daily events, a cohort c
 **Data freshness.** Each metric's true data edge is tracked as it is fetched and exposed as `data_through` in `GET /meta` — the inclusive last date its last observed period covers. When sources disagree (one mart lags the others), the UI anchors every card's headline number, delta, and sparkline at the tree-wide edge via the **As of** selector (toolbar), which defaults to the oldest `data_through` across metrics and counts only periods *fully completed* by that date — so a calendar week the data edge cuts in half never becomes a headline number. The one case this cannot catch is a partially loaded most-recent period (the mart wrote *some* rows for it): detecting that needs load-completeness metadata on the mart side.
 
 **Data-length guidance.** Fits need at least 10 whole periods at the node's grain — coarser grains need proportionally longer windows (a monthly node wants roughly a year of history). Seasonality periods and lags are in grain steps: `period: 7` means weekly on a daily node and seven *months* on a monthly one (the parser warns about that).
+
+### Dimensions (slicing)
+
+Tree RCA says *which upstream metric* moved; slicing says *where inside it* —
+which geo, plan tier, or app version. Declare the dimensions worth slicing a
+metric by, and the slice endpoint/MCP tool can attribute its
+window-over-window gap across the dimension's values:
+
+```yaml
+- name: signups
+  source: my.metrics.signups
+  dimensions:
+    region: customer__region            # shorthand: name -> provider dimension id
+    plan:
+      source: subscription__plan_tier
+      top_k: 6                          # slices kept individually (default 8); rest fold into __other__
+      values: [pro, team, enterprise]   # optional pin-list, overrides top_k
+
+- name: trial_conversion_rate
+  kind: rate
+  formula: "conversions / trial_starts"
+  parents: [conversions, trial_starts]
+  dimensions:
+    region: customer__region            # rate: weight defaults to the formula denominator
+```
+
+For the semantic-layer providers, `source` is the MetricFlow dimension
+identifier (added to the query's `group_by`); the mock provider synthesizes
+deterministic slices for any source; the warehouse provider does not support
+slicing yet. A `rate` metric needs a `weight` — the tree metric whose sliced
+shares blend the per-slice rates — which defaults from a simple `num / den`
+formula's denominator and otherwise must be declared:
+`region: {source: customer__region, weight: trial_starts}`.
+
+Slicing runs **at analysis time**: sliced series are fetched on demand for the
+requested windows only, and never enter the startup data, the fits, or tree
+attribution. Attribution is exact — a flow/stock decomposes as a sum over
+slices; a rate splits per slice into `within` (its own rate moved) and `mix`
+(traffic shifted between slices) — and slices are ranked by **excess
+concentration** (`excess`): how much more of the gap a slice carries than its
+baseline share predicts, with bootstrap credible intervals. Slices that don't
+sum back to the metric are reported in a `reconciliation` block, never
+silently rescaled. See `knowledge/dimensional_slicing_design.md` for the full
+design.
 
 ### Display format
 
@@ -596,7 +641,7 @@ Per-node fields added by grain support: `grain` (the grain the node was analyzed
 `POST /rca/{name}` combines the two attribution methods across a metric tree:
 
 - **Formula nodes** get `attribution_method: "shapley"` — exact symmetric per-day Shapley values (a window-means bridge plus each parent's share of the within-window co-movement term of each window, analysis added and reference subtracted), so shifts in the parents' within-window co-movement are attributed to parents. `unexplained` is only the target's own measurement noise around the formula — for an exact identity it is zero.
-- **Probabilistic nodes** get `attribution_method: "posterior"` — each contribution is the posterior over the parent's raw-scale coefficient (`beta_raw`) times the parent's window-over-window change. Lagged parents are compared over windows shifted back by the lag. These nodes also report a `components` block: the fitted model's own trend and seasonal terms as window-over-window deltas with CIs, so they no longer hide inside `unexplained`.
+- **Probabilistic nodes** get `attribution_method: "posterior"` — each contribution is the posterior over the parent's raw-scale coefficient (`beta_raw`) times the parent's window-over-window change. Lagged parents are compared over windows shifted back by the lag, and each lagged contribution reports `lag` and `parent_windows` — the parent's own shifted `{reference, analysis}` windows — so you can see (and reuse, e.g. for `POST /rca/{parent}/slices`) exactly which parent periods were examined. These nodes also report a `components` block: the fitted model's own trend and seasonal terms as window-over-window deltas with CIs, so they no longer hide inside `unexplained`.
 
 Every contribution is reported as an `estimate` (mean), a 95% interval (`ci_95`), and `prob_same_direction` (mass on the dominant side of zero). The intervals combine coefficient uncertainty (probabilistic nodes) with **window-sampling uncertainty** — the window means themselves are resampled with a circular moving-block bootstrap (≤7-day blocks, jointly across metrics, seeded so responses are deterministic). This is what keeps a 3-day analysis window honest: its CIs are visibly wider than a 4-week window's.
 
@@ -604,19 +649,58 @@ Unfitted probabilistic nodes in scope are fit with ADVI on demand — on data st
 
 See [docs/model.md](docs/model.md) for how to read `components`, `unexplained`, and the bootstrap's assumptions.
 
+### `POST /rca/{name}/slices`
+
+The traverse-then-slice follow-up: attribute one metric's window-over-window gap across a declared dimension's values.
+
+```bash
+curl -X POST "http://localhost:9090/rca/signups/slices?dimension=region&reference_start=2024-02-05&reference_end=2024-03-03&analysis_start=2024-03-04&analysis_end=2024-03-10"
+```
+
+```json
+{
+  "metric": "signups", "dimension": "region", "grain": "day", "kind": "flow",
+  "effective_windows": {
+    "reference": {"start": "2024-02-05", "end": "2024-03-03", "n_periods": 28},
+    "analysis": {"start": "2024-03-04", "end": "2024-03-10", "n_periods": 7}
+  },
+  "baseline": 1240.0, "actual": 1130.0, "gap": -110.0,
+  "attribution_method": "slice_sum",
+  "slices": [
+    {"value": "emea", "baseline": 273.0, "actual": 178.0,
+     "contribution": -95.0, "share_of_gap": 0.86, "baseline_share": 0.22,
+     "excess": -70.8, "ci_95": [-84.1, -57.9], "prob_concentrated": 0.99,
+     "noise_level": false},
+    {"value": "__other__", "n_values": 2, "contribution": -9.0, "...": "..."}
+  ],
+  "reconciliation": {"mean_residual": 0.0, "max_abs_residual": 0.0,
+                     "residual_share_of_baseline": 0.0, "status": "ok"},
+  "ci_status": "ok", "caveats": []
+}
+```
+
+- `contribution` is the slice's own window-mean change; contributions sum exactly to the sliced gap (flows/stocks are sum identities over slices).
+- `excess = contribution − baseline_share × gap` is the **localization signal**: how much more of the gap the slice carries than its size predicts. Excesses sum to zero — concentration is a reallocation of the gap. `prob_concentrated` is the bootstrap probability the excess direction is real; `noise_level: true` rows should not be narrated as localized.
+- Rate metrics return `attribution_method: "slice_blend"`: each slice splits into `within` (its own rate moved) and `mix` (traffic shifted between slices), summing exactly to the blended gap, with the total composition effect in `mix_total`.
+- `reconciliation` compares the slices' sum (or weighted blend) against the metric's own series; `"discrepant"` means the dimension doesn't cleanly partition the metric — attributions are then approximate, and say so.
+- When slicing a **lagged parent** surfaced by an RCA, pass the parent's lag-shifted windows — its RCA contribution carries them as `parent_windows`; those are the periods that influenced the child.
+
+Sliced series are fetched from the provider on demand for just these windows and cached per (metric, dimension, window); nothing about slicing touches the startup data or the fits.
+
 ---
 
 ## MCP server (AI assistants)
 
 The server exposes the engine to AI assistants over [MCP](https://modelcontextprotocol.io) at `http://127.0.0.1:9090/mcp` (streamable HTTP; started automatically by `serve`). A chat assistant connected to it can answer "why was revenue down last week?" by running a real RCA — Shapley attributions, credible intervals, the honest `unexplained` remainder — instead of guessing, and "what if we raise marketing spend 10%?" with a posterior from the what-if engine.
 
-Four tools:
+Five tools:
 
 | Tool | Backed by | Description |
 |------|-----------|-------------|
-| `get_tree` | `/meta` + `/dag` | Metric DAG, grains, kinds, and the loaded data window — assistants call this first |
+| `get_tree` | `/meta` + `/dag` | Metric DAG, grains, kinds, declared dimensions, and the loaded data window — assistants call this first |
 | `explain_metric` | `/metrics/{name}` | One metric's definition, neighbors, recent series, and fit status |
 | `run_rca` | `/rca/{name}` | Full root-cause analysis between two windows |
+| `slice_metric` | `/rca/{name}/slices` | Localize a metric's gap within a declared dimension (geo, plan, app version) — the traverse-then-slice follow-up to `run_rca` |
 | `run_whatif` | `/simulate` | Do-operator what-if scenario with posterior deltas |
 
 Analysis responses are compacted for token economy (rounded floats, decompositions dropped) and carry two extra fields: `how_to_read` — the interpretation rules from [docs/model.md](docs/model.md) (what `unexplained` means, why `share_of_gap` can exceed 100%, ADVI vs NUTS), so the narrating model states caveats instead of flattening them — and `report_url`, a deep link that replays the exact analysis in the UI (the engine is seeded, so the link reproduces the numbers).
@@ -720,10 +804,11 @@ breakdown/
   engine/
     model.py         # fit_metric() — BSTS via PyMC; compute_shapley()
     rca.py           # run_rca() + shapley_attribution() — root cause analysis
+    slices.py        # slice_attribution() — dimensional slicing of a metric's gap
   api/
     main.py          # FastAPI app
   mcp/
-    server.py        # MCP tools for AI assistants (get_tree, explain_metric, run_rca, run_whatif)
+    server.py        # MCP tools for AI assistants (get_tree, explain_metric, run_rca, slice_metric, run_whatif)
     shaping.py       # MCP response compaction + how_to_read caveats + UI deep links
   cli.py             # `breakdown serve` / `breakdown doctor` console entry point
   doctor.py          # Provider connectivity checks with copy-paste remediation
@@ -782,4 +867,6 @@ The premise of breakdown is that by defining the causal graph explicitly, before
 Defining the metric tree *a priori* solves two big problems, both related to reducing the search space when you go looking for the root cause. Consider the two implicit strategies on your late-night call with the CFO: slicing the metrics and searching the upstream metrics. You probably combine those strategies, slicing the concerning metric many ways, then slicing all the upstream metrics several ways. Without a metric tree, you could try naively looking at all your metrics, and seeing what else changed last Friday, and slicing all of those, looking for changes that correlate with your concerning metric in time. Maybe you calculate a correlation coefficient between your concerning metric and every other metric and each of its possible slices. Problem one is that the more metrics you examine, the more spurious correlations you are likely to observe. You'll spend your time chasing correlations and then trying to assess causation. Problem two is that the combinatorial explosion of metrics and all their possible slices can start to be computationally intensive. It's not a time you want to be slow. And a third problem is that you may miss any complex, conditional relationships between metrics.
 
 A metric tree dramatically reduces the search space when you slice up metrics to try to locate the anomaly, and it constrains the space to the metrics that could feasibly cause the observed change.
+
+Both halves of that late-night process are now first-class in breakdown. The traversal is `POST /rca/{name}`: walk the ancestor tree, attribute the gap edge by edge — with lagged edges compared over the right earlier windows, so "trial starts one trial period ago" is exactly what gets examined. The slicing is `POST /rca/{name}/slices`: declare the dimensions worth slicing (`dimensions:` on the metric — region, plan tier, app version), and the gap at any node decomposes exactly across slices, ranked by how much more of the gap each slice carries than its size predicts. An AI assistant connected over MCP runs the whole loop — `run_rca`, then `slice_metric` on the top causes — before the Monday meeting.
 
