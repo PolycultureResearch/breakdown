@@ -172,6 +172,59 @@ button:disabled { opacity: 0.5; cursor: default; }
 .share-item .share-title { font-size: 12.5px; font-weight: 600; }
 .share-item .share-sub { font-size: 11px; color: var(--muted); line-height: 1.35; }
 
+/* Saved views: named deep links kept in this browser's localStorage. */
+#saved-views:empty { display: none; }
+#saved-views { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
+.saved-head {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 4px 10px;
+}
+.saved-row { display: flex; align-items: center; gap: 2px; }
+.saved-open {
+  flex: 1;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.saved-open:hover { background: var(--bg); }
+.saved-del {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1;
+}
+.saved-del:hover { background: var(--down-soft); color: var(--down); }
+.saved-form { display: flex; gap: 4px; padding: 4px 10px 6px; }
+.saved-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+}
+.saved-commit {
+  font-size: 11px;
+  padding: 3px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
 #display-toggle {
   font-size: 12px;
   padding: 4px 10px;

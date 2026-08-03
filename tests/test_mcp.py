@@ -44,6 +44,40 @@ def _call_tool(client, name, arguments, id=2):
     return _rpc(client, "tools/call", {"name": name, "arguments": arguments}, id=id)
 
 
+def test_mcp_open_by_default():
+    """Unset token keeps the loopback workflow friction-free."""
+    with _client() as client:
+        assert client.post("/mcp/", json={}, headers=HEADERS).status_code != 401
+
+
+def test_mcp_requires_bearer_token_when_set(monkeypatch):
+    monkeypatch.setenv("BREAKDOWN_API_TOKEN", "s3cret")
+    with _client() as client:
+        for headers in ({}, {"Authorization": "Bearer wrong"}, {"Authorization": "s3cret"}):
+            resp = client.post("/mcp/", json={}, headers={**HEADERS, **headers})
+            assert resp.status_code == 401, headers
+            assert resp.headers["WWW-Authenticate"] == "Bearer"
+
+        # The right token gets through to the transport.
+        resp = client.post(
+            "/mcp/",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            headers={**HEADERS, "Authorization": "Bearer s3cret"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["result"]["tools"]
+
+
+def test_token_gate_leaves_ui_and_health_open(monkeypatch):
+    """The token guards the machine-facing surface, not the demo itself —
+    a public instance still has to serve its UI to anyone with the link."""
+    monkeypatch.setenv("BREAKDOWN_API_TOKEN", "s3cret")
+    with _client() as client:
+        assert client.get("/health").status_code == 200
+        assert client.get("/ui/").status_code == 200
+        assert client.get("/meta").status_code == 200
+
+
 def test_list_tools():
     with _client() as client:
         result = _rpc(client, "tools/list", {})

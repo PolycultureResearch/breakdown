@@ -205,6 +205,10 @@ function updateShareMenu() {
   $("share-rca-json").disabled = !state.rca;
   const rep = $("share-rca-report");
   if (rep) rep.disabled = !state.rca;
+  const save = $("share-save-view");
+  // Saving stores the hash, so there has to be one — anything deep-linkable
+  // (a metric, an RCA run, a what-if) qualifies.
+  if (save) save.disabled = !location.hash || location.hash.length < 2;
 }
 
 /* ---------- exportable RCA report (roadmap 1.5) ----------
@@ -783,6 +787,123 @@ function saveCardConfig() {
   try {
     localStorage.setItem(CARD_CFG_KEY, JSON.stringify(state.cardConfig));
   } catch { /* storage disabled: config just won't persist */ }
+}
+
+/* ---------- Saved views ----------
+   An RCA run, a what-if scenario, and a selected metric are already fully
+   encoded in the URL hash, so "saving" one is just naming its hash. That keeps
+   this entirely client-side: the engine stays stateless, several people can use
+   one shared instance without seeing each other's work, and a returning visitor
+   finds their own analyses. Nothing here is a substitute for real per-user
+   storage (it does not survive a cleared browser) — it is the honest amount of
+   persistence for a read-only tree, where what a user creates is *analyses*,
+   not edits to the tree itself. */
+
+const VIEWS_KEY = "breakdown.workspace";
+const MAX_SAVED_VIEWS = 30;
+
+function loadSavedViews() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(VIEWS_KEY) || "[]");
+    return Array.isArray(saved) ? saved.filter((v) => v && v.hash && v.name) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSavedViews(views) {
+  try {
+    localStorage.setItem(VIEWS_KEY, JSON.stringify(views.slice(0, MAX_SAVED_VIEWS)));
+  } catch { /* storage disabled or full: saving just won't persist */ }
+}
+
+/* A default name that says what the view *is*, so the list is scannable
+   without opening each one. */
+function describeCurrentView() {
+  if (state.whatif.result) {
+    const n = state.whatif.interventions.length;
+    return `What-if · ${n} intervention${n === 1 ? "" : "s"}`;
+  }
+  if (state.rca) {
+    return `RCA · ${state.rca.target} · ${state.rca.analysis_window.start}`;
+  }
+  if (state.selected) return `Metric · ${state.selected}`;
+  return "View";
+}
+
+/* Naming happens inline rather than through prompt(): a modal dialog blocks
+   the whole page, and this is a menu, not an interruption. */
+function beginSaveView() {
+  const hash = location.hash;
+  if (!hash || hash.length < 2) return;
+  const host = $("saved-views");
+  if (!host || host.querySelector(".saved-name")) return;
+  const form = document.createElement("div");
+  form.className = "saved-form";
+  form.innerHTML =
+    `<input class="saved-name" type="text" maxlength="80" spellcheck="false">` +
+    `<button class="saved-commit">Save</button>`;
+  host.prepend(form);
+  const input = form.querySelector(".saved-name");
+  input.value = describeCurrentView();
+  input.select();
+
+  const commit = () => {
+    const name = input.value.trim();
+    if (!name) return;
+    const views = loadSavedViews().filter((v) => v.hash !== hash);
+    views.unshift({ name, hash, savedAt: new Date().toISOString() });
+    writeSavedViews(views);
+    renderSavedViews();
+  };
+  form.querySelector(".saved-commit").addEventListener("click", (e) => {
+    e.stopPropagation();
+    commit();
+  });
+  input.addEventListener("click", (e) => e.stopPropagation());
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") commit();
+    if (e.key === "Escape") renderSavedViews();
+  });
+}
+
+function renderSavedViews() {
+  const host = $("saved-views");
+  if (!host) return;
+  const views = loadSavedViews();
+  host.innerHTML = views.length
+    ? `<div class="saved-head">Saved in this browser</div>` +
+      views
+        .map(
+          (v, i) => `<div class="saved-row">
+             <button class="saved-open" data-i="${i}" title="${esc(v.hash)}">${esc(v.name)}</button>
+             <button class="saved-del" data-i="${i}" title="Forget this view">×</button>
+           </div>`,
+        )
+        .join("")
+    : "";
+
+  host.querySelectorAll(".saved-open").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const v = loadSavedViews()[Number(btn.dataset.i)];
+      if (!v) return;
+      $("share-menu").style.display = "none";
+      // Assigning an identical hash fires no hashchange, so drive the router
+      // directly rather than relying on the event.
+      location.hash = v.hash.replace(/^#/, "");
+      applyDeepLink();
+    });
+  });
+  host.querySelectorAll(".saved-del").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const views = loadSavedViews();
+      views.splice(Number(btn.dataset.i), 1);
+      writeSavedViews(views);
+      renderSavedViews();
+    });
+  });
 }
 
 /* Wire the canvas-wide card controls. Variant changes resize nodes (re-layout,
@@ -2777,7 +2898,12 @@ function initShareMenu() {
   $("share-toggle").addEventListener("click", (e) => {
     e.stopPropagation();
     updateShareMenu();
+    renderSavedViews();
     shareMenu.style.display = shareMenu.style.display === "none" ? "" : "none";
+  });
+  $("share-save-view").addEventListener("click", (e) => {
+    e.stopPropagation();
+    beginSaveView();
   });
   document.addEventListener("click", (e) => {
     if (!$("share-wrap").contains(e.target)) closeShare();

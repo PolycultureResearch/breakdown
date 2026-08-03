@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import hmac
 import logging
 import math
 import os
@@ -9,6 +10,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from breakdown.data_fetch import (
@@ -279,6 +281,33 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="breakdown API", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def mcp_bearer_token(request: Request, call_next):
+    """Require a bearer token on /mcp when BREAKDOWN_API_TOKEN is set.
+
+    The MCP endpoint runs whole analyses, so exposing it off loopback without
+    a gate hands anyone who finds the URL the tree and its data. Opt-in rather
+    than mandatory: unset (the laptop default) keeps the loopback workflow
+    friction-free, set (a public deployment) closes it. The UI and /health stay
+    open — the token is for the machine-facing surface, not a login.
+
+    A down payment on hosted mode (roadmap 3.5), not a substitute for it: one
+    shared secret, no per-user identity, no revocation short of a redeploy."""
+    token = os.environ.get("BREAKDOWN_API_TOKEN")
+    if token and request.url.path.startswith("/mcp"):
+        header = request.headers.get("authorization", "")
+        scheme, _, presented = header.partition(" ")
+        # compare_digest over the raw strings: constant-time, and it also
+        # keeps a missing header from short-circuiting differently.
+        if scheme.lower() != "bearer" or not hmac.compare_digest(presented, token):
+            return JSONResponse(
+                {"detail": "Missing or invalid bearer token for /mcp."},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    return await call_next(request)
 
 
 @app.middleware("http")
