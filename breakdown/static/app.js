@@ -348,6 +348,109 @@ function buildRcaReportHtml(res, treePng, stripPng) {
 </body></html>`;
 }
 
+/* ---------- cold start (provider: none — declared beliefs, no data) ---------- */
+
+const coldStart = () => !!(state.meta && state.meta.mode === "cold_start");
+
+/* Tiny arithmetic evaluator for formula strings (+ - * / parentheses,
+   numbers, parent names) — enough to derive a formula node's operating point
+   from its parents' asserted baselines, mirroring the engine's per-draw
+   derivation at the mean. Never eval(): parse or return null. */
+function evalFormula(src, vars) {
+  let i = 0;
+  const peek = () => src[i];
+  const ws = () => { while (i < src.length && /\s/.test(src[i])) i++; };
+  function atom() {
+    ws();
+    if (peek() === "(") {
+      i++;
+      const v = expr();
+      ws();
+      if (peek() !== ")") throw new Error("paren");
+      i++;
+      return v;
+    }
+    if (peek() === "-") { i++; return -atom(); }
+    const m = /^(\d+\.?\d*|[A-Za-z_][A-Za-z0-9_]*)/.exec(src.slice(i));
+    if (!m) throw new Error("token");
+    i += m[0].length;
+    if (/^[A-Za-z_]/.test(m[0])) {
+      if (!(m[0] in vars)) throw new Error("unknown var");
+      return vars[m[0]];
+    }
+    return Number(m[0]);
+  }
+  function term() {
+    let v = atom();
+    for (ws(); peek() === "*" || peek() === "/"; ws()) {
+      const op = src[i++];
+      const r = atom();
+      v = op === "*" ? v * r : v / r;
+    }
+    return v;
+  }
+  function expr() {
+    let v = term();
+    for (ws(); peek() === "+" || peek() === "-"; ws()) {
+      const op = src[i++];
+      const r = term();
+      v = op === "+" ? v + r : v - r;
+    }
+    return v;
+  }
+  try {
+    const v = expr();
+    ws();
+    return i === src.length && Number.isFinite(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/* Per-node cold-start operating points, from `baseline` declarations in
+   topological order (formula nodes derive from parents — same rule as the
+   engine). Returns {name: {mu, lo, hi, derived}}; lo/hi null for points. */
+function computeColdBase() {
+  const base = {};
+  const pending = state.dag.nodes.map(([name]) => name);
+  // small tree: iterate until stable instead of a real topo sort
+  for (let pass = 0; pass < pending.length + 1; pass++) {
+    state.dag.nodes.forEach(([name, def]) => {
+      if (base[name]) return;
+      if (def.formula) {
+        const parents = def.parents || [];
+        if (!parents.every((p) => base[p])) return;
+        const mu = evalFormula(def.formula, Object.fromEntries(parents.map((p) => [p, base[p].mu])));
+        if (mu != null) base[name] = { mu, lo: null, hi: null, derived: true };
+      } else if (def.baseline) {
+        const { low, high } = def.baseline;
+        base[name] = {
+          mu: (low + high) / 2,
+          lo: low < high ? low : null,
+          hi: low < high ? high : null,
+          derived: false,
+        };
+      }
+    });
+  }
+  return base;
+}
+
+/* Belief label for a probabilistic edge: the YAML prior in business units.
+   Normal priors show the central-90% belief interval; other distributions
+   show their name + params (still the exact belief, just not symmetric). */
+function beliefEdgeLabel(def, parent) {
+  const prior = (def.priors || {})[parent] || (def.priors || {}).coefficient;
+  if (!prior) return "";
+  const p = prior.params || {};
+  if (prior.distribution === "Normal") {
+    const mu = p.mu ?? 0, sd = p.sigma ?? 1;
+    return `β ~ ${fmt(mu)} [${fmt(mu - 1.645 * sd)}, ${fmt(mu + 1.645 * sd)}] · belief`;
+  }
+  const args = ["mu", "sigma", "lam"].filter((k) => p[k] != null).map((k) => fmt(p[k]));
+  return `β ~ ${prior.distribution}(${args.join(", ")}) · belief`;
+}
+
 function nodeType(def) {
   if (!def.parents || def.parents.length === 0) return "source";
   return def.formula ? "formula" : "prob";
@@ -593,6 +696,30 @@ function buildCardSVG(name, d, variant, isOverride, overlay) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${CARD_W}" height="${H}" viewBox="0 0 ${CARD_W} ${H}">${defs}${inner}</svg>`;
 }
 
+/* Cold-start card: asserted operating point (± 90% belief range) instead of
+   history-derived numbers — there is no series to spark or delta. Overlay
+   (what-if simulated value) folds in exactly like fitted cards. */
+function buildColdCardSVG(name, cb, overlay) {
+  const cx = CARD_W / 2;
+  const dispName = name.length > 26 ? name.slice(0, 25) + "…" : name;
+  const val = overlay && overlay.value != null ? overlay.value : cb ? cb.mu : null;
+  const H = CARD_H.delta;
+
+  let inner =
+    `<text x="${cx}" y="20" text-anchor="middle" font-size="13" font-weight="600" fill="#475569" font-family="${CARD_FONT}">${esc(dispName)}</text>` +
+    `<text x="${cx}" y="52" text-anchor="middle" font-size="34" font-weight="700" fill="#1a202c" font-family="${CARD_FONT}">${esc(fmtCardValue(name, val))}</text>`;
+
+  if (overlay) {
+    inner += deltaSvg(overlay.dpct, overlay.dir, overlay.mark, cx, 82, goodDir(name, overlay.dir));
+  } else {
+    const sub = cb && cb.lo != null
+      ? `${fmtCardValue(name, cb.lo)} – ${fmtCardValue(name, cb.hi)} · 90% belief`
+      : cb && cb.derived ? "derived from parents" : "belief";
+    inner += `<text x="${cx}" y="80" text-anchor="middle" font-size="11.5" fill="#8a94a6" font-family="${CARD_FONT}">${esc(sub)}</text>`;
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${CARD_W}" height="${H}" viewBox="0 0 ${CARD_W} ${H}">${inner}</svg>`;
+}
+
 function svgDataURI(svg) {
   return "data:image/svg+xml;utf8," + encodeURIComponent(svg);
 }
@@ -602,15 +729,22 @@ function svgDataURI(svg) {
 function renderNodeCard(name) {
   const node = state.cy.getElementById(name);
   if (!node.length) return;
-  const variant = effectiveVariant(name);
-  const d = deriveCardData(name);
-  const isOverride = name in state.cardConfig.overrides;
   const overlay = state.cardOverlay[name] || null;
+  let svg, height;
+  if (coldStart()) {
+    svg = buildColdCardSVG(name, (state.coldBase || {})[name], overlay);
+    height = CARD_H.delta;
+  } else {
+    const variant = effectiveVariant(name);
+    const isOverride = name in state.cardConfig.overrides;
+    svg = buildCardSVG(name, deriveCardData(name), variant, isOverride, overlay);
+    height = cardHeight(name, variant);
+  }
   node.style({
-    "background-image": svgDataURI(buildCardSVG(name, d, variant, isOverride, overlay)),
+    "background-image": svgDataURI(svg),
     "background-fit": "contain",
     "width": CARD_W,
-    "height": cardHeight(name, variant),
+    "height": height,
     "padding": 0,
     "label": "",
     "text-opacity": 0, // card draws the name itself; hide Cytoscape's own label
@@ -618,7 +752,7 @@ function renderNodeCard(name) {
 }
 
 function renderAllCards() {
-  if (!state.series || !state.cy) return;
+  if ((!state.series && !coldStart()) || !state.cy) return;
   state.cy.batch(() => {
     state.dag.nodes.forEach(([name]) => renderNodeCard(name));
   });
@@ -652,6 +786,12 @@ function saveCardConfig() {
 /* Wire the canvas-wide card controls. Variant changes resize nodes (re-layout,
    preserving the viewport); length changes only repaint. */
 function initCardControls() {
+  if (coldStart()) {
+    // Variants/sparklines/as-of are history controls; cold cards have none.
+    const tb = $("card-toolbar");
+    if (tb) tb.style.display = "none";
+    return;
+  }
   const variantSel = $("card-variant");
   const sparkInp = $("card-spark");
   const deltaInp = $("card-delta");
@@ -888,8 +1028,11 @@ function buildGraph() {
     const kind = defs[dst].formula ? "formula" : "prob";
     state.revAdj[dst].push(src);
     state.fwdAdj[src].push(dst);
+    // Cold start: a probabilistic edge's "fit" is its stated prior — label it
+    // up front as a belief (fitted mode labels β only after an /analyze run).
+    const label = coldStart() && kind === "prob" ? beliefEdgeLabel(defs[dst], src) : "";
     elements.push({
-      data: { id: `${src}->${dst}`, source: src, target: dst, label: "", w: 2, op: 1 },
+      data: { id: `${src}->${dst}`, source: src, target: dst, label, w: 2, op: 1 },
       classes: kind,
     });
   });
@@ -903,6 +1046,7 @@ function buildGraph() {
   // Paint the stat cards first (this fixes each node's size), then lay out so
   // dagre spaces the real card footprints. Falls back to label-sized nodes when
   // the series failed to load (renderAllCards is a no-op without state.series).
+  if (coldStart()) state.coldBase = computeColdBase();
   renderAllCards();
   runLayout(true);
 
@@ -1014,8 +1158,39 @@ function renderMetricTab(name, data) {
         : ""}
       <tr><td>Parents</td><td>${parentChips}</td></tr>
       ${def.formula ? `<tr><td>Formula</td><td><code>${esc(def.formula)}</code></td></tr>` : ""}
-    </table>
+      ${def.baseline
+        ? `<tr><td>Baseline</td><td>${
+            def.baseline.low < def.baseline.high
+              ? `${fmt(def.baseline.low)} – ${fmt(def.baseline.high)} <span class="chip lag">90% belief</span>`
+              : `${fmt(def.baseline.low)} <span class="chip lag">asserted</span>`
+          }</td></tr>`
+        : ""}
+      ${def.plausible
+        ? `<tr><td>Plausible</td><td>${[
+            def.plausible.min != null ? `min ${fmt(def.plausible.min)}` : null,
+            def.plausible.max != null ? `max ${fmt(def.plausible.max)}` : null,
+          ].filter(Boolean).join(" · ")}</td></tr>`
+        : ""}
+    </table>`;
 
+  if (coldStart()) {
+    // No series, no posterior, no fitting — the declarations above ARE the
+    // model. Say so instead of rendering empty history sections.
+    const cb = (state.coldBase || {})[name];
+    html += `
+      <section>
+        <h3>Cold start</h3>
+        <p class="inline-status">This tree declares no data provider. ${
+          def.formula
+            ? `The operating point${cb && cb.mu != null ? ` (${fmt(cb.mu)})` : ""} derives from the parents' asserted baselines through the formula.`
+            : "The asserted baseline above is this metric's operating point; edge slopes come from the stated priors."
+        } Use the What-if tab to simulate over these beliefs.</p>
+      </section>`;
+    $("tab-metric").innerHTML = html;
+    return;
+  }
+
+  html += `
     <section>
       <h3>Card display</h3>
       <div class="analyze-row">
@@ -1310,7 +1485,12 @@ function clearRcaStyles() {
   cy.edges().forEach((e) => {
     e.data("w", 2);
     e.data("op", 1);
-    e.data("label", "");
+    // cold start: the resting label of a probabilistic edge is its belief,
+    // not blank (fitted mode re-labels β from cached fits after this)
+    const belief = coldStart() && e.hasClass("prob")
+      ? beliefEdgeLabel(state.defs[e.target().id()], e.source().id())
+      : "";
+    e.data("label", belief);
   });
   state.cardOverlay = {};
   renderAllCards(); // restore base cards
@@ -1636,6 +1816,12 @@ function effectLabel(a) {
 }
 
 function initWhatif() {
+  if (coldStart()) {
+    // No window to pick: operating points come from the tree's declarations.
+    state.whatif.baseline = { start: null, end: null };
+    renderWhatifTab();
+    return;
+  }
   // default baseline: last 28 days of loaded data (clamped to the range)
   const end = state.meta.date_end;
   const start28 = isoUTC(addDays(new Date(end), -27));
@@ -1680,7 +1866,13 @@ function renderWhatifTab() {
     .map((s) => `<option value="${esc(s)}"></option>`)
     .join("");
 
-  const builder = `
+  // Cold start replaces the baseline window with the tree's declarations —
+  // there are no dates anywhere in the scenario.
+  const baselineRow = coldStart()
+    ? `<p class="wf-hint">Cold start: baselines are the tree's asserted operating
+       points and slopes are the stated priors — results are consequences of
+       those beliefs, not evidence.</p>`
+    : `
     <div class="wf-row">
       <label>Baseline</label>
       <input type="date" id="wf-start" value="${esc(w.baseline.start || "")}"
@@ -1689,7 +1881,10 @@ function renderWhatifTab() {
       <input type="date" id="wf-end" value="${esc(w.baseline.end || "")}"
         min="${esc(state.meta.date_start)}" max="${esc(state.meta.date_end)}">
     </div>
-    <p class="wf-hint">Date range for baseline metric values.</p>
+    <p class="wf-hint">Date range for baseline metric values.</p>`;
+
+  const builder = `
+    ${baselineRow}
     <p class="wf-hint wf-hint-action">Click a node in the graph to adjust it in the scenario.</p>
     <div id="wf-adjust"></div>
     <details>
@@ -1784,34 +1979,55 @@ function openAdjustPanel(name) {
 async function renderAdjustPanel(name) {
   const box = $("wf-adjust");
   if (!box) return;
-  box.innerHTML = `<div class="wf-adjust-card"><p class="placeholder">Loading ${esc(name)}…</p></div>`;
-  let data;
-  try {
-    data = state.metricCache[name] || (await api(`/metrics/${encodeURIComponent(name)}`));
-    state.metricCache[name] = data;
-  } catch (err) {
-    const el = $("wf-adjust");
-    if (el) el.innerHTML = `<div class="wf-adjust-card">Failed to load: ${esc(err.message)}</div>`;
-    return;
-  }
-  if (state.whatif.adjusting !== name || !$("wf-adjust")) return; // stale render
-
   const w = state.whatif;
-  const vals = data.time_series.map((r) => r[name]).filter((v) => v != null);
-  const hist = {
-    min: Math.min(...vals),
-    max: Math.max(...vals),
-    mean: vals.reduce((a, b) => a + b, 0) / vals.length,
-  };
-  hist.std = Math.sqrt(vals.reduce((a, v) => a + (v - hist.mean) ** 2, 0) / vals.length);
-  const inWin = data.time_series
-    .filter((r) => {
-      const d = String(r.date).slice(0, 10);
-      return (!w.baseline.start || d >= w.baseline.start) && (!w.baseline.end || d <= w.baseline.end);
-    })
-    .map((r) => r[name])
-    .filter((v) => v != null);
-  const base = inWin.length ? inWin.reduce((a, b) => a + b, 0) / inWin.length : hist.mean;
+
+  let base, hist, cold = null;
+  if (coldStart()) {
+    // Baseline = the declared operating point; the honesty band = declared
+    // `plausible` bounds (there is no history to derive one from); the
+    // shaded band = the 90% belief range when the baseline is an interval.
+    const cb = (state.coldBase || {})[name];
+    if (!cb) {
+      box.innerHTML = `<div class="wf-adjust-card">No operating point for ${esc(name)}.</div>`;
+      return;
+    }
+    base = cb.mu;
+    const pl = (state.defs[name] || {}).plausible || null;
+    cold = {
+      pmin: pl && pl.min != null ? pl.min : null,
+      pmax: pl && pl.max != null ? pl.max : null,
+      blo: cb.lo,
+      bhi: cb.hi,
+    };
+  } else {
+    box.innerHTML = `<div class="wf-adjust-card"><p class="placeholder">Loading ${esc(name)}…</p></div>`;
+    let data;
+    try {
+      data = state.metricCache[name] || (await api(`/metrics/${encodeURIComponent(name)}`));
+      state.metricCache[name] = data;
+    } catch (err) {
+      const el = $("wf-adjust");
+      if (el) el.innerHTML = `<div class="wf-adjust-card">Failed to load: ${esc(err.message)}</div>`;
+      return;
+    }
+    if (state.whatif.adjusting !== name || !$("wf-adjust")) return; // stale render
+
+    const vals = data.time_series.map((r) => r[name]).filter((v) => v != null);
+    hist = {
+      min: Math.min(...vals),
+      max: Math.max(...vals),
+      mean: vals.reduce((a, b) => a + b, 0) / vals.length,
+    };
+    hist.std = Math.sqrt(vals.reduce((a, v) => a + (v - hist.mean) ** 2, 0) / vals.length);
+    const inWin = data.time_series
+      .filter((r) => {
+        const d = String(r.date).slice(0, 10);
+        return (!w.baseline.start || d >= w.baseline.start) && (!w.baseline.end || d <= w.baseline.end);
+      })
+      .map((r) => r[name])
+      .filter((v) => v != null);
+    base = inWin.length ? inWin.reduce((a, b) => a + b, 0) / inWin.length : hist.mean;
+  }
 
   const existing = w.interventions.find((iv) => iv.metric === name);
   const mode = existing ? existing.mode : "pct";
@@ -1833,10 +2049,14 @@ async function renderAdjustPanel(name) {
         value="${mode === "pct" ? initial : 0}" ${mode === "pct" ? "" : 'style="display:none"'}>
       <div class="wf-preview" id="wf-preview"></div>
       <div class="range-strip" id="wf-strip"></div>
-      <div class="strip-caption">history min → max · shaded band = mean ± 2σ · amber marker = extrapolating</div>
+      <div class="strip-caption">${
+        cold
+          ? "declared plausible bounds · shaded band = 90% baseline belief · amber marker = outside plausible"
+          : "history min → max · shaded band = mean ± 2σ · amber marker = extrapolating"
+      }</div>
     </div>`;
 
-  const params = { base, hist };
+  const params = { base, hist, cold };
   $("wf-mode").addEventListener("change", () => {
     const m = $("wf-mode").value;
     $("wf-slider").style.display = m === "pct" ? "" : "none";
@@ -1866,9 +2086,11 @@ async function renderAdjustPanel(name) {
   updateAdjustPreview(params);
 }
 
-/* Live preview + historical range strip for the adjust panel. The strip warns
-   about extrapolation *before* the run, not after. */
-function updateAdjustPreview({ base, hist }) {
+/* Live preview + range strip for the adjust panel. The strip warns about
+   extrapolation *before* the run, not after. Fitted mode: history min→max
+   with the ±2σ band. Cold start: declared `plausible` bounds with the 90%
+   baseline-belief band — the honesty substitutes the engine itself uses. */
+function updateAdjustPreview({ base, hist, cold }) {
   const modeEl = $("wf-mode"),
     valEl = $("wf-value");
   if (!modeEl || !valEl) return;
@@ -1877,25 +2099,42 @@ function updateAdjustPreview({ base, hist }) {
   const target = mode === "pct" ? base * (1 + v / 100) : mode === "delta" ? base + v : v;
   const rel = Math.abs(base) > 1e-12 ? target / base - 1 : null;
 
-  const lo2 = hist.mean - 2 * hist.std,
-    hi2 = hist.mean + 2 * hist.std;
-  const out = target < hist.min || target > hist.max || (hist.std > 0 && (target < lo2 || target > hi2));
+  let out, outMsg, gLo, gHi, bandLo, bandHi;
+  if (cold) {
+    out = (cold.pmin != null && target < cold.pmin) || (cold.pmax != null && target > cold.pmax);
+    outMsg = "⚠ outside declared plausible bounds";
+    // strip guide rail: the plausible bounds where declared, else the belief
+    // range, else just the neighborhood of the baseline
+    gLo = cold.pmin != null ? cold.pmin : Math.min(cold.blo != null ? cold.blo : base, base);
+    gHi = cold.pmax != null ? cold.pmax : Math.max(cold.bhi != null ? cold.bhi : base, base);
+    bandLo = cold.blo;
+    bandHi = cold.bhi;
+  } else {
+    const lo2 = hist.mean - 2 * hist.std,
+      hi2 = hist.mean + 2 * hist.std;
+    out = target < hist.min || target > hist.max || (hist.std > 0 && (target < lo2 || target > hi2));
+    outMsg = "⚠ outside historical range";
+    gLo = hist.min;
+    gHi = hist.max;
+    bandLo = hist.std > 0 ? Math.max(lo2, hist.min) : null;
+    bandHi = hist.std > 0 ? Math.min(hi2, hist.max) : null;
+  }
 
   $("wf-preview").innerHTML =
     `${fmt(base)} → <b class="${out ? "out" : ""}">${fmt(target)}</b>` +
     (rel == null ? "" : ` (${signedPct(rel)})`) +
-    (out ? ' <span class="out">⚠ outside historical range</span>' : "");
+    (out ? ` <span class="out">${outMsg}</span>` : "");
 
-  // strip scale spans history (with padding) and always contains the marker
-  const span = Math.max(hist.max - hist.min, 1e-9);
-  const lo = Math.min(hist.min - 0.1 * span, target);
-  const hi = Math.max(hist.max + 0.1 * span, target);
+  // strip scale spans the guide rail (with padding) and always contains the marker
+  const span = Math.max(gHi - gLo, 1e-9);
+  const lo = Math.min(gLo - 0.1 * span, target);
+  const hi = Math.max(gHi + 0.1 * span, target);
   const p = (x) => (100 * (x - lo)) / (hi - lo);
-  const bandLo = Math.max(lo2, hist.min),
-    bandHi = Math.min(hi2, hist.max);
   $("wf-strip").innerHTML = `
-    <div class="strip-band" style="left:${p(hist.min)}%;width:${p(hist.max) - p(hist.min)}%;background:#e4e7ec"></div>
-    ${hist.std > 0 ? `<div class="strip-band" style="left:${p(bandLo)}%;width:${Math.max(p(bandHi) - p(bandLo), 0)}%"></div>` : ""}
+    <div class="strip-band" style="left:${p(gLo)}%;width:${p(gHi) - p(gLo)}%;background:#e4e7ec"></div>
+    ${bandLo != null && bandHi != null && bandHi > bandLo
+      ? `<div class="strip-band" style="left:${p(bandLo)}%;width:${Math.max(p(bandHi) - p(bandLo), 0)}%"></div>`
+      : ""}
     <div class="strip-tick" style="left:${p(base)}%" title="baseline ${fmt(base)}"></div>
     <div class="strip-marker ${out ? "out" : ""}" style="left:${Math.min(Math.max(p(target), 0), 99)}%"></div>`;
 }
@@ -1926,7 +2165,7 @@ function addAssumption() {
 
 function buildScenarioPayload() {
   const w = state.whatif;
-  if (!w.baseline.start || !w.baseline.end) {
+  if (!coldStart() && (!w.baseline.start || !w.baseline.end)) {
     setStatus("Set the baseline window first.", "error");
     return null;
   }
@@ -1937,18 +2176,24 @@ function buildScenarioPayload() {
   const levers = [
     ...new Set(w.assumptions.map((a) => a.source).filter((s) => !state.meta.metrics.includes(s))),
   ];
-  return {
-    baseline_start: w.baseline.start,
-    baseline_end: w.baseline.end,
+  const payload = {
     interventions: w.interventions,
     assumptions: w.assumptions.map((a, i) => ({ id: `a${i}`, ...a })),
     levers: levers.map((name) => ({ name })),
   };
+  if (!coldStart()) {
+    // cold start MUST omit the window (the engine rejects one — operating
+    // points come from the tree's declarations)
+    payload.baseline_start = w.baseline.start;
+    payload.baseline_end = w.baseline.end;
+  }
+  return payload;
 }
 
 /* How many probabilistic nodes on affected paths still need fitting — drives
    the run-progress status. Mirrors the engine's fit-on-demand rule. */
 function countWhatifFits() {
+  if (coldStart()) return 0; // nothing is ever fit — slopes are the stated priors
   const w = state.whatif;
   const fitted = new Set(state.meta.fitted);
   const seeds = [...w.interventions.map((iv) => iv.metric), ...w.assumptions.map((a) => a.target)]
@@ -2159,17 +2404,24 @@ function renderWhatifResults() {
     (n) => res.nodes[n].status !== "baseline" && !(state.fwdAdj[n] || []).length,
   );
 
+  const isCold = res.mode === "cold_start";
   const cards = sinks
     .map((name) => {
       const node = res.nodes[name];
       const dirCls = goodDir(name, node.delta.estimate >= 0 ? "up" : "down");
       const ci = node.delta.ci_95;
+      const sub = isCold
+        ? `${esc(name)} · cold start — declared beliefs`
+        : `${esc(name)} · baseline ${esc(res.baseline_window.start)} → ${esc(res.baseline_window.end)}`;
+      const bci = node.baseline_ci_95;
       return `
       <div class="rca-card">
-        <div class="sub">${esc(name)} · baseline ${esc(res.baseline_window.start)} → ${esc(res.baseline_window.end)}</div>
+        <div class="sub">${sub}</div>
         <div class="gap-line ${dirCls}">${fmt(node.baseline)} → ${fmt(node.simulated)}
           <span style="font-size:14px">(${signedPct(node.relative_delta)})</span></div>
-        <div class="wf-ci">Δ ${fmt(node.delta.estimate)} · 95% CI [${fmt(ci[0])}, ${fmt(ci[1])}] · P(direction) ${pct(node.prob_direction)}</div>
+        <div class="wf-ci">Δ ${fmt(node.delta.estimate)} · 95% CI [${fmt(ci[0])}, ${fmt(ci[1])}] · P(direction) ${pct(node.prob_direction)}${
+          bci ? ` · baseline belief [${fmt(bci[0])}, ${fmt(bci[1])}]` : ""
+        }</div>
         ${waterfallHtml(name, node, labelFor)}
       </div>`;
     })
@@ -2241,6 +2493,8 @@ function activeTab() {
 }
 
 function switchTab(tab) {
+  const el = document.querySelector(`.tab[data-tab="${tab}"]`);
+  if (el && el.classList.contains("disabled")) return; // cold start: RCA is inert
   const prev = activeTab();
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === tab));
   document.querySelectorAll(".tab-content").forEach((c) => c.classList.toggle("active", c.id === `tab-${tab}`));
@@ -2266,6 +2520,22 @@ function initControls() {
   });
   // sensible default target: last metric in the tree (usually the top KPI)
   select.value = state.meta.metrics[state.meta.metrics.length - 1];
+
+  document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
+
+  if (coldStart()) {
+    // No data → no windows, no as-of anchor, no RCA. The Root cause tab
+    // stays visible but inert, saying why — a stated mode, not a bug.
+    const rcaTab = document.querySelector('.tab[data-tab="rca"]');
+    if (rcaTab) {
+      rcaTab.classList.add("disabled");
+      rcaTab.title = "Root cause analysis needs time-series data — this tree declares none (cold start).";
+    }
+    const asofGroup = $("card-asof") && $("card-asof").closest(".control-group");
+    if (asofGroup) asofGroup.style.display = "none";
+    initShareMenu();
+    return;
+  }
 
   // window presets: populate the select with those the data window supports
   const presetSelect = $("win-preset");
@@ -2303,7 +2573,13 @@ function initControls() {
 
   $("run-rca").addEventListener("click", runRCA);
   $("clear-rca").addEventListener("click", clearRCA);
-  // Share menu: copy the deep link, download the last RCA response.
+  initShareMenu();
+  validateWindows();
+}
+
+/* Share menu: copy the deep link, download the last RCA response. Wired on
+   both boot paths (cold start skips all window/RCA controls above). */
+function initShareMenu() {
   const shareMenu = $("share-menu");
   const closeShare = () => { shareMenu.style.display = "none"; };
   $("share-toggle").addEventListener("click", (e) => {
@@ -2334,9 +2610,6 @@ function initControls() {
     URL.revokeObjectURL(a.href);
     closeShare();
   });
-  document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
-
-  validateWindows();
 }
 
 /* Deep links: #metric=<name> opens a metric; #rca=<target>&reference_start=…
@@ -2397,12 +2670,15 @@ async function init() {
     }
     [state.meta, state.dag] = await Promise.all([api("/meta"), api("/dag")]);
     // Series hydrates every node card in one request; degrade to name-only
-    // nodes if it fails rather than blocking the whole graph.
-    try {
-      state.series = await api("/series");
-    } catch (err) {
-      state.series = null;
-      console.warn("card series unavailable:", err.message);
+    // nodes if it fails rather than blocking the whole graph. A cold-start
+    // tree has no series at all — cards render from declared baselines.
+    if (!coldStart()) {
+      try {
+        state.series = await api("/series");
+      } catch (err) {
+        state.series = null;
+        console.warn("card series unavailable:", err.message);
+      }
     }
     // Anchor headlines at the tree-wide data edge: the oldest data_through
     // across metrics. A source mart lagging the requested window then shows
@@ -2414,8 +2690,14 @@ async function init() {
     buildGraph();
     initCardControls();
     initWhatif();
-    const edgeNote = state.asOf < state.meta.date_end ? ` · data → ${state.asOf}` : "";
-    setStatus(`${state.meta.metrics.length} metrics · provider: ${state.meta.provider} · ${state.meta.date_start} → ${state.meta.date_end}${edgeNote}`);
+    if (coldStart()) {
+      // What-if is the only analysis a dataless tree supports — boot into it.
+      setStatus(`${state.meta.metrics.length} metrics · cold start — declared beliefs, no data provider`);
+      switchTab("whatif");
+    } else {
+      const edgeNote = state.asOf < state.meta.date_end ? ` · data → ${state.asOf}` : "";
+      setStatus(`${state.meta.metrics.length} metrics · provider: ${state.meta.provider} · ${state.meta.date_start} → ${state.meta.date_end}${edgeNote}`);
+    }
     applyDeepLink();
     updateShareMenu();
   } catch (err) {

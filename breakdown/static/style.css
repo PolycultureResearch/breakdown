@@ -250,6 +250,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 .tab:hover:not(.active) { color: var(--text); }
+/* cold start: RCA needs history that deliberately doesn't exist */
+.tab.disabled { color: var(--muted); opacity: 0.5; cursor: not-allowed; }
 
 .tab-content { flex: 1; overflow-y: auto; padding: 16px; display: none; }
 .tab-content.active { display: block; }

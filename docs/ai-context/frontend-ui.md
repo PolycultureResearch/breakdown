@@ -79,6 +79,17 @@ keep working unchanged.
 - **Assumption links** are temporary dotted amber edges added to the graph; non-metric sources ("levers", e.g. `discount_pct`) appear as temporary amber-dashed ellipse nodes placed near their target without re-layout.
 - Extrapolation-flagged nodes get the dashed amber border + `⚠`; edges into a pinned node stay neutral (the pin severs them).
 
+## Cold-start surface (`/meta` says `mode: "cold_start"`)
+
+A `provider: none` tree has no data, so the UI boots **what-if-first** over declared beliefs (`coldStart()` in `app.js` gates every branch):
+
+- **Boot**: `/series` is never requested; status line reads "cold start — declared beliefs, no data provider"; the active tab is What-if. The **Root cause** tab gets `.disabled` (inert, tooltip says why); the **As of** control and the card **Display** toolbar are hidden (both are history controls).
+- **Node cards** (`buildColdCardSVG`): name + operating point + a sub-line — `low – high · 90% belief` for range-asserted baselines, `derived from parents` for formula nodes (via `computeColdBase()`, which mirrors the engine's derivation using `evalFormula`, a tiny arithmetic parser — never `eval()`). Variants don't apply; what-if overlay values fold in exactly like fitted cards.
+- **Edges**: probabilistic edges label at build time with the stated prior via `beliefEdgeLabel` — `β ~ 0.03 [0.01, 0.05] · belief` for Normal priors, `β ~ HalfNormal(0.2) · belief` otherwise. `clearRcaStyles` restores these labels (not blank) when overlays clear.
+- **Metric tab**: definition + `Baseline` / `Plausible` rows and a "Cold start" note; the Card display / Time series / Posterior / Analyze sections are omitted entirely.
+- **What-if tab**: no baseline window row (a hint explains operating points come from the tree); `buildScenarioPayload` omits `baseline_start/end` (the engine rejects them); the adjust panel's **range strip renders from declared `plausible` bounds** with the 90% baseline-belief band shaded (`updateAdjustPreview`'s `cold` branch) and the amber marker means "outside plausible". Results label outcome cards "cold start — declared beliefs" and append the `baseline belief [lo, hi]` interval (`baseline_ci_95`). `countWhatifFits` is 0 — nothing is ever fitted.
+- **Unchanged by design**: reader mode, deep links (`#whatif=` carries no dates), the source waterfall, and the per-node table.
+
 ## What-if tab
 
 1. **Builder**: baseline window date pair (default: last 28 days of data); adjust panel (opens on node tap — mode select %/delta/set, slider, live preview, and a pure-CSS **historical range strip** showing min→max, the ±2σ band, the baseline tick, and an amber marker when the setting extrapolates); "+ Add assumption" form (source metric-or-lever with datalist, target select, %/absolute effect range, note); scenario item list with remove controls; Run/Clear.
