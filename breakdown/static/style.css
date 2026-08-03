@@ -360,6 +360,45 @@ details .data-table { margin-top: 8px; }
 .cause-name { font-weight: 600; font-size: 13px; flex-shrink: 0; }
 .cause-bar-wrap { flex: 1; height: 6px; background: #eef0f3; border-radius: 3px; overflow: hidden; }
 .cause-bar { height: 100%; background: var(--accent); border-radius: 3px; }
+/* Dimensional slicing, offered under each ranked cause: the tree says which
+   metric moved, these say where inside it. */
+.slice-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 8px 28px; /* aligns under the cause name, past the rank gutter */
+}
+.slice-label { font-size: 11px; color: var(--muted); }
+.slice-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+}
+.slice-btn:hover { border-color: var(--accent); color: var(--accent); }
+.slice-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.slice-panel { flex-basis: 100%; }
+.slice-panel:empty { display: none; }
+.slice-verdict { font-size: 12.5px; margin: 6px 0; }
+.slice-verdict.dim { color: var(--muted); }
+.slice-table { margin-top: 4px; font-size: 12px; table-layout: fixed; width: 100%; }
+.slice-table th, .slice-table td { overflow: hidden; text-overflow: ellipsis; }
+.slice-table th:first-child, .slice-table td:first-child { width: 38%; }
+.slice-table tr.slice-lead td { background: var(--accent-soft); }
+.slice-windows { font-size: 11px; color: var(--muted); margin: 6px 0 0; }
+.slice-noise {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  cursor: help;
+}
+
 .cause-via {
   font-size: 11px;
   color: var(--muted);

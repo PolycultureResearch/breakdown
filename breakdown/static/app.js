@@ -20,6 +20,8 @@ const state = {
   rca: null,           // last POST /rca response
   rcaView: "headline", // formula-node attribution view: "headline" | "detailed"
   activeCause: null,   // highlighted ranked cause
+  slices: {},          // metric -> {dimension, result|error|loading, lag} for the open slice
+
   whatif: {            // what-if scenario builder + last POST /simulate result
     baseline: { start: null, end: null },
     interventions: [], // {metric, mode, value} (value already in API units)
@@ -1407,6 +1409,7 @@ async function runRCA() {
   );
   try {
     const qs = new URLSearchParams(win).toString();
+    state.slices = {}; // a new analysis invalidates any slice of the old one
     state.rca = await api(`/rca/${encodeURIComponent(target)}?${qs}`, { method: "POST" });
     history.replaceState(null, "", `#rca=${encodeURIComponent(target)}&${qs}`);
     updateShareMenu();
@@ -1517,6 +1520,7 @@ function clearOverlays() {
 async function clearRCA() {
   state.rca = null;
   state.activeCause = null;
+  state.slices = {}; // slices are scoped to one analysis; they never outlive it
   clearRcaStyles();
   // fast path: restore beta labels from cached metric data
   Object.entries(state.metricCache).forEach(([name, data]) => labelBetaEdges(name, data));
@@ -1566,6 +1570,187 @@ function highlightCause(causeName) {
   });
 }
 
+/* ---------- Dimensional slicing (roadmap 3.2) ----------
+   The tree says which metric moved; a slice says where inside it. Offered
+   per ranked cause, because that is the order the question actually gets
+   asked in: traverse to the cause, then localize it. */
+
+/* The windows a slice must use are the ones the metric's contribution was
+   measured over — which, across a lagged edge, are shifted back by the lag.
+   Slicing a lagged parent over the target's calendar window would compare the
+   wrong periods and quietly answer a different question. */
+function sliceWindowsFor(metric) {
+  const res = state.rca;
+  for (const node of Object.values(res.nodes)) {
+    for (const c of node.contributions || []) {
+      if (c.parent === metric && c.parent_windows) {
+        return { windows: c.parent_windows, lag: c.lag || null };
+      }
+    }
+  }
+  const ew = (res.nodes[metric] || {}).effective_windows;
+  return ew ? { windows: ew, lag: null } : null;
+}
+
+function declaredDimensions(metric) {
+  const def = state.defs && state.defs[metric];
+  return def && def.dimensions ? Object.keys(def.dimensions) : [];
+}
+
+function sliceControlsHtml(metric) {
+  const dims = declaredDimensions(metric);
+  if (!dims.length || !sliceWindowsFor(metric)) return "";
+  const active = state.slices[metric] || {};
+  const buttons = dims
+    .map(
+      (d) =>
+        `<button class="slice-btn${active.dimension === d ? " active" : ""}" data-metric="${esc(metric)}" data-dimension="${esc(d)}">${esc(d)}</button>`,
+    )
+    .join("");
+  return `<div class="slice-controls" data-for="${esc(metric)}">
+      <span class="slice-label">slice by</span>${buttons}
+      <div class="slice-panel" id="slice-panel-${cssId(metric)}">${sliceResultHtml(metric)}</div>
+    </div>`;
+}
+
+/* Metric names are author-controlled and can contain characters that are not
+   valid in an id; keep the mapping total rather than assuming they are. */
+const cssId = (name) => name.replace(/[^A-Za-z0-9_-]/g, "_");
+
+function sliceResultHtml(metric) {
+  const s = state.slices[metric];
+  if (!s) return "";
+  if (s.loading) return '<p class="inline-status">slicing…</p>';
+  if (s.error) return `<p class="inline-status error">Slice failed: ${esc(s.error)}</p>`;
+
+  const r = s.result;
+  const rate = r.attribution_method === "slice_blend";
+  const lagNote = s.lag
+    ? ` · windows shifted back ${s.lag} ${esc(r.grain)}${s.lag === 1 ? "" : "s"} for the lag`
+    : "";
+  // Four columns is what the 410px sidebar fits without clipping. The excess
+  // CI rides along as a tooltip rather than a fifth column — it qualifies the
+  // ranking, so it belongs on the number it qualifies.
+  const head = rate
+    ? `<tr><th>${esc(r.dimension)}</th><th class="num">within</th><th class="num">mix</th><th class="num">excess</th></tr>`
+    : `<tr><th>${esc(r.dimension)}</th><th class="num">of gap</th><th class="num">baseline</th><th class="num">excess</th></tr>`;
+
+  // Rate contributions land around 1e-4, where fmt's toPrecision(3) produces
+  // more digits than a sidebar column can hold. Fall back to an exponent for
+  // the very small so the table stays readable instead of ellipsing away the
+  // significant figures; full precision rides in the tooltip.
+  const fmtTight = (x) =>
+    x === null || x === undefined
+      ? "—"
+      : x !== 0 && Math.abs(x) < 0.01
+        ? x.toExponential(1)
+        : fmt(x);
+
+  const excessCell = (row) => {
+    const ci = row.ci_95 ? `95% CI [${fmt(row.ci_95[0])}, ${fmt(row.ci_95[1])}]` : "no CI";
+    const p = row.prob_concentrated == null ? "" : ` · P(direction) ${pct(row.prob_concentrated)}`;
+    return `<td class="num" title="${esc(`excess ${row.excess} · ${ci}${p}`)}">${fmtTight(row.excess)}</td>`;
+  };
+  const rows = r.slices
+    .map((row, i) => {
+      // Concentration is relative to size: lead with the slice carrying more
+      // of the gap than its baseline share predicts, and say when the
+      // bootstrap cannot separate that from zero.
+      const noise = row.noise_level
+        ? ' <span class="slice-noise" title="The bootstrap cannot distinguish this slice&#39;s concentration from zero — the gap is not localized here.">noise</span>'
+        : "";
+      const lead = i === 0 && !row.noise_level ? ' class="slice-lead"' : "";
+      const label = `<td><code>${esc(row.value)}</code>${noise}${row.n_values ? ` <span class="dim">(${row.n_values})</span>` : ""}</td>`;
+      return rate
+        ? `<tr${lead}>${label}
+             <td class="num" title="the slice's own rate moved: ${row.within}">${fmtTight(row.within)}</td>
+             <td class="num" title="traffic moved between slices: ${row.mix}">${fmtTight(row.mix)}</td>
+             ${excessCell(row)}
+           </tr>`
+        : `<tr${lead}>${label}
+             <td class="num" title="contribution ${fmt(row.contribution)}">${row.share_of_gap == null ? "—" : pct(row.share_of_gap)}</td>
+             <td class="num">${row.baseline_share == null ? "—" : pct(row.baseline_share)}</td>
+             ${excessCell(row)}
+           </tr>`;
+    })
+    .join("");
+
+  // The headline claim only survives if the leader is genuinely concentrated.
+  // Ranking always produces a first row, so without this the panel would name
+  // a slice even when the gap is spread evenly — the failure mode that makes
+  // flat slicers untrustworthy. Concentration is excess as a share of the gap:
+  // scale-free, and unlike a share-vs-baseline ratio it does not punish slices
+  // that are already large (mobile is half the traffic and still the culprit).
+  const top = r.slices[0];
+  const concentration =
+    top && top.excess != null && Math.abs(r.gap) > 1e-12
+      ? Math.abs(top.excess / r.gap)
+      : 0;
+  const localized =
+    top && !top.noise_level && top.baseline_share != null && top.share_of_gap != null
+      && concentration >= 0.25;
+  const verdict = localized
+    ? `<p class="slice-verdict"><code>${esc(top.value)}</code> carries
+         <strong>${pct(top.share_of_gap)}</strong> of the gap on a
+         ${pct(top.baseline_share)} baseline share.</p>`
+    : `<p class="slice-verdict dim">Not localized by ${esc(r.dimension)} — no slice carries
+         enough of the gap beyond its own size to single it out.</p>`;
+
+  // mix_total is an {estimate, ci_95} block, like the tree's interaction row.
+  const mixNote =
+    rate && r.mix_total
+      ? `<p class="inline-status">mix shift total ${fmt(r.mix_total.estimate)} — how much of the move is
+         traffic shifting between slices rather than any slice's own rate changing.</p>`
+      : "";
+  const recon =
+    r.reconciliation && r.reconciliation.status !== "ok"
+      ? `<p class="inline-status error">Slices do not sum back to the metric
+         (mean residual ${fmt(r.reconciliation.mean_residual)},
+         ${pct(r.reconciliation.residual_share_of_baseline)} of baseline) — reported, not rescaled.</p>`
+      : "";
+  const caveats = (r.caveats || []).length
+    ? `<p class="inline-status">${r.caveats.map(esc).join(" ")}</p>`
+    : "";
+  const degenerate =
+    r.ci_status === "degenerate_single_period"
+      ? '<p class="inline-status">Single-period window: no bootstrap CI.</p>'
+      : "";
+
+  return `${verdict}
+    <table class="data-table slice-table">${head}${rows}</table>
+    <p class="slice-windows">${esc(r.effective_windows.reference.start)} → ${esc(r.effective_windows.reference.end)}
+      vs ${esc(r.effective_windows.analysis.start)} → ${esc(r.effective_windows.analysis.end)}${lagNote}</p>
+    ${mixNote}${degenerate}${caveats}${recon}`;
+}
+
+async function toggleSlice(metric, dimension) {
+  const current = state.slices[metric];
+  if (current && current.dimension === dimension && !current.error) {
+    delete state.slices[metric];
+    renderRcaTab();
+    return;
+  }
+  const win = sliceWindowsFor(metric);
+  if (!win) return;
+  state.slices[metric] = { dimension, loading: true, lag: win.lag };
+  renderRcaTab();
+
+  const qs = new URLSearchParams({
+    dimension,
+    reference_start: win.windows.reference.start,
+    reference_end: win.windows.reference.end,
+    analysis_start: win.windows.analysis.start,
+    analysis_end: win.windows.analysis.end,
+  }).toString();
+  try {
+    const result = await api(`/rca/${encodeURIComponent(metric)}/slices?${qs}`, { method: "POST" });
+    state.slices[metric] = { dimension, result, lag: win.lag };
+  } catch (err) {
+    state.slices[metric] = { dimension, error: err.message, lag: win.lag };
+  }
+  renderRcaTab();
+}
+
 function renderRcaTab() {
   const res = state.rca;
   const target = res.nodes[res.target];
@@ -1599,7 +1784,8 @@ function renderRcaTab() {
         <span class="cause-name">${esc(c.metric)}</span>
         <span class="cause-bar-wrap"><span class="cause-bar" style="width:${(100 * c.score) / maxScore}%"></span></span>
         <span class="cause-via">via ${esc(c.via || "—")}</span>
-      </div>`,
+      </div>
+      ${sliceControlsHtml(c.metric)}`,
     )
     .join("");
 
@@ -1742,6 +1928,12 @@ function renderRcaTab() {
 
   document.querySelectorAll(".cause-row").forEach((row) => {
     row.addEventListener("click", () => highlightCause(row.dataset.metric));
+  });
+  document.querySelectorAll(".slice-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation(); // the row underneath highlights a cause; this is a different question
+      toggleSlice(btn.dataset.metric, btn.dataset.dimension);
+    });
   });
   document.querySelectorAll(".rca-view-btn").forEach((btn) => {
     btn.addEventListener("click", () => {

@@ -1,8 +1,9 @@
 # Design: Dimensional slicing inside the tree (roadmap 3.2)
 
 Status: v1 shipped (schema + engine + mock/semantic-layer providers +
-API/MCP); warehouse contract, doctor checks, snapshots, automated tree×slice,
-and UI deferred (§9). Companion to [`grain_design.md`](grain_design.md)
+API/MCP), plus the **UI** and **sliced snapshots** built for the White Cube
+demo ([`white_cube_demo_plan.md`](white_cube_demo_plan.md)); warehouse contract,
+doctor checks, and automated tree×slice deferred (§9). Companion to [`grain_design.md`](grain_design.md)
 (window snapping the slice path reuses), [`grain_research.md`](grain_research.md)
 (§ tool survey — the prior art), and
 [`rca_lag_assessment.md`](rca_lag_assessment.md) (lag-correct slice windows).

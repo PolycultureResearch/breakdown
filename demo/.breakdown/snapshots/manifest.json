@@ -209,16 +209,6 @@
     "provider": "LocalDataFetcher",
     "rows": 790
   },
-  "trial_conversion_rate__by-trial__country__week-rate__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:17.230756+00:00",
-    "provider": "LocalDataFetcher",
-    "rows": 1365
-  },
-  "trial_conversion_rate__by-trial__device__week-rate__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:19.049873+00:00",
-    "provider": "LocalDataFetcher",
-    "rows": 342
-  },
   "trial_conversion_rate__week-rate__2024-06-01__2026-07-30.parquet": {
     "fetched_at": "2026-08-03T22:45:36.959894+00:00",
     "provider": "LocalDataFetcher",
@@ -263,16 +253,6 @@
     "fetched_at": "2026-08-03T22:45:35.123219+00:00",
     "provider": "LocalDataFetcher",
     "rows": 790
-  },
-  "visit_signup_rate__by-user__country__day-rate__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:52:57.931637+00:00",
-    "provider": "LocalDataFetcher",
-    "rows": 9823
-  },
-  "visit_signup_rate__by-user__device__day-rate__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:01.815453+00:00",
-    "provider": "LocalDataFetcher",
-    "rows": 3158
   },
   "visit_signup_rate__day-rate__2024-06-01__2026-07-30.parquet": {
     "fetched_at": "2026-08-03T22:45:31.297844+00:00",

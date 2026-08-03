@@ -63,11 +63,9 @@ metrics:
     format:
       style: percent
       decimals: 2
-    # No dimensions: the only ones MetricFlow exposes on this ratio reach it
-    # through the `user` entity, and a session that never signed up has no
-    # user — so ~96% of the weight lands in __null__ and the slice says
-    # nothing. Slice `signups` by device or country instead; same question,
-    # answered on the side of the ratio that actually carries the attribute.
+    dimensions:
+      country: { source: user__country, weight: sessions }
+      device: { source: user__device, weight: sessions }
 
   - name: signups
     description: "New free accounts created"
