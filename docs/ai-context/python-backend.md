@@ -18,6 +18,7 @@ breakdown/
   engine/
     model.py       # fit_metric() — BSTS via PyMC; compute_shapley(); summarize_trace()
     rca.py         # run_rca() + shapley_attribution() — all window-over-window attribution
+    simulate.py    # run_scenario() — do-operator what-if; fitted (posterior draws) or prior (data=None)
   api/
     main.py        # FastAPI app — routes, lifespan, state (owns the trace cache)
   mcp/
@@ -41,7 +42,7 @@ Design rules:
 
 ## `parser.py`
 
-**`MetricDefinition`** — Pydantic model for one metric node. Fields: `name`, `source`, `grain` (`day`|`week`|`month`, default day), `kind` (`flow`|`stock`|`rate`, default flow), `description`, `sql` (warehouse provider only), `parents`, `formula`, `priors: Dict[str, Prior]`, `lags: Dict[str, int]` (grain steps at the node's grain), `seasonality: List[Seasonality]` (periods ≥ 2, in grain steps), `trend: Optional[TrendConfig]` (local-level random-walk step-size prior), `format: Optional[MetricFormat]` (UI display hint — presentation only, coerced from the `format: currency` string shorthand), `direction` (`up_is_good`|`down_is_good`|`neutral`, UI goodness coloring only — never touches modeling). Validators enforce: formula is arithmetic-only AST and references only parents; prior keys are `"coefficient"` or a parent name; lag keys are parents, values are ints ≥ 1 (with `formula`, lags declare a cohort-aligned lagged identity — `A[t] = f(parents shifted back by their lags)`); `expected_signs` keys are parents with values `positive`/`negative` and are rejected on formula nodes (no learned coefficients to check); classic day-grain seasonality periods (7/30/365) on a non-day node warn.
+**`MetricDefinition`** — Pydantic model for one metric node. Fields: `name`, `source`, `grain` (`day`|`week`|`month`, default day), `kind` (`flow`|`stock`|`rate`, default flow), `description`, `sql` (warehouse provider only), `parents`, `formula`, `priors: Dict[str, Prior]`, `lags: Dict[str, int]` (grain steps at the node's grain), `seasonality: List[Seasonality]` (periods ≥ 2, in grain steps), `trend: Optional[TrendConfig]` (local-level random-walk step-size prior), `baseline: Optional[AssertedBaseline]` (prior-mode asserted operating point — `{low, high}` read as a central-90% Normal interval, numeric shorthand coerced to a degenerate point; units are mean per native-grain period, i.e. what a fitted `window_mean` baseline would be), `plausible: Optional[PlausibleRange]` (prior-mode honesty band — optional `min`/`max`, at least one required, stands in for historical min/max in what-if extrapolation flags), `format: Optional[MetricFormat]` (UI display hint — presentation only, coerced from the `format: currency` string shorthand), `direction` (`up_is_good`|`down_is_good`|`neutral`, UI goodness coloring only — never touches modeling). Validators enforce: formula is arithmetic-only AST and references only parents; prior keys are `"coefficient"` or a parent name; lag keys are parents, values are ints ≥ 1 (with `formula`, lags declare a cohort-aligned lagged identity — `A[t] = f(parents shifted back by their lags)`); `expected_signs` keys are parents with values `positive`/`negative` and are rejected on formula nodes (no learned coefficients to check); `baseline` is rejected on formula nodes (theirs derive per-draw from parents so the identity holds — an asserted one could contradict it); classic day-grain seasonality periods (7/30/365) on a non-day node warn.
 
 **Cross-node grain rules** (`Parser._validate_grains`, needs both edge endpoints so it runs after the DAG is built): a parent may never be coarser than its child (downward disaggregation undefined); a finer parent must be an auto-aggregatable `flow`/`stock` whose grain **nests** in the child's (days tile weeks/months; weeks straddle month boundaries, so week-under-month is rejected); finer `rate` parents are rejected (declare the rate at the child's grain).
 
@@ -135,6 +136,20 @@ Root cause analysis over `nx.ancestors(dag, target) | {target}`. `traces` is the
 `window_mean(data, col, start, end)` is the shared helper (inclusive bounds; raises on empty window).
 
 Response contract: `{"target", "reference_window", "analysis_window", "nodes", "ranked_causes"}` — the top level echoes the *requested* windows; snapped ones are per-node.
+
+---
+
+## `engine/simulate.py`
+
+### `run_scenario(dag, data, traces, scenario, advi_draws=500, n_draws=2000)`
+
+Do-operator what-if behind `POST /simulate` and the MCP `run_whatif` tool. A `ScenarioRequest` carries `interventions` (set/delta/pct on a node — do-operator: severs inbound influence), `assumptions` (user-stated Normal effect ranges on edges the tree doesn't encode, central-90% `[low, high]` convention), and `levers` (display metadata only — no dynamics in v1). Steady-state deltas propagate per-draw through the affected downstream subgraph in topological order — draw index preserved end-to-end, so an optimistic coefficient draw stays optimistic through every hop — with an exact Shapley decomposition over sources (each intervention/assumption) using point means. Cross-grain edges scale deltas by the edge's periods-per-period factor.
+
+**Fitted mode** (`data` present): baselines are `window_mean` over `baseline_start/end` (required; whole periods at each node's grain, no whole period → `ValueError`); coefficient draws index each needed node's `beta_raw` posterior, fit on demand with ADVI into the caller's `traces` cache (keyed `(node, fit_end)`, `fit_end = baseline_end + 1 day`, or the full-window `None` key when the baseline runs to the data edge). Extrapolation honesty flags compare simulated levels against full-history min/max and ±2σ.
+
+**Prior mode** (`data=None` — a tree with no data): the same machinery with zero rows. Baselines come from each node's asserted `baseline` declaration — sampled `Normal(mu, (high−low)/2z₉₀)` per non-formula node, formula nodes derived per-draw from parents in topological order so identities hold under the stated beliefs; `beta_raw` is sampled directly from each edge's YAML prior in business units (`_sample_prior`, with analytic `_prior_mean` for the Shapley point pass) — the `x_std/y_std` rescaling exists only to reach normalized space for fitting, so with nothing to fit the prior IS the coefficient distribution. Extrapolation flags come from declared `plausible` bounds (no bounds → no flag). The scenario must omit `baseline_start/end`; `traces` is untouched. `validate_prior_mode(dag) -> List[str]` returns every blocker — a non-formula node without `baseline`, a probabilistic edge without an explicit prior (the fitted-mode `Normal(0, 1)` fallback is meaningless with no data to set the scale) — and `run_scenario` raises on a non-empty list.
+
+Response contract: `{"mode": "fitted"|"prior", "baseline_window" (null in prior mode), "n_draws", "seed", "sources", "nodes", "warnings", "caveats"}`. Per-node: `status` (`baseline`|`affected`|`intervened`), `baseline`, `simulated`, `delta: {estimate, ci_95}`, `relative_delta`, `prob_direction`, `fit_quality`, `extrapolation`, `contributions`; prior mode adds `baseline_ci_95` (null for point baselines) and swaps `CAVEATS` for `PRIOR_CAVEATS`. Seeded rng (`seed: 0`) with fixed draw order — identical calls are byte-identical.
 
 ---
 
