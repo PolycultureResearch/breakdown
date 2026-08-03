@@ -19,7 +19,7 @@ from breakdown.data_fetch import (
 )
 from breakdown.engine.model import fit_metric, summarize_trace
 from breakdown.engine.rca import run_rca, shapley_attribution
-from breakdown.engine.simulate import ScenarioRequest, run_scenario
+from breakdown.engine.simulate import ScenarioRequest, run_scenario, validate_cold_start
 from breakdown.grains import GrainedData, build_grained
 from breakdown.mcp.server import mcp
 from breakdown.parser import Parser
@@ -129,6 +129,20 @@ def _require_ready(request: Request) -> None:
         )
 
 
+def _require_data(request: Request) -> None:
+    """422 on time-series endpoints for a cold-start tree (`provider: none`).
+    A stated mode, not an error: the tree deliberately has no data, so
+    analyses that consume history cannot exist — only /simulate can."""
+    _require_ready(request)
+    if request.app.state.data is None:
+        raise HTTPException(
+            status_code=422,
+            detail="This tree declares no data provider (cold start mode); "
+            "this endpoint needs time-series data. What-if simulation over "
+            "the declared beliefs is available at POST /simulate.",
+        )
+
+
 def _pick_fit(traces: Dict[Tuple[str, Optional[str]], Any], name: str):
     """Best cached fit to summarize for a metric: prefer the full-window fit,
     else the one with the latest fit_end, else None."""
@@ -190,33 +204,53 @@ async def lifespan(app: FastAPI):
     app.state.lock = asyncio.Lock()
 
     try:
-        start_date = _validate_date(
-            os.environ.get("BREAKDOWN_START_DATE", DEFAULT_START_DATE), "start date"
-        )
-        end_date = _validate_date(
-            os.environ.get("BREAKDOWN_END_DATE", DEFAULT_END_DATE), "end date"
-        )
-        if end_date < start_date:
-            raise RuntimeError(f"end date '{end_date}' is before start date '{start_date}'")
-
         with open(tree_path, "r") as f:
             yaml_config = f.read()
 
         parser = Parser(yaml_config)
         provider_cfg = parser.config.provider
-        fetcher = _build_fetcher(provider_cfg, parser.dag, parser.config.metrics)
-        fetcher = _wrap_snapshots(fetcher, provider_cfg.type, tree_path)
-        data = _fetch_all_metrics(parser, fetcher, provider_cfg.type, start_date, end_date)
+        if provider_cfg.type == "none":
+            # Cold-start tree: nothing is fetched, app.state.data stays None
+            # — a stated mode, not a degraded startup. Missing declarations
+            # would otherwise surface one 422 at a time on /simulate, so
+            # check readiness here and fail loudly with the full list.
+            problems = validate_cold_start(parser.dag)
+            if problems:
+                raise RuntimeError(
+                    "tree declares no data provider but is not cold-start "
+                    "ready: " + "; ".join(problems)
+                )
+            app.state.parser = parser
+            logger.info(
+                "breakdown API started (cold start): tree=%s metrics=%d — "
+                "no data provider, serving what-if over declared beliefs",
+                tree_path, len(parser.config.metrics),
+            )
+        else:
+            start_date = _validate_date(
+                os.environ.get("BREAKDOWN_START_DATE", DEFAULT_START_DATE), "start date"
+            )
+            end_date = _validate_date(
+                os.environ.get("BREAKDOWN_END_DATE", DEFAULT_END_DATE), "end date"
+            )
+            if end_date < start_date:
+                raise RuntimeError(
+                    f"end date '{end_date}' is before start date '{start_date}'"
+                )
 
-        app.state.parser = parser
-        app.state.fetcher = fetcher
-        app.state.data = data
+            fetcher = _build_fetcher(provider_cfg, parser.dag, parser.config.metrics)
+            fetcher = _wrap_snapshots(fetcher, provider_cfg.type, tree_path)
+            data = _fetch_all_metrics(parser, fetcher, provider_cfg.type, start_date, end_date)
 
-        logger.info(
-            "breakdown API started: tree=%s provider=%s window=[%s, %s] rows=%s",
-            tree_path, provider_cfg.type, start_date, end_date,
-            ", ".join(f"{g}:{len(f)}" for g, f in data.frames.items()),
-        )
+            app.state.parser = parser
+            app.state.fetcher = fetcher
+            app.state.data = data
+
+            logger.info(
+                "breakdown API started: tree=%s provider=%s window=[%s, %s] rows=%s",
+                tree_path, provider_cfg.type, start_date, end_date,
+                ", ".join(f"{g}:{len(f)}" for g, f in data.frames.items()),
+            )
     except Exception as e:
         app.state.startup_error = f"{type(e).__name__}: {e}"
         logger.error(
@@ -279,16 +313,31 @@ async def health(request: Request):
 
 @app.get("/meta")
 async def get_meta(request: Request):
-    """Bootstrap info for the UI: metrics, data window, provider, fit status."""
+    """Bootstrap info for the UI: metrics, data window, provider, fit status.
+    `mode` tells the UI which surface to boot: "fitted" (data-backed) or
+    "cold_start" (no data provider — what-if over declared beliefs only)."""
     _require_ready(request)
     parser = request.app.state.parser
     data = request.app.state.data
+    if data is None:
+        return {
+            "mode": "cold_start",
+            "provider": parser.config.provider.type,
+            "metrics": [m.name for m in parser.config.metrics],
+            "date_start": None,
+            "date_end": None,
+            "grains": {m.name: m.grain for m in parser.config.metrics},
+            "kinds": {m.name: m.kind for m in parser.config.metrics},
+            "data_through": {},
+            "fitted": [],
+        }
     data_through = {}
     for name in data.grain_of:
         through = data.data_through(name)
         if through is not None:
             data_through[name] = str(through.date())
     return {
+        "mode": "fitted",
         "provider": parser.config.provider.type,
         "metrics": [m.name for m in parser.config.metrics],
         "date_start": str(data.date_start.date()),
@@ -321,7 +370,7 @@ async def get_series(request: Request):
     """Every metric's series at its native grain, for the node cards. Mixed
     grains mean there is no single shared date axis: each metric carries its
     own period-start dates. NaN -> null for valid JSON."""
-    _require_ready(request)
+    _require_data(request)
     parser = request.app.state.parser
     data = request.app.state.data
     metrics = {}
@@ -351,10 +400,15 @@ async def get_metric(name: str, request: Request):
     if not metric:
         raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
 
-    try:
-        time_series = data.series(name).to_dict(orient="records")
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"No data found for metric '{name}'")
+    if data is None:
+        # Cold-start tree: the definition (with its asserted baseline and
+        # plausible band) is the whole story — there is no series to show.
+        time_series = []
+    else:
+        try:
+            time_series = data.series(name).to_dict(orient="records")
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"No data found for metric '{name}'")
 
     summary = None
     diagnostics = None
@@ -385,7 +439,7 @@ async def analyze_metric(
     chains: int = Query(default=4, ge=1, le=8),
     fit_end: Optional[str] = Query(default=None),
 ):
-    _require_ready(request)
+    _require_data(request)
     parser = request.app.state.parser
     data = request.app.state.data
 
@@ -424,7 +478,7 @@ async def get_shapley(
     analysis_start: str = Query(..., description="Start of analysis window (YYYY-MM-DD)"),
     analysis_end: str = Query(..., description="End of analysis window (YYYY-MM-DD)"),
 ):
-    _require_ready(request)
+    _require_data(request)
     parser = request.app.state.parser
     data = request.app.state.data
 
@@ -454,7 +508,7 @@ async def root_cause_analysis(
     analysis_start: str = Query(..., description="Start of analysis window (YYYY-MM-DD)"),
     analysis_end: str = Query(..., description="End of analysis window (YYYY-MM-DD)"),
 ):
-    _require_ready(request)
+    _require_data(request)
     parser = request.app.state.parser
     data = request.app.state.data
 

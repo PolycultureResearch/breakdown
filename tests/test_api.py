@@ -284,3 +284,121 @@ def test_degraded_startup_serves_instead_of_crashing(tmp_path, monkeypatch):
 
         assert client.get("/ui/").status_code == 200
         assert client.get("/").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Cold start mode: provider `none` — no data, what-if over declared beliefs
+
+COLD_START_TREE = """
+provider:
+  type: none
+
+metrics:
+  - name: sessions
+    source: assumed
+    baseline: {low: 800, high: 1600}
+    plausible: {min: 0}
+
+  - name: signups
+    source: assumed
+    parents: [sessions]
+    baseline: 40
+    priors:
+      sessions:
+        distribution: "Normal"
+        params: {mu: 0.03, sigma: 0.01}
+
+  - name: aov
+    source: assumed
+    baseline: 50
+
+  - name: revenue
+    source: assumed
+    parents: [signups, aov]
+    formula: "signups * aov"
+"""
+
+
+@pytest.fixture
+def cold_start_env(tmp_path, monkeypatch):
+    tree_file = tmp_path / "cold_start_tree.yml"
+    tree_file.write_text(COLD_START_TREE)
+    monkeypatch.setenv("BREAKDOWN_TREE", str(tree_file))
+
+
+def test_cold_start_boots_ok_not_degraded(cold_start_env):
+    """provider: none is a stated mode: startup fetches nothing, data stays
+    None, and health reports ok — not the degraded path."""
+    with TestClient(app) as client:
+        assert app.state.startup_error is None
+        assert app.state.data is None
+        assert client.get("/health").json() == {
+            "status": "ok", "provider": "none", "metrics": 4,
+        }
+
+        meta = client.get("/meta").json()
+        assert meta["mode"] == "cold_start"
+        assert meta["date_start"] is None and meta["date_end"] is None
+        assert meta["fitted"] == [] and meta["data_through"] == {}
+        assert meta["grains"]["sessions"] == "day"
+
+        # the DAG and definitions still serve (they need no data)
+        assert client.get("/dag").status_code == 200
+        m = client.get("/metrics/revenue").json()
+        assert m["time_series"] == [] and m["summary"] is None
+
+
+def test_cold_start_guards_data_routes(cold_start_env):
+    """Time-series endpoints are a stated impossibility on a dataless tree:
+    422 pointing at /simulate, not a 500 or a degraded 503."""
+    windows = {
+        "reference_start": "2024-01-01", "reference_end": "2024-01-31",
+        "analysis_start": "2024-02-01", "analysis_end": "2024-02-29",
+    }
+    with TestClient(app) as client:
+        for resp in (
+            client.get("/series"),
+            client.post("/analyze/sessions"),
+            client.get("/shapley/revenue", params=windows),
+            client.post("/rca/revenue", params=windows),
+        ):
+            assert resp.status_code == 422
+            assert "no data provider" in resp.json()["detail"]
+            assert "/simulate" in resp.json()["detail"]
+
+
+def test_cold_start_simulate(cold_start_env):
+    """POST /simulate runs the cold-start engine: no baseline window, mode
+    label, belief intervals; passing a window is rejected."""
+    with TestClient(app) as client:
+        resp = client.post("/simulate", json={
+            "interventions": [{"metric": "sessions", "mode": "pct", "value": 0.10}],
+        })
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["mode"] == "cold_start"
+        assert body["baseline_window"] is None
+        # the range-asserted root carries a belief interval; propagation reaches revenue
+        assert body["nodes"]["sessions"]["baseline_ci_95"] is not None
+        assert body["nodes"]["revenue"]["status"] == "affected"
+        assert body["nodes"]["revenue"]["delta"]["estimate"] > 0
+
+        resp = client.post("/simulate", json={
+            "baseline_start": "2024-01-01", "baseline_end": "2024-02-01",
+            "interventions": [{"metric": "sessions", "mode": "pct", "value": 0.10}],
+        })
+        assert resp.status_code == 422
+        assert "baseline" in resp.json()["detail"]
+
+
+def test_cold_start_not_ready_tree_serves_degraded(tmp_path, monkeypatch):
+    """A provider-none tree missing declarations must fail loudly at startup
+    with the full blocker list, not one 422 at a time on /simulate."""
+    tree_file = tmp_path / "not_ready.yml"
+    tree_file.write_text(COLD_START_TREE.replace("    baseline: {low: 800, high: 1600}\n", ""))
+    monkeypatch.setenv("BREAKDOWN_TREE", str(tree_file))
+    with TestClient(app) as client:
+        health = client.get("/health").json()
+        assert health["status"] == "degraded"
+        assert "not cold-start ready" in health["error"]
+        assert "sessions" in health["error"]

@@ -27,6 +27,10 @@ from breakdown.parser import MetricDefinition
 
 logger = logging.getLogger(__name__)
 
+# Minimum whole periods (at the node's grain, after lag trimming) a fit needs.
+# `breakdown doctor` reports per-metric readiness against the same number.
+MIN_FIT_PERIODS = 10
+
 
 @dataclass
 class FitResult:
@@ -260,11 +264,11 @@ def _prepare_series(
 
     lags = defn.lags
     max_lag = max(lags.values(), default=0)
-    if max_lag > 0 and len(data) - max_lag < 10:
+    if max_lag > 0 and len(data) - max_lag < MIN_FIT_PERIODS:
         raise ValueError(
             f"Not enough rows after applying lags to '{target}': "
             f"{len(data)} rows minus max lag {max_lag} leaves "
-            f"{len(data) - max_lag} (need >= 10)."
+            f"{len(data) - max_lag} (need >= {MIN_FIT_PERIODS})."
         )
 
     if defn.formula and parents:
@@ -447,10 +451,10 @@ def fit_metric(
         # identical to the pre-grain behavior.
         ends = pd.DatetimeIndex([next_start(d, grain) for d in dates])
         data = data.loc[ends <= cutoff].reset_index(drop=True)
-        if len(data) < 10:
+        if len(data) < MIN_FIT_PERIODS:
             raise ValueError(
                 f"Only {len(data)} whole {grain} periods before fit_end={fit_end} "
-                f"for '{target}' (need >= 10)."
+                f"for '{target}' (need >= {MIN_FIT_PERIODS})."
             )
 
     _validate_columns(data, [target] + parents)

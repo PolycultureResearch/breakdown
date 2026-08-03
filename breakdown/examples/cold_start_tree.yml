@@ -1,0 +1,63 @@
+# A cold-start tree: a pre-revenue SaaS working out its subscription pricing
+# before the first row of data exists (knowledge/cold_start_founder_intro.md).
+#
+# `provider: none` means nothing is ever fetched — every baseline below is an
+# asserted operating point ([low, high] = central 90% belief; a bare number is
+# a point), every probabilistic edge carries an explicit business-unit prior,
+# and `plausible` bounds stand in for historical min/max in the honesty flags.
+#
+#   uv run breakdown serve --tree breakdown/examples/cold_start_tree.yml
+
+provider:
+  type: none
+
+metrics:
+  - name: site_sessions
+    description: "Monthly unique visits once launch content lands"
+    source: assumed
+    grain: month
+    baseline: { low: 8000, high: 20000 }
+    plausible: { min: 0 }
+
+  - name: trial_signups
+    description: "10–50 trials per 1,000 visits, stated as a belief"
+    source: assumed
+    grain: month
+    parents: [site_sessions]
+    baseline: { low: 150, high: 700 }
+    plausible: { min: 0 }
+    priors:
+      site_sessions:
+        distribution: "Normal"
+        params: { mu: 0.03, sigma: 0.012 }
+
+  - name: paying_customers
+    description: "Trial → paid conversion believed 5–25%"
+    source: assumed
+    grain: month
+    kind: stock
+    parents: [trial_signups]
+    baseline: { low: 20, high: 120 }
+    plausible: { min: 0 }
+    priors:
+      trial_signups:
+        distribution: "Normal"
+        params: { mu: 0.15, sigma: 0.06 }
+
+  - name: avg_price
+    description: "Monthly price the pitch can carry"
+    source: assumed
+    grain: month
+    kind: rate
+    baseline: { low: 30, high: 80 }
+    plausible: { min: 0 }
+    format: currency
+
+  - name: mrr
+    description: "The identity the whole question hangs on"
+    source: assumed
+    grain: month
+    parents: [paying_customers, avg_price]
+    formula: "paying_customers * avg_price"
+    plausible: { min: 0 }
+    format: currency

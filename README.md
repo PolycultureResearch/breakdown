@@ -150,6 +150,8 @@ uv run breakdown doctor --tree path/to/my_tree.yml
 
 It walks the provider's auth chain step by step (tree parses → env vars set → CLI/profile/token valid → connection opens → every metric's query actually runs) and prints `[PASS]`/`[FAIL]` per step with copy-paste remediation for each failure. Exit code is non-zero if anything failed. Probes run over the last 7 days by default; override with `--start-date`/`--end-date`.
 
+Two mode-specific checks ride along: a cold-start tree (`provider: none`) gets its declarations validated instead of a connection probe, and when you pass an explicit `--start-date`/`--end-date` window the doctor adds a **fit readiness** report — each metric's whole-period count against the 10-period fit minimum, the graduation check for a tree [moving from cold start to fitted mode](#cold-start-mode-what-if-with-no-data).
+
 ### Snapshots: fetch once, refit forever
 
 For non-mock providers, every fetched series is cached as a parquet snapshot keyed on `(metric, grain, kind, window)` — by default in `.breakdown/snapshots/` next to the tree. Later startups with the same window read from disk instead of the warehouse, which makes restarts fast, keeps re-runs reproducible (commit the snapshots next to the tree and an RCA re-runs from a fresh clone), and lets the server boot even when the warehouse is unreachable, as long as every metric has a snapshot.
@@ -186,7 +188,7 @@ Controls how metric time-series data is fetched.
 
 ```yaml
 provider:
-  type: mock           # mock | local | cloud | warehouse
+  type: mock           # mock | local | cloud | warehouse | none
   project_path: "..."  # required for type: local
   environment_id: "..."  # required for type: cloud
   host: "..."            # required for type: cloud; optional for warehouse (read from profile)
@@ -203,6 +205,7 @@ provider:
 | `local` | Queries a dbt project on disk via the MetricFlow CLI (`mf query`). Requires `project_path`. |
 | `cloud` | Queries the dbt Semantic Layer API via the `dbt-sl-sdk`. Requires `environment_id`, `host`, and `token`. |
 | `warehouse` | Runs each metric's own `sql` directly against a warehouse (currently Databricks SQL). Use when the semantic layer isn't queryable — the analyst mirrors governed definitions in SQL. Requires `http_path` plus **one of**: a PAT `token` (with `host`), or a Databricks CLI OAuth `profile` created by `databricks auth login --profile <name>` (host is read from the profile). |
+| `none` | No data is ever fetched — a **cold-start tree** of declared beliefs (`assumed` is an accepted alias). Only what-if simulation is available; every non-formula node needs a `baseline` and every probabilistic edge an explicit prior. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
 
 For `local` and `cloud`, the metric queried from the semantic layer is the last segment of `source` (e.g., `source: jaffle_shop.metrics.revenue` queries the metric `revenue`); the result is exposed in the tree under `name`. For `warehouse`, each metric carries its own `sql` (see the `metrics` table) and is keyed by `name`. The data window defaults to `2024-01-01`–`2024-04-09` and is set with `--start-date` / `--end-date` (or the `BREAKDOWN_START_DATE` / `BREAKDOWN_END_DATE` / `BREAKDOWN_TREE` environment variables).
 
@@ -227,6 +230,8 @@ Each metric entry supports the following fields:
 | `expected_signs` | dict | Per-parent declared coefficient direction (`positive` \| `negative`) on a probabilistic node. **Not a prior** — the fit is unconstrained, but a posterior that contradicts the declaration raises a `sign_warnings` diagnostic (surfaced in `/analyze`, `/metrics`, RCA responses, and the UI). |
 | `seasonality` | list | Periodic components to include in the BSTS model. Periods are in grain steps at the node's grain. |
 | `trend` | string or dict | Local-level (random-walk) trend. `trend: linear` uses the default step-size prior HalfNormal(0.05); `trend: {type: linear, sigma: 0.1}` widens it so the trend may absorb faster drift. Only `type: linear` is supported. |
+| `baseline` | number or dict | **Cold-start mode only.** Asserted operating point for a tree with no data: `baseline: 1200` (point) or `baseline: {low: 800, high: 1600}` (central 90% interval of a Normal), in mean-per-period units at the node's grain. Rejected on formula nodes — theirs derive from parents so the identity holds. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
+| `plausible` | dict | **Cold-start mode only.** Declared honesty band `{min, max}` (either bound may be omitted, at least one required) standing in for historical min/max in the what-if extrapolation flags; `min: 0` recovers the "can't go negative" check. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
 | `format` | string or dict | UI display hint for the node card's big number — presentation only, no effect on modeling. See [Display format](#display-format). |
 | `direction` | string | Which way is good news, for UI coloring only: `up_is_good` (default), `down_is_good` (costs, tickets, time-to-X), or `neutral` (gray, no judgment). Arrows stay directional; only the green/red coloring follows the declaration. Note: a stored-negative flow like churn MRR is `up_is_good` — moving toward zero means less churn. |
 
@@ -392,18 +397,71 @@ Delta values (period-over-period change) always render as a percent; `format` ap
 
 **Display defaults.** When a metric declares no `format`, the UI guesses one from naming conventions — names containing tokens like `mrr`, `arr`, `revenue`, `arpu`, `aov`, `usd`, `cost`, `spend` render as currency; `rate`, `pct`, `percent`, `share`, `ratio` render as percent; everything else as a plain number. This is presentation-only and an explicit `format` always wins — declare one whenever the guess would be wrong.
 
+### Cold-start mode (what-if with no data)
+
+A tree with **no data provider** can still run what-if scenarios — on declared beliefs alone. The what-if engine's propagation core consumes operating points, edge slopes, and assumption effects; in cold-start mode all three are stated rather than fitted, so a pre-revenue company can simulate its business before the first row of data exists. The output quantifies the consequences of your assumptions — honestly wide intervals, never evidence.
+
+A cold-start tree declares beliefs everywhere:
+
+- **`baseline` on every non-formula node** — the asserted operating point, as a point (`baseline: 1200`) or a central-90% interval (`baseline: {low: 800, high: 1600}`), in mean-per-period units at the node's grain. Formula nodes derive theirs per-draw from their parents so the arithmetic identity holds by construction — declaring one there is a parse error.
+- **An explicit prior on every probabilistic edge** (parent-specific or shared `coefficient`). Priors are already stated in business units, and with nothing to fit the prior *is* the coefficient distribution — coefficient draws are sampled from it directly. The fitted-mode fallback `Normal(0, 1)` is meaningless without data to set the scale, so it is not allowed here.
+- **`plausible: {min, max}`** (optional; either bound alone is fine) — the declared honesty band standing in for historical min/max: a simulated value outside it raises the same extrapolation warning fitted mode derives from history. `min: 0` recovers the "this can't go negative" check.
+
+```yaml
+- name: site_sessions
+  source: assumed                       # provenance label; no provider is queried
+  baseline: { low: 800, high: 1600 }
+  plausible: { min: 0 }
+
+- name: signups
+  source: assumed
+  parents: [site_sessions]
+  baseline: { low: 10, high: 60 }
+  priors:
+    site_sessions:
+      distribution: "Normal"
+      params: { mu: 0.02, sigma: 0.01 } # ~2 signups per 100 sessions, stated as a belief
+```
+
+Propagation, do-operator semantics, draw alignment, and the Shapley source decomposition are identical to fitted mode. The response is labeled `mode: "cold_start"`, adds a per-node `baseline_ci_95` where the asserted baseline is a range, and carries cold-start caveats so the output can't be mistaken for estimates from data. When data arrives, the same YAML priors feed the fit — posteriors replace priors with zero config changes.
+
+**Serving a cold-start tree.** Declare `provider: type: none` and `breakdown serve` boots without fetching anything — not a degraded start; the tree simply has no data. Startup validates the declarations and fails loudly with the full list of blockers if any are missing (`breakdown doctor` runs the same check). `GET /meta` reports `"mode": "cold_start"`; endpoints that consume history (`/series`, `/analyze`, `/shapley`, `/rca`) return 422 pointing at `POST /simulate`, which runs scenarios with **no baseline window** — operating points come from the tree, so a scenario passing `baseline_start`/`baseline_end` is rejected. The MCP `run_whatif` tool works the same way (omit the baseline dates).
+
+**The UI boots what-if-first** on a cold-start tree: node cards show each metric's asserted operating point with its 90% belief range (formula nodes derive theirs), probabilistic edges are labeled with their stated priors (`β ~ 0.03 [0.01, 0.05] · belief`), the adjust panel's range strip renders from the declared `plausible` bounds, and results are labeled as consequences of beliefs — the Root cause tab is inert, since there is no history to explain. Try it with the bundled example:
+
+```bash
+uv run breakdown serve --tree breakdown/examples/cold_start_tree.yml
+```
+
+See [`docs/model.md`](docs/model.md) ("Reading cold-start output") before presenting results, and `knowledge/cold_start_design.md` for the full design.
+
+**Graduating from cold start.** The tree you build pre-data *is* the tree you fit once data exists — the Bayesian promise is literal. When real numbers start flowing:
+
+1. Swap the provider block (`type: none` → `local` / `cloud` / `warehouse`) and give each metric a real `source` (or `sql`). Nothing else in the tree changes.
+2. Your `priors` carry over untouched — the same declarations that were sampled directly in cold start become the Bayesian priors of the BSTS fit, and the data updates them into posteriors. What-if flips from prior draws to posterior draws automatically; RCA becomes available.
+3. `baseline` and `plausible` are ignored by fitted mode and stay in the YAML as a record of what you believed before the data arrived — worth keeping.
+
+Two things to plan for. Each node needs at least **10 whole periods at its grain** before it can be fitted — a monthly tree waits most of a year for its first fit, so author cold-start trees at the finest grain you'll actually measure (weekly for most funnels; edge priors are per-parent-unit and carry over, but per-period `baseline` values would need rescaling). And check where you stand at any point with the doctor's **fit readiness** report:
+
+```bash
+uv run breakdown doctor --tree my_tree.yml --start-date 2026-01-01 --end-date 2026-08-01
+```
+
+It reports every metric's whole-period count against the fit minimum (`signups: 30/10 whole day periods` … `churn_rate: 4/10 — not fittable yet`), so you can watch the tree graduate metric by metric.
+
 ---
 
 ## API reference
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/meta` | Metric names, data window, provider type, fitted models (UI bootstrap) |
+| `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), fitted models (UI bootstrap) |
 | `GET` | `/dag` | Full metric DAG (nodes + edges) |
 | `GET` | `/metrics/{name}` | Metric definition, time series, and posterior summary |
 | `POST` | `/analyze/{name}` | Run Bayesian sampling for a metric |
 | `GET` | `/shapley/{name}` | Shapley attribution for a formula metric |
 | `POST` | `/rca/{name}` | Root cause analysis over the metric's ancestors |
+| `POST` | `/simulate` | Do-operator what-if scenario (fitted posteriors, or declared beliefs on a cold-start tree) |
 | `GET` | `/ui` | Interactive DAG visualization |
 
 ### `POST /analyze/{name}`

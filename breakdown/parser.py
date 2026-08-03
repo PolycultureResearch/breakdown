@@ -25,6 +25,52 @@ class Prior(BaseModel):
             raise ValueError(f"Invalid distribution: {v}. Must be one of {valid_dists}")
         return v
 
+class AssertedBaseline(BaseModel):
+    """Declared operating point for cold-start mode (a tree with no data).
+
+    `[low, high]` is read as the central 90% interval of a Normal — the same
+    elicitation convention as what-if assumption effects — with `low == high`
+    degenerating to a point. Units are mean per native grain period, exactly
+    what a fitted baseline (`window_mean`) would be. Written in YAML either as
+    the shorthand `baseline: 1200` or as `baseline: {low: 800, high: 1600}`.
+    """
+
+    low: float
+    high: float
+
+    @model_validator(mode="after")
+    def check_bounds(self) -> "AssertedBaseline":
+        if self.low > self.high:
+            raise ValueError(f"baseline low ({self.low}) must be <= high ({self.high})")
+        return self
+
+    @property
+    def mu(self) -> float:
+        return (self.low + self.high) / 2.0
+
+    @property
+    def is_point(self) -> bool:
+        return self.low == self.high
+
+
+class PlausibleRange(BaseModel):
+    """Declared honesty band for cold-start mode: the substitute for historical
+    min/max when there is no history. A simulated value outside the bounds
+    flags the node; `min: 0` recovers the non-physical (negative) check.
+    Either bound may be omitted; at least one must be present."""
+
+    min: Optional[float] = None
+    max: Optional[float] = None
+
+    @model_validator(mode="after")
+    def check_bounds(self) -> "PlausibleRange":
+        if self.min is None and self.max is None:
+            raise ValueError("plausible must declare at least one of min/max")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError(f"plausible min ({self.min}) must be <= max ({self.max})")
+        return self
+
+
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
@@ -46,7 +92,7 @@ def _expand_env(value: Optional[str]) -> Optional[str]:
 
 
 class DataProviderConfig(BaseModel):
-    type: str = "mock" # "mock", "local", "cloud", "warehouse"
+    type: str = "mock" # "mock", "local", "cloud", "warehouse", "none" (alias "assumed")
     project_path: Optional[str] = None
     environment_id: Optional[str] = None
     host: Optional[str] = None
@@ -67,8 +113,12 @@ class DataProviderConfig(BaseModel):
     @field_validator("type")
     @classmethod
     def validate_type(cls, v: str) -> str:
-        if v not in ["mock", "local", "cloud", "warehouse"]:
-            raise ValueError("type must be one of: mock, local, cloud, warehouse")
+        # `none` declares a cold-start tree (no data is ever fetched);
+        # `assumed` is the same thing said from the tree author's seat.
+        if v == "assumed":
+            return "none"
+        if v not in ["mock", "local", "cloud", "warehouse", "none"]:
+            raise ValueError("type must be one of: mock, local, cloud, warehouse, none")
         return v
 
     @field_validator(
@@ -162,6 +212,12 @@ class MetricDefinition(BaseModel):
     expected_signs: Dict[str, str] = Field(default_factory=dict)
     seasonality: List[Seasonality] = Field(default_factory=list)
     trend: Optional[TrendConfig] = None
+    # Cold-start declarations (trees with no data provider). `baseline` is the
+    # asserted operating point of a source/probabilistic node (formula nodes
+    # derive theirs from parents — declaring one is rejected); `plausible` is
+    # the declared honesty band standing in for historical min/max.
+    baseline: Optional[AssertedBaseline] = None
+    plausible: Optional[PlausibleRange] = None
     # UI display hint for the node card's big number; does not affect modeling.
     format: Optional[MetricFormat] = None
     # Which way is good news, for UI coloring only (never affects modeling or
@@ -240,6 +296,27 @@ class MetricDefinition(BaseModel):
         if isinstance(v, str):
             return {"style": v}
         return v
+
+    @field_validator("baseline", mode="before")
+    @classmethod
+    def coerce_baseline(cls, v: Any) -> Any:
+        # shorthand: `baseline: 1200` is `baseline: {low: 1200, high: 1200}`
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return {"low": float(v), "high": float(v)}
+        return v
+
+    @model_validator(mode="after")
+    def check_baseline(self) -> "MetricDefinition":
+        # A formula node's baseline is derived per-draw from its parents so
+        # the identity holds by construction; an asserted one could contradict
+        # it, so it is rejected rather than silently ignored.
+        if self.baseline is not None and self.formula is not None:
+            raise ValueError(
+                f"Metric '{self.name}' declares `baseline` on a formula node; "
+                "formula baselines are derived from parents (the identity must "
+                "hold), so an asserted baseline is not allowed."
+            )
+        return self
 
     @field_validator("trend", mode="before")
     @classmethod

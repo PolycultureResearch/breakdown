@@ -57,6 +57,24 @@ WHATIF_HOW_TO_READ = (
     "than dropping it."
 )
 
+COLD_START_HOW_TO_READ = (
+    "- This tree runs in COLD START mode (`mode: \"cold_start\"`): it has no data provider. "
+    "Every baseline and slope is a stated belief (asserted operating points, YAML priors) — "
+    "present results as consequences of the assumptions, never as evidence. "
+    "`baseline_ci_95` is the belief interval around a node's operating point; extrapolation "
+    "flags compare against the tree's declared `plausible` bounds, not history. "
+    "The most useful narrative is sensitivity: which beliefs drive the answer, and are "
+    "therefore worth measuring first."
+)
+
+
+def whatif_how_to_read(mode: str) -> str:
+    """The what-if how_to_read block; cold-start results gain the caveat
+    block that reframes every number as a stated belief."""
+    if mode == "cold_start":
+        return WHATIF_HOW_TO_READ + "\n" + COLD_START_HOW_TO_READ
+    return WHATIF_HOW_TO_READ
+
 
 def round_floats(obj: Any, sig: int = _SIG_FIGS) -> Any:
     """Recursively round floats to `sig` significant figures; non-finite -> None."""
@@ -159,19 +177,24 @@ def compact_scenario(result: Dict[str, Any]) -> Dict[str, Any]:
     for name, node in result["nodes"].items():
         if node["status"] == "baseline":
             nodes[name] = {"status": "baseline", "baseline": node["baseline"]}
-            continue
-        nodes[name] = {
-            "status": node["status"],
-            "baseline": node["baseline"],
-            "simulated": node["simulated"],
-            "delta": node["delta"],
-            "relative_delta": node["relative_delta"],
-            "prob_direction": node["prob_direction"],
-            "fit_quality": node["fit_quality"],
-            "extrapolation": node["extrapolation"]["flag"],
-            "contributions": node["contributions"],
-        }
+        else:
+            nodes[name] = {
+                "status": node["status"],
+                "baseline": node["baseline"],
+                "simulated": node["simulated"],
+                "delta": node["delta"],
+                "relative_delta": node["relative_delta"],
+                "prob_direction": node["prob_direction"],
+                "fit_quality": node["fit_quality"],
+                "extrapolation": node["extrapolation"]["flag"],
+                "contributions": node["contributions"],
+            }
+        # Cold-start results carry the belief interval around each operating
+        # point; a null (point baseline) stays omitted like other null fields.
+        if node.get("baseline_ci_95") is not None:
+            nodes[name]["baseline_ci_95"] = node["baseline_ci_95"]
     return {
+        "mode": result["mode"],
         "baseline_window": result["baseline_window"],
         "n_draws": result["n_draws"],
         "sources": result["sources"],

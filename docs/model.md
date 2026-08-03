@@ -254,6 +254,45 @@ the parent's |share| (clamped to 1). It is a triage ordering — "look here
 first" — not a probability. For rigor, read the per-node contributions and
 their credible intervals.
 
+## Reading cold-start output
+
+A tree with `provider: none` runs what-if simulations with **zero data** —
+every input is a stated belief, and the output must be read that way.
+
+**Where the numbers come from.** Each non-formula node's operating point is
+its asserted `baseline` — `[low, high]` read as the central 90% interval of a
+Normal, sampled per draw (formula nodes derive theirs from parents per draw,
+so identities hold exactly under the stated beliefs). Each probabilistic
+edge's slope is sampled directly from its YAML prior in business units: with
+nothing to fit, the prior *is* the coefficient distribution. Propagation,
+do-operator semantics, and the Shapley source decomposition are identical to
+fitted mode; the response says `mode: "cold_start"`.
+
+**What the intervals mean.** A fitted 95% CI summarizes a posterior — belief
+disciplined by data. A cold-start 95% CI summarizes *only your stated
+beliefs composed coherently through the tree*. It answers "if my ranges are
+honest, where does the outcome land?", never "what does the evidence say?".
+Wide intervals are the feature: they are the truth about a business with no
+history, made explicit instead of hidden behind a spreadsheet's single
+confident number. Per-node `baseline_ci_95` is the belief interval around
+that node's operating point.
+
+**How to use it.** Comparing scenarios (two pricing trees, two growth
+assumptions) compares belief distributions — a valid, useful comparison. The
+source waterfall doubles as sensitivity analysis: the beliefs that dominate
+the outcome's spread are the ones worth measuring first. What cold-start
+output can never do is confirm a belief — only data can, and when it arrives
+the same YAML priors feed `fit_metric` and posteriors take over with no
+config changes.
+
+**Honesty flags.** Extrapolation warnings come from the tree's declared
+`plausible` bounds (there is no history to compare against); a node with no
+bounds is never flagged, which means *unchecked*, not *safe*. Belief draws
+are sampled independently per edge and per baseline — correlated beliefs
+("if price lands high, conversion lands low") are not represented, so
+intervals may be too narrow or too wide where beliefs co-vary. Both caveats
+ship in every cold-start response.
+
 ## Assumptions and limitations to keep in mind
 
 1. **The DAG is your hypothesis.** breakdown quantifies relationships along
