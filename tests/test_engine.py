@@ -553,8 +553,15 @@ metrics:
     parents: [daily_sessions]
     trend: { sigma: 0.2 }
 """
-    default = fit_metric(Parser(default_yaml).dag, data, "order_count", draws=200, tune=200).trace
-    wide = fit_metric(Parser(wide_yaml).dag, data, "order_count", draws=200, tune=200).trace
+    # Same seed for both fits: the claim is about the prior, so the sampler's
+    # randomness has to be held fixed or the comparison is a coin flip on a
+    # weak effect. Observed failing once in ~5 unseeded runs.
+    default = fit_metric(
+        Parser(default_yaml).dag, data, "order_count", draws=200, tune=200, random_seed=42
+    ).trace
+    wide = fit_metric(
+        Parser(wide_yaml).dag, data, "order_count", draws=200, tune=200, random_seed=42
+    ).trace
 
     assert float(wide.posterior["sigma_trend"].mean()) > float(default.posterior["sigma_trend"].mean())
 
