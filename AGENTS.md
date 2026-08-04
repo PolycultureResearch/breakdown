@@ -49,6 +49,13 @@ uv run breakdown serve --reload        # UI at http://localhost:9090/ui
 uv run pytest tests/ -v
 ```
 
+`uv sync` installs every provider extra (the dev group pulls
+`metric-breakdown[all]`), so the whole suite runs. **Users don't get that** —
+`pip install metric-breakdown` is base-only and the provider SDKs are the `dbt`
+and `databricks` extras, so nothing provider-specific may be imported at module
+scope and the three tests that need a real SDK skip themselves when it's absent.
+CI proves this with a no-extras job; see `docs/ai-context/python-backend.md`.
+
 Point at your own tree with `--tree path/to/tree.yml --start-date … --end-date …`.
 `--reload` is opt-in (the installed CLI defaults to no reload, loopback bind);
 `breakdown doctor --tree …` checks provider connectivity. Deployment (uvx, Docker)

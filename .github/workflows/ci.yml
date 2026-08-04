@@ -6,7 +6,10 @@ on:
   pull_request:
 
 jobs:
-  test:
+  # Lint is its own job rather than a step in front of the tests: it takes
+  # seconds, it is Python-version independent, and running it once in parallel
+  # returns a style failure faster than gating a matrix on it.
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -16,26 +19,137 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install dependencies
-        run: uv sync
-
       - name: Lint
         run: uv run ruff check .
 
+  # `requires-python = ">=3.11"` is a claim; this is what makes it true. Each
+  # version gets the full suite with every provider extra installed (the dev
+  # group pulls `metric-breakdown[all]`), so the dbt- and Databricks-backed
+  # tests actually run rather than skipping.
+  #
+  # 3.14 is deliberately absent here and covered by `base-install` below: the
+  # `dbt` extra cannot be used there (dbt-core's `mf` fails on import), so a
+  # matrix entry would have to be special-cased into a different test.
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.0
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --python ${{ matrix.python-version }}
+
       - name: Test
-        run: uv run pytest tests/ -q
+        run: uv run --python ${{ matrix.python-version }} pytest tests/ -q
 
-      # Keep the install story honest: the wheel must build, expose the
-      # console script, and ship the UI + bundled example tree.
+  # The install most people will actually perform: no extras — engine, API, UI,
+  # MCP server and the mock provider. Run on 3.14 because that is the version
+  # only the base package supports, so this is simultaneously the "does it work
+  # without extras" test and the "is the 3.14 classifier honest" test.
+  #
+  # It installs the built wheel rather than syncing the project, because a
+  # `uv sync` resolves the dev group and would quietly put the extras back.
+  base-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.0
+        with:
+          enable-cache: true
+
       - name: Build wheel
-        run: uv build
+        run: uv build --wheel
 
-      - name: Smoke-test wheel
+      - name: Install the wheel with no extras
         run: |
-          uv run --isolated --no-project --with dist/*.whl breakdown --help
-          uv run --isolated --no-project --with dist/*.whl python -c "
+          uv venv --python 3.14 .venv-base
+          VIRTUAL_ENV=.venv-base uv pip install dist/*.whl "pytest>=9.0.2" "httpx>=0.28.1"
+
+      # The three provider tests that need a real SDK skip themselves; the rest
+      # must pass, or the base install is not a working product.
+      - name: Test
+        run: .venv-base/bin/python -m pytest tests/ -q
+
+      # A base install must fail *informatively* on a provider it cannot serve.
+      # An ImportError traceback here would be a regression in the install story.
+      - name: Provider extras degrade with an actionable error
+        run: |
+          .venv-base/bin/python - <<'PY'
+          from breakdown.data_fetch import (
+              CloudDataFetcher, LocalDataFetcher, MissingProviderExtra, WarehouseDataFetcher,
+          )
+
+          cases = {
+              "dbt": [
+                  lambda: LocalDataFetcher("/tmp/x").fetch_metric("m", "2024-01-01", "2024-01-31"),
+                  lambda: CloudDataFetcher(environment_id="1", host="h", token="t"),
+              ],
+              "databricks": [
+                  lambda: WarehouseDataFetcher(
+                      host="h", http_path="p", token="t", metric_sql={}
+                  )._connect(),
+              ],
+          }
+          for extra, builders in cases.items():
+              for build in builders:
+                  try:
+                      build()
+                  except MissingProviderExtra as e:
+                      assert f"metric-breakdown[{extra}]" in str(e), e
+                      print("OK:", e)
+                  else:
+                      raise AssertionError(f"{extra}: expected MissingProviderExtra")
+          PY
+
+  # Keep the install story honest: the wheel must build, expose the console
+  # script, and ship the UI + bundled example tree.
+  wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.0
+        with:
+          enable-cache: true
+
+      - name: Build wheel
+        run: uv build --wheel
+
+      # `working-directory` is load-bearing, not tidiness. Run this from the
+      # repo root and Python puts the checkout on sys.path, so `import
+      # breakdown` resolves to the *source tree* and every assertion below
+      # passes whether or not the wheel contains anything. Running from
+      # elsewhere is what makes it a test of the artifact.
+      - name: Smoke-test wheel
+        working-directory: ${{ runner.temp }}
+        run: |
+          WHL=$(echo "$GITHUB_WORKSPACE"/dist/*.whl)
+          uv run --isolated --no-project --with "$WHL" breakdown --help
+          uv run --isolated --no-project --with "$WHL" breakdown --version
+          uv run --isolated --no-project --with "$WHL" python - <<'PY'
+          from importlib.metadata import version
           from importlib.resources import files
-          pkg = files('breakdown')
-          assert pkg.joinpath('static/index.html').is_file(), 'UI missing from wheel'
-          assert pkg.joinpath('examples/jaffle_shop_tree.yml').is_file(), 'example tree missing from wheel'
-          "
+
+          import breakdown
+
+          pkg = files("breakdown")
+          assert "site-packages" in str(pkg), f"not testing the wheel: imported from {pkg}"
+          assert pkg.joinpath("static/index.html").is_file(), "UI missing from wheel"
+          assert pkg.joinpath("examples/jaffle_shop_tree.yml").is_file(), "example tree missing"
+          assert pkg.joinpath("py.typed").is_file(), "py.typed missing"
+          # One version, one source of truth: a literal that drifted from the
+          # distribution metadata is exactly what `__version__` exists to prevent.
+          assert breakdown.__version__ == version("metric-breakdown"), breakdown.__version__
+          print("wheel OK:", pkg, breakdown.__version__)
+          PY

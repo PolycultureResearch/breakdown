@@ -32,6 +32,10 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    # 3.14 covers the base package only — CI runs the whole suite there against
+    # a no-extras install. The `dbt` extra does not work on 3.14 (dbt-core's
+    # `mf` fails on import), which is precisely why it is an extra.
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Information Analysis",
     "Typing :: Typed",
 ]

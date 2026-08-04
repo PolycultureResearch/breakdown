@@ -12,6 +12,35 @@ fixes. Callers who need stability should pin `metric-breakdown~=0.1.0` until 1.0
 
 ## [Unreleased]
 
+### Added
+
+- **`breakdown --version`** and **`breakdown.__version__`**, both read from the
+  installed distribution metadata so `pyproject.toml` stays the only place a
+  version is written and the two can never disagree.
+- **CI matrix over Python 3.11, 3.12 and 3.13** with every provider extra
+  installed, plus a **3.14 job that installs the wheel with no extras** and runs
+  the same suite — so `requires-python = ">=3.11"` is tested at both ends
+  instead of advertised.
+
+### Changed
+
+- **Provider SDKs are now extras.** `pip install metric-breakdown` installs the
+  engine, API, UI, MCP server and the `mock` provider — 70 packages / ~390 MB,
+  down from 138 / ~640 MB. Real providers opt in:
+  `metric-breakdown[dbt]` for `local` and `cloud`, `metric-breakdown[databricks]`
+  for `warehouse`, `metric-breakdown[all]` for both. Selecting a provider whose
+  extra is absent raises `MissingProviderExtra` naming the exact `pip install`,
+  and `breakdown doctor` reports it as its own check with the downstream
+  connectivity checks skipped rather than failing misleadingly.
+- **The base package supports Python 3.14.** It could not before, because
+  dbt-core was a hard dependency and its `mf` binary does not run there. The
+  `dbt` extra is still 3.13-and-earlier.
+- **Dependency floors lowered** to versions the suite is actually verified
+  against (`numpy>=1.26`, `pandas>=2.1`, `pymc>=5.16`, `pydantic>=2.7`,
+  `fastapi>=0.115`, `networkx>=3.1`, `uvicorn>=0.27`, `arviz>=0.22`), so
+  breakdown stops forcing a resolver conflict on stacks that are a few months
+  behind. `mcp>=2.0` is unchanged — the server genuinely uses 2.x APIs.
+
 ## [0.1.0] — unreleased
 
 First public release.
