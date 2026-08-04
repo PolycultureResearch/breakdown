@@ -1,9 +1,40 @@
 [project]
-name = "breakdown"
+# Distribution name only. `breakdown` is taken on PyPI, so the project is
+# published as `metric-breakdown` — but the import package stays `breakdown`
+# and so does the CLI, because that is what the docs, the API and every tree
+# YAML already say. A distribution name differing from its import name is
+# ordinary (scikit-learn/sklearn, beautifulsoup4/bs4); the only cost is that
+# `pip install` and `import` read differently, which the README now states up
+# front.
+name = "metric-breakdown"
 version = "0.1.0"
 description = "Bayesian metric trees: root cause analysis for business metrics over the dbt Semantic Layer"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Polyculture Research" }]
+keywords = [
+    "analytics",
+    "attribution",
+    "bayesian",
+    "causal-inference",
+    "dbt",
+    "metric-tree",
+    "root-cause-analysis",
+    "semantic-layer",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Typing :: Typed",
+]
 dependencies = [
     "arviz<1.0.0",
     "databricks-sdk>=0.20.0",
@@ -22,12 +53,38 @@ dependencies = [
     "uvicorn>=0.42.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/PolycultureResearch/breakdown"
+Repository = "https://github.com/PolycultureResearch/breakdown"
+Issues = "https://github.com/PolycultureResearch/breakdown/issues"
+Changelog = "https://github.com/PolycultureResearch/breakdown/blob/main/CHANGELOG.md"
+
 [project.scripts]
 breakdown = "breakdown.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# Required, not cosmetic: hatchling infers the package directory from the
+# distribution name, and `metric-breakdown` does not match `breakdown/`. Without
+# this the wheel builds empty. It also pins what ships — the demo instance's
+# tree and parquet snapshots live outside `breakdown/`, so they can never end up
+# in a wheel by accident.
+[tool.hatch.build.targets.wheel]
+packages = ["breakdown"]
+
+# The sdist otherwise mirrors the whole repo. Someone running `pip download` or
+# building from source wants the package, its tests and its docs — not the demo
+# instance's committed parquet, nor the agent/CI scaffolding.
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.claude",
+    "/.github",
+    "/demo",
+    "/dist",
+    "/knowledge",
+]
 
 [dependency-groups]
 dev = [

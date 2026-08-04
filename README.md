@@ -74,18 +74,27 @@ The YAML is validated and compiled into a directed acyclic graph using NetworkX.
 
 ## Quickstart
 
-**Requirements:** Python 3.11+, [uv](https://github.com/astral-sh/uv)
+**Requirements:** Python 3.11+
 
-Run straight from git without cloning:
+> **Installed as `metric-breakdown`, used as `breakdown`.** The name `breakdown`
+> was already taken on PyPI, so that is the distribution name — but the command,
+> the import package and everything in this documentation are `breakdown`.
 
 ```bash
-uvx --from git+https://github.com/your-org/breakdown breakdown serve
+pip install metric-breakdown
+breakdown serve
+```
+
+Or, with [uv](https://github.com/astral-sh/uv), without installing anything:
+
+```bash
+uvx --from metric-breakdown breakdown serve
 ```
 
 Or work from a checkout:
 
 ```bash
-git clone https://github.com/your-org/breakdown
+git clone https://github.com/PolycultureResearch/breakdown
 cd breakdown
 uv sync
 uv run breakdown serve            # or: uv run python main.py serve
