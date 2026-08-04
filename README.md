@@ -174,7 +174,9 @@ Start the server and open `http://localhost:9090/ui`. Breakdown fetches every me
 
 **2. Run a root-cause analysis.** In the header bar: choose a **Target** (must be a metric with a `formula`, e.g. `revenue`), set the **Reference** and **Analysis** date pairs (or pick a canned pair from the **Windows** preset), then click **Run RCA**. Breakdown auto-fits any upstream probabilistic models it needs (on data strictly before the analysis window) and paints the result on the graph: nodes tinted by direction of change, edges weighted by each parent's share of the explained gap, and a ranked cause list with credible intervals in the **Root cause** tab. **Copy link** yields a shareable `#rca=…` URL; **Clear** resets.
 
-**3. Simulate a what-if (optional).** Open the **What-if** tab, click nodes to adjust them (interventions), optionally add assumption links for effects the tree doesn't encode, and click **Run simulation** for a steady-state projection with credible intervals rendered on the graph and in the sidebar.
+**3. Localize a cause with a slice (optional).** Any ranked cause whose metric declares [`dimensions`](#dimensions-slicing) shows a **slice by** row — click a dimension to attribute that metric's gap across its values. Slices are ranked by excess concentration (how much more of the gap a value carries than its baseline share predicts), with the leader highlighted, `noise` badges where the bootstrap can't separate concentration from zero, and an explicit "not localized" verdict when nothing stands out. Across a lagged edge the slice automatically uses the parent's lag-shifted windows, so it compares the periods the contribution was actually measured over.
+
+**4. Simulate a what-if (optional).** Open the **What-if** tab, click nodes to adjust them (interventions), optionally add assumption links for effects the tree doesn't encode, and click **Run simulation** for a steady-state projection with credible intervals rendered on the graph and in the sidebar.
 
 RCA runs and metric views are deep-linkable (`#rca=…`, `#metric=…`), so any analysis can be shared or bookmarked as a URL.
 

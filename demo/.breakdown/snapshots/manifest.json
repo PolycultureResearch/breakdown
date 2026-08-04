@@ -1,0 +1,262 @@
+{
+  "active_subscriptions__by-subscription_day__plan__week-stock__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:36.119403+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 226
+  },
+  "active_subscriptions__by-user__country__week-stock__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:37.984260+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 1342
+  },
+  "active_subscriptions__week-stock__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:45:46.440159+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 113
+  },
+  "churn_arpu__by-mrr_movement__plan__week-rate__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:45.630000+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 226
+  },
+  "churn_arpu__week-rate__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:45:52.150331+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 113
+  },
+  "churned_mrr__by-mrr_movement__plan__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:47.528640+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 226
+  },
+  "churned_mrr__by-user__country__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:49.426110+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 1282
+  },
+  "churned_mrr__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:45:54.010066+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 113
+  },
+  "churned_subscriptions__by-mrr_movement__plan__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:41.832999+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 226
+  },
+  "churned_subscriptions__by-user__country__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:43.716918+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 1282
+  },
+  "churned_subscriptions__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:45:50.282425+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 113
+  },
+  "contraction_mrr__by-mrr_movement__plan__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:55.055982+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 226
+  },
+  "contraction_mrr__by-user__country__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:56.936585+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 1282
+  },
+  "contraction_mrr__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:45:57.800506+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 113
+  },
+  "customer_churn_rate__by-user__country__week-rate__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:39.950991+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 1342
+  },
+  "customer_churn_rate__week-rate__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:45:48.359166+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 113
+  },
+  "expansion_mrr__by-mrr_movement__plan__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:51.343621+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 226
+  },
+  "expansion_mrr__by-user__country__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:53.245672+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 1282
+  },
+  "expansion_mrr__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:45:55.896784+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 113
+  },
+  "marketing_spend__by-spend__channel__day-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:52:50.257860+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 2370
+  },
+  "marketing_spend__day-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:45:27.467820+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 790
+  },
+  "net_new_mrr__by-mrr_movement__plan__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:58.796946+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 226
+  },
+  "net_new_mrr__by-user__country__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:54:00.692772+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 1282
+  },
+  "net_new_mrr__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:45:59.729814+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 113
+  },
+  "new_arpu__by-mrr_movement__plan__week-rate__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:30.436509+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 226
+  },
+  "new_arpu__week-rate__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:45:42.646717+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 113
+  },
+  "new_mrr__by-mrr_movement__plan__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:32.297347+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 226
+  },
+  "new_mrr__by-user__country__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:34.157661+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 1282
+  },
+  "new_mrr__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:45:44.541652+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 113
+  },
+  "new_subscriptions__by-mrr_movement__plan__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:26.555813+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 226
+  },
+  "new_subscriptions__by-user__country__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:28.526384+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 1282
+  },
+  "new_subscriptions__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:45:40.714258+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 113
+  },
+  "sessions__by-session__channel__day-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:52:52.141819+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 5530
+  },
+  "sessions__by-session__country__day-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:52:54.082802+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 9483
+  },
+  "sessions__by-session__device__day-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:52:55.930904+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 2370
+  },
+  "sessions__by-user__country__day-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:52:59.891169+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 9823
+  },
+  "sessions__by-user__device__day-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:03.702962+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 3158
+  },
+  "sessions__day-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:45:29.393768+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 790
+  },
+  "signups__by-user__country__day-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:05.746480+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 9033
+  },
+  "signups__by-user__device__day-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:07.631367+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 2368
+  },
+  "signups__by-user__signup_channel__day-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:09.544009+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 5190
+  },
+  "signups__day-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:45:33.200668+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 790
+  },
+  "trial_conversion_rate__week-rate__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:45:36.959894+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 114
+  },
+  "trial_conversions__by-trial__country__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:20.904234+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 1365
+  },
+  "trial_conversions__by-trial__device__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:22.790148+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 342
+  },
+  "trial_conversions__by-trial__plan__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:24.668873+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 342
+  },
+  "trial_conversions__week-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:45:38.812330+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 114
+  },
+  "trials_started__by-trial__country__day-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:11.543220+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 7597
+  },
+  "trials_started__by-trial__device__day-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:13.448505+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 2312
+  },
+  "trials_started__by-trial__signup_channel__day-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:53:15.348872+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 4701
+  },
+  "trials_started__day-flow__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:45:35.123219+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 790
+  },
+  "visit_signup_rate__day-rate__2024-06-01__2026-07-30.parquet": {
+    "fetched_at": "2026-08-03T22:45:31.297844+00:00",
+    "provider": "LocalDataFetcher",
+    "rows": 790
+  }
+}

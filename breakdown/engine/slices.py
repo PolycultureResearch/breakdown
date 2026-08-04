@@ -28,7 +28,9 @@ Ranking is by **excess concentration**, not raw size: the biggest slice always
 has the biggest raw contribution, so each slice also gets
 `excess_g = contribution_g − baseline_share_g × gap` — how much more of the
 gap it carries than its size predicts. `Σ_g excess_g = 0` (a zero-sum
-reallocation of the gap), so excess is self-normalizing. Uncertainty comes
+reallocation of the gap), so excess is self-normalizing — and so slices are
+ordered by excess *signed toward the gap*, never by |excess|, which would tie
+on a two-value dimension and rank the culprit arbitrarily. Uncertainty comes
 from the same circular moving-block window bootstrap as tree RCA (resampled
 jointly across slices), giving each excess a credible interval and a
 `prob_concentrated` direction probability — no per-slice model fits.
@@ -58,6 +60,23 @@ MAX_DISTINCT = 100
 # A slice is flagged noise-level when its excess direction probability is
 # below this — the bootstrap can't tell its concentration from zero.
 _NOISE_PROB = 0.8
+
+
+def _rank_by_excess(rows: List[Dict[str, Any]], gap: float) -> None:
+    """Order slices by excess *in the direction of the gap*, most concentrated
+    first.
+
+    Ranking on |excess| looks equivalent but is not: `Σ excess = 0`, so on a
+    two-value dimension the excesses are exactly ±x and the magnitudes tie —
+    leaving the culprit's position down to dict ordering. Signing by the gap
+    also states the right thing generally: when a metric fell, the slice that
+    drove it is the one carrying *more of the decline* than its size predicts
+    (most negative excess), and when it rose, the most positive. Slices pulling
+    against the move sort to the bottom, where they read as the offsets they are.
+    """
+    direction = -1.0 if gap < 0 else 1.0
+    rows.sort(key=lambda r: -direction * (r["excess"] if r["excess"] is not None else 0.0))
+
 
 # Reconciliation: mean |Σ slices − metric| above this share of |baseline|
 # flags the dimension as not cleanly partitioning the metric.
@@ -329,7 +348,7 @@ def _sum_attribution(
         if g == _OTHER:
             row["n_values"] = len(wide.columns) - len(kept)
         rows.append(row)
-    rows.sort(key=lambda r: -abs(r["excess"] if r["excess"] is not None else 0.0))
+    _rank_by_excess(rows, gap)
 
     if _OTHER in groups and have_share and abs(baseline) >= 1e-12:
         other_share = float(groups[_OTHER][in_ref].mean() / baseline)
@@ -509,7 +528,7 @@ def _rate_attribution(
         if g == _OTHER:
             row["n_values"] = len(folded)
         rows.append(row)
-    rows.sort(key=lambda r: -abs(r["excess"] if r["excess"] is not None else 0.0))
+    _rank_by_excess(rows, gap)
 
     # Per-date blend vs the unsliced rate: does Σ s_g·r_g reproduce the metric?
     w_totals = W.sum(axis=1)

@@ -91,6 +91,47 @@ def test_localization_recovery():
     assert top["noise_level"] is False
 
 
+def _two_slice_defn():
+    return MetricDefinition(
+        name="churned_mrr",
+        source="mock.churned_mrr",
+        dimensions={"plan": {"source": "subscription__plan"}},
+    )
+
+
+def _two_slices(boost):
+    """Two slices only — the case where |excess| ties exactly."""
+    rng = np.random.default_rng(11)
+    dates = _dates(REF[0], REF[1]).union(_dates(AN[0], AN[1]))
+    n = len(dates)
+    frames = {
+        "studio": pd.Series(600.0 + rng.normal(0, 8, n), index=dates),
+        "professional": pd.Series(400.0 + rng.normal(0, 8, n), index=dates),
+    }
+    name, delta = boost
+    an_mask = (dates >= pd.Timestamp(AN[0])) & (dates <= pd.Timestamp(AN[1]))
+    frames[name] = frames[name] + delta * an_mask.astype(float)
+    return frames, dates
+
+
+@pytest.mark.parametrize("delta", [150.0, -150.0])
+def test_two_slice_ranking_is_not_a_coin_flip(delta):
+    """With two slices `Σ excess = 0` makes the excesses exactly ±x, so ranking
+    by |excess| ties and the culprit's position falls to dict order. It must be
+    ranked by excess signed toward the gap instead — for a rise, the slice that
+    rose beyond its share; for a fall, the one that fell beyond it."""
+    frames, dates = _two_slices(boost=("professional", delta))
+    result = slice_attribution(
+        _two_slice_defn(), "plan", _long(frames),
+        _unsliced(frames, dates, name="churned_mrr"), *REF, *AN,
+    )
+    excesses = [r["excess"] for r in result["slices"]]
+    assert abs(excesses[0]) == pytest.approx(abs(excesses[1]), rel=1e-9)  # the tie is real
+    assert result["slices"][0]["value"] == "professional"
+    # the mover leads regardless of direction; the offsetting slice trails
+    assert np.sign(excesses[0]) == np.sign(result["gap"])
+
+
 def test_null_restraint_uniform_change():
     """A proportional shrink across all slices concentrates nowhere: every
     excess is small relative to the gap."""

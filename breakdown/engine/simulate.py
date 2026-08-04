@@ -565,12 +565,24 @@ def run_scenario(
             }
     else:
         for n in dag.nodes:
-            vals = data.series(n)[n].to_numpy()
+            vals = data.series(n)[n].to_numpy(dtype=float)
+            # A metric can be genuinely undefined for part of its history — a
+            # per-cancellation average in a week with no cancellations, any
+            # ratio before its denominator exists. Reduce nan-safely so those
+            # periods are skipped rather than poisoning the band (and, since
+            # NaN is not JSON, turning the whole response into a 500).
+            observed = vals[~np.isnan(vals)]
+            if observed.size == 0:
+                hist_stats[n] = {
+                    "hist_min": None, "hist_max": None,
+                    "hist_mean": None, "hist_std": None,
+                }
+                continue
             hist_stats[n] = {
-                "hist_min": float(np.min(vals)),
-                "hist_max": float(np.max(vals)),
-                "hist_mean": float(np.mean(vals)),
-                "hist_std": float(np.std(vals)),
+                "hist_min": float(np.min(observed)),
+                "hist_max": float(np.max(observed)),
+                "hist_mean": float(np.mean(observed)),
+                "hist_std": float(np.std(observed)),
             }
 
     nodes_out: Dict[str, Any] = {}
@@ -620,6 +632,10 @@ def run_scenario(
                 )
             if flag:
                 warnings.append({"kind": "extrapolation", "metric": node, "detail": detail})
+        elif hist["hist_min"] is None:
+            # Never observed (every period undefined): no band to be outside of.
+            # Say nothing rather than invent a range.
+            pass
         else:
             outside_range = simulated < hist["hist_min"] or simulated > hist["hist_max"]
             outside_band = (

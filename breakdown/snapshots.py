@@ -39,6 +39,11 @@ class SnapshotStore:
     def _filename(self, metric: str, start: str, end: str, grain: str, kind: str) -> str:
         return f"{metric}__{grain}-{kind}__{start}__{end}.parquet"
 
+    def _sliced_filename(
+        self, metric: str, dimension: str, start: str, end: str, grain: str, kind: str
+    ) -> str:
+        return f"{metric}__by-{dimension}__{grain}-{kind}__{start}__{end}.parquet"
+
     def read(
         self, metric: str, start: str, end: str, grain: str, kind: str
     ) -> Optional[pd.DataFrame]:
@@ -49,12 +54,59 @@ class SnapshotStore:
         df["date"] = pd.to_datetime(df["date"])
         return df
 
+    def read_sliced(
+        self, metric: str, dimension: str, start: str, end: str, grain: str, kind: str
+    ) -> Optional[pd.DataFrame]:
+        """Return a sliced frame covering [start, end], trimmed from any stored
+        window that contains it.
+
+        Unlike `read`, this does not require an exact window match. Sliced
+        frames are fetched per analysis, so keying on the requested window would
+        only ever serve the windows someone happened to snapshot — anyone
+        picking their own dates would fall through to the provider. Storing the
+        widest window once and trimming makes every sub-window a hit."""
+        for path, s, e in self._sliced_candidates(metric, dimension, grain, kind):
+            if s <= start and e >= end:
+                df = pd.read_parquet(path)
+                df["date"] = pd.to_datetime(df["date"])
+                window = df[(df["date"] >= start) & (df["date"] <= end)]
+                return window.reset_index(drop=True)
+        return None
+
+    def _sliced_candidates(
+        self, metric: str, dimension: str, grain: str, kind: str
+    ) -> list[tuple[str, str, str]]:
+        """Stored sliced windows for this key, widest first."""
+        prefix = f"{metric}__by-{dimension}__{grain}-{kind}__"
+        found = []
+        try:
+            names = os.listdir(self.directory)
+        except OSError:
+            return []
+        for name in names:
+            if not name.startswith(prefix) or not name.endswith(".parquet"):
+                continue
+            span = name[len(prefix) : -len(".parquet")]
+            start, _, end = span.partition("__")
+            if start and end:
+                found.append((os.path.join(self.directory, name), start, end))
+        return sorted(found, key=lambda f: (f[1], f[2]))
+
     def write(
         self, metric: str, start: str, end: str, grain: str, kind: str,
         df: pd.DataFrame, provider: str,
     ) -> None:
         os.makedirs(self.directory, exist_ok=True)
         filename = self._filename(metric, start, end, grain, kind)
+        df.to_parquet(os.path.join(self.directory, filename), index=False)
+        self._record(filename, provider, len(df))
+
+    def write_sliced(
+        self, metric: str, dimension: str, start: str, end: str, grain: str, kind: str,
+        df: pd.DataFrame, provider: str,
+    ) -> None:
+        os.makedirs(self.directory, exist_ok=True)
+        filename = self._sliced_filename(metric, dimension, start, end, grain, kind)
         df.to_parquet(os.path.join(self.directory, filename), index=False)
         self._record(filename, provider, len(df))
 
@@ -84,10 +136,20 @@ class SnapshotFetcher(BaseDataFetcher):
     writes), forcing one clean refetch pass — the knob for "the warehouse
     backfilled, my snapshots are stale"."""
 
-    def __init__(self, inner: BaseDataFetcher, store: SnapshotStore, refresh: bool = False):
+    def __init__(
+        self, inner: BaseDataFetcher, store: SnapshotStore, refresh: bool = False,
+        slice_span: Optional[tuple[str, str]] = None,
+    ):
         self.inner = inner
         self.store = store
         self.refresh = refresh
+        # The window sliced fetches are widened to before storing. Slices are
+        # fetched per analysis, so without this a snapshot only ever serves the
+        # exact windows someone already ran; widening to the loaded data window
+        # stores each (metric, dimension) once and serves every sub-window from
+        # it — which is what lets a snapshot-only deployment answer slice
+        # questions nobody anticipated.
+        self.slice_span = slice_span
 
     def fetch_metric(
         self, metric_name: str, start_date: str, end_date: str,
@@ -119,10 +181,45 @@ class SnapshotFetcher(BaseDataFetcher):
         start_date: str, end_date: str,
         grain: str = "day", kind: str = "flow",
     ) -> pd.DataFrame:
-        # Sliced frames are analysis-time queries and not snapshot-persisted
-        # yet (deferred); delegate straight to the inner provider so slicing
-        # works identically with and without the snapshot wrapper.
-        return self.inner.fetch_metric_sliced(
-            metric_name, dimension_source, start_date, end_date,
-            grain=grain, kind=kind,
+        if not self.refresh:
+            df = self.store.read_sliced(
+                metric_name, dimension_source, start_date, end_date, grain, kind
+            )
+            if df is not None:
+                logger.info(
+                    "sliced snapshot hit: %s by %s [%s, %s] %s",
+                    metric_name, dimension_source, start_date, end_date, grain,
+                )
+                return df
+
+        span_start, span_end = self._span(start_date, end_date)
+        df = self.inner.fetch_metric_sliced(
+            metric_name, dimension_source, span_start, span_end, grain=grain, kind=kind,
         )
+        try:
+            self.store.write_sliced(
+                metric_name, dimension_source, span_start, span_end, grain, kind,
+                df, provider=type(self.inner).__name__,
+            )
+            logger.info(
+                "sliced snapshot written: %s by %s [%s, %s] %s",
+                metric_name, dimension_source, span_start, span_end, grain,
+            )
+        except OSError as e:
+            logger.warning(
+                "sliced snapshot write failed for %s by %s (%s); serving uncached.",
+                metric_name, dimension_source, e,
+            )
+        if (span_start, span_end) == (start_date, end_date):
+            return df
+        window = df[(df["date"] >= start_date) & (df["date"] <= end_date)]
+        return window.reset_index(drop=True)
+
+    def _span(self, start_date: str, end_date: str) -> tuple[str, str]:
+        """Widen a sliced fetch to the configured span when it covers the request."""
+        if not self.slice_span:
+            return start_date, end_date
+        span_start, span_end = self.slice_span
+        if span_start <= start_date and span_end >= end_date:
+            return span_start, span_end
+        return start_date, end_date

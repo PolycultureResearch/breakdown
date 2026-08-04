@@ -1,0 +1,63 @@
+# Fly.io deployment for the White Cube demo.
+#
+# **Always run these from the repo root**, never from demo/:
+#
+#   fly launch --no-deploy --copy-config --config demo/fly.toml --name white-cube-demo
+#   fly secrets set BREAKDOWN_API_TOKEN=$(openssl rand -hex 24) --app white-cube-demo
+#   fly deploy --config demo/fly.toml
+#
+# Then warm the trace cache once, so the first visitor does not pay for the fits:
+#   uv run python demo/prewarm.py --rcas --url https://white-cube-demo.fly.dev
+#
+# Why the repo root: the Dockerfile installs the breakdown package from
+# pyproject.toml/uv.lock and copies breakdown/, so the build context has to be
+# the whole repo. flyctl never changes the context away from the project root
+# and resolves `dockerfile` against it too — which is why the path below is
+# `demo/Dockerfile` and not `Dockerfile`. Pointing it at `Dockerfile` would
+# silently build the repo's *general-purpose* image instead, the one that
+# expects a tree mounted at /config/tree.yml and ships no snapshots.
+
+app = "white-cube-demo"
+primary_region = "iad"
+
+[build]
+  dockerfile = "demo/Dockerfile"
+
+[env]
+  # MCP responses embed report_url deep links; without this they would point
+  # at 127.0.0.1 and be useless to the person reading them.
+  BREAKDOWN_PUBLIC_URL = "https://white-cube-demo.fly.dev"
+
+[http_service]
+  internal_port = 9090
+  force_https = true
+  auto_start_machines = true
+
+  # Suspend, not stop. Suspend snapshots RAM, so an idle machine wakes in about
+  # a second *with the pre-warmed trace cache intact*. Stopping would cold-boot
+  # and re-fit on the first click — the one latency risk in a live pitch, since
+  # fits are serialized behind a single lock.
+  auto_stop_machines = "suspend"
+
+  # Zero idle cost while the demo is invite-only. Raise to 1 before a scheduled
+  # call, or permanently once traffic justifies it.
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    # Fits are CPU-bound and serialized, so queueing many concurrent analyses on
+    # one machine helps nobody. Spill to a second machine instead.
+    type = "requests"
+    soft_limit = 8
+    hard_limit = 20
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "5s"
+
+[[vm]]
+  # PyMC + pytensor's runtime C compilation want the headroom; 1GB OOMs mid-fit.
+  size = "shared-cpu-2x"
+  memory = "2gb"

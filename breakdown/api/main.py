@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import hmac
 import logging
 import math
 import os
@@ -9,6 +10,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from breakdown.data_fetch import (
@@ -64,14 +66,18 @@ def _build_fetcher(provider_cfg, dag, metrics=None):
     return MockDataFetcher(dag=dag)
 
 
-def _wrap_snapshots(fetcher, provider_type: str, tree_path: str):
+def _wrap_snapshots(fetcher, provider_type: str, tree_path: str, slice_span=None):
     """Wrap the fetcher in the snapshot read-through cache (roadmap 2.4).
 
     Mock data is already deterministic and free, so only real providers are
     cached. Default directory is tree-adjacent (`.breakdown/snapshots`) so a
     partner repo can commit its snapshots and re-run RCAs from a fresh clone;
     BREAKDOWN_SNAPSHOT_DIR overrides, "off" disables, BREAKDOWN_REFRESH=1
-    forces one refetch pass."""
+    forces one refetch pass.
+
+    `slice_span` is the loaded data window. Sliced fetches are widened to it
+    before being stored, so one snapshot per (metric, dimension) serves every
+    analysis window rather than only the ones already run."""
     if provider_type == "mock":
         return fetcher
     snapshot_dir = os.environ.get("BREAKDOWN_SNAPSHOT_DIR", "")
@@ -83,6 +89,7 @@ def _wrap_snapshots(fetcher, provider_type: str, tree_path: str):
         fetcher,
         SnapshotStore(snapshot_dir),
         refresh=os.environ.get("BREAKDOWN_REFRESH") == "1",
+        slice_span=slice_span,
     )
 
 
@@ -245,7 +252,9 @@ async def lifespan(app: FastAPI):
                 )
 
             fetcher = _build_fetcher(provider_cfg, parser.dag, parser.config.metrics)
-            fetcher = _wrap_snapshots(fetcher, provider_cfg.type, tree_path)
+            fetcher = _wrap_snapshots(
+                fetcher, provider_cfg.type, tree_path, slice_span=(start_date, end_date)
+            )
             data = _fetch_all_metrics(parser, fetcher, provider_cfg.type, start_date, end_date)
 
             app.state.parser = parser
@@ -272,6 +281,33 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="breakdown API", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def mcp_bearer_token(request: Request, call_next):
+    """Require a bearer token on /mcp when BREAKDOWN_API_TOKEN is set.
+
+    The MCP endpoint runs whole analyses, so exposing it off loopback without
+    a gate hands anyone who finds the URL the tree and its data. Opt-in rather
+    than mandatory: unset (the laptop default) keeps the loopback workflow
+    friction-free, set (a public deployment) closes it. The UI and /health stay
+    open — the token is for the machine-facing surface, not a login.
+
+    A down payment on hosted mode (roadmap 3.5), not a substitute for it: one
+    shared secret, no per-user identity, no revocation short of a redeploy."""
+    token = os.environ.get("BREAKDOWN_API_TOKEN")
+    if token and request.url.path.startswith("/mcp"):
+        header = request.headers.get("authorization", "")
+        scheme, _, presented = header.partition(" ")
+        # compare_digest over the raw strings: constant-time, and it also
+        # keeps a missing header from short-circuiting differently.
+        if scheme.lower() != "bearer" or not hmac.compare_digest(presented, token):
+            return JSONResponse(
+                {"detail": "Missing or invalid bearer token for /mcp."},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    return await call_next(request)
 
 
 @app.middleware("http")
