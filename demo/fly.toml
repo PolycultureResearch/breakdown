@@ -1,19 +1,27 @@
 # Fly.io deployment for the White Cube demo.
 #
-#   fly launch --no-deploy --copy-config --name white-cube-demo
-#   fly secrets set BREAKDOWN_API_TOKEN=$(openssl rand -hex 24)
-#   fly deploy --dockerfile demo/Dockerfile
+# **Always run these from the repo root**, never from demo/:
 #
-# Run from the repo root: the Dockerfile needs the package in build context.
-# After the first deploy, warm the trace cache once so the first prospect does
-# not pay for the fits:
+#   fly launch --no-deploy --copy-config --config demo/fly.toml --name white-cube-demo
+#   fly secrets set BREAKDOWN_API_TOKEN=$(openssl rand -hex 24) --app white-cube-demo
+#   fly deploy --config demo/fly.toml
+#
+# Then warm the trace cache once, so the first visitor does not pay for the fits:
 #   uv run python demo/prewarm.py --rcas --url https://white-cube-demo.fly.dev
+#
+# Why the repo root: the Dockerfile installs the breakdown package from
+# pyproject.toml/uv.lock and copies breakdown/, so the build context has to be
+# the whole repo. flyctl never changes the context away from the project root
+# and resolves `dockerfile` against it too — which is why the path below is
+# `demo/Dockerfile` and not `Dockerfile`. Pointing it at `Dockerfile` would
+# silently build the repo's *general-purpose* image instead, the one that
+# expects a tree mounted at /config/tree.yml and ships no snapshots.
 
 app = "white-cube-demo"
 primary_region = "iad"
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = "demo/Dockerfile"
 
 [env]
   # MCP responses embed report_url deep links; without this they would point

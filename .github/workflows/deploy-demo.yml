@@ -1,0 +1,60 @@
+name: Deploy demo
+
+# Redeploys the White Cube demo instance (demo/README.md).
+#
+# Deliberately **not** deploy-on-every-push. This repo is the engine; the demo
+# is one app built out of it, and a deploy restarts the process — which drops
+# the in-memory trace cache that `demo/prewarm.py` filled. An automatic deploy
+# on an unrelated engine commit would silently make the next visitor wait
+# through a cold multi-node fit, possibly mid-pitch. So:
+#
+#   * `workflow_dispatch` — deploy when you decide to, from the Actions tab.
+#   * `push` to main, but only when something under demo/ or the package
+#     itself actually changed, so an unrelated docs commit is a no-op.
+#
+# Prerequisite, once: create the app and store a deploy token.
+#   fly launch --no-deploy --copy-config --config demo/fly.toml --name white-cube-demo
+#   fly tokens create deploy --app white-cube-demo
+#   gh secret set FLY_API_TOKEN --body "<token>"   # or via the GitHub UI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "demo/**"
+      - "breakdown/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/deploy-demo.yml"
+
+concurrency:
+  # Never let two deploys race; a half-finished rollout is worse than a late one.
+  group: deploy-demo
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: demo
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # Run from the repo root: the Dockerfile installs the package from
+      # pyproject.toml/uv.lock and copies breakdown/, so the build context must
+      # be the whole repo. --config selects the demo's fly.toml; the dockerfile
+      # path inside it is repo-root-relative for the same reason.
+      - name: Deploy
+        run: flyctl deploy --config demo/fly.toml --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      # A fresh machine has an empty trace cache, so the first RCA would pay for
+      # three ADVI fits. Warming here means the demo is fast the moment it is
+      # deployed rather than the moment someone unlucky opens it.
+      - name: Warm the trace cache
+        run: |
+          python demo/prewarm.py --rcas \
+            --url "https://${{ vars.DEMO_HOSTNAME || 'white-cube-demo.fly.dev' }}"
