@@ -11,3 +11,6 @@ wheels/
 
 # macOS
 .DS_Store
+
+# agent worktrees
+.claude/worktrees/

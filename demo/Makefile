@@ -75,7 +75,12 @@ doctor:
 	  --start-date $(START) --end-date $(END)
 
 ## Serve the demo the way the deployed image does — snapshots only, no provider.
+## The tree names its provider's project_path via ${WHITE_CUBE_DBT_PROJECT}, and
+## it still has to *validate* even though nothing reads it here. Point it at a
+## path that cannot exist, exactly as demo/Dockerfile does: every series is a
+## snapshot hit, so a bogus path is the loudest signal if that stops being true.
 serve:
+	WHITE_CUBE_DBT_PROJECT=/nonexistent-by-design \
 	$(BREAKDOWN)/.venv/bin/breakdown serve --tree $(TREE) \
 	  --start-date $(START) --end-date $(END) \
 	  --snapshot-dir $(SNAPSHOTS) --port $(PORT)
