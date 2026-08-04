@@ -58,9 +58,15 @@ invokes `.venv/bin/breakdown` directly rather than through `uv run`.
 # All from the repo root — the build context must be the whole repo.
 fly launch --no-deploy --copy-config --config demo/fly.toml --name white-cube-demo
 fly secrets set BREAKDOWN_API_TOKEN=<a token you keep> --app white-cube-demo
-fly deploy . --config demo/fly.toml
+fly deploy . --config demo/fly.toml --ha=false
 uv run python demo/prewarm.py --rcas --url https://white-cube-demo.fly.dev
 ```
+
+`--ha=false` matters more than it looks: Fly otherwise creates a spare machine
+for high availability, and the trace cache is per-process and in-memory — so
+`prewarm.py` would warm one machine while requests round-robin onto a cold one,
+making analyses fast or slow at random. If an app already has two, fix it with
+`fly scale count 1`; no fly.toml setting controls this.
 
 The trailing `.` on `fly deploy` is the build context, and it is required: the
 Dockerfile installs the package from `pyproject.toml`/`uv.lock`, so the context
