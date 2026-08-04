@@ -16,6 +16,9 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[options]
+prerelease-mode = "disallow"
+
 [[package]]
 name = "adbc-driver-flightsql"
 version = "1.10.0"
@@ -1641,22 +1644,22 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "arviz", specifier = "<1.0.0" },
+    { name = "arviz", specifier = ">=0.22.0,<1.0.0" },
     { name = "databricks-sdk", marker = "extra == 'databricks'", specifier = ">=0.20.0" },
     { name = "databricks-sql-connector", marker = "extra == 'databricks'", specifier = ">=4.4.0" },
     { name = "dbt-metricflow", marker = "extra == 'dbt'", specifier = ">=0.10.1" },
     { name = "dbt-sl-sdk", extras = ["sync"], marker = "extra == 'dbt'", specifier = ">=0.13.2" },
-    { name = "fastapi", specifier = ">=0.135.2" },
+    { name = "fastapi", specifier = ">=0.115.0" },
     { name = "mcp", specifier = ">=2.0.0" },
     { name = "metric-breakdown", extras = ["databricks", "dbt"], marker = "extra == 'all'" },
-    { name = "networkx", specifier = ">=3.6.1" },
-    { name = "numpy", specifier = ">=2.4.4" },
-    { name = "pandas", specifier = ">=3.0.2" },
+    { name = "networkx", specifier = ">=3.1" },
+    { name = "numpy", specifier = ">=1.26.0" },
+    { name = "pandas", specifier = ">=2.1.0" },
     { name = "pyarrow", specifier = ">=15.0.0" },
-    { name = "pydantic", specifier = ">=2.12.5" },
-    { name = "pymc", specifier = ">=5.28.0" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "uvicorn", specifier = ">=0.42.0" },
+    { name = "pydantic", specifier = ">=2.7.0" },
+    { name = "pymc", specifier = ">=5.16.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "uvicorn", specifier = ">=0.27.0" },
 ]
 provides-extras = ["dbt", "databricks", "all"]
 

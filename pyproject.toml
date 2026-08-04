@@ -39,18 +39,28 @@ classifiers = [
 # provider — the "just let me try it" path. Provider SDKs are extras (below),
 # because carrying dbt-core and the Databricks connector for everyone tripled
 # the install for dependencies most users never touch.
+#
+# Floors are the oldest release each dependency is actually exercised against,
+# verified with `uv lock --resolution lowest-direct` + the full suite on 3.11 —
+# not "whatever was current while developing". A library that pins high forces
+# a resolver conflict on anyone whose stack is a few months behind.
 dependencies = [
-    "arviz<1.0.0",
-    "fastapi>=0.135.2",
+    # 0.22 is the first release that survives current matplotlib: earlier ones
+    # touch `matplotlib.style.core`, removed in matplotlib 3.11, so an unbounded
+    # `arviz<1.0.0` resolves to something that cannot be imported.
+    "arviz>=0.22.0,<1.0.0",
+    "fastapi>=0.115.0",
+    # Genuinely 2.x: `mcp.server.MCPServer` and the streamable-HTTP session
+    # manager breakdown/mcp/server.py builds on do not exist in mcp 1.x.
     "mcp>=2.0.0",
-    "networkx>=3.6.1",
-    "numpy>=2.4.4",
-    "pandas>=3.0.2",
+    "networkx>=3.1",
+    "numpy>=1.26.0",
+    "pandas>=2.1.0",
     "pyarrow>=15.0.0",
-    "pydantic>=2.12.5",
-    "pymc>=5.28.0",
-    "pyyaml>=6.0.3",
-    "uvicorn>=0.42.0",
+    "pydantic>=2.7.0",
+    "pymc>=5.16.0",
+    "pyyaml>=6.0",
+    "uvicorn>=0.27.0",
 ]
 
 # Provider SDKs. Each one is needed only by the provider that uses it, and
@@ -116,6 +126,17 @@ dev = [
     "pytest>=9.0.2",
     "ruff>=0.9.0",
 ]
+
+# Lockfile-only; none of this is published metadata.
+#
+# Lowering the numpy floor widens the resolver's search, and it will happily
+# reach a numba beta to get there — 0.63.0b1 still references `np.row_stack`,
+# removed in numpy 2.0, so `import arviz` dies on a lockfile that resolved
+# "successfully". pip does not consider prereleases by default, so this only
+# ever bit `uv sync`; saying so here keeps the development lockfile honest
+# about what users actually get.
+[tool.uv]
+prerelease = "disallow"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
