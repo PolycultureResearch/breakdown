@@ -22,8 +22,8 @@ from breakdown.data_fetch import (
 )
 from breakdown.engine.model import fit_metric, summarize_trace
 from breakdown.engine.rca import run_rca, shapley_attribution
-from breakdown.engine.slices import slice_attribution
 from breakdown.engine.simulate import ScenarioRequest, run_scenario, validate_cold_start
+from breakdown.engine.slices import slice_attribution
 from breakdown.grains import GrainedData, build_grained
 from breakdown.mcp.server import mcp
 from breakdown.parser import Parser

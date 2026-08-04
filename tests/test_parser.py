@@ -604,7 +604,8 @@ metrics:
 def test_provider_type_none_and_assumed_alias():
     """`provider: none` declares a cold-start tree; `assumed` is an alias
     normalized to `none` so downstream code has one spelling to check."""
-    yaml_for = lambda ptype: f"""
+    def yaml_for(ptype):
+        return f"""
 provider:
   type: {ptype}
 metrics:
@@ -612,6 +613,7 @@ metrics:
     source: assumed
     baseline: 1200
 """
+
     assert Parser(yaml_for("none")).config.provider.type == "none"
     assert Parser(yaml_for("assumed")).config.provider.type == "none"
     with pytest.raises(Exception, match="mock, local, cloud, warehouse, none"):

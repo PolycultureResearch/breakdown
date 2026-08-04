@@ -1,0 +1,89 @@
+name: Publish
+
+# Publishes `metric-breakdown` to PyPI via Trusted Publishing (OIDC) — no API
+# tokens stored in the repo. Two paths:
+#   * Publish a GitHub Release  -> builds and uploads to PyPI.
+#   * Run the workflow manually  -> builds and uploads to TestPyPI (a dry run).
+#
+# One-time setup on PyPI/TestPyPI (Account -> Publishing -> Add a pending
+# publisher), matching these values exactly:
+#   PyPI:     project metric-breakdown, owner PolycultureResearch, repo breakdown,
+#             workflow publish.yml, environment pypi
+#   TestPyPI: same, environment testpypi
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.0
+        with:
+          enable-cache: true
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      # Keep the install story honest: the wheel must build, expose the console
+      # script, and ship the UI + bundled example tree.
+      - name: Smoke-test wheel
+        run: |
+          uv run --isolated --no-project --with dist/*.whl breakdown --help
+          uv run --isolated --no-project --with dist/*.whl python -c "
+          from importlib.resources import files
+          pkg = files('breakdown')
+          assert pkg.joinpath('static/index.html').is_file(), 'UI missing from wheel'
+          assert pkg.joinpath('examples/jaffle_shop_tree.yml').is_file(), 'example tree missing from wheel'
+          "
+
+      - name: Check metadata renders on PyPI
+        run: uv run --isolated --no-project --with twine twine check dist/*
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # Manual runs go to TestPyPI so a release can be rehearsed end to end.
+  publish-testpypi:
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write  # required for Trusted Publishing
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  # A published GitHub Release ships the real thing.
+  publish-pypi:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # required for Trusted Publishing
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
