@@ -10,6 +10,7 @@ For the statistical assumptions and how to interpret results, see `docs/model.md
 
 ```
 breakdown/
+  __init__.py      # `__version__`, from importlib.metadata — pyproject.toml is the only source
   parser.py        # YAML → Pydantic models → NetworkX DAG (typed nodes) + cross-node grain rules
   formula.py       # Shared formula AST validation + safe eval (used by parser, engine, data_fetch)
   grains.py        # ALL grain arithmetic: period floors/snapping/steps, kind-aware
@@ -26,7 +27,7 @@ breakdown/
   mcp/
     server.py      # MCP server — 5 tools over the same engine/state (mounted at /mcp)
     shaping.py     # MCP response compaction, how_to_read caveats, UI deep links
-  cli.py           # Console entry point (`breakdown serve` / `breakdown doctor`)
+  cli.py           # Console entry point (`breakdown serve` / `breakdown doctor` / `--version`)
   doctor.py        # Provider connectivity checks — reuses the real fetchers
   snapshots.py     # Parquet read-through cache at the fetcher boundary (roadmap 2.4)
   static/          # UI files (inside the package so the wheel ships them)
