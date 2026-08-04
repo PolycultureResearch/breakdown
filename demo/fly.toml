@@ -3,25 +3,32 @@
 # **Always run these from the repo root**, never from demo/:
 #
 #   fly launch --no-deploy --copy-config --config demo/fly.toml --name white-cube-demo
-#   fly secrets set BREAKDOWN_API_TOKEN=$(openssl rand -hex 24) --app white-cube-demo
-#   fly deploy --config demo/fly.toml
+#   fly secrets set BREAKDOWN_API_TOKEN=… --app white-cube-demo
+#   fly deploy . --config demo/fly.toml
 #
 # Then warm the trace cache once, so the first visitor does not pay for the fits:
 #   uv run python demo/prewarm.py --rcas --url https://white-cube-demo.fly.dev
 #
-# Why the repo root: the Dockerfile installs the breakdown package from
-# pyproject.toml/uv.lock and copies breakdown/, so the build context has to be
-# the whole repo. flyctl never changes the context away from the project root
-# and resolves `dockerfile` against it too — which is why the path below is
-# `demo/Dockerfile` and not `Dockerfile`. Pointing it at `Dockerfile` would
-# silently build the repo's *general-purpose* image instead, the one that
-# expects a tree mounted at /config/tree.yml and ships no snapshots.
+# Two different paths are in play, and they resolve against different roots —
+# which is worth stating because Fly's own docs get it backwards:
+#
+#   * `dockerfile` below resolves **relative to this file's directory**, so
+#     "Dockerfile" means demo/Dockerfile. (Writing "demo/Dockerfile" here fails
+#     with demo/demo/Dockerfile — verified, not theorised.)
+#   * The **build context** is `fly deploy`'s WORKING_DIRECTORY argument, which
+#     defaults to the shell's cwd. It must be the repo root, because the
+#     Dockerfile installs the package from pyproject.toml/uv.lock and copies
+#     breakdown/. Passing `.` from the repo root pins it explicitly rather than
+#     relying on where you happened to be standing.
 
 app = "white-cube-demo"
 primary_region = "iad"
 
 [build]
-  dockerfile = "demo/Dockerfile"
+  # Relative to this file: demo/Dockerfile. Not the repo's root Dockerfile,
+  # which is the general-purpose image expecting a tree mounted at
+  # /config/tree.yml and shipping no snapshots.
+  dockerfile = "Dockerfile"
 
 [env]
   # MCP responses embed report_url deep links; without this they would point

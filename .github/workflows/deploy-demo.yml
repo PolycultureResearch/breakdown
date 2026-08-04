@@ -47,7 +47,7 @@ jobs:
       # be the whole repo. --config selects the demo's fly.toml; the dockerfile
       # path inside it is repo-root-relative for the same reason.
       - name: Deploy
-        run: flyctl deploy --config demo/fly.toml --remote-only
+        run: flyctl deploy . --config demo/fly.toml --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
