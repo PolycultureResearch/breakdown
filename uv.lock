@@ -1603,10 +1603,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "arviz" },
-    { name = "databricks-sdk" },
-    { name = "databricks-sql-connector" },
-    { name = "dbt-metricflow" },
-    { name = "dbt-sl-sdk", extra = ["sync"] },
     { name = "fastapi" },
     { name = "mcp" },
     { name = "networkx" },
@@ -1619,9 +1615,26 @@ dependencies = [
     { name = "uvicorn" },
 ]
 
+[package.optional-dependencies]
+all = [
+    { name = "databricks-sdk" },
+    { name = "databricks-sql-connector" },
+    { name = "dbt-metricflow" },
+    { name = "dbt-sl-sdk", extra = ["sync"] },
+]
+databricks = [
+    { name = "databricks-sdk" },
+    { name = "databricks-sql-connector" },
+]
+dbt = [
+    { name = "dbt-metricflow" },
+    { name = "dbt-sl-sdk", extra = ["sync"] },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "httpx" },
+    { name = "metric-breakdown", extra = ["all"] },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -1629,12 +1642,13 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "arviz", specifier = "<1.0.0" },
-    { name = "databricks-sdk", specifier = ">=0.20.0" },
-    { name = "databricks-sql-connector", specifier = ">=4.4.0" },
-    { name = "dbt-metricflow", specifier = ">=0.10.1" },
-    { name = "dbt-sl-sdk", extras = ["sync"], specifier = ">=0.13.2" },
+    { name = "databricks-sdk", marker = "extra == 'databricks'", specifier = ">=0.20.0" },
+    { name = "databricks-sql-connector", marker = "extra == 'databricks'", specifier = ">=4.4.0" },
+    { name = "dbt-metricflow", marker = "extra == 'dbt'", specifier = ">=0.10.1" },
+    { name = "dbt-sl-sdk", extras = ["sync"], marker = "extra == 'dbt'", specifier = ">=0.13.2" },
     { name = "fastapi", specifier = ">=0.135.2" },
     { name = "mcp", specifier = ">=2.0.0" },
+    { name = "metric-breakdown", extras = ["databricks", "dbt"], marker = "extra == 'all'" },
     { name = "networkx", specifier = ">=3.6.1" },
     { name = "numpy", specifier = ">=2.4.4" },
     { name = "pandas", specifier = ">=3.0.2" },
@@ -1644,10 +1658,12 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "uvicorn", specifier = ">=0.42.0" },
 ]
+provides-extras = ["dbt", "databricks", "all"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "metric-breakdown", extras = ["all"] },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "ruff", specifier = ">=0.9.0" },
 ]
@@ -3365,9 +3381,9 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", marker = "python_full_version < '3.12'" },
-    { name = "scipy", marker = "python_full_version < '3.12'" },
-    { name = "xarray", marker = "python_full_version < '3.12'" },
+    { name = "numpy" },
+    { name = "scipy" },
+    { name = "xarray" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f1/10/ef474494a7f2102ec4c02352c723fa282c6237b600565eb82ee354291211/xarray_einstats-0.9.1.tar.gz", hash = "sha256:39b373deed43592c41d3fbf8863af62e19e01c1ae553ae5ff059a8df78d995c6", size = 33327, upload-time = "2025-06-18T15:53:28.499Z" }
 wheels = [
@@ -3390,9 +3406,9 @@ resolution-markers = [
     "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", marker = "python_full_version >= '3.12'" },
-    { name = "scipy", marker = "python_full_version >= '3.12'" },
-    { name = "xarray", marker = "python_full_version >= '3.12'" },
+    { name = "numpy" },
+    { name = "scipy" },
+    { name = "xarray" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/48/9b/305ee6a2dac75fc9c28105db061408df6ecbf0f7a1de37636e8e4ea47ca7/xarray_einstats-0.10.0.tar.gz", hash = "sha256:d432a363fc8f09baad164f9826dc711551c684b9abd8098c1b961d18663a627d", size = 33449, upload-time = "2026-02-19T18:13:55.245Z" }
 wheels = [

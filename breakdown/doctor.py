@@ -105,6 +105,31 @@ def _skip_rest(names: List[str], reason: str) -> List[CheckResult]:
     return [CheckResult.skip(name, reason) for name in names]
 
 
+def check_provider_extra(provider: str) -> Optional[CheckResult]:
+    """Provider SDKs ship as extras, so "not installed" is a distinct failure
+    from "installed and misconfigured". Report it first and by name — every
+    downstream check would otherwise fail with the same ImportError wearing a
+    connectivity check's remediation."""
+    from breakdown.data_fetch import PROVIDER_EXTRAS, provider_extra_missing
+
+    extra = PROVIDER_EXTRAS.get(provider)
+    if extra is None:
+        return None
+    problem = provider_extra_missing(provider)
+    if problem:
+        return CheckResult.fail(
+            f"{extra} extra installed", problem,
+            f"pip install 'metric-breakdown[{extra}]'"
+            + (
+                "\nor, to keep MetricFlow out of this environment:"
+                "\n  uv tool install dbt-metricflow"
+                if extra == "dbt"
+                else ""
+            ),
+        )
+    return CheckResult.ok(f"{extra} extra installed", f"`{provider}` provider dependencies present")
+
+
 def check_warehouse(config: MetricTreeConfig, start_date: str, end_date: str) -> List[CheckResult]:
     from breakdown.data_fetch import WarehouseDataFetcher
 
@@ -288,7 +313,7 @@ def check_local(config: MetricTreeConfig) -> List[CheckResult]:
         results.append(
             CheckResult.fail(
                 "metricflow CLI", "`mf` not found on PATH",
-                "uv tool install dbt-metricflow   # or: pip install dbt-metricflow",
+                "pip install 'metric-breakdown[dbt]'   # or: uv tool install dbt-metricflow",
             )
         )
         results.extend(_skip_rest(["dbt project", "metrics listable"], "no mf CLI"))
@@ -370,6 +395,16 @@ def check_fit_readiness(parser, start_date: str, end_date: str) -> CheckResult:
     return CheckResult.ok("fit readiness", detail)
 
 
+# What each provider's own checks would have reported, had its SDK been there.
+# Listed so a missing extra reads as one fixable failure plus skips, instead of
+# a cascade of connectivity failures with misleading remediations.
+_DOWNSTREAM_CHECKS = {
+    "warehouse": ["auth configured", "warehouse connection", "metric sql runs"],
+    "cloud": ["cloud config", "semantic layer reachable", "tree metrics exist"],
+    "local": ["dbt project", "metrics listable"],
+}
+
+
 def run_doctor(
     tree_path: str,
     start_date: Optional[str] = None,
@@ -384,7 +419,13 @@ def run_doctor(
         return results
 
     provider = tree.config.provider.type
-    if provider == "warehouse":
+    extra = check_provider_extra(provider)
+    if extra is not None:
+        results.append(extra)
+
+    if extra is not None and extra.status == "fail":
+        results += _skip_rest(_DOWNSTREAM_CHECKS[provider], "provider extra not installed")
+    elif provider == "warehouse":
         results += check_warehouse(tree.config, start_date, end_date)
     elif provider == "cloud":
         results += check_cloud(tree.config)

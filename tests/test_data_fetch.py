@@ -4,10 +4,29 @@ import pytest
 from breakdown.data_fetch import (
     CloudDataFetcher,
     LocalDataFetcher,
+    MissingProviderExtra,
     MockDataFetcher,
     WarehouseDataFetcher,
+    provider_extra_missing,
 )
 from breakdown.parser import Parser
+
+# Provider SDKs are optional extras, so the handful of tests that need a real
+# one skip on a base install rather than failing it. Everything else — the mock
+# provider, the warehouse gap/alignment rules driven by stub cursors — runs
+# without any extra installed.
+needs_dbt_extra = pytest.mark.skipif(
+    provider_extra_missing("cloud") is not None,
+    reason="requires the `dbt` extra (pip install 'metric-breakdown[dbt]')",
+)
+needs_mf_cli = pytest.mark.skipif(
+    provider_extra_missing("local") is not None,
+    reason="requires the MetricFlow `mf` CLI on PATH",
+)
+needs_databricks_extra = pytest.mark.skipif(
+    provider_extra_missing("warehouse") is not None,
+    reason="requires the `databricks` extra (pip install 'metric-breakdown[databricks]')",
+)
 
 TREE_YAML = """
 metrics:
@@ -118,6 +137,7 @@ metrics:
     assert corr_lagged > corr_contemp
 
 
+@needs_dbt_extra
 def test_cloud_fetcher_requires_credentials():
     """CloudDataFetcher.__init__ should raise when dbtsl client rejects bad credentials."""
     with pytest.raises(Exception):
@@ -125,6 +145,7 @@ def test_cloud_fetcher_requires_credentials():
         fetcher.fetch_metric("revenue", "2024-01-01", "2024-03-31")
 
 
+@needs_mf_cli
 def test_local_fetcher_raises_on_bad_project():
     """LocalDataFetcher should raise RuntimeError when mf fails on a non-existent project."""
     fetcher = LocalDataFetcher(project_path="/tmp/nonexistent_dbt_project")
@@ -220,6 +241,7 @@ def test_warehouse_fetcher_requires_auth():
         WarehouseDataFetcher(host="h", http_path="p", token=None, metric_sql={})
 
 
+@needs_databricks_extra
 def test_warehouse_fetcher_profile_uses_credentials_provider(monkeypatch):
     """With a `profile`, the connector is called with an OAuth credentials
     provider (not access_token), and host defaults to the profile's host."""
@@ -447,3 +469,94 @@ def test_sliced_long_ambiguous_columns_raise():
     })
     with pytest.raises(RuntimeError, match="exactly one dimension column"):
         _sliced_long(raw, "signups", "day")
+
+
+# --- provider extras (packaging) ---
+#
+# Provider SDKs ship as `[dbt]` / `[databricks]` extras, so the base install
+# has to fail with an instruction rather than an ImportError traceback.
+
+
+def test_local_fetcher_without_mf_names_the_extra(monkeypatch):
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    fetcher = LocalDataFetcher(project_path="/tmp/whatever")
+    with pytest.raises(MissingProviderExtra) as exc:
+        fetcher.fetch_metric("revenue", "2024-01-01", "2024-01-31")
+    message = str(exc.value)
+    assert "provider type 'local' needs the dbt extra" in message
+    assert "pip install 'metric-breakdown[dbt]'" in message
+
+
+def test_cloud_fetcher_without_dbtsl_names_the_extra(monkeypatch):
+    import sys
+
+    # A None entry makes `import dbtsl` raise ImportError, which is what an
+    # uninstalled extra looks like from inside the fetcher.
+    monkeypatch.setitem(sys.modules, "dbtsl", None)
+    with pytest.raises(MissingProviderExtra) as exc:
+        CloudDataFetcher(environment_id="1", host="h", token="t")
+    message = str(exc.value)
+    assert "provider type 'cloud' needs the dbt extra" in message
+    assert "pip install 'metric-breakdown[dbt]'" in message
+
+
+def test_warehouse_fetcher_without_databricks_names_the_extra(monkeypatch):
+    """Building the fetcher is pure config; the driver is needed to connect,
+    which is where the base install has to explain itself."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "databricks.sql", None)
+    fetcher = WarehouseDataFetcher(host="h", http_path="p", token="tok", metric_sql={})
+    with pytest.raises(MissingProviderExtra) as exc:
+        fetcher._connect()
+    message = str(exc.value)
+    assert "provider type 'warehouse' needs the databricks extra" in message
+    assert "pip install 'metric-breakdown[databricks]'" in message
+
+
+def test_missing_extra_is_not_a_bare_import_error():
+    """MissingProviderExtra stays a RuntimeError so existing provider-error
+    handling keeps working, but is distinguishable from a broken install."""
+    assert issubclass(MissingProviderExtra, RuntimeError)
+    assert not issubclass(MissingProviderExtra, ImportError)
+
+
+def test_extra_lookup_is_none_for_providers_without_dependencies():
+    assert provider_extra_missing("mock") is None
+    assert provider_extra_missing("none") is None
+
+
+def test_api_import_does_not_pull_provider_sdks():
+    """The base install must be able to start the server. `breakdown.api.main`
+    imports data_fetch, so any module-scope provider import there would make
+    `pip install metric-breakdown` unusable without the extras."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; import breakdown.api.main; "
+        "leaked = [m for m in sys.modules "
+        "if m == 'dbtsl' or m.split('.')[0] in ('databricks', 'dbt', 'metricflow')]; "
+        "print(leaked)"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=180
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "[]", f"provider SDKs imported eagerly: {proc.stdout}"
+
+
+def test_local_fetcher_constructs_without_mf_so_snapshots_still_serve():
+    """A tree can name the `local` provider and never query it — the snapshot
+    cache serves committed parquet with no dbt project or `mf` in sight. Only
+    an actual query may demand the extra."""
+    import shutil
+
+    real_which = shutil.which
+    try:
+        shutil.which = lambda name: None
+        LocalDataFetcher(project_path="/tmp/nonexistent")  # must not raise
+    finally:
+        shutil.which = real_which

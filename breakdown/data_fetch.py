@@ -1,5 +1,9 @@
+import importlib
+import importlib.util
 import logging
+import shutil
 from abc import ABC, abstractmethod
+from types import ModuleType
 from typing import Dict, Optional, Tuple
 
 import networkx as nx
@@ -10,6 +14,62 @@ from breakdown.formula import eval_formula
 from breakdown.grains import floor_period, period_spine, resample_up
 
 logger = logging.getLogger(__name__)
+
+# Which extra ships each provider's SDK. The base install deliberately carries
+# none of them, so every provider dependency is imported at the point of use
+# and a missing one is reported as a fixable install, not a traceback.
+PROVIDER_EXTRAS = {"cloud": "dbt", "local": "dbt", "warehouse": "databricks"}
+
+
+class MissingProviderExtra(RuntimeError):
+    """A provider was selected whose optional dependencies aren't installed.
+
+    Distinct from ImportError so callers (the API startup path, `breakdown
+    doctor`) can tell "you need to install something" apart from "the provider
+    is installed and broken" — the remediations are completely different.
+    """
+
+
+def _extra_hint(provider: str, extra: str, detail: str) -> str:
+    return (
+        f"provider type '{provider}' needs the {extra} extra: "
+        f"pip install 'metric-breakdown[{extra}]'   ({detail})"
+    )
+
+
+def _require_module(module: str, provider: str, extra: str) -> ModuleType:
+    """Import a provider SDK, or say which extra installs it."""
+    try:
+        return importlib.import_module(module)
+    except ImportError as e:
+        raise MissingProviderExtra(
+            _extra_hint(provider, extra, f"missing module '{module}'")
+        ) from e
+
+
+def provider_extra_missing(provider: str) -> Optional[str]:
+    """The error message for `provider`'s extra being absent, or None if it is
+    installed. Lets callers report the problem before building a fetcher."""
+    extra = PROVIDER_EXTRAS.get(provider)
+    if extra is None:
+        return None
+    if provider == "local":
+        # The local provider shells out to MetricFlow's `mf`; the binary on
+        # PATH is the dependency, not an importable module.
+        if shutil.which("mf") is None:
+            return _extra_hint(provider, extra, "`mf` not found on PATH")
+        return None
+    modules = {"cloud": ("dbtsl",), "warehouse": ("databricks.sql", "databricks.sdk")}[provider]
+    for module in modules:
+        # `databricks` is a namespace package split across two distributions,
+        # so only the dotted submodule proves the right one is installed.
+        try:
+            found = importlib.util.find_spec(module) is not None
+        except (ImportError, ValueError):
+            found = False
+        if not found:
+            return _extra_hint(provider, extra, f"missing module '{module}'")
+    return None
 
 
 def _floor_labels(df: pd.DataFrame, metric_name: str, grain: str) -> pd.DataFrame:
@@ -105,7 +165,7 @@ def _sliced_long(df: pd.DataFrame, metric_name: str, grain: str) -> pd.DataFrame
 class CloudDataFetcher(BaseDataFetcher):
     """Fetches data from the dbt Semantic Layer (Cloud) using the official SDK."""
     def __init__(self, environment_id: str, host: str, token: str):
-        from dbtsl import SemanticLayerClient
+        SemanticLayerClient = _require_module("dbtsl", "cloud", "dbt").SemanticLayerClient
         self.client = SemanticLayerClient(
             environment_id=int(environment_id),
             host=host,
@@ -163,6 +223,16 @@ class LocalDataFetcher(BaseDataFetcher):
         import os
         import subprocess
         import tempfile
+
+        # Checked here rather than in __init__ because a tree can name the
+        # local provider and still never query it — the snapshot cache serves
+        # committed parquet without a dbt project present (see the white-cube
+        # demo). The dependency is the `mf` binary, so this is a PATH check:
+        # `uv tool install dbt-metricflow` satisfies it just as well as the
+        # extra, which is what `breakdown doctor` recommends.
+        problem = provider_extra_missing("local")
+        if problem:
+            raise MissingProviderExtra(problem)
 
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
             tmp_path = f.name
@@ -259,6 +329,9 @@ class WarehouseDataFetcher(BaseDataFetcher):
         schema: Optional[str] = None,
         profile: Optional[str] = None,
     ):
+        # No extra check here: constructing the fetcher is pure config, and the
+        # driver is only needed to connect. `_connect` raises MissingProviderExtra
+        # on the first fetch, which is the startup path anyway.
         if not token and not profile:
             raise ValueError(
                 "warehouse provider needs either a `token` (PAT) or a `profile` "
@@ -274,13 +347,13 @@ class WarehouseDataFetcher(BaseDataFetcher):
         self._con = None
 
     def _connect(self):
-        from databricks import sql as dbsql
+        dbsql = _require_module("databricks.sql", "warehouse", "databricks")
 
         if self.profile:
             # Reuse the Databricks SDK's unified OAuth for this CLI profile. The
             # connector's `credentials_provider` wants a zero-arg callable that
             # returns a HeaderFactory; `Config.authenticate` is exactly that.
-            from databricks.sdk.core import Config
+            Config = _require_module("databricks.sdk.core", "warehouse", "databricks").Config
 
             cfg = Config(profile=self.profile)
             host = self.host or cfg.host

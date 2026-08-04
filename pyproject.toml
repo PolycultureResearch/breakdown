@@ -35,12 +35,12 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Information Analysis",
     "Typing :: Typed",
 ]
+# The base install is the whole engine, API, UI, MCP server and the `mock`
+# provider — the "just let me try it" path. Provider SDKs are extras (below),
+# because carrying dbt-core and the Databricks connector for everyone tripled
+# the install for dependencies most users never touch.
 dependencies = [
     "arviz<1.0.0",
-    "databricks-sdk>=0.20.0",
-    "databricks-sql-connector>=4.4.0",
-    "dbt-metricflow>=0.10.1",
-    "dbt-sl-sdk[sync]>=0.13.2",
     "fastapi>=0.135.2",
     "mcp>=2.0.0",
     "networkx>=3.6.1",
@@ -52,6 +52,25 @@ dependencies = [
     "pyyaml>=6.0.3",
     "uvicorn>=0.42.0",
 ]
+
+# Provider SDKs. Each one is needed only by the provider that uses it, and
+# selecting a provider without its extra raises an error naming the exact
+# `pip install` to run (breakdown/data_fetch.py) rather than an ImportError.
+#
+# `dbt` is also where the Python-version ceiling lives: dbt-core does not run on
+# 3.14 (`mf` dies on import with a mashumaro serialization error). It is left
+# unmarked rather than pinned to <3.14 so that failure stays visible: a marker
+# would make `pip install 'metric-breakdown[dbt]'` a silent no-op.
+[project.optional-dependencies]
+dbt = [
+    "dbt-metricflow>=0.10.1",
+    "dbt-sl-sdk[sync]>=0.13.2",
+]
+databricks = [
+    "databricks-sdk>=0.20.0",
+    "databricks-sql-connector>=4.4.0",
+]
+all = ["metric-breakdown[databricks,dbt]"]
 
 [project.urls]
 Homepage = "https://github.com/PolycultureResearch/breakdown"
@@ -86,9 +105,14 @@ exclude = [
     "/knowledge",
 ]
 
+# Contributors get every provider, so a plain `uv sync` still runs the whole
+# suite — the provider tests skip themselves when their SDK is absent, which is
+# what keeps a base install testable, not what we want by default when working
+# on the code. This is a development setting; it has no effect on `pip install`.
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
+    "metric-breakdown[all]",
     "pytest>=9.0.2",
     "ruff>=0.9.0",
 ]
