@@ -74,22 +74,66 @@ The YAML is validated and compiled into a directed acyclic graph using NetworkX.
 
 ## Quickstart
 
-**Requirements:** Python 3.11+, [uv](https://github.com/astral-sh/uv)
+**Requirements:** Python 3.11+
 
-Run straight from git without cloning:
+> **Installed as `metric-breakdown`, used as `breakdown`.** The name `breakdown`
+> was already taken on PyPI, so that is the distribution name — but the command,
+> the import package and everything in this documentation are `breakdown`.
 
 ```bash
-uvx --from git+https://github.com/your-org/breakdown breakdown serve
+pip install metric-breakdown
+breakdown serve
+```
+
+Or, with [uv](https://github.com/astral-sh/uv), without installing anything:
+
+```bash
+uvx --from metric-breakdown breakdown serve
 ```
 
 Or work from a checkout:
 
 ```bash
-git clone https://github.com/your-org/breakdown
+git clone https://github.com/PolycultureResearch/breakdown
 cd breakdown
 uv sync
 uv run breakdown serve            # or: uv run python main.py serve
 ```
+
+`breakdown --version` reports the installed version — the first thing to include
+in a bug report.
+
+### Provider extras
+
+The base install is the whole product — engine, API, UI, MCP server — with the
+**`mock` provider**, which is enough to run the bundled example tree and every
+analysis in this README. Connecting to real data pulls in a vendor SDK, and
+those are **extras** you opt into:
+
+| You want to use | Install | Brings in |
+|---|---|---|
+| `mock`, or cold-start `none` | `pip install metric-breakdown` | — |
+| `local` (MetricFlow CLI) or `cloud` (dbt Cloud Semantic Layer) | `pip install 'metric-breakdown[dbt]'` | `dbt-metricflow`, `dbt-sl-sdk` |
+| `warehouse` (direct SQL) | `pip install 'metric-breakdown[databricks]'` | `databricks-sdk`, `databricks-sql-connector` |
+| all of them | `pip install 'metric-breakdown[all]'` | both of the above |
+
+This is not cosmetic: the extras are ~66 packages and ~120 MB that most installs
+never touch, and dbt-core in particular drags in a large tree of its own.
+Selecting a provider without its extra fails with the exact command to run —
+and `breakdown doctor --tree …` reports it as its own check — rather than an
+`ImportError` traceback.
+
+> **Python 3.14 and the `dbt` extra.** The base package supports 3.11–3.14 (CI
+> runs the suite on all four). The **`dbt` extra does not work on 3.14** —
+> dbt-core's `mf` binary fails on import — so use 3.13 or earlier for the
+> `local` and `cloud` providers. The `local` provider needs only `mf` on
+> `PATH`, so `uv tool install dbt-metricflow` in its own environment is a good
+> alternative to the extra.
+
+A tree that names `local` but is served entirely from committed snapshots (see
+[Snapshots](#snapshots-fetch-once-refit-forever)) needs neither the extra nor a
+dbt project: the extra is only required when a query actually reaches the
+provider.
 
 Open `http://localhost:9090/ui` to explore the metric tree. The UI shows the DAG (formula vs learned edges, fit status), per-metric time series and posteriors in business units, and a full point-and-click RCA workflow: pick a target and two windows, run it, and read the answer off the graph — nodes tinted by direction of change, edges weighted by share of the gap explained, ranked causes with credible intervals in the sidebar. RCA runs and metric views are deep-linkable (`#rca=…`, `#metric=…`) so an analysis can be shared as a URL.
 

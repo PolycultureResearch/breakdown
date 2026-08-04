@@ -9,6 +9,7 @@ from breakdown.doctor import (
     _probe_window,
     check_cloud,
     check_local,
+    check_provider_extra,
     check_warehouse,
     print_report,
     run_doctor,
@@ -217,3 +218,47 @@ def test_doctor_fit_readiness_skips_cold_start(tmp_path):
     results = {r.name: r for r in run_doctor(str(tree), "2024-01-01", "2024-01-31")}
     assert results["fit readiness"].status == "skip"
     assert "nothing is ever fitted" in results["fit readiness"].detail
+
+
+# --- provider extras (packaging) ---
+
+
+def test_provider_extra_present_is_a_pass():
+    assert check_provider_extra("mock") is None
+    assert check_provider_extra("none") is None
+
+
+def test_missing_extra_reported_once_and_downstream_skipped(tmp_path, monkeypatch):
+    """A missing extra must read as one fixable failure, not a cascade of
+    connectivity failures whose remediations all point the wrong way."""
+    import breakdown.data_fetch as data_fetch
+
+    monkeypatch.setattr(
+        data_fetch, "provider_extra_missing",
+        lambda provider: (
+            "provider type 'warehouse' needs the databricks extra: "
+            "pip install 'metric-breakdown[databricks]'   (missing module 'databricks.sql')"
+        ),
+    )
+    tree = tmp_path / "tree.yml"
+    tree.write_text(WAREHOUSE_TREE)
+    results = by_name(run_doctor(str(tree)))
+
+    assert results["databricks extra installed"].status == "fail"
+    assert "metric-breakdown[databricks]" in results["databricks extra installed"].remediation
+    for name in ("auth configured", "warehouse connection", "metric sql runs"):
+        assert results[name].status == "skip"
+    # No lookalike failure from a check that never got to run.
+    assert sum(1 for r in results.values() if r.status == "fail") == 1
+
+
+def test_missing_dbt_extra_offers_the_standalone_cli_route(monkeypatch):
+    import breakdown.data_fetch as data_fetch
+
+    monkeypatch.setattr(data_fetch, "provider_extra_missing", lambda provider: "`mf` not found")
+    result = check_provider_extra("local")
+    assert result.status == "fail"
+    assert "metric-breakdown[dbt]" in result.remediation
+    # dbt-metricflow as a uv tool satisfies the local provider too, and keeps
+    # dbt-core out of the analysis environment.
+    assert "uv tool install dbt-metricflow" in result.remediation

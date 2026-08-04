@@ -85,3 +85,27 @@ def test_doctor_dispatch_exits_with_report_code(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         cli.main(["doctor", "--tree", "whatever.yml"])
     assert exc.value.code == 1
+
+
+# --- version (packaging) ---
+
+
+def test_version_flag_prints_installed_version(capsys):
+    """`--version` is the first thing a bug report is asked for, so it must
+    exist and must agree with what pip actually installed."""
+    from importlib.metadata import version
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--version"])
+    assert exc.value.code == 0
+    assert version("metric-breakdown") in capsys.readouterr().out
+
+
+def test_dunder_version_matches_distribution_metadata():
+    """`breakdown.__version__` is derived from the installed distribution, not
+    a literal — there is exactly one place the version can be wrong."""
+    from importlib.metadata import version
+
+    import breakdown
+
+    assert breakdown.__version__ == version("metric-breakdown")

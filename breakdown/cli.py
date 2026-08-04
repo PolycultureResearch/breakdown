@@ -4,6 +4,8 @@ import argparse
 import datetime
 import os
 
+from breakdown import __version__
+
 
 def serve(
     port: int = 9090,
@@ -65,6 +67,13 @@ def doctor(tree: str, start_date: str | None = None, end_date: str | None = None
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="breakdown", description="breakdown: Open-Source Bayesian Metric Trees"
+    )
+    # First thing anyone filing a bug is asked for. Names the distribution as
+    # well as the command, because `pip install metric-breakdown` and
+    # `breakdown` read differently and issue reports need both.
+    parser.add_argument(
+        "--version", action="version",
+        version=f"breakdown {__version__} (metric-breakdown {__version__})",
     )
     subparsers = parser.add_subparsers(dest="command")
 

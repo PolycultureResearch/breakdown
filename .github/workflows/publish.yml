@@ -31,15 +31,38 @@ jobs:
 
       # Keep the install story honest: the wheel must build, expose the console
       # script, and ship the UI + bundled example tree.
+      #
+      # `working-directory` is load-bearing, not tidiness. Run this from the
+      # repo root and Python puts the checkout on sys.path, so `import
+      # breakdown` resolves to the *source tree* and every assertion below
+      # passes whether or not the wheel contains anything. Running from
+      # elsewhere is what makes it a test of the artifact.
       - name: Smoke-test wheel
+        working-directory: ${{ runner.temp }}
         run: |
-          uv run --isolated --no-project --with dist/*.whl breakdown --help
-          uv run --isolated --no-project --with dist/*.whl python -c "
+          WHL=$(echo "$GITHUB_WORKSPACE"/dist/*.whl)
+          uv run --isolated --no-project --with "$WHL" breakdown --help
+          uv run --isolated --no-project --with "$WHL" python - <<'PY'
+          from importlib.metadata import distribution
           from importlib.resources import files
-          pkg = files('breakdown')
-          assert pkg.joinpath('static/index.html').is_file(), 'UI missing from wheel'
-          assert pkg.joinpath('examples/jaffle_shop_tree.yml').is_file(), 'example tree missing from wheel'
-          "
+          import os
+
+          pkg = files("breakdown")
+          # Proves we are inspecting the installed wheel, not a checkout.
+          assert "site-packages" in str(pkg), f"not testing the wheel: imported from {pkg}"
+
+          assert pkg.joinpath("static/index.html").is_file(), "UI missing from wheel"
+          assert pkg.joinpath("examples/jaffle_shop_tree.yml").is_file(), "example tree missing from wheel"
+          assert pkg.joinpath("py.typed").is_file(), "py.typed missing — the Typing :: Typed classifier would be a lie"
+
+          # Published under a different name than it imports; assert both, since
+          # a mismatch here is exactly what Trusted Publishing rejects.
+          assert distribution("metric-breakdown").metadata["Name"] == "metric-breakdown"
+
+          # The demo instance is a repo asset, not a dependency of the library.
+          assert not os.path.isdir(os.path.join(str(pkg), "..", "demo")), "demo/ leaked into the wheel"
+          print("wheel OK:", pkg)
+          PY
 
       - name: Check metadata renders on PyPI
         run: uv run --isolated --no-project --with twine twine check dist/*

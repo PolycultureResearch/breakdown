@@ -10,11 +10,13 @@ For the statistical assumptions and how to interpret results, see `docs/model.md
 
 ```
 breakdown/
+  __init__.py      # `__version__`, from importlib.metadata — pyproject.toml is the only source
   parser.py        # YAML → Pydantic models → NetworkX DAG (typed nodes) + cross-node grain rules
   formula.py       # Shared formula AST validation + safe eval (used by parser, engine, data_fetch)
   grains.py        # ALL grain arithmetic: period floors/snapping/steps, kind-aware
                    # resample_up, GrainedData (per-grain frames), BOOT_BLOCK
   data_fetch.py    # BaseDataFetcher + Mock / Local / Cloud / Warehouse implementations
+                   # (provider SDKs are optional extras — imported lazily, never at module scope)
   engine/
     model.py       # fit_metric() — BSTS via PyMC; compute_shapley(); summarize_trace()
     rca.py         # run_rca() + shapley_attribution() — all window-over-window attribution
@@ -25,7 +27,7 @@ breakdown/
   mcp/
     server.py      # MCP server — 5 tools over the same engine/state (mounted at /mcp)
     shaping.py     # MCP response compaction, how_to_read caveats, UI deep links
-  cli.py           # Console entry point (`breakdown serve` / `breakdown doctor`)
+  cli.py           # Console entry point (`breakdown serve` / `breakdown doctor` / `--version`)
   doctor.py        # Provider connectivity checks — reuses the real fetchers
   snapshots.py     # Parquet read-through cache at the fetcher boundary (roadmap 2.4)
   static/          # UI files (inside the package so the wheel ships them)
@@ -56,6 +58,18 @@ Design rules:
 
 ## `data_fetch.py`
 
+### Provider SDKs are optional extras
+
+Only `pymc`/`pandas`/`fastapi`-class dependencies are unconditional. `dbtsl` (cloud), the MetricFlow `mf` binary (local) and `databricks-*` (warehouse) ship as the `dbt` and `databricks` extras, so **nothing provider-specific may be imported at module scope** — `api/main.py` imports `data_fetch`, and a module-level `import dbtsl` would make a base install unable to start the server.
+
+The rules, all in `data_fetch.py`:
+
+- `PROVIDER_EXTRAS` maps provider type → extra name; `MissingProviderExtra` (a `RuntimeError`, deliberately **not** an `ImportError`) is what a missing extra raises, carrying the literal `pip install 'metric-breakdown[…]'` to run.
+- `_require_module(module, provider, extra)` is the only way a provider SDK enters the process. `provider_extra_missing(provider)` is the non-raising form, used by `doctor.check_provider_extra` and by tests to skip themselves.
+- **The check belongs at the point of use, not in `__init__`.** Constructing a fetcher is pure config and must stay free of SDK requirements: a tree can name `local` and be served entirely from committed snapshots (the white-cube demo does exactly this), so `LocalDataFetcher.__init__` must not demand `mf`. `LocalDataFetcher` checks in `_run_mf_query`, `WarehouseDataFetcher` in `_connect`. `CloudDataFetcher` is the exception — it builds a live `SemanticLayerClient` in `__init__`, so that is its point of use.
+
+`doctor.py` reports a missing extra as its own `CheckResult` before the provider chain runs and skips `_DOWNSTREAM_CHECKS[provider]`; otherwise every connectivity check fails with a remediation pointing at the wrong problem.
+
 ### `BaseDataFetcher` (ABC)
 
 All fetchers implement:
@@ -82,7 +96,7 @@ Mock slicing (`fetch_metric_sliced`): slice shares are smooth **date-anchored** 
 Runs each metric's own `sql` against Databricks SQL. The SQL owns the aggregation to the declared grain (one row per period, period-start labels — misaligned labels error); the engine reindexes onto the spine of whole periods inside the window, drops partial edge periods, fills **interior** gaps by kind, and **trims trailing** gaps (periods after the last returned row are not-yet-loaded data, not zeros — except when the query returns no rows at all, which keeps the full zero spine for flows).
 
 ### `LocalDataFetcher`
-Invokes `mf query --metrics <name> --group-by metric_time__<grain> --start-time ... --end-time ... --csv <tmpfile>` as a subprocess. `project_path` becomes the working directory. Raises `RuntimeError` on non-zero exit code or OS errors (e.g., path not found).
+Invokes `mf query --metrics <name> --group-by metric_time__<grain> --start-time ... --end-time ... --csv <tmpfile>` as a subprocess. `project_path` becomes the working directory. Raises `RuntimeError` on non-zero exit code or OS errors (e.g., path not found), and `MissingProviderExtra` when `mf` is not on `PATH` — a `PATH` check rather than an import check, because `uv tool install dbt-metricflow` satisfies this provider just as well as the `dbt` extra.
 
 ### `CloudDataFetcher`
 Uses the `dbtsl.SemanticLayerClient` sync API; the Arrow result is converted to pandas and the `metric_time__<grain>` column renamed to `date`.
