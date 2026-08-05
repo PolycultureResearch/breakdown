@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import pytest
 
 from breakdown.data_fetch import (
@@ -435,6 +436,179 @@ def test_warehouse_partial_period_rows_dropped():
     # Window ends Wednesday Jan 10: the Jan-8 week is partial.
     df = _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-10", grain="week")
     assert df["m"].tolist() == [100.0]
+
+
+# --- provider date alignment (roadmap C1/C2) ---
+#
+# Every case below produced a *plausible wrong number* rather than an error.
+# They are grouped here because they share one cause: the spine/trim/fill
+# contract lived inside the warehouse fetcher, so the semantic-layer providers
+# never got it, and the alignment guard that should have caught the tz case
+# compared two values that were both tz-aware.
+
+
+def test_warehouse_tz_aware_dates_do_not_become_zeros():
+    """A tz-aware date column used to zero out the whole metric (C1).
+
+    `floor_period` calls `.normalize()`, which preserves tzinfo, so a tz-aware
+    midnight passed the alignment guard. It then matched nothing on the
+    tz-naive spine, `notna().any()` was False so the trailing trim was skipped,
+    and `fillna(0.0)` returned a full spine of zeros — silently, and then
+    snapshotted.
+    """
+    rows = [
+        (pd.Timestamp("2024-06-03", tz="UTC"), 100.0),
+        (pd.Timestamp("2024-06-04", tz="UTC"), 250.0),
+    ]
+    df = _wh_fetcher(rows).fetch_metric("m", "2024-06-03", "2024-06-04")
+
+    assert df["m"].tolist() == [100.0, 250.0]
+    assert df["date"].tolist() == [pd.Timestamp("2024-06-03"), pd.Timestamp("2024-06-04")]
+    assert df["date"].dt.tz is None
+
+
+def test_warehouse_tz_aware_offset_keeps_the_labelled_date():
+    """A non-UTC session timezone must not shift the label. The warehouse means
+    the wall-clock date it put on the row, so we drop the zone rather than
+    converting through UTC (which would move a +09:00 midnight to the previous
+    day)."""
+    rows = [(pd.Timestamp("2024-06-03 00:00:00", tz="Asia/Tokyo"), 100.0)]
+    df = _wh_fetcher(rows).fetch_metric("m", "2024-06-03", "2024-06-03")
+
+    assert df["date"].tolist() == [pd.Timestamp("2024-06-03")]
+    assert df["m"].tolist() == [100.0]
+
+
+def test_warehouse_rows_entirely_off_the_spine_raise():
+    """SQL that ignores its bound parameters returns rows for the wrong window;
+    every row then falls off the spine and the old code zero-filled the lot.
+    An empty *result* is legitimate (all-quiet flow window); rows that all miss
+    is a bug in the query, and must say so."""
+    import datetime
+    rows = [
+        (datetime.date(2024, 5, 1), 100.0),
+        (datetime.date(2024, 5, 2), 250.0),
+    ]
+    with pytest.raises(RuntimeError, match="none of which fall on"):
+        _wh_fetcher(rows).fetch_metric("m", "2024-06-01", "2024-06-05")
+
+
+def test_warehouse_interior_gap_fill_warns(caplog):
+    """Filling an interior hole is a judgement call, not a fact — say so. A
+    three-day ETL outage is otherwise indistinguishable from a real collapse,
+    and RCA will name the metric as the root cause."""
+    import datetime
+    import logging
+    rows = [
+        (datetime.date(2024, 1, 1), 100.0),
+        (datetime.date(2024, 1, 15), 250.0),
+    ]
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week")
+
+    assert "interior" in caplog.text.lower()
+    assert "2024-01-08" in caplog.text  # names the period it invented
+
+
+# -- the semantic-layer providers never snapped at all (C2) --
+
+
+def _sl_frame(dates, values, grain="week", name="m"):
+    return pd.DataFrame({f"metric_time__{grain}": dates, name: values})
+
+
+def _local_fetcher(frame, monkeypatch):
+    fetcher = LocalDataFetcher(project_path="/unused")
+    monkeypatch.setattr(fetcher, "_run_mf_query", lambda *a, **k: frame.copy())
+    return fetcher
+
+
+def _cloud_fetcher(frame):
+    import contextlib
+
+    class _StubTable:
+        def to_pandas(self):
+            return frame.copy()
+
+    class _StubClient:
+        def session(self):
+            return contextlib.nullcontext()
+
+        def query(self, **kwargs):
+            return _StubTable()
+
+    fetcher = object.__new__(CloudDataFetcher)  # bypass SDK construction
+    fetcher.client = _StubClient()
+    return fetcher
+
+
+def test_local_fetcher_drops_partial_edge_periods(monkeypatch):
+    """A window ending mid-week used to hand back a two-day partial week as a
+    full row at ~2/7 normal volume, which `snap_window` then treated as whole —
+    a manufactured −71% gap."""
+    frame = _sl_frame(
+        [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-08")], [100.0, 30.0]
+    )
+    df = _local_fetcher(frame, monkeypatch).fetch_metric(
+        "m", "2024-01-01", "2024-01-10", grain="week"
+    )
+    assert df["m"].tolist() == [100.0]
+
+
+def test_cloud_fetcher_drops_partial_edge_periods():
+    frame = _sl_frame(
+        [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-08")], [100.0, 30.0]
+    )
+    df = _cloud_fetcher(frame).fetch_metric(
+        "m", "2024-01-01", "2024-01-10", grain="week"
+    )
+    assert df["m"].tolist() == [100.0]
+
+
+def test_local_fetcher_fills_interior_gap_and_trims_trailing(monkeypatch):
+    frame = _sl_frame(
+        [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-15")], [100.0, 250.0]
+    )
+    df = _local_fetcher(frame, monkeypatch).fetch_metric(
+        "m", "2024-01-01", "2024-01-28", grain="week"
+    )
+    # Interior Jan-8 week -> 0; trailing Jan-22 week trimmed as not-yet-loaded.
+    assert df["m"].tolist() == [100.0, 0.0, 250.0]
+
+
+def test_cloud_fetcher_stock_forward_fills_interior_gap():
+    frame = _sl_frame(
+        [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-15")], [100.0, 250.0]
+    )
+    df = _cloud_fetcher(frame).fetch_metric(
+        "m", "2024-01-01", "2024-01-28", grain="week", kind="stock"
+    )
+    assert df["m"].tolist() == [100.0, 100.0, 250.0]
+
+
+def test_local_fetcher_rate_missing_period_raises(monkeypatch):
+    """A rate cannot be gap-filled — the same rule the warehouse path already
+    enforced, now shared."""
+    frame = _sl_frame(
+        [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-15")], [0.5, 0.6]
+    )
+    with pytest.raises(RuntimeError, match="Rate metric 'm' is missing week periods"):
+        _local_fetcher(frame, monkeypatch).fetch_metric(
+            "m", "2024-01-01", "2024-01-28", grain="week", kind="rate"
+        )
+
+
+def test_cloud_fetcher_tz_aware_dates_do_not_become_zeros():
+    """The semantic layer returns tz-aware timestamps for some warehouses."""
+    frame = _sl_frame(
+        [pd.Timestamp("2024-01-01", tz="UTC"), pd.Timestamp("2024-01-08", tz="UTC")],
+        [100.0, 250.0],
+    )
+    df = _cloud_fetcher(frame).fetch_metric(
+        "m", "2024-01-01", "2024-01-14", grain="week"
+    )
+    assert df["m"].tolist() == [100.0, 250.0]
+    assert df["date"].dt.tz is None
 
 
 # --- sliced-fetch reshape (_sliced_long) ---

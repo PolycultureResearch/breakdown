@@ -77,7 +77,14 @@ All fetchers implement:
 def fetch_metric(self, metric_name: str, start_date: str, end_date: str,
                  grain: str = "day", kind: str = "flow") -> pd.DataFrame
 ```
-Returns a DataFrame with columns `["date", metric_name]`, sorted by date, no NaNs, with **period-start** date labels at the requested grain (day midnight, week Monday, month 1st). `kind` drives gap-filling where the provider reindexes onto a period spine: flow → 0, stock → forward-fill (leading gap errors), rate → missing period errors.
+Returns a DataFrame with columns `["date", metric_name]`, sorted by date, no NaNs, with **period-start** date labels at the requested grain (day midnight, week Monday, month 1st).
+
+**Every provider reaches that shape through the same two module-level helpers** — this is a contract, not a convention, and it is enforced in one place because the alternative was tried and failed (roadmap C1/C2, fixed):
+
+- `_to_naive_dates(df, metric_name)` parses `date` and **drops any timezone**, keeping the wall-clock label. It must run first: `floor_period` normalizes but *preserves* tzinfo, so a tz-aware midnight satisfies every period-start check and then matches nothing against the tz-naive spine. That path used to return a full spine of zeros, silently, and snapshot them. The zone is dropped rather than converted — a row labelled midnight `+09:00` means that calendar date, and converting through UTC moves it back a day.
+- `_align_to_spine(df, metric_name, grain, kind, start, end, value_col)` reindexes onto the spine of whole periods inside the window and fills by `kind`: partial edge periods dropped, **trailing** gaps trimmed (not-yet-loaded, not zero), **interior** gaps filled — flow → 0, stock → forward-fill (leading gap errors), rate → error, with a warning naming the periods it invented. Rows that *all* miss the spine raise (a query ignoring its bound window); *no rows at all* keeps the full fill for flows, since an all-quiet window is a legitimate flow series.
+
+Label policy stays per-provider on purpose: the warehouse fetcher **errors** on a misaligned label because the SQL author owns the aggregation, while the semantic-layer fetchers **floor with a warning** via `_floor_labels` because a dbt project may legitimately use non-Monday weeks.
 
 A second, non-abstract method backs dimensional slicing:
 ```python
@@ -93,7 +100,7 @@ Constructed with an optional metric DAG (`MockDataFetcher(dag=parser.dag)`). Wit
 Mock slicing (`fetch_metric_sliced`): slice shares are smooth **date-anchored** seeded curves per `(dimension, slice)` — identical across metrics and fetch windows, which is what makes a mock rate's weighted blend reconcile *exactly* against its weight metric's slices (rate slices deviate around the blended rate, orthogonalized against the shares). A slice fetch first looks for a cached `_tree_data` window covering the request and splits *those* numbers (the covering-cache path), so sub-window slice fetches reconcile exactly against the served startup data.
 
 ### `WarehouseDataFetcher`
-Runs each metric's own `sql` against Databricks SQL. The SQL owns the aggregation to the declared grain (one row per period, period-start labels — misaligned labels error); the engine reindexes onto the spine of whole periods inside the window, drops partial edge periods, fills **interior** gaps by kind, and **trims trailing** gaps (periods after the last returned row are not-yet-loaded data, not zeros — except when the query returns no rows at all, which keeps the full zero spine for flows).
+Runs each metric's own `sql` against Databricks SQL. The SQL owns the aggregation to the declared grain (one row per period, period-start labels — misaligned labels **error** here rather than being floored, unlike the semantic-layer providers). Spine, trim and gap-fill are the shared `_align_to_spine` contract above; this fetcher is where those rules were first worked out, which is why its docstring carries the reasoning.
 
 ### `LocalDataFetcher`
 Invokes `mf query --metrics <name> --group-by metric_time__<grain> --start-time ... --end-time ... --csv <tmpfile>` as a subprocess. `project_path` becomes the working directory. Raises `RuntimeError` on non-zero exit code or OS errors (e.g., path not found), and `MissingProviderExtra` when `mf` is not on `PATH` — a `PATH` check rather than an import check, because `uv tool install dbt-metricflow` satisfies this provider just as well as the `dbt` extra.
