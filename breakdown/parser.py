@@ -136,9 +136,16 @@ class Seasonality(BaseModel):
     @field_validator("period")
     @classmethod
     def check_period(cls, v: int) -> int:
-        if v < 2:
+        # A period of 2 is at the Nyquist limit of the grain it is declared in:
+        # every Fourier term the model would fit is either identically zero or
+        # collinear with the intercept, so the component is unidentifiable no
+        # matter how much data arrives. That is a config error, not a data
+        # shortage — reject it here rather than fitting pure-prior parameters.
+        if v < 3:
             raise ValueError(
-                f"seasonality period must be an integer >= 2 (in grain steps), got {v}"
+                f"seasonality period must be an integer >= 3 (in grain steps), got {v}. "
+                "A period of 2 is unidentifiable at any sample size; a cycle needs "
+                "more than two steps per period to be distinguishable from the level."
             )
         return v
 

@@ -6,6 +6,7 @@ from breakdown.engine.model import (
     FitResult,
     compute_shapley,
     fit_metric,
+    identifiable_harmonics,
     scale_prior_params,
     seasonal_window_delta,
     summarize_trace,
@@ -717,6 +718,83 @@ metrics:
 
     warnings = result.diagnostics.get("seasonality_warnings", [])
     assert len(warnings) == 1 and "unidentifiable" in warnings[0]
+
+
+# --- Nyquist harmonic filter (1.1) ---
+
+
+@pytest.mark.parametrize(
+    "period,expected",
+    [(3, (1,)), (4, (1,)), (5, (1, 2)), (7, (1, 2)), (12, (1, 2)), (365, (1, 2))],
+)
+def test_identifiable_harmonics_respects_nyquist(period, expected):
+    assert identifiable_harmonics(period) == expected
+
+
+@pytest.mark.parametrize("period", [3, 4, 5, 7])
+def test_fitted_seasonal_design_is_full_rank(period):
+    """The regression the filter exists to prevent: with both harmonics
+    unconditionally, periods 3 and 4 give a rank-deficient design whose extra
+    parameters are sampled but never informed by the data."""
+    t = np.arange(4 * period)
+    cols = [np.ones(len(t))]
+    for k in identifiable_harmonics(period):
+        cols.append(np.sin(2 * np.pi * k * t / period))
+        cols.append(np.cos(2 * np.pi * k * t / period))
+    design = np.column_stack(cols)
+    assert np.linalg.matrix_rank(design) == design.shape[1]
+
+
+def test_period_four_drops_second_harmonic_and_says_so():
+    """A dropped harmonic is a property of the period, not the sample size, so
+    it is reported separately from the not-enough-data warning — and the fitted
+    component is narrower than the YAML implies."""
+    yaml_content = """
+metrics:
+  - name: dau
+    source: dbt.metric.dau
+    seasonality:
+      - period: 4
+        name: monthly_ish
+"""
+    parser = Parser(yaml_content)
+    data = generate_mock_data(n_days=80)[["date", "daily_sessions"]].rename(
+        columns={"daily_sessions": "dau"}
+    )
+
+    result = fit_metric(parser.dag, data, "dau", draws=200, inference_method="advi")
+
+    warnings = result.diagnostics.get("seasonality_warnings", [])
+    assert any("harmonic(s) [2] dropped" in w for w in warnings)
+    # The dropped harmonic has no posterior variable...
+    assert "sin_monthly_ish_h2" not in result.trace.posterior
+    # ...and the kept one does.
+    assert "sin_monthly_ish_h1" in result.trace.posterior
+
+
+def test_seasonal_window_delta_matches_the_filtered_fit():
+    """`seasonal_window_delta` reads posterior variables by name, so its filter
+    must mirror the model's exactly or a dropped harmonic is a KeyError."""
+    yaml_content = """
+metrics:
+  - name: dau
+    source: dbt.metric.dau
+    seasonality:
+      - period: 4
+        name: monthly_ish
+"""
+    parser = Parser(yaml_content)
+    data = generate_mock_data(n_days=80)[["date", "daily_sessions"]].rename(
+        columns={"daily_sessions": "dau"}
+    )
+    result = fit_metric(parser.dag, data, "dau", draws=200, inference_method="advi")
+    defn = parser.dag.nodes["dau"]["definition"]
+
+    delta = seasonal_window_delta(
+        result.trace, defn.seasonality, np.arange(0, 20), np.arange(20, 40)
+    )
+    assert delta.shape == (200,)
+    assert np.isfinite(delta).all()
 
 
 # --- expected_signs diagnostic ---
