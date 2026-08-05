@@ -215,9 +215,11 @@ metrics:
     assert abs(node["unexplained"]) < abs(node["unexplained"] + comps["seasonal"]["estimate"])
 
 
-def test_rca_reference_window_outside_fit_raises():
-    """With a lag, the fitted period starts after the data start; a reference
-    window reaching before it must raise a clear error."""
+def test_rca_lagged_reference_window_outside_data_raises():
+    """A lagged parent is read from a window shifted back by its lag. When that
+    shifted window reaches before the data start the error must name the parent,
+    the lag and the *shifted* dates — the caller never typed that window, so
+    reporting the one they did type would send them looking in the wrong place."""
     yaml_content = """
 metrics:
   - name: daily_sessions
@@ -228,12 +230,87 @@ metrics:
     lags: { daily_sessions: 5 }
 """
     parser = Parser(yaml_content)
-    data = generate_mock_data(n_days=100)
+    data = generate_mock_data(n_days=100)  # starts 2024-01-01
 
-    with pytest.raises(ValueError, match="inside the fitted period"):
+    with pytest.raises(ValueError) as excinfo:
         run_rca(parser.dag, data, {}, "order_count",
                 "2024-01-01", "2024-02-15", "2024-02-16", "2024-03-14",
                 advi_draws=100)
+    message = str(excinfo.value)
+    assert "daily_sessions" in message
+    assert "lag 5" in message
+    assert "2023-12-27" in message  # 2024-01-01 shifted back 5 days
+
+
+# --- Window validation (1.1) ---
+
+_WINDOW_TREE = """
+metrics:
+  - name: daily_sessions
+    source: dbt.metric.daily_sessions
+  - name: average_order_value
+    source: dbt.metric.average_order_value
+  - name: revenue
+    source: dbt.metric.revenue
+    formula: "daily_sessions * average_order_value"
+    parents: [daily_sessions, average_order_value]
+"""
+
+
+@pytest.mark.parametrize("entry_point", [run_rca, shapley_attribution])
+def test_overlapping_windows_raise(entry_point):
+    """Overlap is an error, not a warning: a shared period would count as both
+    the normal regime and the departure from it."""
+    parser = Parser(_WINDOW_TREE)
+    data = generate_mock_data(n_days=100)
+    args = (parser.dag, data, {}, "revenue") if entry_point is run_rca else (
+        parser.dag, data, "revenue"
+    )
+
+    with pytest.raises(ValueError, match="overlap"):
+        entry_point(*args, "2024-01-01", "2024-02-15", "2024-02-10", "2024-03-14")
+
+
+@pytest.mark.parametrize("entry_point", [run_rca, shapley_attribution])
+def test_inverted_window_raises(entry_point):
+    parser = Parser(_WINDOW_TREE)
+    data = generate_mock_data(n_days=100)
+    args = (parser.dag, data, {}, "revenue") if entry_point is run_rca else (
+        parser.dag, data, "revenue"
+    )
+
+    with pytest.raises(ValueError, match="analysis_start.*on or before.*analysis_end"):
+        entry_point(*args, "2024-01-01", "2024-01-31", "2024-03-14", "2024-02-16")
+
+
+def test_reference_window_starting_before_data_raises():
+    """A window that only *partly* overlaps the data would silently average the
+    periods that happen to exist — a wrong number, not a missing one."""
+    parser = Parser(_WINDOW_TREE)
+    data = generate_mock_data(n_days=100)  # starts 2024-01-01
+
+    with pytest.raises(ValueError, match="not fully covered by its data"):
+        run_rca(parser.dag, data, {}, "revenue",
+                "2023-12-01", "2024-01-31", "2024-02-01", "2024-02-28")
+
+
+def test_analysis_window_running_past_data_raises():
+    parser = Parser(_WINDOW_TREE)
+    data = generate_mock_data(n_days=100)  # ends 2024-04-09
+
+    with pytest.raises(ValueError, match="not fully covered by its data"):
+        run_rca(parser.dag, data, {}, "revenue",
+                "2024-01-01", "2024-01-31", "2024-02-01", "2024-05-31")
+
+
+def test_windows_fully_inside_the_data_are_accepted():
+    """The guard must not fire on the ordinary case it exists to protect."""
+    parser = Parser(_WINDOW_TREE)
+    data = generate_mock_data(n_days=100)
+
+    result = run_rca(parser.dag, data, {}, "revenue",
+                     "2024-01-01", "2024-01-31", "2024-02-01", "2024-02-28")
+    assert result["nodes"]["revenue"]["gap"] is not None
 
 
 # --- Per-day Shapley (T6) ---
