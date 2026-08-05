@@ -14,6 +14,24 @@ fixes. Callers who need stability should pin `metric-breakdown~=0.1.0` until 1.0
 
 ### Added
 
+- **Input validation across the analysis path** (roadmap 1.1 / T9). Every case
+  below previously produced a *plausible wrong number* rather than an error,
+  which is the worst failure mode this engine has:
+  - **Window ordering.** `run_rca` and `shapley_attribution` both require
+    `reference_start <= reference_end < analysis_start <= analysis_end`.
+    Overlap is an error, not a warning — a shared period would count as both
+    the normal regime and the departure from it.
+  - **Window coverage.** The snapped windows must lie *fully* inside the node's
+    own grain frame. A window entirely outside the data already raised; the new
+    check catches the partial overlap, which silently averaged whichever
+    periods happened to exist. Lagged parents are validated on their *shifted*
+    windows and the error names the parent, its lag, and the shifted dates —
+    the window the caller never typed but the engine actually read.
+  - **Gap-free date spine.** `build_grained` rejects a grain frame with holes,
+    naming up to 10 missing periods. Model time (`t = arange(len(y))`), lags,
+    and bootstrap blocks are all positional, so a hole compresses the calendar
+    and shifts every downstream date. Periods dropped by the inner join are
+    logged even when the survivors stay contiguous.
 - **`breakdown --version`** and **`breakdown.__version__`**, both read from the
   installed distribution metadata so `pyproject.toml` stays the only place a
   version is written and the two can never disagree.
@@ -22,8 +40,28 @@ fixes. Callers who need stability should pin `metric-breakdown~=0.1.0` until 1.0
   the same suite — so `requires-python = ">=3.11"` is tested at both ends
   instead of advertised.
 
+### Fixed
+
+- **Seasonality no longer fits unidentifiable Fourier harmonics.** A harmonic
+  `k` carries `k / period` cycles per grain step, so Nyquist requires
+  `2k < period`; below that the design column is identically zero or collinear
+  with another, and the parameter is pure prior — sampled but never informed by
+  data. Unconditionally fitting 2 harmonics meant `period: 2` fit three such
+  parameters, `period: 3` two, and `period: 4` one. Harmonics are now filtered
+  by `identifiable_harmonics(period)` (periods 3–4 keep one, ≥ 5 keep both) and
+  dropped harmonics are reported in the `seasonality_warnings` diagnostic,
+  alongside the existing not-enough-data warning.
+- **The bundled example stopped shipping a documented pitfall.** The `period:
+  365` annual component is gone from `jaffle_shop_tree.yml` and the B2B MRR
+  reference tree: identifying it needs two full years inside the *fit* window,
+  and RCA fits stop at `analysis_start`, so it only ever soaked up degrees of
+  freedom the parents needed.
+
 ### Changed
 
+- **`seasonality.period` must now be >= 3** (was >= 2). A period of 2 is at the
+  Nyquist limit of its own grain and is unidentifiable at any sample size — a
+  config error, not a data shortage, so it is rejected at parse time.
 - **Provider SDKs are now extras.** `pip install metric-breakdown` installs the
   engine, API, UI, MCP server and the `mock` provider — 70 packages / ~390 MB,
   down from 138 / ~640 MB. Real providers opt in:

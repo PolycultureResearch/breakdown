@@ -41,8 +41,9 @@ metrics:
     parents:
       - order_count
       - average_order_value
+    # Only declare seasonality the fit window can actually see: two full
+    # periods, minimum. An annual component (period: 365) on a few months of
+    # data is unidentifiable and soaks up degrees of freedom the parents need.
     seasonality:
       - period: 7
         name: "weekly"
-      - period: 365
-        name: "annual"

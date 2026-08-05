@@ -55,9 +55,13 @@ deep-linkable RCA / metric / what-if views. *(UI plan U1–U4 + node cards.)*
 over streamable HTTP at `/mcp`, sharing the API process and trace cache; analysis
 responses carry `how_to_read` caveats and deep links back into the UI. *(2.5.)*
 
-**Not yet built** (the roadmap below): remaining statistical rigor (T9–T11), UI trust
-finish (U5–U6), the connectivity kit, and the market-driven items (report export,
-scheduled monitoring, dimensional slicing).
+**Input validation.** Window ordering and overlap, per-node window coverage
+(including lagged parents' shifted windows), a gap-free date spine per grain, and
+seasonality identifiability (Nyquist harmonic filter + fit-length warnings). *(T9.)*
+
+**Not yet built** (the roadmap below): remaining statistical rigor (T11), UI trust
+finish (U5–U6), the connectivity kit, and the market-driven items (scheduled
+monitoring, the rest of dimensional slicing).
 
 ---
 
@@ -67,7 +71,7 @@ Goal: an RCA a stakeholder believes, on governed metrics, that re-runs determini
 
 | # | Item | Status | Why |
 |---|------|--------|-----|
-| 1.1 | **Statistical hardening finish** — input validation (window ordering/overlap, lagged-window bounds), seasonality identifiability checks, and remove the unidentifiable annual component from the example tree (T9) | ○ | Silent-corruption guards; the example currently ships a documented pitfall |
+| 1.1 | **Statistical hardening finish** (T9) — input validation, seasonality identifiability, and the example's documented pitfall. Shipped: `_validate_windows` (ordering; overlap is an error) + `_validate_coverage` (snapped windows must lie fully inside the node's own data; lagged parents checked on their *shifted* windows and reported with parent/lag/shifted dates) on both `run_rca` and `shapley_attribution`; a gap-free-spine check in `build_grained` naming up to 10 missing periods, plus an inner-join drop warning; Nyquist-filtered Fourier harmonics (`identifiable_harmonics`: keep harmonic `k` only when `2k < period`, so periods 3–4 keep one and `period < 3` is rejected at parse time) with dropped harmonics reported in `seasonality_warnings`; annual component removed from the jaffle example and the B2B MRR reference tree | ✅ | Silent-corruption guards. Every case fixed here produced a *plausible wrong number* rather than an error: a partly-covered window averaged whichever periods existed, a hole in the date spine shifted every downstream date (positional `t`, lags, bootstrap blocks), and periods 2–4 fit rank-deficient seasonal designs whose extra parameters were pure prior |
 | 1.2 | **Calibration test suite** (T10) — known-root-cause recovery, null-case restraint, CI coverage against synthetic ground truth. Shipped as `tests/test_calibration.py` (contemporaneous/lagged/identity recovery, null + unrelated-parent restraint, 20-world CI coverage), made deterministic by the sampler seeding | ✅ | The moat made testable; guards T1–T9 against regression |
 | 1.3 | **Config hardening** — per-metric grain floors, `kind` (flow/stock/rate) and sign-convention metadata. `grain` + `kind` shipped with 1.7; `expected_signs` (declared coefficient direction + contradiction diagnostic) shipped after a live wrong-sign what-if on the Net-New-MRR tree; display sign conventions shipped as `direction: up_is_good|down_is_good|neutral` (goodness-aware UI coloring; arrows stay directional) | ✅ | Table stakes before config lands in an external repo; prevents cumulative-vs-flow and sign traps |
 | 1.4 | **UI trust finish** — fit provenance in the Metric tab, name-keyed coefficients, fit-window controls (U5); accessibility & keyboard pass (U6) | ○ | The reader/reviewer persona is the audience these features serve |

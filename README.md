@@ -330,13 +330,16 @@ Unlike a `HalfNormal` prior, this never constrains the fit. After fitting, the e
 
 ```yaml
 seasonality:
-  - period: 7
+  - period: 7      # in grain steps: 7 on a daily metric is weekly
     name: weekly
-  - period: 365
-    name: annual
 ```
 
-Each seasonality component is modeled with 2 Fourier harmonics (4 parameters: sin/cos × 2 harmonics).
+Each seasonality component is modeled with up to 2 Fourier harmonics (4 parameters: sin/cos × 2 harmonics). `period` is expressed in the node's own grain steps, so `period: 7` means weekly on a daily metric and is meaningless on a monthly one.
+
+**Declare only seasonality your fit window can see.** Two constraints, both enforced:
+
+- **Period vs. grain.** A harmonic needs more than two steps per cycle to be distinguishable from the level (Nyquist), so `period` must be ≥ 3, and the second harmonic is dropped below `period: 5`. Dropped harmonics are reported in the fit's `seasonality_warnings` diagnostic.
+- **Period vs. data.** Identifying a component takes at least two full periods *inside the fit window* — and RCA fits stop at `analysis_start`, so the window is shorter than your data. A `period: 365` component on a few months of history is unidentifiable and will soak up degrees of freedom the parents need; it too lands in `seasonality_warnings`.
 
 ### Formula
 
