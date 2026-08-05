@@ -10,6 +10,19 @@ roadmap. For how the codebase is built, see [`../AGENTS.md`](../AGENTS.md) and
 - [`roadmap.md`](roadmap.md) — **start here** for what to build next: a prioritized,
   status-tagged list of engineering/product work (no go-to-market).
 
+## White papers
+
+- [`statistics_whitepaper.md`](statistics_whitepaper.md) — **the statistics of
+  breakdown**, written for data professionals who are not Bayesian
+  statisticians and intended as a public document. The high-level approach and
+  the five commitments behind it; every statistical model in the engine (BSTS,
+  NUTS/ADVI, Shapley attribution, the block bootstrap, do-operator simulation,
+  cold start, slice attribution) with why it fits its job and where it breaks;
+  cited sources; and an honest assessment of the engine's current rigor with a
+  prioritized list of improvements. Complements
+  [`../docs/model.md`](../docs/model.md), which is the practitioner's guide to
+  *reading* output — this paper is the *why* underneath it.
+
 ## Design specs
 
 The _what_ and _why_ behind shipped features (the _how_ lives in the code and in

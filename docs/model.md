@@ -4,6 +4,11 @@ This page is for the person interpreting breakdown's output. It states exactly
 what is fitted, the assumptions behind it, and the caveats that matter when you
 read an attribution. No PyMC knowledge required.
 
+For the *why* underneath — why each model was chosen, its strengths and
+weaknesses, cited sources, and an assessment of the engine's overall statistical
+rigor — see the
+[statistics white paper](../knowledge/statistics_whitepaper.md).
+
 ## What gets fitted
 
 Every metric in the tree can be fitted with a Bayesian structural time series

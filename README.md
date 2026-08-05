@@ -874,7 +874,7 @@ Dockerfile           # Container image (see "Deploying")
 compose.yaml
 ```
 
-**If you're going to interpret breakdown's output, read [docs/model.md](docs/model.md)** — it explains what the model assumes, what `unexplained` means, why shares can exceed 100%, and when to trust (or distrust) a credible interval. **If you're going to work on the codebase, read [AGENTS.md](AGENTS.md)** — the project's invariants and where everything lives.
+**If you're going to interpret breakdown's output, read [docs/model.md](docs/model.md)** — it explains what the model assumes, what `unexplained` means, why shares can exceed 100%, and when to trust (or distrust) a credible interval. **If you want the statistics in depth**, the [statistics white paper](knowledge/statistics_whitepaper.md) covers every model in the engine, why it was chosen, where it breaks, and how rigorous the whole thing actually is today. **If you're going to work on the codebase, read [AGENTS.md](AGENTS.md)** — the project's invariants and where everything lives.
 
 ---
 
