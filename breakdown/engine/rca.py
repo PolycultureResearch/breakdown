@@ -532,16 +532,33 @@ def run_rca(
                 {p: ref_vals[p][ref_idx].reshape(-1) for p in parents},
             )
 
+            # The published point is the **exact** Shapley value; the bootstrap
+            # supplies only the interval around it (roadmap C3).
+            #
+            # Both numbers were already computed here. Reporting the bootstrap
+            # *mean* as the estimate broke efficiency: the decomposition is
+            # nonlinear in the window means, and joint resampling gives the
+            # replicated means a nonzero covariance, so E[phi_boot] != phi_exact
+            # and the contributions no longer reconciled with the node's own
+            # gap. `unexplained` was always computed from the exact call
+            # (`gap - sh["gap"]` below), so the two halves of the same identity
+            # disagreed by the bias — small on a multilinear formula, unbounded
+            # in principle on a ratio with a noisy denominator.
+            #
             # A single-period window degenerates the block bootstrap to
             # identical replicates; report no interval rather than a
             # falsely-zero-width one.
-            def _boot_summary(samples: np.ndarray) -> Dict[str, Any]:
-                out = _sample_summary(samples)
-                if single_period:
-                    out["ci_95"] = None
-                return out
+            def _summary(point: float, samples: np.ndarray) -> Dict[str, Any]:
+                return {
+                    "estimate": float(point),
+                    "ci_95": None if single_period else [
+                        float(np.percentile(samples, 2.5)),
+                        float(np.percentile(samples, 97.5)),
+                    ],
+                }
 
             interaction_b = np.zeros(_N_BOOT)
+            interaction_exact = 0.0
             for p in parents:
                 means_b = phi_means[p]
                 comovement_b = (
@@ -550,7 +567,18 @@ def run_rca(
                 )
                 interaction_b = interaction_b + comovement_b
                 phi_b = means_b + comovement_b
-                estimate = float(phi_b.mean())
+
+                # The same three parts as the bootstrap replicates, evaluated
+                # once on the observed windows: attribution = means +
+                # covariance_analysis - covariance_reference.
+                parts = sh["decomposition"][p]
+                means_exact = parts["means"]
+                comovement_exact = (
+                    parts["covariance_analysis"] - parts["covariance_reference"]
+                )
+                estimate = float(sh["attribution"][p])
+                interaction_exact += comovement_exact
+
                 contribution = {
                     "parent": p,
                     "estimate": estimate,
@@ -563,11 +591,12 @@ def run_rca(
                         max((phi_b > 0).mean(), (phi_b < 0).mean())
                     ),
                     # Two-level view: the window-means bridge part and the
-                    # co-movement (covariance/Jensen) shift part; they sum to
-                    # `estimate` exactly per bootstrap replicate.
+                    # co-movement (covariance/Jensen) shift part. They sum to
+                    # `estimate` exactly — as exact values, not just in
+                    # expectation over replicates.
                     "decomposition": {
-                        "means": _boot_summary(means_b),
-                        "comovement": _boot_summary(comovement_b),
+                        "means": _summary(means_exact, means_b),
+                        "comovement": _summary(comovement_exact, comovement_b),
                     },
                 }
                 # Lagged parents were measured over their own earlier windows;
@@ -580,8 +609,10 @@ def run_rca(
                 contributions.append(contribution)
             # The headline view's explicit interaction row: the total
             # within-window co-movement shift across parents, shown as its own
-            # line instead of silently folded into the factors.
-            interaction = _boot_summary(interaction_b)
+            # line instead of silently folded into the factors. Note it is
+            # already *inside* each contribution's `estimate` — it is a
+            # readout of the same quantity, never a term to add on top.
+            interaction = _summary(interaction_exact, interaction_b)
             ci_status = "degenerate_single_period" if single_period else "ok"
             unexplained = gap - sh["gap"]
         else:
