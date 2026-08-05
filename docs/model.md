@@ -73,7 +73,15 @@ Consequences to keep in mind when reading results:
   dates; each node reports its `effective_windows`, and a node whose window
   holds no whole period is reported with `status: "window_shorter_than_grain"`
   rather than failing the analysis. Fits need ≥ 10 whole periods, so monthly
-  nodes want roughly a year of history.
+  nodes want roughly a year of history. **Treat that as a hard floor, not a
+  recommendation.** A monthly node fit on ~12 periods is where every weakness in
+  this document lands at once: the model carries one latent trend state per
+  observation, so it is estimating more latent parameters than it has data
+  points; a 2–3 month analysis window sits in the bootstrap's least reliable
+  regime (see "Uncertainty" below); the block length for month grain is already
+  the smallest it can be; and the trend is held flat across months rather than
+  days. Monthly nodes are supported and the numbers are real, but read their
+  intervals as the loosest in the tree, not the tightest.
 - **Gaps are mean-per-period at each node's own grain.** In a mixed-grain
   tree, raw gaps of different-grain nodes are not comparable — compare
   `share_of_gap` and `ranked_causes` scores instead.
@@ -149,9 +157,20 @@ Given a reference window and an analysis window, each metric's change is its
   of three exact Shapley games: a **window-means bridge** (reference means →
   analysis means), plus the parent's share of the **within-analysis-window
   co-movement term**, minus its share of the **within-reference-window**
-  counterpart. The parts telescope, so contributions sum exactly to
+  counterpart. The parts telescope, so the attribution sums exactly to
   `mean over analysis days of formula(parents that day) − mean over reference
-  days of formula(parents that day)`. Compared to Shapley on window means,
+  days of formula(parents that day)`.
+
+  > **Caveat (open, roadmap C3).** That exactness is what `GET /shapley`
+  > returns. `run_rca` currently publishes each contribution's `estimate` as the
+  > *bootstrap mean* of the same decomposition rather than the exact value, and
+  > because the decomposition is nonlinear in jointly-resampled window means the
+  > two differ slightly — so RCA contributions reconcile with `gap` only
+  > approximately, and the residual lands in neither `unexplained` nor any
+  > reported row. The exact values are already computed; C3 publishes them. Until
+  > it lands, use `GET /shapley` when the numbers have to tie.
+
+  Compared to Shapley on window means,
   this attributes *shifts* in the parents' within-window covariance to the
   parents — for `revenue = orders × aov`, "the big orders disappeared" is
   exactly an orders–aov covariance shift, and it shows up in the attribution
@@ -212,6 +231,25 @@ contributions; posterior nodes keep their coefficient-posterior CI but are
 flagged `"posterior_only_single_period"` because the window-sampling
 component is absent.
 
+> **Caveat (open, roadmap C4).** Two known defects sit in this path today, both
+> in the direction of *overconfidence*, and formula-node contribution intervals
+> come entirely from it.
+>
+> - **Short windows are worse than they look.** The bootstrap's effective block
+>   length is capped at half the window, which systematically shrinks the
+>   resampled variance of a window mean. The shrinkage is largest on the short
+>   windows this mechanism exists to be honest about, and it is not monotone in
+>   window length — a 14-day daily window is not necessarily better off than a
+>   5-day one. Treat a short-window formula CI as a **lower bound** on the true
+>   uncertainty until C4 lands.
+> - **The degeneracy guard is keyed on the wrong quantity.** It fires on a
+>   single-period window, but the failure it exists to catch is *any* resampling
+>   that produces identical replicates. A parent that is constant across the
+>   window — an unlaunched feature, an unmoved stock, a zero-inflated series —
+>   collapses every replicate to the same value and yields a **zero-width
+>   `ci_95` reported with `ci_status: "ok"`**. A zero-width interval is never a
+>   real result; read it as a withheld one.
+
 ### `components`: trend and seasonal, made explicit
 
 For a fitted (probabilistic) node the model already decomposed the series into
@@ -228,8 +266,18 @@ lumping them into `unexplained`:
   after the fit period (RCA fits strictly before it), and a random-walk local
   level forecasts flat at its last fitted state — so the analysis-window trend
   is `trend[last fitted day]`, compared against the reference-window mean of
-  the fitted trend. Its CI comes from the posterior of that last state, not
-  from forward simulation of new steps.
+  the fitted trend.
+
+  Its CI comes from the posterior of that last state, not from forward
+  simulation of new steps. **That is an understatement, not just a design
+  note** (open, roadmap S16): a random walk accumulates variance with every step
+  past the fit end, so the honest interval should widen the further the analysis
+  window sits from the fit, and this one does not — a one-day analysis window
+  and a ninety-day one starting the same date report the identical trend
+  estimate *and* the identical interval. The flat *point* forecast is correct
+  for a local level (roadmap S8 / 3.4 address nodes with genuine momentum); the
+  flat *interval width* is not. `components.trend` is usually the number that
+  gets narrated, so treat it as the least conservative figure in the response.
 
 Formula nodes and roots have `components: null`.
 
@@ -263,6 +311,34 @@ The ranking propagates a score from the target upward, weighting each hop by
 the parent's |share| (clamped to 1). It is a triage ordering — "look here
 first" — not a probability. For rigor, read the per-node contributions and
 their credible intervals.
+
+> **Caveat (open, roadmap C5).** The clamp misbehaves on a specific and common
+> input: a node whose own gap is near zero while its parents move in opposite
+> directions produces enormous |share| values that are then clamped to 1.0 — so
+> the metric that most conclusively did *not* move hands its full influence
+> score to everything above it. Scores accumulate across children, so a
+> well-connected node with several quiet children can top the ranking on pure
+> offsetting noise. Check the `gap` of a top-ranked cause before acting on its
+> rank.
+
+### Multiplicity: a ranking is a search
+
+One RCA on a mid-sized tree produces on the order of thirty intervals and
+`prob_same_direction` values, and then sorts them. Two consequences worth
+holding onto:
+
+- **The winner's interval was computed before it was selected.** A
+  pre-specified node's `ci_95` means what this document says it means. The
+  interval on the *top of a ranking* does not carry the same guarantee — the
+  maximum of many noisy quantities is biased upward, and some intervals will
+  exclude zero even when nothing is happening.
+- **Re-running with different windows is a search.** The window pair is a free
+  choice with no cost to retrying, so trying several and reporting the one that
+  produced the clearest story is the same failure mode this engine exists to
+  avoid. Pick the window from the incident, not from the result.
+
+The engine does not currently correct for this (roadmap S15). The practical
+defence is to state your target node and windows before you look.
 
 ## Reading cold-start output
 

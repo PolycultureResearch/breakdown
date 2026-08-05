@@ -74,12 +74,20 @@ has to be the repo root rather than `demo/`. Note also that `fly launch`
 rewrites `fly.toml` in place, stripping its comments — the values survive, but
 restore the file from git afterwards to keep the reasoning.
 
-[`fly.toml`](fly.toml) explains the settings; the load-bearing one is
-`auto_stop_machines = "suspend"`, which snapshots RAM so an idle machine wakes in
-about a second with the pre-warmed trace cache intact. The prewarm run is what
-keeps the first prospect of the day from paying for the model fits — fits are
-serialized behind a single lock, so a cold multi-node RCA is the one real
-latency risk in a live pitch.
+[`fly.toml`](fly.toml) explains the settings. Two are load-bearing:
+
+- `auto_stop_machines = "suspend"` snapshots RAM, so a briefly-idle machine wakes
+  in about a second with the pre-warmed trace cache intact. The prewarm run is
+  what keeps the first prospect of the day from paying for the model fits — fits
+  are serialized behind a single lock, so a cold multi-node RCA is the one real
+  latency risk in a live pitch.
+- `min_machines_running = 1` keeps one up rather than letting the app scale to
+  zero. Suspend only covers *short* idles; a long-idle machine gets stopped
+  outright, and that path measured **16.0s** to first byte on `GET /ui`
+  (vs 0.56s warm) on 2026-08-05. Since the demo URL now ships in the v0.1.0
+  release notes and the PyPI sidebar, that wait would land on exactly the
+  visitor who has never seen the tool before. Idle cost is no longer the thing
+  to optimize.
 
 Give clients the plain URL. Give them the token only if you want them driving it
 from Claude:

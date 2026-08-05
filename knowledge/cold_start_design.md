@@ -218,7 +218,14 @@ run_scenario(dag, data=None, traces=None, scenario, n_draws=2000)
 - The adjust panel's range strip renders from `plausible` bounds.
 - Reader mode, deep links, waterfall, per-node table: unchanged.
 
-### 5.3 Hybrid mode (future, the real payoff)
+### 5.3 Hybrid mode (~~future, the real payoff~~ — removed 2026-08-05)
+
+> **Not scheduled.** This was roadmap item 2.7 and was removed; see
+> [Deliberately not on the roadmap](roadmap.md#deliberately-not-on-the-roadmap)
+> for the reasoning. Cold start is now a demo mode rather than a supported
+> persona, so deepening it is not where engine surface goes. The section is kept
+> because the design is sound and someone may want it later — read it as a
+> proposal, not a plan.
 
 Per-node graceful upgrade once *some* data exists: a node with ≥ 10 whole
 periods uses its posterior and measured baseline; every other node falls back

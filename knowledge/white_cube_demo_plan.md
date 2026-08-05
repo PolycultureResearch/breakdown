@@ -198,12 +198,20 @@ Two things are added on top:
 
 **Fly.io.** The existing `Dockerfile` deploys as-is; the demo variant just drops
 dbt. `demo/fly.toml`: 2 GB VM (PyMC needs the headroom),
-`auto_stop_machines = "suspend"` with `min_machines_running = 0`, health check on
+`auto_stop_machines = "suspend"` with `min_machines_running = 1`, health check on
 `GET /health`, forced HTTPS.
 
 **Suspend, not stop** is the load-bearing setting: it snapshots RAM, so the
 pre-warmed trace cache survives an idle period and wakes in about a second.
 Stopping would cold-boot and re-fit on the first click.
+
+**Amended 2026-08-05 — `min_machines_running` 0 → 1.** Suspend only covers short
+idles; Fly stops a long-idle machine outright, and that path measured **16.0s**
+to first byte on `GET /ui` (0.56s warm). Acceptable while the demo was
+invite-only and every visitor was expected; not acceptable once the URL ships in
+the v0.1.0 release notes and the PyPI sidebar, where the person paying the 16s
+is by definition the one who has never seen the tool. The §7 scaling note below
+("invite-only → ~$0 idle") is superseded for this reason.
 
 Env: `BREAKDOWN_PUBLIC_URL` (so MCP `report_url` deep links resolve to the public
 hostname), `BREAKDOWN_START_DATE` / `BREAKDOWN_END_DATE`, and
@@ -216,8 +224,9 @@ Clients connect with
 `claude mcp add --transport http breakdown <url> --header "Authorization: Bearer …"`.
 This is a down payment on roadmap 3.5's hosted mode, not throwaway demo code.
 
-Scaling: invite-only → one suspended machine, ~$0 idle. Moderate traffic → raise
-`min_machines_running` and add a region. A named prospect who should see their
+Scaling: ~~invite-only → one suspended machine, ~$0 idle~~ (superseded — see the
+2026-08-05 amendment above; one machine now stays up so the public link never
+cold-starts). Moderate traffic → add a region. A named prospect who should see their
 own branded tree → a second machine or app with a different tree file; no code
 change. Cloudflare Workers cannot run PyMC/pytensor and are not an option for
 this stack.
