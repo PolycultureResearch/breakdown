@@ -117,12 +117,12 @@ The single fitting entry point (stateless). `data` may be a `GrainedData` or a p
 
 ```
 y[t] = alpha + trend[t] + seasonal[t] + (X @ beta)[t] + eps[t]
-trend = cumsum(HalfNormal(trend.sigma) * z), non-centered;  seasonal = Fourier pairs (2 harmonics per entry)
+trend = cumsum(HalfNormal(trend.sigma) * z), non-centered;  seasonal = Fourier pairs (up to 2 harmonics per entry)
 ```
 
 Internals are three helpers, each documented in-code:
 - `_prepare_series(defn, parents, data, target)` → `(y, X, scale, y_mean, y_std, x_stds, dates)`. Formula nodes fit the z-scored residual (X is None); probabilistic nodes get one z-scored regressor per parent, lag-shifted and trimmed by `max(lags)` (raises if < 10 rows remain); `scale[i] = x_std_i / y_std`.
-- `_seasonal_component(seasonality, t)` — Fourier terms. Unidentifiable periods (`len(y) < 2·period`) land in `diagnostics["seasonality_warnings"]`.
+- `_seasonal_component(seasonality, t)` — Fourier terms, Nyquist-filtered by `identifiable_harmonics(period)` (harmonic `k` is kept only when `2k < period`; below that the column is identically zero or collinear, so the parameter would be pure prior — period 3–4 keep one harmonic, ≥ 5 keep both). `seasonal_window_delta` reads posterior variables by name and **must** apply the same filter. Both unidentifiability modes land in `diagnostics["seasonality_warnings"]`: too little data (`len(y) < 2·period`) and dropped harmonics (a property of the period, which more data never fixes). Period < 3 is rejected at parse time.
 - After fitting, `expected_signs` declarations are checked against the `beta_raw` posterior: < 10% mass on the declared side → `diagnostics["sign_warnings"]` (passed through per-node in RCA responses and shown in the UI). Not a constraint — a diagnostic.
 - `_regression_component(defn, parents, X, scale)` — one `beta_{parent}` RV per parent (parent-specific prior → shared `coefficient` prior → `Normal(0, 1)`), stacked into `beta = Deterministic(...)` plus `beta_raw = beta / scale` (business units). Priors are stated in business units and rescaled via `scale_prior_params(distribution, params, scale)`; unknown distributions raise.
 
@@ -141,6 +141,13 @@ Pure Shapley enumeration (O(2ⁿ)): distributes `formula(actuals) − formula(ba
 ## `engine/rca.py`
 
 All window-over-window attribution lives here.
+
+### Window validation (both entry points)
+
+Two guards, called by `shapley_attribution` and `run_rca` alike, because a window that is merely *wrong* rather than *empty* produces a plausible number:
+
+- `_validate_windows(...)` — grain- and data-independent ordering: `reference_start <= reference_end < analysis_start <= analysis_end`. Overlap is an error, not a warning (a shared period counts as both the normal regime and the departure from it); an inverted window is rejected here rather than silently snapping to an empty one.
+- `_validate_coverage(frame, node, grain, snapped_ref, snapped_an, lags)` — the snapped windows must lie *fully* inside the node's own grain frame. A window entirely outside the data already raised in `_window_values`; this catches the partial overlap, which silently averages whichever periods happen to exist. Lagged parents are checked against their shifted windows and reported with the parent, its lag, and the shifted dates — the caller never typed that window, so naming the one they did type would send them looking in the wrong place. Called per node in `run_rca` (after the `window_shorter_than_grain` check, so grain mismatch still degrades gracefully rather than raising).
 
 ### `shapley_attribution(dag, data, target, reference_start, reference_end, analysis_start, analysis_end)`
 
@@ -212,6 +219,8 @@ Response contract: `{"mode": "fitted"|"cold_start", "baseline_window" (null in c
 | `BREAKDOWN_END_DATE` | `--end-date` | `2024-04-09` |
 
 Dates are validated (ISO format, start ≤ end) both at the CLI and in `lifespan`. `lifespan` builds the fetcher from the tree's `provider` config and fetches every metric for the window **at its declared grain/kind**, assembling per-grain frames via `build_grained` (inner join on `date` within each grain only — a monthly metric no longer drops daily rows tree-wide). For `local`/`cloud` the queried metric name is the last segment of `source`, renamed to the tree `name`; mock generates by tree name directly.
+
+`build_grained` then requires each grain frame to be a **gap-free run of periods** (`_check_contiguous`, grain-aware via `_FREQ`), raising with up to 10 named missing dates plus a count. This is not tidiness: everything downstream indexes by position — the model's `t = arange(len(y))` dates the rows, lags shift by *rows*, and the bootstrap resamples contiguous runs — so a hole compresses the calendar and silently shifts every date rather than failing. Periods dropped by the inner join (present for only some metrics) are logged as a warning even when the survivors stay contiguous.
 
 **Cold-start startup (`provider: none`):** `lifespan` fetches nothing — `app.state.data` stays `None` with no `startup_error`; a stated mode, not degraded. Readiness is checked up front (`validate_cold_start`); missing declarations raise into the degraded path with the full blocker list. Time-series routes (`/series`, `/analyze`, `/shapley`, `/rca`) reject via `_require_data` (422 pointing at `/simulate`); `/meta` reports `mode: "cold_start"` with null window; `/metrics/{name}` serves the definition with an empty series; `/simulate` passes `data=None` through to the engine's cold-start branch unchanged.
 

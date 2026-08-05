@@ -56,6 +56,114 @@ from breakdown.grains import (
 _N_BOOT = 500
 
 
+def _validate_windows(
+    reference_start: str,
+    reference_end: str,
+    analysis_start: str,
+    analysis_end: str,
+) -> None:
+    """Reject window pairs that cannot mean what the caller intended.
+
+    Requires `reference_start <= reference_end < analysis_start <= analysis_end`.
+    Overlap is an error, not a warning: the whole premise of the comparison is
+    that the reference window describes the normal regime the analysis window
+    departed from, and a shared period is counted on both sides of every gap.
+    An inverted window is rejected here rather than silently snapping to an
+    empty one downstream.
+
+    Grain- and data-independent — coverage is checked per node by
+    `_validate_coverage`, since each node reads its own grain frame.
+    """
+    dates = {
+        "reference_start": reference_start,
+        "reference_end": reference_end,
+        "analysis_start": analysis_start,
+        "analysis_end": analysis_end,
+    }
+    parsed = {}
+    for label, value in dates.items():
+        try:
+            parsed[label] = pd.Timestamp(value).normalize()
+        except (ValueError, TypeError):
+            raise ValueError(f"{label} is not a valid date: {value!r}")
+
+    for first, second in (
+        ("reference_start", "reference_end"),
+        ("analysis_start", "analysis_end"),
+    ):
+        if parsed[first] > parsed[second]:
+            raise ValueError(
+                f"{first} ({dates[first]}) must be on or before {second} "
+                f"({dates[second]})."
+            )
+
+    if parsed["reference_end"] >= parsed["analysis_start"]:
+        raise ValueError(
+            f"The reference window [{reference_start}, {reference_end}] must end "
+            f"strictly before the analysis window starts ({analysis_start}); the "
+            "windows overlap, so the same periods would count as both the normal "
+            "regime and the departure from it."
+        )
+
+
+def _validate_coverage(
+    frame: pd.DataFrame,
+    node: str,
+    grain: str,
+    snapped_ref,
+    snapped_an,
+    lags: Optional[Dict[str, int]] = None,
+) -> None:
+    """Every window a node reads must lie inside that node's own data.
+
+    A window that falls *entirely* outside the data already raises in
+    `_window_values`. The case this catches is the quiet one: a window that
+    only *partly* overlaps the data silently averages the periods that happen
+    to exist, so a reference mean over 30 requested days can be computed from
+    the 4 that were loaded — a wrong number, not a missing one.
+
+    Lagged parents are checked against their *shifted* windows and reported
+    with the parent, its lag, and the shifted dates, so the message names a
+    window the caller can act on rather than one they never typed.
+    """
+    if frame.empty:
+        raise ValueError(f"No data at all for '{node}' at grain '{grain}'.")
+    data_start = pd.Timestamp(frame["date"].min())
+    data_end = pd.Timestamp(frame["date"].max())
+
+    def check(first_start, last_start, label: str, owner: str, shifted_by: int) -> None:
+        if first_start >= data_start and last_start <= data_end:
+            return
+        window = f"[{first_start.date()}, {(next_start(last_start, grain) - pd.Timedelta(days=1)).date()}]"
+        via = (
+            ""
+            if not shifted_by
+            else (
+                f" (parent '{owner}' is read at lag {shifted_by}, so the node's "
+                f"{label} window shifts back {shifted_by} {grain}(s) to this one)"
+            )
+        )
+        raise ValueError(
+            f"The {label} window {window} for '{owner}' is not fully covered by "
+            f"its data, which runs [{data_start.date()}, {data_end.date()}]{via}. "
+            "Attribution over a partly-covered window would average only the "
+            "periods that happen to exist."
+        )
+
+    for label, snapped in (("reference", snapped_ref), ("analysis", snapped_an)):
+        check(snapped.first_start, snapped.last_start, label, node, 0)
+        for parent, lag in (lags or {}).items():
+            if not lag:
+                continue
+            check(
+                shift_periods(snapped.first_start, -lag, grain),
+                shift_periods(snapped.last_start, -lag, grain),
+                label,
+                parent,
+                lag,
+            )
+
+
 def window_mean(data: pd.DataFrame, col: str, start: pd.Timestamp, end: pd.Timestamp) -> float:
     """Mean of `col` over rows whose date is within [start, end] (inclusive).
 
@@ -173,6 +281,7 @@ def shapley_attribution(
     per-parent parts with `attribution = means + covariance_analysis −
     covariance_reference`.
     """
+    _validate_windows(reference_start, reference_end, analysis_start, analysis_end)
     data = ensure_grained(data)
     defn = dag.nodes[target]["definition"]
     if not defn.formula:
@@ -195,6 +304,7 @@ def shapley_attribution(
             f"The {which} window [{s}, {e}] contains no whole '{grain}' period "
             f"for '{target}'."
         )
+    _validate_coverage(frame, target, grain, snapped_ref, snapped_an, defn.lags)
     ref_start, ref_end = snapped_ref.first_start, snapped_ref.last_start
     an_start, an_end = snapped_an.first_start, snapped_an.last_start
 
@@ -286,6 +396,7 @@ def run_rca(
     if target not in dag:
         raise ValueError(f"Metric '{target}' not found in the metric tree.")
 
+    _validate_windows(reference_start, reference_end, analysis_start, analysis_end)
     data = ensure_grained(data)
 
     # One seeded generator per call: bootstrap replicates (and hence every
@@ -348,6 +459,7 @@ def run_rca(
                 "contributions": [],
             }
             continue
+        _validate_coverage(frame, node, grain, snapped_ref, snapped_an, defn.lags)
         ref_start, ref_end = snapped_ref.first_start, snapped_ref.last_start
         an_start, an_end = snapped_an.first_start, snapped_an.last_start
         single_period = snapped_ref.n_periods == 1 or snapped_an.n_periods == 1

@@ -380,16 +380,20 @@ metrics:
     assert parser.dag.has_edge("daily_signups", "weekly_conversions")
 
 
-def test_seasonality_period_below_two_raises():
-    yaml_content = """
+@pytest.mark.parametrize("period", [1, 2])
+def test_seasonality_period_below_three_raises(period):
+    """Period 2 sits at the Nyquist limit of its own grain: every Fourier term
+    is identically zero or collinear with the intercept, so no amount of data
+    identifies it. That is a config error, not a data shortage."""
+    yaml_content = f"""
 metrics:
   - name: dau
     source: dbt.metric.dau
     seasonality:
-      - period: 1
+      - period: {period}
         name: degenerate
 """
-    with pytest.raises(ValueError, match="period must be an integer >= 2"):
+    with pytest.raises(ValueError, match="period must be an integer >= 3"):
         Parser(yaml_content)
 
 

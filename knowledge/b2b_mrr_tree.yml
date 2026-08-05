@@ -44,11 +44,12 @@ metrics:
     source: b2b_saas.metrics.total_arr
     formula: "total_mrr * 12"
     parents: [total_mrr]
+    # No annual component: identifying period 365 needs two full years in the
+    # fit window, and RCA fits stop at `analysis_start`, so in practice it
+    # would soak up degrees of freedom without ever being learned.
     seasonality:
       - period: 7
         name: weekly
-      - period: 365
-        name: annual
 
   - name: total_mrr
     description: >-

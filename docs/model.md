@@ -4,6 +4,11 @@ This page is for the person interpreting breakdown's output. It states exactly
 what is fitted, the assumptions behind it, and the caveats that matter when you
 read an attribution. No PyMC knowledge required.
 
+For the *why* underneath — why each model was chosen, its strengths and
+weaknesses, cited sources, and an assessment of the engine's overall statistical
+rigor — see the
+[statistics white paper](../knowledge/statistics_whitepaper.md).
+
 ## What gets fitted
 
 Every metric in the tree can be fitted with a Bayesian structural time series
@@ -317,7 +322,12 @@ ship in every cold-start response.
    as the sign that the trend is now competing with a parent.
 4. **Seasonality needs data to be identified.** A `period: 365` component on
    100 days of data is unidentifiable and will soak up degrees of freedom —
-   only declare seasonality your window can actually see (≥2 full periods).
+   only declare seasonality your window can actually see (≥2 full periods
+   inside the *fit* window, which for RCA ends at `analysis_start`). The fit
+   reports both failure modes in `seasonality_warnings`: too little data for
+   the period, and harmonics the period itself cannot support (a cycle needs
+   more than two grain steps to be told apart from the level, so `period` must
+   be ≥ 3 and the second harmonic is dropped below `period: 5`).
 5. **Window means hide within-window shape.** A spike-and-recover pattern and
    a level shift can have the same window mean. Choose windows that isolate
    the regime you care about, and look at the time-series panel.

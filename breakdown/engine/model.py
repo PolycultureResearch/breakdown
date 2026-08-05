@@ -304,12 +304,40 @@ def _prepare_series(
     return y, np.column_stack(X_cols), x_stds_arr / y_std, y_mean, y_std, x_stds_arr, dates
 
 
+#: Fourier harmonics attempted per seasonality entry, before the Nyquist filter.
+_HARMONICS = (1, 2)
+
+
+def identifiable_harmonics(period: int) -> tuple:
+    """The harmonics of `period` a series sampled at its grain can actually
+    resolve: harmonic `k` carries `k / period` cycles per step, so Nyquist
+    requires `k / period < 1/2`.
+
+    Below that bound the design matrix is rank-deficient and the extra
+    parameters are pure prior — sampled but never informed by data:
+
+    - `period 2`: both sin terms are identically zero on integer `t` and the
+      second cosine is constant, i.e. collinear with the intercept. Nothing is
+      identifiable, which is why the parser rejects it.
+    - `period 3`: the second harmonic is an exact linear image of the first
+      (`sin_2 = −sin_1`, `cos_2 = cos_1`).
+    - `period 4`: the second sine is identically zero.
+
+    Dropping them is not a loss of expressiveness — those columns carry no
+    information about the data — but it removes parameters NUTS would otherwise
+    have to explore, and stops the model reporting seasonal structure it
+    invented from the prior.
+    """
+    return tuple(k for k in _HARMONICS if 2 * k < period)
+
+
 def _seasonal_component(seasonality: List[Any], t: np.ndarray):
-    """Fourier seasonality: 2 sin/cos harmonic pairs per YAML entry.
+    """Fourier seasonality: up to 2 sin/cos harmonic pairs per YAML entry,
+    Nyquist-filtered by `identifiable_harmonics`.
     Must be called inside a pm.Model context."""
     terms = []
     for s in seasonality:
-        for k in (1, 2):
+        for k in identifiable_harmonics(s.period):
             sin_term = np.sin(2 * np.pi * k * t / s.period)
             cos_term = np.cos(2 * np.pi * k * t / s.period)
             a = pm.Normal(f"sin_{s.name}_h{k}", mu=0, sigma=1.0)
@@ -338,7 +366,9 @@ def seasonal_window_delta(
     n_samples = posterior.sizes["chain"] * posterior.sizes["draw"]
     delta = np.zeros(n_samples)
     for s in seasonality:
-        for k in (1, 2):
+        # Must mirror `_seasonal_component`'s filter exactly: a harmonic it
+        # skipped has no posterior variable to read.
+        for k in identifiable_harmonics(s.period):
             a = posterior[f"sin_{s.name}_h{k}"].values.reshape(-1)
             b = posterior[f"cos_{s.name}_h{k}"].values.reshape(-1)
             sin_delta = (
@@ -472,6 +502,19 @@ def fit_metric(
                 f"Seasonality '{s.name}' (period {s.period} {grain}s) on '{target}' "
                 f"is unidentifiable: only {len(y)} fitted {grain} periods "
                 f"(need >= {2 * s.period})."
+            )
+            seasonality_warnings.append(msg)
+            logger.warning(msg)
+        # Distinct from the shortage above: this one is a property of the
+        # period itself, so more data will never fix it. Say so, because the
+        # fitted component is narrower than the YAML implies.
+        dropped = [k for k in _HARMONICS if k not in identifiable_harmonics(s.period)]
+        if dropped:
+            msg = (
+                f"Seasonality '{s.name}' (period {s.period} {grain}s) on '{target}': "
+                f"harmonic(s) {dropped} dropped as unidentifiable at this period "
+                f"(Nyquist requires 2k < period); fitted with harmonic(s) "
+                f"{list(identifiable_harmonics(s.period))}."
             )
             seasonality_warnings.append(msg)
             logger.warning(msg)
