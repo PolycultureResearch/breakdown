@@ -577,3 +577,96 @@ def test_short_window_intervals_are_wider_than_the_raw_bootstrap():
     # so the correction is a material widening, not a rounding difference.
     from breakdown.engine.rca import _window_mean_correction
     assert _window_mean_correction(7, 3) > 1.4
+
+
+# --- ranked_causes: the offsetting-noise inversion (C5) ---
+
+
+def test_hop_weight_decays_above_one_instead_of_saturating():
+    """`min(|s|, 1.0)` gave a parent contributing 500,000x its child's gap the
+    same maximum weight as one that explained the gap exactly (C5)."""
+    from breakdown.engine.rca import _hop_weight
+
+    assert _hop_weight(None) == 0.0
+    assert _hop_weight(0.0) == 0.0
+    assert abs(_hop_weight(0.5) - 0.5) < 1e-12
+    assert abs(_hop_weight(1.0) - 1.0) < 1e-12      # peak: explains it exactly
+    assert abs(_hop_weight(-1.0) - 1.0) < 1e-12     # sign-blind
+    # Above 1 it decays: the parent's movement was cancelled by a sibling's.
+    assert abs(_hop_weight(2.0) - 0.5) < 1e-12
+    assert _hop_weight(5e5) < 1e-5
+    # Symmetric in log space — 10x too small and 10x too large weigh the same.
+    assert abs(_hop_weight(10.0) - _hop_weight(0.1)) < 1e-12
+
+
+def test_quiet_node_does_not_hand_full_influence_upward():
+    """A node that barely moved between two large opposing parents used to give
+    both parents weight 1.0, so the metric that most conclusively did *not*
+    move handed its full influence score to everything above it (C5)."""
+    yaml_content = """
+metrics:
+  - name: big_up
+    source: dbt.metric.big_up
+  - name: big_down
+    source: dbt.metric.big_down
+  - name: quiet
+    source: dbt.metric.quiet
+    formula: "big_up + big_down"
+    parents: [big_up, big_down]
+"""
+    dates = pd.date_range("2024-01-01", periods=100, freq="D")
+    n = len(dates)
+    an = dates >= pd.Timestamp(AN[0])
+    # Both parents swing hard in the analysis window, in exact opposition, so
+    # `quiet` is flat: its gap is ~0 while each parent's contribution is huge.
+    up = np.full(n, 100.0) + np.where(an, 50.0, 0.0)
+    down = np.full(n, 100.0) - np.where(an, 50.0, 0.0)
+    frame = pd.DataFrame({
+        "date": dates, "big_up": up, "big_down": down, "quiet": up + down,
+    })
+
+    dag = Parser(yaml_content).dag
+    result = run_rca(dag, frame, {}, "quiet", *REF, *AN, advi_draws=300)
+
+    node = result["nodes"]["quiet"]
+    assert abs(node["gap"]) < 1e-9, "the target must be the one that didn't move"
+
+    ranked = {r["metric"]: r["score"] for r in result["ranked_causes"]}
+    # The target's own gap is ~0, so `share_of_gap` is withheld entirely and
+    # nothing upstream can claim to explain a movement that did not happen.
+    for c in node["contributions"]:
+        assert c["share_of_gap"] is None
+    assert ranked["big_up"] == 0.0 and ranked["big_down"] == 0.0
+
+
+def test_share_of_gap_guard_is_relative_to_node_scale():
+    """The old absolute 1e-12 floor let a node sitting at a large level report
+    shares in the hundreds of thousands off a numerically trivial gap (C5)."""
+    yaml_content = """
+metrics:
+  - name: a
+    source: dbt.metric.a
+  - name: b
+    source: dbt.metric.b
+  - name: total
+    source: dbt.metric.total
+    formula: "a + b"
+    parents: [a, b]
+"""
+    dates = pd.date_range("2024-01-01", periods=100, freq="D")
+    n = len(dates)
+    an = dates >= pd.Timestamp(AN[0])
+    # Level 1e6; the parents shift by +-0.5 so `total` moves by ~1e-9 of its
+    # own size — numerically nonzero, substantively motionless.
+    a = np.full(n, 1e6) + np.where(an, 0.5, 0.0)
+    b = np.full(n, 1e6) - np.where(an, 0.5, 0.0)
+    frame = pd.DataFrame({"date": dates, "a": a, "b": b, "total": a + b})
+
+    dag = Parser(yaml_content).dag
+    node = run_rca(dag, frame, {}, "total", *REF, *AN, advi_draws=300)["nodes"]["total"]
+
+    for c in node["contributions"]:
+        assert c["share_of_gap"] is None, (
+            f"{c['parent']} reported share {c['share_of_gap']} on a gap of "
+            f"{node['gap']} against a level of 2e6"
+        )

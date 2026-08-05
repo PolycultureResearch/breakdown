@@ -28,9 +28,11 @@ strictly before the analysis window; the caller passes its trace cache, keyed
 by `(name, fit_end)`, and new fits are added to it in place.
 
 The `ranked_causes` list is a documented **heuristic**: it propagates an
-influence score from the target up the ancestor tree, weighting each hop by the
-parent's share of its child's gap (clamped to [0, 1]). It is meant as a triage
-ordering, not a rigorous multi-hop uncertainty propagation.
+influence score from the target up the ancestor tree, weighting each hop by
+`min(|share|, 1/|share|)` of the parent's share of its child's gap — peaked
+where the parent explains the child exactly, decaying both when it explains
+little and when its contribution dwarfs the child's net movement. It is meant
+as a triage ordering, not a rigorous multi-hop uncertainty propagation.
 """
 
 from typing import Any, Dict, Optional, Tuple
@@ -54,6 +56,12 @@ from breakdown.grains import (
 # Bootstrap replicates per window; fixed so contribution CIs are comparable
 # across nodes and runs.
 _N_BOOT = 500
+
+# A node's gap counts as movement only above this fraction of its own level.
+# Relative, not absolute: a metric sitting at 1e6 and a metric sitting at 1e-3
+# have wildly different "didn't move" thresholds, and the absolute 1e-12 floor
+# this replaced was right only for the second (roadmap C5).
+_GAP_EPS = 1e-9
 
 
 def _validate_windows(
@@ -544,6 +552,11 @@ def run_rca(
         actual = window_mean(frame, node, an_start, an_end)
         gap = actual - baseline
         relative_change = gap / baseline if abs(baseline) >= 1e-12 else None
+        # `share_of_gap` is only meaningful when the node actually moved, and
+        # "moved" has to be judged against the node's own scale (roadmap C5).
+        # The old absolute `1e-12` floor let a node sitting at 1e6 with a gap of
+        # 1e-6 report shares in the hundreds of thousands.
+        gap_is_material = abs(gap) >= _GAP_EPS * max(abs(baseline), abs(actual), 1.0)
 
         contributions = []
         components = None
@@ -683,7 +696,7 @@ def run_rca(
                 contribution = {
                     "parent": p,
                     "estimate": estimate,
-                    "share_of_gap": (estimate / gap) if abs(gap) >= 1e-12 else None,
+                    "share_of_gap": (estimate / gap) if gap_is_material else None,
                     "ci_95": None if withheld else [
                         float(np.percentile(phi_b, 2.5)),
                         float(np.percentile(phi_b, 97.5)),
@@ -817,7 +830,7 @@ def run_rca(
                 contribution = {
                     "parent": p,
                     "estimate": estimate,
-                    "share_of_gap": (estimate / gap) if abs(gap) >= 1e-12 else None,
+                    "share_of_gap": (estimate / gap) if gap_is_material else None,
                     "ci_95": [
                         float(np.percentile(samples, 2.5)),
                         float(np.percentile(samples, 97.5)),
@@ -876,9 +889,37 @@ def run_rca(
     }
 
 
+def _hop_weight(share: Optional[float]) -> float:
+    """How much of a child's influence a parent inherits, from its share of the
+    child's gap. `min(|s|, 1/|s|)` — peaked at 1, decaying either side.
+
+    The decay above 1 is the point (roadmap C5). The old `min(|s|, 1.0)`
+    saturated instead, so a parent whose contribution *dwarfed* its child's gap
+    scored identically to one that explained it exactly. That is backwards: a
+    share far above 1 means the parent's movement was cancelled by a sibling's,
+    so the parent demonstrably did **not** drive the child's net movement. The
+    pathological case is a child that barely moved between two large opposing
+    parents — shares of ±5e5, both clamped to 1.0, so the metric that most
+    conclusively did *not* move handed its full influence to everything above
+    it. Scores accumulate across children, so one such node with several quiet
+    children could top the ranking on pure offsetting noise.
+
+    Symmetric in log-space around 1, which is the property worth keeping: a
+    parent explaining 10% of the gap and one explaining 1000% of it are both
+    weak evidence about what drove the child, for opposite reasons.
+    """
+    if share is None:
+        return 0.0
+    s = abs(float(share))
+    if s <= 1.0:
+        return s
+    return 1.0 / s
+
+
 def _rank_causes(dag, target, nodes_in_scope, nodes_out):
     """Heuristic influence score: propagate 1.0 from the target up the ancestor
-    tree, weighting each hop by the parent's clamped share of its child's gap.
+    tree, weighting each hop by `_hop_weight` of the parent's share of its
+    child's gap.
 
     Processing in reverse topological order (target first) guarantees a child's
     score is complete before it is propagated to its parents.
@@ -894,9 +935,7 @@ def _rank_causes(dag, target, nodes_in_scope, nodes_out):
             parent = contrib["parent"]
             if parent not in score:
                 continue
-            share = contrib["share_of_gap"]
-            weight = 0.0 if share is None else min(abs(share), 1.0)
-            term = score[child] * weight
+            term = score[child] * _hop_weight(contrib["share_of_gap"])
             score[parent] += term
             if term > best_term[parent]:
                 best_term[parent] = term

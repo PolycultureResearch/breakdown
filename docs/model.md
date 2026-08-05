@@ -316,18 +316,16 @@ worth seeing. The UI clamps only the *edge width*, never the numbers.
 ### `ranked_causes` is a heuristic
 
 The ranking propagates a score from the target upward, weighting each hop by
-the parent's |share| (clamped to 1). It is a triage ordering — "look here
-first" — not a probability. For rigor, read the per-node contributions and
-their credible intervals.
+`min(|share|, 1/|share|)` — peaked where a parent explains its child's gap
+exactly, and decaying **both** when it explains little and when its
+contribution dwarfs the child's net movement. That second case is a parent
+whose movement was cancelled by a sibling's: it moved, but it demonstrably did
+not drive the child. A node that barely moved also reports no `share_of_gap` at
+all (the threshold is relative to the node's own level), so nothing upstream of
+it can inherit influence for explaining a movement that did not happen.
 
-> **Caveat (open, roadmap C5).** The clamp misbehaves on a specific and common
-> input: a node whose own gap is near zero while its parents move in opposite
-> directions produces enormous |share| values that are then clamped to 1.0 — so
-> the metric that most conclusively did *not* move hands its full influence
-> score to everything above it. Scores accumulate across children, so a
-> well-connected node with several quiet children can top the ranking on pure
-> offsetting noise. Check the `gap` of a top-ranked cause before acting on its
-> rank.
+It remains a triage ordering — "look here first" — not a probability. For
+rigor, read the per-node contributions and their credible intervals.
 
 ### Multiplicity: a ranking is a search
 
