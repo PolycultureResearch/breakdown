@@ -1,5 +1,7 @@
 """Grain arithmetic, kind-aware resampling, and the GrainedData container."""
 
+import logging
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -183,6 +185,63 @@ def test_build_grained_joins_within_grain_only():
     assert len(gd.frame("week")) == 4
     assert gd.date_start == pd.Timestamp("2024-01-01")
     assert gd.date_end == pd.Timestamp("2024-01-31")
+
+
+# --- Date-grid contiguity (1.1) ---
+
+
+def test_build_grained_rejects_a_hole_in_the_spine():
+    """Positional indexing (model t, lags, bootstrap blocks) assumes a gap-free
+    spine, so a hole silently shifts every downstream date rather than failing."""
+    dates = pd.date_range("2024-01-01", periods=31).delete(15)  # drop 2024-01-16
+    daily = pd.DataFrame({"date": dates, "a": np.ones(len(dates))})
+
+    with pytest.raises(RuntimeError, match="missing period"):
+        build_grained({"a": daily}, {"a": "day"}, {"a": "flow"})
+
+
+def test_missing_dates_are_named_and_capped_at_ten():
+    dates = pd.date_range("2024-01-01", periods=60)
+    holes = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]  # 12 gaps -> 10 shown + count
+    daily = pd.DataFrame({"date": dates.delete(holes), "a": np.ones(60 - len(holes))})
+
+    with pytest.raises(RuntimeError) as excinfo:
+        build_grained({"a": daily}, {"a": "day"}, {"a": "flow"})
+    message = str(excinfo.value)
+    assert "2024-01-06" in message          # the first missing date, named
+    assert "and 2 more" in message          # 12 missing, 10 shown
+    assert "2024-01-18" not in message      # the 11th+ are not spelled out
+
+
+def test_contiguous_weekly_and_monthly_spines_are_accepted():
+    """The check is grain-aware: consecutive Mondays are contiguous at week
+    grain even though they are 7 days apart."""
+    weekly = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=8, freq="W-MON"),
+                           "w": np.ones(8)})
+    monthly = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=6, freq="MS"),
+                            "m": np.ones(6)})
+    gd = build_grained(
+        {"w": weekly, "m": monthly}, {"w": "week", "m": "month"},
+        {"w": "flow", "m": "flow"},
+    )
+    assert len(gd.frame("week")) == 8
+    assert len(gd.frame("month")) == 6
+
+
+def test_inner_join_drop_is_logged(caplog):
+    """A date present for only some metrics is dropped by the join; the
+    survivors here stay contiguous, so only the log records the loss."""
+    full = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=20), "a": np.ones(20)})
+    short = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=15), "b": np.ones(15)})
+
+    with caplog.at_level(logging.WARNING, logger="breakdown.grains"):
+        gd = build_grained(
+            {"a": full, "b": short}, {"a": "day", "b": "day"},
+            {"a": "flow", "b": "flow"},
+        )
+
+    assert len(gd.frame("day")) == 15
+    assert "dropped 5 period(s)" in caplog.text
 
 
 def test_series_resamples_up_by_kind():

@@ -15,11 +15,14 @@ months, but weeks straddle month boundaries, so week → month is rejected
 rather than approximated.
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, Optional, Union
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 GRAINS = ("day", "week", "month")
 _ORDER = {"day": 0, "week": 1, "month": 2}
@@ -331,6 +334,48 @@ class GrainedData:
         )
 
 
+def _check_contiguous(
+    frame: pd.DataFrame, grain: str, names: list, widest: int
+) -> None:
+    """A grain frame must be a gap-free run of periods.
+
+    Everything downstream indexes by position: the model's `t = arange(len(y))`
+    dates the rows, lags shift by *rows*, and the block bootstrap resamples
+    contiguous runs. A hole makes all three quietly wrong — `t` compresses the
+    calendar, so a lag of 7 rows stops meaning 7 days and the seasonal design
+    is fitted against the wrong dates. Nothing raises; the numbers are just
+    off, which is the worst failure mode this engine has.
+
+    The inner join is the usual culprit — a date present for only some metrics
+    is dropped from the shared frame — so a drop count is logged even when the
+    survivors happen to stay contiguous.
+    """
+    dates = pd.DatetimeIndex(frame["date"])
+    dropped = widest - len(frame)
+    if dropped > 0:
+        logger.warning(
+            "Inner join at grain '%s' dropped %d period(s) present in only some "
+            "of %s; the shared frame runs [%s, %s].",
+            grain, dropped, names, dates.min().date(), dates.max().date(),
+        )
+
+    expected = pd.date_range(dates.min(), dates.max(), freq=_FREQ[grain])
+    missing = expected.difference(dates)
+    if len(missing) == 0:
+        return
+
+    shown = ", ".join(str(d.date()) for d in missing[:10])
+    more = f" (and {len(missing) - 10} more)" if len(missing) > 10 else ""
+    raise RuntimeError(
+        f"The '{grain}' grain frame has {len(missing)} missing period(s) between "
+        f"{dates.min().date()} and {dates.max().date()}: {shown}{more}. "
+        f"Metrics at this grain: {names}. Positional indexing (model time, lags, "
+        f"bootstrap blocks) assumes a gap-free spine, so a hole silently shifts "
+        f"every downstream date. Backfill the gap, narrow the date range, or drop "
+        f"the metric that is missing those periods."
+    )
+
+
 def build_grained(
     per_metric: Dict[str, pd.DataFrame],
     grain_of: Dict[str, str],
@@ -359,9 +404,11 @@ def build_grained(
                 f"No overlapping periods across metrics at grain '{grain}': "
                 f"{names}. Check each metric's date coverage."
             )
-        frames[grain] = (
+        frame = (
             joined.rename_axis("date").reset_index().sort_values("date").reset_index(drop=True)
         )
+        _check_contiguous(frame, grain, names, max(len(per_metric[m]) for m in names))
+        frames[grain] = frame
     return GrainedData(
         frames=frames,
         grain_of=dict(grain_of),
