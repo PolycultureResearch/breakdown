@@ -86,12 +86,27 @@ is covered in the [README](README.md#deploying).
   `docs/ai-context/` doc (architecture) in the same change.
 - **The statistics white paper is a living document.** When you ship a
   [Statistical rigor (S)](knowledge/roadmap.md#statistical-rigor-s--a-standing-workstream)
+  or [Horizon 0 correctness (C)](knowledge/roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend)
   item, update three things in the same change: the roadmap row (the source of
   truth for status), the matching §3.2 weakness and §4 item in
   [`knowledge/statistics_whitepaper.md`](knowledge/statistics_whitepaper.md),
   and that paper's **Last updated** date plus a revision-history row. It is a
   public document that tells readers whether they are looking at a known current
   issue or a fixed one — a stale status there is worse than no status.
+
+  **C items carry one extra obligation.** An S item is a *disclosed* limitation;
+  a C item is behavior the docs describe wrongly, so shipping one usually makes
+  a caveat somewhere false. Grep [`docs/model.md`](docs/model.md) for the
+  C-number before you finish — several passages there are marked
+  `**Caveat (open, roadmap Cn)**` and must be **deleted, not amended**, once the
+  fix lands. A stale caveat understates the engine to its own users, which is the
+  same class of error as overstating it. Not every C item has a §3.2 weakness —
+  today only **C4, C5 and C7** are cited there by ID; the rest are engineering
+  defects or docs corrections. Grep the white paper for the C-number rather than
+  assuming, and if it is absent, the roadmap row plus the `docs/model.md` sweep
+  are the whole obligation. One passage needs reading rather than grepping: §3.3
+  refers to the provider-boundary defects without naming them, so re-read it when
+  **C1/C2** land.
 
 ## Conventions
 
