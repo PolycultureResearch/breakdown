@@ -13,12 +13,18 @@ and where each one stops being trustworthy.**
 >
 > **○ open** · **◑ in progress** · **✅ shipped**
 >
-> Items are tagged with a roadmap ID (`S1`, `S2`, …). **The
-> [roadmap](roadmap.md) is the single source of truth for status and
-> sequencing** — this paper holds the *statistical rationale* (why the gap
-> matters, what the literature says, what "fixed" would mean) and does not
-> duplicate the schedule. If the two ever disagree, the roadmap is right and
-> this paper is stale. See the [revision history](#revision-history).
+> Items are tagged with a roadmap ID — `S1`, `S2`, … for the
+> [statistical rigor](roadmap.md#statistical-rigor-s--a-standing-workstream)
+> workstream, and `C1`, `C2`, … for
+> [Horizon 0](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend),
+> the correctness gate. The difference is worth knowing: an **S** item is a
+> disclosed limitation, a **C** item is a defect where the engine's behavior and
+> its documentation disagree. **The [roadmap](roadmap.md) is the single source of
+> truth for status and sequencing** — this paper holds the *statistical
+> rationale* (why the gap matters, what the literature says, what "fixed" would
+> mean) and does not duplicate the schedule. If the two ever disagree, the
+> roadmap is right and this paper is stale. See the
+> [revision history](#revision-history).
 
 ---
 
@@ -634,6 +640,16 @@ Ordered roughly by how much it should worry you. Each carries its status and the
 roadmap item that addresses it — check the [roadmap](roadmap.md) for current
 state before assuming a weakness listed here is still open.
 
+Two kinds of item appear below, and the difference matters when you are deciding
+how much to trust a number today. An **S** item is a known limitation that is
+*disclosed*: the engine does what this paper says, and the honest description of
+what it does is less than you might want. A **C** item is a
+[Horizon 0](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend)
+**correctness defect** — behavior this paper or [`docs/model.md`](../docs/model.md)
+describes wrongly, or a number the engine cannot defend at all. C items block the
+S track. Several weaknesses below were found or sharpened by a hostile external
+review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
+
 1. **The default inference method understates uncertainty.** — ○ open
    ([S1](roadmap.md#statistical-rigor-s--a-standing-workstream),
    [S2](roadmap.md#statistical-rigor-s--a-standing-workstream))
@@ -643,47 +659,121 @@ state before assuming a weakness listed here is still open.
    one**, and most users will never leave it. This is the single largest gap
    between what the intervals claim and what they deliver — worked through in
    detail in [`advi_vs_nuts_in_breakdown.md`](advi_vs_nuts_in_breakdown.md).
-2. **The ADVI quality check is not a real approximation diagnostic.** — ○ open
+2. **The short-window block bootstrap is attenuated by construction.** — ○ open
+   ([C4](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend))
+   `_block_bootstrap_indices` caps the effective block length at `n // 2`, which
+   lands on the midpoint of the very degeneracy curve its docstring reasons
+   about: the resampled variance of a window mean is systematically too small,
+   worst on short windows, and not even monotone in `n`. **Formula-node
+   contribution intervals come entirely from this path**, with no offsetting
+   term — and §2.5 sells the bootstrap as the honesty mechanism for exactly the
+   two-to-three-period windows where it is least honest. Separately, the
+   degeneracy guard keys on `n_periods == 1` rather than on the resampled
+   spread, so a window in which a parent is *constant* (an unlaunched feature, a
+   zero-inflated series) ships a **zero-width interval flagged `ci_status:
+   "ok"`**. Until C4 lands, treat short-window formula CIs as a lower bound on
+   the true uncertainty.
+3. **Nothing accounts for multiplicity or selection.** — ○ open
+   ([S15](roadmap.md#statistical-rigor-s--a-standing-workstream))
+   One `run_rca` on a 15-node tree emits 25–30 intervals plus a
+   `prob_same_direction` each, then sorts by effect size and presents the top
+   one. Under a global null, ~1.5 of those intervals exclude zero by
+   construction; the selected top cause is the maximum of many noisy quantities
+   and is upward-biased, and its `ci_95` was computed **before** that selection.
+   The window pair is a free user choice with no cost to retrying. This paper
+   argues elsewhere that an unconstrained search over metrics × slices
+   manufactures spurious findings; breakdown runs a bounded version of the same
+   search and, until S15, says so nowhere. The interval on a *pre-specified*
+   node is unaffected — the problem is specific to reading the winner of a
+   ranking as though it had been the question.
+4. **The ADVI quality check is not a real approximation diagnostic.** — ○ open
    ([S2](roadmap.md#statistical-rigor-s--a-standing-workstream))
    ELBO convergence says the optimizer stopped; it says nothing about closeness
-   to the true posterior.
-3. **No posterior predictive checks.** — ○ open
+   to the true posterior. Worse than neutral: `_advi_diagnostics` thresholds the
+   ELBO drift against the standard deviation of the stochastic ELBO trace
+   itself — a quantity dominated by Monte-Carlo noise — so a `fit_quality: "ok"`
+   conveys very little, and it is the field the MCP payload keeps and places
+   beside the intervals.
+5. **No posterior predictive checks.** — ○ open
    ([S3](roadmap.md#statistical-rigor-s--a-standing-workstream))
    The engine never asks "could this fitted model have generated data that looks
    like what I saw?" — the single most informative Bayesian model check there is
    (Gelman et al., 2020; Gabry et al., 2019). A badly misspecified node currently
    passes silently as long as it converges.
-4. **No collinearity diagnostic on parents.** — ○ open
+6. **No collinearity diagnostic on parents.** — ○ open
    ([S4](roadmap.md#statistical-rigor-s--a-standing-workstream))
    Correlated parents produce a well-determined *sum* and an unstable *split*,
-   and the split is exactly what RCA reports. Nothing warns.
-5. **Interval calibration is tested at one point, coarsely.** — ○ open
-   ([S5](roadmap.md#statistical-rigor-s--a-standing-workstream))
-   The 20-world coverage test is real and valuable, but it is a single scenario
-   with an 80% pass bar for a nominal 95% interval. There is no simulation-based
-   calibration (Talts et al., 2018) across the prior, and no coverage testing
-   across grains, window lengths, or tree shapes.
-6. **The bootstrap is bolted on, not integrated.** — ○ open, partially addressed
-   ([S6](roadmap.md#statistical-rigor-s--a-standing-workstream))
-   Composing a frequentist resampling interval with a Bayesian posterior is
-   pragmatic and defensible but not a coherent joint posterior; block length is
-   fixed rather than estimated. S6 fixes the block length; the deeper
-   composition question is not currently scheduled, and would mean moving
-   window-sampling uncertainty inside the model.
-7. **`ranked_causes` is a heuristic and reads like a result.** — ○ open
-   ([S12](roadmap.md#statistical-rigor-s--a-standing-workstream))
+   and the split is exactly what RCA reports. Nothing warns — and mean-field
+   ADVI will report a *narrow* interval around whichever arbitrary split it
+   landed on, so weakness #1 and this one compound rather than add. The
+   reference tree in `knowledge/` contains the structure itself.
+7. **Interval calibration is tested by a test that is structurally unable to
+   fail.** — ○ open
+   ([S17](roadmap.md#statistical-rigor-s--a-standing-workstream),
+   [S5](roadmap.md#statistical-rigor-s--a-standing-workstream))
+   This one is a correction to an earlier edition of this paper, which offered
+   the 20-world coverage test as its headline defence. The test computes the
+   true contribution from the **realized** parent series and then checks it
+   against percentiles of `beta_samples × a bootstrap of that same realized
+   series` — so the window-sampling term is pure added width around a point that
+   already carries the truth's parent factor. If β were known exactly, coverage
+   would be ≈ 1 by construction, and the added width is precisely what would
+   mask a too-narrow ADVI posterior. The pass bar (80% for a nominal 95%
+   interval) has no power to reject true coverage of 0.85; all 20 worlds share
+   one data-generating process varying only the noise seed. Two things are
+   consequently **untested anywhere**: formula-node CIs, which come 100% from
+   the bootstrap in #2, and the collinear-parent case in #6. The *design* of the
+   test suite — including its null-case restraint tests, which remain the most
+   valuable part — is right; this particular implementation proves less than it
+   appears to.
+8. **`ranked_causes` is a heuristic, reads like a result, and inverts on a
+   common input.** — ○ open
+   ([C5](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend),
+   [S12](roadmap.md#statistical-rigor-s--a-standing-workstream))
    The score propagates |share| products up the tree. It is explicitly
    documented as triage rather than probability, but it is also the most
    prominent number in the UI, and prominence implies rigor whatever the docs
-   say.
-8. **The flat trend forecast understates counterfactual movement** for nodes
-   with genuine momentum (§2.4). — ○ open
-   ([3.4](roadmap.md#horizon-3--make-it-findable-and-sticky-it-comes-to-you),
-   [S8](roadmap.md#statistical-rigor-s--a-standing-workstream))
-9. **Cold-start beliefs are sampled independently,** so correlated beliefs are
-   misrepresented in either direction. — ○ open
-   ([S7](roadmap.md#statistical-rigor-s--a-standing-workstream))
-10. **Causal language rests entirely on the declared DAG.** — ○ open
+   say. Beyond the framing problem there is a defect: the near-zero-gap guard is
+   an absolute `1e-12` rather than relative to node scale, so a node that barely
+   moved with two large offsetting parents produces shares of ±10⁵ that are then
+   *clamped to 1.0* — the metric that most conclusively did not move hands its
+   full influence score upward. C5 fixes the clamp; S12 fixes the prominence.
+9. **The trend interval does not grow with the analysis horizon.** — ○ open
+   ([S16](roadmap.md#statistical-rigor-s--a-standing-workstream))
+   `components.trend` is reported as the last fitted level's posterior, so a
+   one-period analysis window and a ninety-period one starting the same date
+   return the identical estimate *and* the identical interval. The flat *point*
+   forecast is a correct property of a local-level random walk and is documented
+   as such (§2.1); the *interval* silently omits the forward-simulation variance
+   that accumulates with every step past the fit end. This is distinct from #11
+   below, which is about the point estimate. The size of the understatement
+   scales with `σ_trend` and has not been measured — S16 measures it.
+10. **The bootstrap is bolted on, not integrated.** — ○ open, partially addressed
+    ([S6](roadmap.md#statistical-rigor-s--a-standing-workstream),
+    [C4](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend))
+    Composing a frequentist resampling interval with a Bayesian posterior is
+    pragmatic and defensible but not a coherent joint posterior; block length is
+    fixed rather than estimated. C4 fixes the block *cap* (a defect); S6
+    estimates the block *length* from the data. The deeper composition question
+    is not currently scheduled, and would mean moving window-sampling
+    uncertainty inside the model.
+11. **The flat trend forecast understates counterfactual movement** for nodes
+    with genuine momentum (§2.4). — ○ open
+    ([3.4](roadmap.md#horizon-3--make-it-findable-and-sticky-it-comes-to-you),
+    [S8](roadmap.md#statistical-rigor-s--a-standing-workstream))
+12. **Cold-start beliefs are sampled independently,** so correlated beliefs are
+    misrepresented in either direction. — ○ open
+    ([S7](roadmap.md#statistical-rigor-s--a-standing-workstream),
+    [C7](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend))
+    The bias is not symmetric in practice: a founder's beliefs about their own
+    funnel are substantially one latent variable (how optimistic they are), and
+    treating them as independent systematically *understates* interval width.
+    Two related defects are C7 rather than S7 — baseline draws are unbounded
+    Normals that ignore the declared `plausible` floor, and the central
+    statistic on a ratio node is the Monte-Carlo mean of a ratio distribution
+    whose mean may not exist. Cold start is a demo mode as of 2026-08-05; read
+    its numbers as illustrations of a belief, not as forecasts.
+13. **Causal language rests entirely on the declared DAG.** — ○ open
     ([S14](roadmap.md#statistical-rigor-s--a-standing-workstream))
     This is disclosed everywhere and remains the assumption most likely to be
     violated in practice — not because users are careless, but because business
@@ -702,9 +792,21 @@ checking layer is thin. The engine's real achievement is *structural*: it is
 built so that adding rigor does not require re-architecting anything, because
 uncertainty already flows everywhere it needs to.
 
-Most importantly, the failure modes above are **documented rather than
-hidden** — which is the difference between a tool with known limitations and a
-tool that is quietly wrong.
+Most of the failure modes above are **documented rather than hidden** — which is
+the difference between a tool with known limitations and a tool that is quietly
+wrong.
+
+An earlier edition of this paper made that claim without qualification. The
+2026-08-05 review found that it was not fully earned: a handful of behaviors were
+quietly wrong rather than disclosed, including two that could silently turn real
+data into fabricated movement at the provider boundary, and one — the coverage
+test in #7 — where this document's own headline evidence proved less than it
+appeared to. Those are now enumerated as
+[Horizon 0](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend) and
+they gate everything else. Until they close, the honest statement is: the
+*statistical* limitations are documented; a short, named list of *correctness*
+defects is documented and open. We would rather you read that list than trust the
+claim it replaced.
 
 ---
 
@@ -721,12 +823,20 @@ begin immediately after the 0.1.0 release, ahead of the adoption items, and
 starts with **S1** — benchmarking full-rank ADVI, the cheapest attack on the
 weakness ranked first in §3.2.
 
+**Ahead of all of it:**
+[**Horizon 0**](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend),
+the correctness gate. Nothing in this section is worth building on top of a
+number the engine cannot defend, and two of the items there (C4, C7) are the
+defect halves of S items listed below (S6, S7). C4 in particular blocks any
+honest reading of S17's rebuilt coverage test: measuring calibration against an
+attenuated bootstrap would just relocate the error.
+
 | ID | Item | Status |
 |---|---|---|
 | S1 | Benchmark full-rank ADVI as the RCA default | ○ open — **next up** |
 | S2 | PSIS k̂ approximation diagnostic + auto-escalation | ○ open |
 | S3 | Posterior predictive checks on every fit | ○ open |
-| S4 | Parent collinearity diagnostic | ○ open |
+| S4 | Parent collinearity diagnostic | ○ open — **promoted** |
 | S5 | Simulation-based calibration | ○ open |
 | S6 | Data-driven bootstrap block length | ○ open |
 | S7 | Correlated cold-start beliefs | ○ open |
@@ -737,6 +847,9 @@ weakness ranked first in §3.2.
 | S12 | `ranked_causes` visibly a heuristic | ○ open |
 | S13 | Methods appendix in the exported report | ○ open |
 | S14 | Quantify the DAG assumption | ○ open |
+| S15 | Multiplicity and selection-aware reporting | ○ open |
+| S16 | Forward-simulation variance in the trend interval | ○ open |
+| S17 | Rebuild the calibration suite's coverage test | ○ open |
 | 3.4 | Counterfactual RCA (Horizon 3, not the S track) | ○ open |
 
 Below, the reasoning behind each — ordered by value per unit of effort.
@@ -774,19 +887,69 @@ what the normal regime predicts (95% CI …)." This is the full Brodersen et al.
 (2015) pattern, it replaces the flat-trend approximation (§2.4), and it produces
 a considerably stronger headline number than a window-mean difference.
 
-**A parent collinearity diagnostic** — `S4`, ○ open. Compute pairwise
-correlation (or VIF) among a node's parent regressors over the fit window and
-warn when the split of credit is unstable. Cheap, and it addresses a silent
-failure that directly corrupts what RCA reports.
+**A parent collinearity diagnostic** — `S4`, ○ open, **promoted 2026-08-05**.
+Compute pairwise correlation (or VIF) among a node's parent regressors over the
+fit window and warn when the split of credit is unstable. Cheap, and it addresses
+a silent failure that directly corrupts what RCA reports. It moved up because it
+compounds with weakness #1 rather than merely adding to it: correlated parents
+make the split unstable, and mean-field ADVI then reports a *narrow* interval
+around whichever split it happened to land on. That combination — a confident
+number attached to an arbitrary division of credit — is the most likely route
+from breakdown's output to a decision someone regrets, and it is untested (S17).
+
+**Multiplicity and selection-aware reporting** — `S15`, ○ open. Disclose before
+modeling. A `run_rca` result is a *ranking over many intervals*, and the top of
+that ranking is a selected maximum whose interval was computed pre-selection.
+Step one is that the `how_to_read` payload, [`docs/model.md`](../docs/model.md)
+and the UI say so — that a pre-specified node's interval means what it says while
+the *winner's* does not, and that re-running with a different window pair is a
+search. Step two, only if step one proves insufficient, is a selection-aware
+interval for the reported top cause.
+
+*Considered and not adopted as the fix:* hierarchical pooling of `beta_raw`
+across a node's parents, which would shrink winners and give selection-aware
+intervals cheaply. It is rejected on substantive grounds, not cost: a node's
+parents are heterogeneous quantities in different units — ad spend, sessions, a
+conversion rate — and partial pooling toward a common mean encodes a belief that
+they are exchangeable draws from one population, which is false. The independent
+`Normal(0, 1)` on the *rescaled* coefficient (§2.1) is a deliberate choice, not
+an oversight. If pooling is revisited, the case has to be made per tree shape.
+
+**Forward-simulation variance in the trend interval** — `S16`, ○ open. The
+reported `components.trend` is the posterior of the last fitted level, and its
+interval does not widen as the analysis window moves further past the fit end.
+For a random walk the forward variance accumulates with each step, so the correct
+interval for a window `H` periods out is strictly wider — and today's is flat in
+`H`. The fix is mechanical; the *sizing* is not, because it scales with
+`σ_trend`, which this model prioritizes tightly by design. So S16 is a
+measurement first: simulate forward from fitted posteriors across grains and
+horizons, report the actual understatement, then correct it. This is separate
+from S8 and 3.4, which concern the point forecast.
 
 ### 4.2 Substantial but well-scoped
+
+**Rebuild the coverage test so it can fail** — `S17`, ○ open. Before S5's
+expensive machinery, fix the cheap test that already exists. Three changes.
+Draw the true contribution from the **data-generating process** rather than from
+the realized parent series, so the interval is not being checked against a
+quantity it was partly built from. Vary the world properly — a different seed per
+world, and more than one DGP — instead of resampling noise around one scenario
+with a fixed inference seed. Raise the pass bar to something with power against
+the alternative that actually worries us (true coverage ≈ 0.85). Then add the two
+uncovered cases: a **formula node**, whose interval comes entirely from the block
+bootstrap and has no coverage test at all today, and a **collinear-parent** tree,
+which is S4's failure mode and the shape real trees take. Expect this to fail on
+first run — that is the point, and it is why C4 should land first so the failure
+is attributable.
 
 **Simulation-based calibration** — `S5`, ○ open (Talts et al., 2018). Draw
 parameters from the prior, simulate data, refit, and check that the rank of the
 true parameter within the posterior is uniform. This is the definitive test that
 the inference is calibrated, and it would turn the current single-scenario
 coverage test into a real guarantee. Expensive to run — a nightly or
-release-gate job, not a per-commit one.
+release-gate job, not a per-commit one. S17 is the cheap complement, not a
+substitute: it fixes the test we already rely on, while S5 replaces the class of
+guarantee.
 
 **Data-driven bootstrap block length** — `S6`, ○ open (Politis & White, 2004),
 replacing the fixed per-grain constants.
@@ -847,6 +1010,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-08-05 | **Acted on a hostile external review** of the engine, docs and tests (against 0.1.0). §3.2 gained four weaknesses it had not named — the short-window bootstrap attenuation (#2, `C4`), unacknowledged multiplicity and selection (#3, `S15`), the horizon-invariant trend interval (#9, `S16`), and the structural bias in the coverage test this paper had offered as its headline calibration evidence (#7, `S17`) — and #6, #8, #10 and #12 were amended with the specific defects behind them. §3.3's unqualified claim that the failure modes are "documented rather than hidden" was **corrected**: it was not fully earned, and the exceptions are now enumerated as the roadmap's [Horizon 0](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend) correctness gate, which runs ahead of the S track. §4 gained `S15`/`S16`/`S17` with rationale, and `S4` (parent collinearity) was promoted. |
 | 2026-08-05 | §3.2 and §4 given status markers and roadmap IDs; §4 items registered as the roadmap's [Statistical rigor (S) workstream](roadmap.md#statistical-rigor-s--a-standing-workstream), sequenced to start after the 0.1.0 release with S1 first. Added full-rank ADVI (S1) as a §4.1 item, split out of the ADVI diagnostic. Cross-linked [`advi_vs_nuts_in_breakdown.md`](advi_vs_nuts_in_breakdown.md) from §2.2 and §3.2. |
 | 2026-08-04 | First version, against engine 0.1.0. Written after the roadmap 1.1 statistical hardening work (window validation, date-spine contiguity, Nyquist harmonic filtering) — §2.10 describes those guards as shipped. |
 
