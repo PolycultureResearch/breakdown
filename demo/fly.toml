@@ -46,8 +46,17 @@ primary_region = "iad"
   # fits are serialized behind a single lock.
   auto_stop_machines = "suspend"
 
-  # Zero idle cost while the demo is invite-only. Raise to 1 before a scheduled
-  # call, or permanently once traffic justifies it.
+  # Keep one machine up. The demo link ships in the v0.1.0 release notes and the
+  # PyPI sidebar — the two places a stranger's first click lands — so idle cost
+  # is no longer the thing to optimize.
+  #
+  # Measured at min_machines_running = 0 on 2026-08-05: **16.0s** for the first
+  # GET /ui after a quiet period, 0.56s warm. That is well past the point where
+  # a blank tab reads as "broken" rather than "waking up", and the visitor who
+  # pays it is by definition the one who has never seen the tool before. Note
+  # the ~1s wake the `auto_stop_machines = "suspend"` comment above describes is
+  # the *suspend* path; a long-idle machine gets stopped outright, and that is
+  # the 16s case.
   #
   # This is *not* the machine-count control, despite flyctl printing "set
   # min_machines_running = 0" when it creates a spare for HA. It only sets how
@@ -56,7 +65,7 @@ primary_region = "iad"
   # from being given two in the first place. Two machines would be actively
   # wrong here: the trace cache is per-process and in-memory, so prewarming one
   # leaves the other cold and analyses would be fast or slow at random.
-  min_machines_running = 0
+  min_machines_running = 1
 
   [http_service.concurrency]
     # Fits are CPU-bound and serialized, so queueing many concurrent analyses on
