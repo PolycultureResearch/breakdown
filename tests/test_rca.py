@@ -482,3 +482,98 @@ def test_rca_day_grain_golden_pinned():
     # the node's own gap. Pinning values that violated it is how the bug
     # survived a golden test in the first place.
     assert abs(sum(contribs.values()) - (rev["gap"] - rev["unexplained"])) < 1e-9
+
+
+# --- bootstrap honesty: attenuation correction + degeneracy guard (C4) ---
+
+
+def test_window_mean_correction_matches_the_derivation():
+    """The factor is 1/sqrt((1 - l/n)(1 - 1/n)) — the circular-MBB attenuation
+    times the ddof gap of the empirical distribution."""
+    from breakdown.engine.rca import _window_mean_correction
+
+    for n, block in ((14, 7), (28, 7), (5, 2), (7, 3), (90, 7)):
+        expected = 1.0 / np.sqrt((1 - block / n) * (1 - 1 / n))
+        assert abs(_window_mean_correction(n, block) - expected) < 1e-12
+
+    # Undefined cases fall back to no correction rather than dividing by zero.
+    assert _window_mean_correction(1, 1) == 1.0
+    assert _window_mean_correction(4, 4) == 1.0
+
+
+def test_bootstrap_variance_attenuation_is_real_and_corrected():
+    """The bug, measured directly on the estimator: the resampled variance of a
+    window mean targets (1 - l/n) times the truth. The correction undoes it."""
+    from breakdown.engine.rca import _window_mean_correction
+
+    rng = np.random.default_rng(0)
+    n, block = 14, 7
+    ratios = []
+    for _ in range(400):
+        x = rng.normal(0, 1.0, n)
+        idx = _block_bootstrap_indices(n, 2000, rng, block=block)
+        means = x[idx].mean(axis=1)
+        ratios.append(means.var() / (1.0 / n))
+    observed = float(np.mean(ratios))
+
+    # Uncorrected: attenuated to roughly (1 - 7/14) = 0.5 of the true variance.
+    assert abs(observed - (1 - block / n)) < 0.08, observed
+    # Corrected: back to ~1.0 (the ddof half of the factor closes the rest).
+    f = _window_mean_correction(n, block)
+    assert abs(observed * f**2 - 1.0) < 0.12, observed * f**2
+
+
+def test_constant_parent_withholds_the_interval():
+    """A parent that never moves collapses every replicate to the same value.
+    That used to ship a zero-width ci_95 flagged `ci_status: "ok"` — the guard
+    keyed on period count, so it never fired (C4)."""
+    yaml_content = """
+metrics:
+  - name: order_count
+    source: dbt.metric.order_count
+  - name: average_order_value
+    source: dbt.metric.average_order_value
+  - name: revenue
+    source: dbt.metric.revenue
+    formula: "order_count * average_order_value"
+    parents: [order_count, average_order_value]
+"""
+    dates = pd.date_range("2024-01-01", periods=100, freq="D")
+    rng = np.random.default_rng(3)
+    orders = 100.0 + rng.normal(0, 5.0, 100)
+    frame = pd.DataFrame({
+        "date": dates,
+        "order_count": orders,
+        # Unlaunched feature: identically flat across both windows.
+        "average_order_value": np.full(100, 25.0),
+        "revenue": orders * 25.0,
+    })
+    dag = Parser(yaml_content).dag
+    result = run_rca(dag, frame, {}, "revenue", *REF, *AN, advi_draws=300)
+    rev = result["nodes"]["revenue"]
+
+    aov = next(c for c in rev["contributions"] if c["parent"] == "average_order_value")
+    assert aov["ci_95"] is None, "a zero-width interval is never a real finding"
+    assert aov["prob_same_direction"] is None
+    assert rev["ci_status"] == "degenerate_constant_window"
+
+    # The parent that *did* move keeps a real interval — degeneracy is judged
+    # per contribution, not per node.
+    oc = next(c for c in rev["contributions"] if c["parent"] == "order_count")
+    assert oc["ci_95"] is not None and oc["ci_95"][0] < oc["ci_95"][1]
+
+
+def test_short_window_intervals_are_wider_than_the_raw_bootstrap():
+    """The correction is largest where the interval is most load-bearing: a
+    short analysis window. Guards against the factor being silently dropped."""
+    dag, data = make_tree()
+    short = run_rca(dag, data, {}, "revenue", *REF, "2024-02-16", "2024-02-22",
+                    advi_draws=300)
+    rev = short["nodes"]["revenue"]
+    for c in rev["contributions"]:
+        assert c["ci_95"] is not None
+        assert c["ci_95"][1] > c["ci_95"][0]
+    # 7 analysis periods -> block 3 -> factor 1/sqrt((1-3/7)(1-1/7)) ~ 1.42,
+    # so the correction is a material widening, not a rounding difference.
+    from breakdown.engine.rca import _window_mean_correction
+    assert _window_mean_correction(7, 3) > 1.4

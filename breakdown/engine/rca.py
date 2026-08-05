@@ -206,6 +206,81 @@ def _block_bootstrap_indices(n: int, n_boot: int, rng, block: int = 7) -> np.nda
     return idx.reshape(n_boot, n_blocks * block)[:, :n]
 
 
+def _window_mean_correction(n: int, block: int) -> float:
+    """Factor that undoes the circular block bootstrap's finite-sample
+    attenuation of a window mean's variance (roadmap C4).
+
+    Two exactly-derivable biases, both downward, both worst on short windows —
+    which is precisely where this interval is load-bearing.
+
+    **Block resampling.** For the circular MBB with block length ``l`` on ``n``
+    periods, the resampled window mean has (iid case, exact)::
+
+        Var*(mean) = (sigma^2 / n) * (1 - l/n)
+
+    so the bootstrap targets ``(1 - l/n)`` times the true variance. Because
+    ``l = min(BOOT_BLOCK[grain], n // 2)``, every daily window below 14 periods
+    sits near ratio 0.5 — a CI about 29% too narrow — and the ratio is not even
+    monotone in ``n`` (a 14-period window is attenuated *more* than a 5-period
+    one, which nobody would predict). Note this is not fixable by choosing a
+    different cap: *any* ``l < n`` carries the factor, and the cap only decides
+    how large it is. It needs the correction, not a different constant.
+
+    **Empirical-distribution variance.** Replicates are drawn from the observed
+    periods, whose variance about their own mean is ``(1 - 1/n)`` times the
+    unbiased estimate — the usual ddof gap, and non-negligible when ``n`` is 5.
+
+    Both are variance-scale corrections, so they multiply::
+
+        factor = 1 / sqrt((1 - l/n) * (1 - 1/n))
+
+    Returns 1.0 where no correction is defined (``n <= 1``, or a block spanning
+    the whole window) — those windows are degenerate anyway and their intervals
+    are withheld by `_degenerate_spread`.
+
+    **This does not make short-window intervals correct.** Measured coverage of
+    the nominal 95% window-mean interval, before -> after this correction::
+
+        n            3     5     7    14    28    60
+        iid       0.75  0.78  0.79  0.74  0.86  0.91
+                  0.84  0.88  0.90  0.87  0.90  0.92
+        AR(1) .7  0.41  0.43  0.46  0.53  0.71  0.80
+                  0.57  0.57  0.59  0.68  0.77  0.83
+
+    Strictly better everywhere and still short of 95% everywhere. Two causes
+    remain, both out of scope here and both scheduled: the block length is a
+    fixed per-grain constant rather than estimated from the data, which is what
+    keeps the AR(1) row low and makes n=14 worse than n=7 (roadmap S6); and the
+    percentile interval uses effectively normal quantiles where a short window
+    needs a t-shaped tail, which is most of the remaining iid gap (roadmap
+    S18). Quote these numbers rather than "the CI is honest now".
+    """
+    if n <= 1 or block >= n:
+        return 1.0
+    return 1.0 / float(np.sqrt((1.0 - block / n) * (1.0 - 1.0 / n)))
+
+
+def _widen(samples: np.ndarray, centre: float, factor: float) -> np.ndarray:
+    """Rescale replicate spread about `centre`, leaving its location alone."""
+    if factor == 1.0:
+        return samples
+    return centre + (samples - centre) * factor
+
+
+def _degenerate_spread(samples: np.ndarray, scale: float) -> bool:
+    """True when replicates carry no window-sampling information at all.
+
+    Keyed on the *resampled spread* rather than on the period count (roadmap
+    C4). A single-period window is only one way to get identical replicates;
+    the other is a parent that is constant across the window — an unlaunched
+    feature, an unmoved stock, a zero-inflated series — which collapses every
+    replicate to the same value and used to ship a **zero-width `ci_95` with
+    `ci_status: "ok"`**. A zero-width interval is never a real finding, so the
+    condition to test is the one that actually matters.
+    """
+    return float(np.ptp(samples)) <= 1e-9 * max(1.0, abs(float(scale)))
+
+
 def _sample_summary(samples: np.ndarray) -> Dict[str, Any]:
     return {
         "estimate": float(samples.mean()),
@@ -516,8 +591,27 @@ def run_rca(
             boot_ref_means = {p: ref_vals[p][ref_idx].mean(axis=1) for p in parents}
             boot_an_means = {p: an_vals[p][an_idx].mean(axis=1) for p in parents}
 
+            # Undo the bootstrap's finite-sample attenuation of window-mean
+            # variance (C4) — but only for the means bridge, which is the game
+            # whose variance the correction was derived for and the dominant
+            # term in a contribution. The two co-movement games below pair a
+            # replicate's means with that same replicate's daily values, so
+            # widening one side without the other would break the pairing that
+            # makes them telescope. Their spread is a second-order quantity we
+            # are not claiming to have corrected.
+            corr_ref = _window_mean_correction(n_ref, block)
+            corr_an = _window_mean_correction(n_an, block)
             phi_means = compute_shapley(
-                defn.formula, parents, boot_ref_means, boot_an_means
+                defn.formula,
+                parents,
+                {
+                    p: _widen(boot_ref_means[p], float(ref_vals[p].mean()), corr_ref)
+                    for p in parents
+                },
+                {
+                    p: _widen(boot_an_means[p], float(an_vals[p].mean()), corr_an)
+                    for p in parents
+                },
             )
             phi_cov_an = compute_shapley(
                 defn.formula,
@@ -545,13 +639,15 @@ def run_rca(
             # disagreed by the bias — small on a multilinear formula, unbounded
             # in principle on a ratio with a noisy denominator.
             #
-            # A single-period window degenerates the block bootstrap to
-            # identical replicates; report no interval rather than a
-            # falsely-zero-width one.
+            # Withhold an interval whenever the replicates are degenerate, not
+            # merely when the window holds one period (C4) — see
+            # `_degenerate_spread`. Reporting no interval is honest; reporting
+            # a zero-width one flagged "ok" is not.
             def _summary(point: float, samples: np.ndarray) -> Dict[str, Any]:
+                withheld = single_period or _degenerate_spread(samples, point)
                 return {
                     "estimate": float(point),
-                    "ci_95": None if single_period else [
+                    "ci_95": None if withheld else [
                         float(np.percentile(samples, 2.5)),
                         float(np.percentile(samples, 97.5)),
                     ],
@@ -559,6 +655,7 @@ def run_rca(
 
             interaction_b = np.zeros(_N_BOOT)
             interaction_exact = 0.0
+            constant_window = False
             for p in parents:
                 means_b = phi_means[p]
                 comovement_b = (
@@ -579,15 +676,19 @@ def run_rca(
                 estimate = float(sh["attribution"][p])
                 interaction_exact += comovement_exact
 
+                degenerate = _degenerate_spread(phi_b, estimate)
+                constant_window = constant_window or degenerate
+                withheld = single_period or degenerate
+
                 contribution = {
                     "parent": p,
                     "estimate": estimate,
                     "share_of_gap": (estimate / gap) if abs(gap) >= 1e-12 else None,
-                    "ci_95": None if single_period else [
+                    "ci_95": None if withheld else [
                         float(np.percentile(phi_b, 2.5)),
                         float(np.percentile(phi_b, 97.5)),
                     ],
-                    "prob_same_direction": None if single_period else float(
+                    "prob_same_direction": None if withheld else float(
                         max((phi_b > 0).mean(), (phi_b < 0).mean())
                     ),
                     # Two-level view: the window-means bridge part and the
@@ -613,7 +714,11 @@ def run_rca(
             # already *inside* each contribution's `estimate` — it is a
             # readout of the same quantity, never a term to add on top.
             interaction = _summary(interaction_exact, interaction_b)
-            ci_status = "degenerate_single_period" if single_period else "ok"
+            ci_status = (
+                "degenerate_single_period" if single_period
+                else "degenerate_constant_window" if constant_window
+                else "ok"
+            )
             unexplained = gap - sh["gap"]
         else:
             attribution_method = "posterior"
@@ -691,7 +796,18 @@ def run_rca(
                     an_idx if len(p_an_vals) == an_idx.shape[1]
                     else _block_bootstrap_indices(len(p_an_vals), _N_BOOT, rng, block=block)
                 )
-                delta_samples = p_an_vals[a_idx].mean(axis=1) - p_ref_vals[r_idx].mean(axis=1)
+                # Correct the window-sampling half only (C4): the coefficient
+                # posterior is not a bootstrap quantity and carries no such
+                # attenuation, so widening the product would over-inflate it.
+                boot_an = _widen(
+                    p_an_vals[a_idx].mean(axis=1), float(p_an_vals.mean()),
+                    _window_mean_correction(len(p_an_vals), block),
+                )
+                boot_ref = _widen(
+                    p_ref_vals[r_idx].mean(axis=1), float(p_ref_vals.mean()),
+                    _window_mean_correction(len(p_ref_vals), block),
+                )
+                delta_samples = boot_an - boot_ref
                 # Shuffle so posterior draw i is not systematically paired with
                 # the same bootstrap replicate across parents.
                 delta_samples = rng.permutation(delta_samples)

@@ -52,6 +52,17 @@ async function api(path, opts) {
   return resp.json();
 }
 
+// A withheld bootstrap CI, whatever the reason: a single-period window, or a
+// window in which the parent never moved (both degenerate the resampling, and
+// a zero-width interval is never a real finding). Prefix-matched so a future
+// `degenerate_*` status is never silently rendered as a normal result.
+function ciWithheldNote(ciStatus) {
+  if (ciStatus === "degenerate_single_period") return "single-period window: no bootstrap CI";
+  if (ciStatus === "degenerate_constant_window") return "parent constant across the window: no bootstrap CI";
+  if (typeof ciStatus === "string" && ciStatus.startsWith("degenerate_")) return "no bootstrap CI";
+  return "";
+}
+
 function fmt(x) {
   if (x === null || x === undefined) return "—";
   const ax = Math.abs(x);
@@ -253,7 +264,7 @@ function buildRcaReportHtml(res, treePng, stripPng) {
       const ew = node.effective_windows;
       bits.push(`${node.grain} grain, snapped to ${ew.reference.n_periods}+${ew.analysis.n_periods} whole ${node.grain}s`);
     }
-    if (node.ci_status === "degenerate_single_period") bits.push("single-period window: no bootstrap CI");
+    if (ciWithheldNote(node.ci_status)) bits.push(ciWithheldNote(node.ci_status));
     if (node.sign_warnings && node.sign_warnings.length) bits.push("⚠ learned sign contradicts declared expectation");
     return bits.length ? ` · ${esc(bits.join(" · "))}` : "";
   };
@@ -1832,10 +1843,10 @@ function sliceResultHtml(metric) {
   const caveats = (r.caveats || []).length
     ? `<p class="inline-status">${r.caveats.map(esc).join(" ")}</p>`
     : "";
-  const degenerate =
-    r.ci_status === "degenerate_single_period"
-      ? '<p class="inline-status">Single-period window: no bootstrap CI.</p>'
-      : "";
+  const degenerateNote = ciWithheldNote(r.ci_status);
+  const degenerate = degenerateNote
+    ? `<p class="inline-status">${esc(degenerateNote[0].toUpperCase() + degenerateNote.slice(1))}.</p>`
+    : "";
 
   return `${verdict}
     <table class="data-table slice-table">${head}${rows}</table>
@@ -1929,10 +1940,9 @@ function renderRcaTab() {
         node.grain && node.grain !== "day" && ew
           ? ` · ${esc(node.grain)} grain, snapped to ${ew.reference.n_periods}+${ew.analysis.n_periods} whole ${esc(node.grain)}s`
           : "";
-      const ciNote =
-        node.ci_status === "degenerate_single_period"
-          ? ` · single-period window: no bootstrap CI`
-          : "";
+      const ciNote = ciWithheldNote(node.ci_status)
+        ? ` · ${esc(ciWithheldNote(node.ci_status))}`
+        : "";
       const signNote =
         node.sign_warnings && node.sign_warnings.length
           ? ` · <span class="sign-flag" title="${esc(node.sign_warnings.join("\n\n"))}">⚠ learned sign contradicts expectation</span>`
