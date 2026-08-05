@@ -12,8 +12,44 @@ fixes. Callers who need stability should pin `metric-breakdown~=0.1.0` until 1.0
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.1.0] — 2026-08-05
+
+**First public release** — the first version published to PyPI as
+`metric-breakdown`. The **Added** section describes the surface that ships;
+**Changed** and **Fixed** are relative to the `0.0.1` pre-release, which was
+tagged on GitHub and never published to an index.
+
 ### Added
 
+- **Engine.** Per-node Bayesian Structural Time Series with contemporaneous and
+  lagged regressors and business-unit priors. Root-cause analysis over the
+  ancestor DAG combining exact per-day Shapley attribution on `formula` nodes
+  with posterior attribution on probabilistic ones, block-bootstrap credible
+  intervals, an explicit `unexplained` term, and convergence diagnostics on
+  every fit.
+- **Per-node grains** (`grain`, `kind`) so ratio and cohort metrics are fitted at
+  the grain they are meaningful at, with cohort-aligned lagged identities.
+- **Dimensional slicing** — attribute a node's gap across a declared dimension,
+  ranked by excess concentration, with a UI panel, MCP tool and API endpoint.
+- **What-if simulation** — do-operator interventions, assumption links, Shapley
+  source attribution, and a **cold-start mode** (`provider: none`) that runs the
+  whole what-if machine on declared beliefs with no data at all.
+- **Providers** — `mock`, `local` (MetricFlow), `cloud` (dbt Cloud Semantic
+  Layer), `warehouse` (direct SQL), plus a parquet snapshot cache so a tree
+  refits without touching the warehouse.
+- **UI** at `/ui` — Cytoscape DAG, per-metric series and posteriors,
+  point-and-click RCA, what-if builder, exportable HTML report, deep links.
+- **MCP server** at `/mcp` for AI assistants, with interpretation caveats and
+  deep links back into the UI. Optional bearer-token gate via
+  `BREAKDOWN_API_TOKEN`.
+- **`breakdown doctor`** — walks a provider's auth chain and prints copy-paste
+  remediation for each failure.
+- **Documentation.** [`docs/model.md`](docs/model.md) (what is fitted and how to
+  read it), a [statistics white paper](knowledge/statistics_whitepaper.md)
+  covering every model in the engine with its limitations and an honest rigor
+  assessment, and architecture docs under `docs/ai-context/`.
 - **Input validation across the analysis path** (roadmap 1.1 / T9). Every case
   below previously produced a *plausible wrong number* rather than an error,
   which is the worst failure mode this engine has:
@@ -79,35 +115,23 @@ fixes. Callers who need stability should pin `metric-breakdown~=0.1.0` until 1.0
   breakdown stops forcing a resolver conflict on stacks that are a few months
   behind. `mcp>=2.0` is unchanged — the server genuinely uses 2.x APIs.
 
-## [0.1.0] — unreleased
+### Known limitations
 
-First public release.
+Stated up front rather than discovered later; all are documented in
+[`docs/model.md`](docs/model.md) and assessed in §3 of the
+[statistics white paper](knowledge/statistics_whitepaper.md):
 
-### Added
-
-- **Engine.** Per-node Bayesian Structural Time Series with contemporaneous and
-  lagged regressors and business-unit priors. Root-cause analysis over the
-  ancestor DAG combining exact per-day Shapley attribution on `formula` nodes
-  with posterior attribution on probabilistic ones, block-bootstrap credible
-  intervals, an explicit `unexplained` term, and convergence diagnostics on
-  every fit.
-- **Per-node grains** (`grain`, `kind`) so ratio and cohort metrics are fitted at
-  the grain they are meaningful at, with cohort-aligned lagged identities.
-- **Dimensional slicing** — attribute a node's gap across a declared dimension,
-  ranked by excess concentration, with a UI panel, MCP tool and API endpoint.
-- **What-if simulation** — do-operator interventions, assumption links, Shapley
-  source attribution, and a **cold-start mode** (`provider: none`) that runs the
-  whole what-if machine on declared beliefs with no data at all.
-- **Providers** — `mock`, `local` (MetricFlow), `cloud` (dbt Cloud Semantic
-  Layer), `warehouse` (direct SQL), plus a parquet snapshot cache so a tree
-  refits without touching the warehouse.
-- **UI** at `/ui` — Cytoscape DAG, per-metric series and posteriors,
-  point-and-click RCA, what-if builder, exportable HTML report, deep links.
-- **MCP server** at `/mcp` for AI assistants, with interpretation caveats and
-  deep links back into the UI. Optional bearer-token gate via
-  `BREAKDOWN_API_TOKEN`.
-- **`breakdown doctor`** — walks a provider's auth chain and prints copy-paste
-  remediation for each failure.
+- **RCA defaults to mean-field ADVI**, whose credible intervals are
+  systematically narrower than the truth. Confirm anything load-bearing with
+  `POST /analyze/{name}?inference_method=nuts&fit_end=<analysis_start>`. Fixing
+  this is the first item in the roadmap's
+  [statistical rigor workstream](knowledge/roadmap.md#statistical-rigor-s--a-standing-workstream).
+- **`ranked_causes` is a documented heuristic**, not a probability — a triage
+  ordering. Read the per-node contributions and their intervals for rigor.
+- **The DAG is your hypothesis.** breakdown quantifies the edges you declare; it
+  does not discover them, detect confounders, or prove causality.
+- **The `dbt` extra requires Python ≤ 3.13** (dbt-core's `mf` binary does not run
+  on 3.14). The base package supports 3.11–3.14.
 
 [Unreleased]: https://github.com/PolycultureResearch/breakdown/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.1.0

@@ -177,7 +177,7 @@ export DATABRICKS_TOKEN=...        # whatever ${VARS} your tree references
 docker compose up --build
 ```
 
-The [`compose.yaml`](compose.yaml) mounts `./tree.yml` read-only at `/config/tree.yml`, passes provider credentials through as environment variables, and healthchecks `GET /health`. The image is large (~2.5–3 GB — PyMC and its compiler toolchain); the first build takes a while.
+The [`compose.yaml`](https://github.com/PolycultureResearch/breakdown/blob/main/compose.yaml) mounts `./tree.yml` read-only at `/config/tree.yml`, passes provider credentials through as environment variables, and healthchecks `GET /health`. The image is large (~2.5–3 GB — PyMC and its compiler toolchain); the first build takes a while.
 
 Two things differ from a laptop run:
 
@@ -527,7 +527,7 @@ Propagation, do-operator semantics, draw alignment, and the Shapley source decom
 uv run breakdown serve --tree breakdown/examples/cold_start_tree.yml
 ```
 
-See [`docs/model.md`](docs/model.md) ("Reading cold-start output") before presenting results, and `knowledge/cold_start_design.md` for the full design.
+See [`docs/model.md`](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md) ("Reading cold-start output") before presenting results, and `knowledge/cold_start_design.md` for the full design.
 
 **Graduating from cold start.** The tree you build pre-data *is* the tree you fit once data exists — the Bayesian promise is literal. When real numbers start flowing:
 
@@ -696,7 +696,7 @@ Every contribution is reported as an `estimate` (mean), a 95% interval (`ci_95`)
 
 Unfitted probabilistic nodes in scope are fit with ADVI on demand — on data strictly before the analysis window — and cached, so the endpoint works without a prior `/analyze` call. `ranked_causes` is a documented heuristic that propagates an influence score from the target up the ancestor tree (weighting each hop by the parent's clamped share of its child's gap); use it as a triage ordering.
 
-See [docs/model.md](docs/model.md) for how to read `components`, `unexplained`, and the bootstrap's assumptions.
+See [docs/model.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md) for how to read `components`, `unexplained`, and the bootstrap's assumptions.
 
 ### `POST /rca/{name}/slices`
 
@@ -752,7 +752,7 @@ Five tools:
 | `slice_metric` | `/rca/{name}/slices` | Localize a metric's gap within a declared dimension (geo, plan, app version) — the traverse-then-slice follow-up to `run_rca` |
 | `run_whatif` | `/simulate` | Do-operator what-if scenario with posterior deltas |
 
-Analysis responses are compacted for token economy (rounded floats, decompositions dropped) and carry two extra fields: `how_to_read` — the interpretation rules from [docs/model.md](docs/model.md) (what `unexplained` means, why `share_of_gap` can exceed 100%, ADVI vs NUTS), so the narrating model states caveats instead of flattening them — and `report_url`, a deep link that replays the exact analysis in the UI (the engine is seeded, so the link reproduces the numbers).
+Analysis responses are compacted for token economy (rounded floats, decompositions dropped) and carry two extra fields: `how_to_read` — the interpretation rules from [docs/model.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md) (what `unexplained` means, why `share_of_gap` can exceed 100%, ADVI vs NUTS), so the narrating model states caveats instead of flattening them — and `report_url`, a deep link that replays the exact analysis in the UI (the engine is seeded, so the link reproduces the numbers).
 
 Connect from Claude Code:
 
@@ -874,7 +874,7 @@ Dockerfile           # Container image (see "Deploying")
 compose.yaml
 ```
 
-**If you're going to interpret breakdown's output, read [docs/model.md](docs/model.md)** — it explains what the model assumes, what `unexplained` means, why shares can exceed 100%, and when to trust (or distrust) a credible interval. **If you want the statistics in depth**, the [statistics white paper](knowledge/statistics_whitepaper.md) covers every model in the engine, why it was chosen, where it breaks, and how rigorous the whole thing actually is today. **If you're going to work on the codebase, read [AGENTS.md](AGENTS.md)** — the project's invariants and where everything lives.
+**If you're going to interpret breakdown's output, read [docs/model.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md)** — it explains what the model assumes, what `unexplained` means, why shares can exceed 100%, and when to trust (or distrust) a credible interval. **If you want the statistics in depth**, the [statistics white paper](https://github.com/PolycultureResearch/breakdown/blob/main/knowledge/statistics_whitepaper.md) covers every model in the engine, why it was chosen, where it breaks, and how rigorous the whole thing actually is today. **If you're going to work on the codebase, read [AGENTS.md](https://github.com/PolycultureResearch/breakdown/blob/main/AGENTS.md)** — the project's invariants and where everything lives.
 
 ---
 

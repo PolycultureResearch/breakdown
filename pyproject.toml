@@ -91,6 +91,8 @@ Homepage = "https://github.com/PolycultureResearch/breakdown"
 Repository = "https://github.com/PolycultureResearch/breakdown"
 Issues = "https://github.com/PolycultureResearch/breakdown/issues"
 Changelog = "https://github.com/PolycultureResearch/breakdown/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md"
+Demo = "https://white-cube-demo.fly.dev/ui"
 
 [project.scripts]
 breakdown = "breakdown.cli:main"
