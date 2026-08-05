@@ -22,6 +22,13 @@ roadmap. For how the codebase is built, see [`../AGENTS.md`](../AGENTS.md) and
   prioritized list of improvements. Complements
   [`../docs/model.md`](../docs/model.md), which is the practitioner's guide to
   *reading* output — this paper is the *why* underneath it.
+- [`advi_vs_nuts_in_breakdown.md`](advi_vs_nuts_in_breakdown.md) — a deep dive
+  on the white paper's #1 identified weakness: RCA defaults to mean-field ADVI,
+  which is underdispersed by construction, and breakdown's β-vs-trend posterior
+  ridge is the geometry it handles worst. Covers the mechanism (reverse KL, the
+  `σ²(1−ρ²)` result), why this engine is unusually exposed, a worked example of
+  a decision it would send the wrong way, when to confirm with NUTS, and the
+  two candidate fixes (PSIS k̂ escalation, full-rank ADVI).
 
 ## Design specs
 

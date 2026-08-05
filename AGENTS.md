@@ -84,6 +84,14 @@ is covered in the [README](README.md#deploying).
 - **Docs travel with the code.** When you change the API surface, the YAML schema,
   or UI behavior, update the [README](README.md) (user-facing) and the relevant
   `docs/ai-context/` doc (architecture) in the same change.
+- **The statistics white paper is a living document.** When you ship a
+  [Statistical rigor (S)](knowledge/roadmap.md#statistical-rigor-s--a-standing-workstream)
+  item, update three things in the same change: the roadmap row (the source of
+  truth for status), the matching §3.2 weakness and §4 item in
+  [`knowledge/statistics_whitepaper.md`](knowledge/statistics_whitepaper.md),
+  and that paper's **Last updated** date plus a revision-history row. It is a
+  public document that tells readers whether they are looking at a known current
+  issue or a fixed one — a stale status there is worse than no status.
 
 ## Conventions
 

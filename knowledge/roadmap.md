@@ -4,6 +4,11 @@ A prioritized list of what to build, grounded in what's already shipped. Horizon
 not dates: each gates on its exit criteria. This is the product/engineering roadmap
 only — no go-to-market.
 
+Three horizons, plus one standing workstream:
+[**Statistical rigor (S)**](#statistical-rigor-s--a-standing-workstream), which
+runs alongside them and holds the improvements identified in the
+[statistics white paper](statistics_whitepaper.md).
+
 Legend: ✅ shipped · ◑ partially shipped · ○ not started.
 
 ---
@@ -171,6 +176,53 @@ Gate: real, recurring usage asking for these.
 | 3.5 | **Hosted mode** — auth, scheduled refresh, fit queue + warm cache | ○ | The operational product layer; PyMC fits are CPU-heavy, so a queue + cache is required |
 | 3.6 | **Domain template packs** — worked example trees + methodology for specific domains (e.g. emissions/impact driver-tree decomposition) | ○ | Content that doubles as onboarding examples and demonstrates breadth |
 | 3.7 | **Deployable demo instance** — a hosted Breakdown over synthetic B2C SaaS data ("White Cube") with planted, ground-truth-labeled anomalies, per [`white_cube_demo_plan.md`](white_cube_demo_plan.md) | ◑ | The pitch artifact: a link a prospect can actually use. Pulls three engine items forward as a side effect — the slicing **UI** and **sliced snapshots** (both 3.2 "Remaining"), and a bearer-token gate on `/mcp` (a down payment on 3.5) |
+
+---
+
+## Statistical rigor (S) — a standing workstream
+
+Not a horizon: a parallel, priority-ordered track that runs alongside them. The
+items come from §4 of the [statistics white paper](statistics_whitepaper.md),
+which holds the *statistical rationale* for each — why the gap matters, what the
+literature says, what "fixed" would mean. **This table is the source of truth
+for status and sequencing**; the white paper cites these IDs and does not
+duplicate the schedule.
+
+**Sequencing decision (2026-08-05):** this track runs **immediately after the
+0.1.0 release**, ahead of the adoption items (2.2, 2.6). The reasoning is that
+the cheapest moment to change what a credible interval *means* is while the user
+base is still small — once people have RCAs in circulation, widening intervals
+means telling them their past analyses were overconfident. It does not block the
+release itself: 0.1.0's limitations are documented rather than hidden, which is
+the bar principle 3 sets.
+
+| # | Item | Status | Why |
+|---|------|--------|-----|
+| S1 | **Benchmark full-rank ADVI** as the RCA default — `pm.fit(method="fullrank_advi")` fits a full covariance matrix instead of a diagonal one. Measure fit time and interval width against both mean-field ADVI and NUTS on the calibration suite and the White Cube tree; adopt if the cost is acceptable | ○ | **First up.** The cheapest possible attack on the engine's #1 statistical weakness — a config change plus a benchmark, no new machinery. Mean-field cannot represent the β-vs-trend posterior ridge (see [`advi_vs_nuts_in_breakdown.md`](advi_vs_nuts_in_breakdown.md)); full-rank *can*. If it is fast enough to default to, it may make S2 unnecessary — which is exactly why it should be measured before S2 is built |
+| S2 | **A real ADVI approximation diagnostic** — PSIS-based k̂ (Yao et al., 2018) reported per fit; where k̂ is poor, auto-escalate that node to NUTS or mark its intervals unreliable in the response | ○ | Today's `fit_quality` for ADVI checks only that the ELBO stopped moving, so a well-converged *bad* approximation passes as `"ok"`. This detects the failure instead of assuming it away, without paying NUTS cost on every node. Scope depends on S1's result |
+| S3 | **Posterior predictive checks on every fit** — simulate replicated series from the posterior, compare summary statistics against the observed series, flag nodes whose data sits in the tail; surface through the existing `fit_quality` channel | ○ | The single most informative Bayesian model check there is (Gelman et al., 2020) and the one the engine most conspicuously lacks. Needs no new modeling. A badly misspecified node currently passes silently as long as it converges |
+| S4 | **Parent collinearity diagnostic** — pairwise correlation (or VIF) among a node's parent regressors over the fit window; warn when the split of credit is unstable | ○ | Correlated parents produce a well-determined *sum* and an unstable *split* — and the split is exactly what RCA reports. Cheap, self-contained, and addresses a silent failure that directly corrupts output. Composes with the existing `sign_warnings` channel |
+| S5 | **Simulation-based calibration** (Talts et al., 2018) — draw parameters from the prior, simulate, refit, check that the rank of the true parameter within the posterior is uniform | ○ | The definitive test that inference is calibrated. Turns 1.2's single-scenario coverage test into a real guarantee. Expensive: a release-gate or nightly job, not per-commit |
+| S6 | **Data-driven bootstrap block length** (Politis & White, 2004), replacing the fixed per-grain constants in `BOOT_BLOCK` | ○ | Block length currently is not estimated from the data at all. Too short understates uncertainty, too long overstates it — and the current values are reasonable guesses, not measurements |
+| S7 | **Correlated cold-start beliefs** — let authors declare correlations between priors (or a joint distribution over a small set of beliefs) | ○ | The largest modeling gap in cold start: beliefs are sampled independently today, so "if price lands high, conversion lands low" is unrepresentable and intervals are wrong in either direction wherever beliefs genuinely co-vary. Already disclosed in every cold-start response |
+| S8 | **Local linear trend as an opt-in** — a trend with a slope component, chosen per node in the YAML; local level stays the default | ○ | A node with genuine momentum is currently modeled as a level that happened to move, which pushes momentum onto the parents. Keep the tight-prior default (it does deliberate work) and give the exception an escape hatch |
+| S9 | **Narrow nonlinear edges** — a declared transform on a specific edge (`response: log` on ad spend → conversions), not a modeling language | ○ | Covers the most common nonlinearity (diminishing returns) without opening the door to arbitrary model complexity. MVP-first: one named transform |
+| S10 | **Posterior predictive plot in the UI** — observed vs replicated series per node | ○ | The most persuasive single visual a Bayesian tool can offer, and nearly free once S3 computes it. *Blocked on S3* |
+| S11 | **Prior-vs-posterior visualization** per coefficient — "you believed 0.1 ± 0.02; the data says 0.08 ± 0.01" | ○ | Makes the Bayesian update concrete and teaches the model while it informs. Directly serves the reader/reviewer persona 1.4 targets |
+| S12 | **Make `ranked_causes` visibly a heuristic in the UI** — distinguish "ranked by triage score" from "ranked by evidence", or attach the underlying interval so a wide-interval cause cannot outrank a tight one on a point estimate | ○ | It is documented as triage and rendered as the most prominent number in the UI. Prominence implies rigor whatever the docs say |
+| S13 | **Methods appendix in the exported report** — a linkable expansion of the existing methods footnote stating fit window, inference method, diagnostics, and the caveats that applied to *that* analysis | ○ | Makes an exported RCA self-defending when it circulates without its author — the whole point of 1.5's export |
+| S14 | **Quantify the DAG assumption** — a sensitivity statement: "if an unmodeled confounder explained X% of this parent's movement, the attribution would change by Y" | ○ | Puts a number on the assumption everything rests on. Highest ceiling and least defined item here; adapting unmeasured-confounding sensitivity analysis to metric trees is research-flavored. Note this is *not* causal discovery, which stays off the roadmap |
+
+**Related, already scheduled elsewhere:** [3.4](#horizon-3--make-it-findable-and-sticky-it-comes-to-you)
+(counterfactual RCA via posterior-predictive forecast) is the white paper's
+fourth §4.1 item — it upgrades the flat-trend approximation and shares
+machinery with S3. It stays in Horizon 3 rather than being duplicated here.
+
+**Exit:** no fixed exit — this track is maintenance of a property, not a
+milestone. The nearest thing to a bar: intervals that pass SBC (S5), a default
+inference path whose approximation error is *measured* rather than assumed
+(S1/S2), and no weakness in white paper §3.2 left without either a fix or a
+disclosed caveat.
 
 ---
 

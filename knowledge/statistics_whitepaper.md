@@ -3,6 +3,23 @@
 **A white paper on the models behind Bayesian metric trees, why each was chosen,
 and where each one stops being trustworthy.**
 
+> **Written:** 2026-08-04 · **Last updated:** 2026-08-05 ·
+> **Engine version:** 0.1.0
+>
+> **This is a living document.** The assessment in §3 and the improvements in §4
+> describe the engine *as it stands on the last-updated date above*. Both
+> sections carry status markers so you can tell a known current issue from one
+> that has since been fixed:
+>
+> **○ open** · **◑ in progress** · **✅ shipped**
+>
+> Items are tagged with a roadmap ID (`S1`, `S2`, …). **The
+> [roadmap](roadmap.md) is the single source of truth for status and
+> sequencing** — this paper holds the *statistical rationale* (why the gap
+> matters, what the literature says, what "fixed" would mean) and does not
+> duplicate the schedule. If the two ever disagree, the roadmap is right and
+> this paper is stale. See the [revision history](#revision-history).
+
 ---
 
 ## Who this is for
@@ -250,6 +267,9 @@ returned as trustworthy:
   ADVI is the RCA default, **the credible intervals in a default RCA response
   are, if anything, optimistic.** Yao et al. (2018) is the standard treatment of
   how badly this can go and how little the ELBO tells you about it.
+  [`advi_vs_nuts_in_breakdown.md`](advi_vs_nuts_in_breakdown.md) works through
+  the mechanism, why breakdown's β-vs-trend geometry is the worst case for it,
+  and a decision it would send the wrong way.
 - **The ADVI diagnostic is weak.** An ELBO-convergence check confirms the
   optimizer stopped moving. It does *not* confirm the approximation is close to
   the true posterior — a well-converged bad approximation passes. Stronger
@@ -610,46 +630,67 @@ An honest assessment, in the spirit of the fourth commitment.
 
 ### 3.2 What is weak
 
-Ordered roughly by how much it should worry you.
+Ordered roughly by how much it should worry you. Each carries its status and the
+roadmap item that addresses it — check the [roadmap](roadmap.md) for current
+state before assuming a weakness listed here is still open.
 
-1. **The default inference method understates uncertainty.** RCA defaults to
-   mean-field ADVI, which cannot represent posterior correlation and produces
-   systematically narrow intervals. The escape hatch (re-run with NUTS) exists
-   and is documented, but **the default path is the optimistic one**, and most
-   users will never leave it. This is the single largest gap between what the
-   intervals claim and what they deliver.
-2. **The ADVI quality check is not a real approximation diagnostic.** ELBO
-   convergence says the optimizer stopped; it says nothing about closeness to
-   the true posterior.
-3. **No posterior predictive checks.** The engine never asks "could this fitted
-   model have generated data that looks like what I saw?" — the single most
-   informative Bayesian model check there is (Gelman et al., 2020; Gabry et al.,
-   2019). A badly misspecified node currently passes silently as long as it
-   converges.
-4. **No collinearity diagnostic on parents.** Correlated parents produce a
-   well-determined *sum* and an unstable *split*, and the split is exactly what
-   RCA reports. Nothing warns.
-5. **Interval calibration is tested at one point, coarsely.** The 20-world
-   coverage test is real and valuable, but it is a single scenario with an 80%
-   pass bar for a nominal 95% interval. There is no simulation-based calibration
-   (Talts et al., 2018) across the prior, and no coverage testing across grains,
-   window lengths, or tree shapes.
-6. **The bootstrap is bolted on, not integrated.** Composing a frequentist
-   resampling interval with a Bayesian posterior is pragmatic and defensible but
-   not a coherent joint posterior; block length is fixed rather than estimated.
-7. **`ranked_causes` is a heuristic and reads like a result.** The score
-   propagates |share| products up the tree. It is explicitly documented as
-   triage rather than probability, but it is also the most prominent number in
-   the UI, and prominence implies rigor whatever the docs say.
+1. **The default inference method understates uncertainty.** — ○ open
+   ([S1](roadmap.md#statistical-rigor-s--a-standing-workstream),
+   [S2](roadmap.md#statistical-rigor-s--a-standing-workstream))
+   RCA defaults to mean-field ADVI, which cannot represent posterior correlation
+   and produces systematically narrow intervals. The escape hatch (re-run with
+   NUTS) exists and is documented, but **the default path is the optimistic
+   one**, and most users will never leave it. This is the single largest gap
+   between what the intervals claim and what they deliver — worked through in
+   detail in [`advi_vs_nuts_in_breakdown.md`](advi_vs_nuts_in_breakdown.md).
+2. **The ADVI quality check is not a real approximation diagnostic.** — ○ open
+   ([S2](roadmap.md#statistical-rigor-s--a-standing-workstream))
+   ELBO convergence says the optimizer stopped; it says nothing about closeness
+   to the true posterior.
+3. **No posterior predictive checks.** — ○ open
+   ([S3](roadmap.md#statistical-rigor-s--a-standing-workstream))
+   The engine never asks "could this fitted model have generated data that looks
+   like what I saw?" — the single most informative Bayesian model check there is
+   (Gelman et al., 2020; Gabry et al., 2019). A badly misspecified node currently
+   passes silently as long as it converges.
+4. **No collinearity diagnostic on parents.** — ○ open
+   ([S4](roadmap.md#statistical-rigor-s--a-standing-workstream))
+   Correlated parents produce a well-determined *sum* and an unstable *split*,
+   and the split is exactly what RCA reports. Nothing warns.
+5. **Interval calibration is tested at one point, coarsely.** — ○ open
+   ([S5](roadmap.md#statistical-rigor-s--a-standing-workstream))
+   The 20-world coverage test is real and valuable, but it is a single scenario
+   with an 80% pass bar for a nominal 95% interval. There is no simulation-based
+   calibration (Talts et al., 2018) across the prior, and no coverage testing
+   across grains, window lengths, or tree shapes.
+6. **The bootstrap is bolted on, not integrated.** — ○ open, partially addressed
+   ([S6](roadmap.md#statistical-rigor-s--a-standing-workstream))
+   Composing a frequentist resampling interval with a Bayesian posterior is
+   pragmatic and defensible but not a coherent joint posterior; block length is
+   fixed rather than estimated. S6 fixes the block length; the deeper
+   composition question is not currently scheduled, and would mean moving
+   window-sampling uncertainty inside the model.
+7. **`ranked_causes` is a heuristic and reads like a result.** — ○ open
+   ([S12](roadmap.md#statistical-rigor-s--a-standing-workstream))
+   The score propagates |share| products up the tree. It is explicitly
+   documented as triage rather than probability, but it is also the most
+   prominent number in the UI, and prominence implies rigor whatever the docs
+   say.
 8. **The flat trend forecast understates counterfactual movement** for nodes
-   with genuine momentum (§2.4).
+   with genuine momentum (§2.4). — ○ open
+   ([3.4](roadmap.md#horizon-3--make-it-findable-and-sticky-it-comes-to-you),
+   [S8](roadmap.md#statistical-rigor-s--a-standing-workstream))
 9. **Cold-start beliefs are sampled independently,** so correlated beliefs are
-   misrepresented in either direction.
-10. **Causal language rests entirely on the declared DAG.** This is disclosed
-    everywhere and remains the assumption most likely to be violated in
-    practice — not because users are careless, but because business metric
-    graphs have confounders (a pricing change that moves traffic *and*
-    conversion) that are invisible unless someone thought to declare them.
+   misrepresented in either direction. — ○ open
+   ([S7](roadmap.md#statistical-rigor-s--a-standing-workstream))
+10. **Causal language rests entirely on the declared DAG.** — ○ open
+    ([S14](roadmap.md#statistical-rigor-s--a-standing-workstream))
+    This is disclosed everywhere and remains the assumption most likely to be
+    violated in practice — not because users are careless, but because business
+    metric graphs have confounders (a pricing change that moves traffic *and*
+    conversion) that are invisible unless someone thought to declare them. S14
+    would put a *number* on the assumption; note that removing it entirely would
+    mean causal discovery, which is deliberately off the roadmap.
 
 ### 3.3 The fair summary
 
@@ -669,58 +710,98 @@ tool that is quietly wrong.
 
 ## 4. Where to go next
 
-Ordered by value per unit of effort.
+Every item below is tracked in the roadmap's
+[**Statistical rigor (S) workstream**](roadmap.md#statistical-rigor-s--a-standing-workstream),
+which is the source of truth for status and sequencing. This section holds the
+*rationale* — why each gap matters and what "fixed" would mean. The IDs are
+stable; the statuses here are a snapshot as of the last-updated date.
+
+**Current state (2026-08-05):** all items open. The workstream is sequenced to
+begin immediately after the 0.1.0 release, ahead of the adoption items, and
+starts with **S1** — benchmarking full-rank ADVI, the cheapest attack on the
+weakness ranked first in §3.2.
+
+| ID | Item | Status |
+|---|---|---|
+| S1 | Benchmark full-rank ADVI as the RCA default | ○ open — **next up** |
+| S2 | PSIS k̂ approximation diagnostic + auto-escalation | ○ open |
+| S3 | Posterior predictive checks on every fit | ○ open |
+| S4 | Parent collinearity diagnostic | ○ open |
+| S5 | Simulation-based calibration | ○ open |
+| S6 | Data-driven bootstrap block length | ○ open |
+| S7 | Correlated cold-start beliefs | ○ open |
+| S8 | Local linear trend (opt-in) | ○ open |
+| S9 | Narrow nonlinear edges | ○ open |
+| S10 | Posterior predictive plot in the UI | ○ open — blocked on S3 |
+| S11 | Prior-vs-posterior visualization | ○ open |
+| S12 | `ranked_causes` visibly a heuristic | ○ open |
+| S13 | Methods appendix in the exported report | ○ open |
+| S14 | Quantify the DAG assumption | ○ open |
+| 3.4 | Counterfactual RCA (Horizon 3, not the S track) | ○ open |
+
+Below, the reasoning behind each — ordered by value per unit of effort.
 
 ### 4.1 Highest value
 
-**Posterior predictive checks on every fit.** For each fitted node, simulate
-replicated series from the posterior and compare summary statistics against the
-observed series; flag nodes whose observed data sits in the tail. This is the
-standard Bayesian workflow check (Gelman et al., 2020), it needs no new
-modeling, and it would catch misspecification that convergence diagnostics
-cannot see. It composes with the existing `fit_quality` channel.
+**Benchmark full-rank ADVI** — `S1`, ○ open, **next up**. PyMC's
+`fullrank_advi` fits a full covariance matrix rather than a diagonal one, which
+is exactly the missing capability: it *can* represent the β-vs-trend ridge that
+mean-field destroys. It is slower than mean-field and far faster than NUTS. This
+is a config change plus a benchmark — no new machinery — and it should be
+measured **before** S2 is built, because if full-rank is cheap enough to default
+to, the k̂ diagnostic may be unnecessary for most trees. See
+[`advi_vs_nuts_in_breakdown.md`](advi_vs_nuts_in_breakdown.md).
 
-**A real ADVI approximation diagnostic.** Implement the PSIS-based k̂ diagnostic
-of Yao et al. (2018) so a bad variational approximation is *detected* rather
-than assumed away. Where k̂ is poor, either auto-escalate that node to NUTS or
-mark its intervals as unreliable. This directly addresses weakness #1 without
-paying NUTS cost everywhere.
+**A real ADVI approximation diagnostic** — `S2`, ○ open. Implement the
+PSIS-based k̂ diagnostic of Yao et al. (2018) so a bad variational approximation
+is *detected* rather than assumed away. Where k̂ is poor, either auto-escalate
+that node to NUTS or mark its intervals as unreliable. This directly addresses
+weakness #1 without paying NUTS cost everywhere. Scope depends on S1's result.
 
-**Counterfactual RCA via posterior predictive forecast** (already roadmap 3.4 /
-T11). Instead of comparing window means, forecast the analysis window from the
+**Posterior predictive checks on every fit** — `S3`, ○ open. For each fitted
+node, simulate replicated series from the posterior and compare summary
+statistics against the observed series; flag nodes whose observed data sits in
+the tail. This is the standard Bayesian workflow check (Gelman et al., 2020), it
+needs no new modeling, and it would catch misspecification that convergence
+diagnostics cannot see. It composes with the existing `fit_quality` channel.
+
+**Counterfactual RCA via posterior predictive forecast** — roadmap `3.4` / T11,
+○ open. Lives in Horizon 3 rather than the S track, since it is a headline
+feature as much as a rigor fix. Instead of comparing window means, forecast the
+analysis window from the
 normal-regime model and report the *departure*: "revenue came in 12,400 below
 what the normal regime predicts (95% CI …)." This is the full Brodersen et al.
 (2015) pattern, it replaces the flat-trend approximation (§2.4), and it produces
 a considerably stronger headline number than a window-mean difference.
 
-**A parent collinearity diagnostic.** Compute pairwise correlation (or VIF) among
-a node's parent regressors over the fit window and warn when the split of credit
-is unstable. Cheap, and it addresses a silent failure that directly corrupts
-what RCA reports.
+**A parent collinearity diagnostic** — `S4`, ○ open. Compute pairwise
+correlation (or VIF) among a node's parent regressors over the fit window and
+warn when the split of credit is unstable. Cheap, and it addresses a silent
+failure that directly corrupts what RCA reports.
 
 ### 4.2 Substantial but well-scoped
 
-**Simulation-based calibration** (Talts et al., 2018). Draw parameters from the
-prior, simulate data, refit, and check that the rank of the true parameter
-within the posterior is uniform. This is the definitive test that the inference
-is calibrated, and it would turn the current single-scenario coverage test into
-a real guarantee. Expensive to run — a nightly or release-gate job, not a
-per-commit one.
+**Simulation-based calibration** — `S5`, ○ open (Talts et al., 2018). Draw
+parameters from the prior, simulate data, refit, and check that the rank of the
+true parameter within the posterior is uniform. This is the definitive test that
+the inference is calibrated, and it would turn the current single-scenario
+coverage test into a real guarantee. Expensive to run — a nightly or
+release-gate job, not a per-commit one.
 
-**Data-driven bootstrap block length** (Politis & White, 2004), replacing the
-fixed per-grain constants.
+**Data-driven bootstrap block length** — `S6`, ○ open (Politis & White, 2004),
+replacing the fixed per-grain constants.
 
-**Correlated cold-start beliefs.** Let authors declare correlations between
-priors (or specify a joint distribution over a small set of beliefs), so
-"if price lands high, conversion lands low" is representable. This is the
-largest modeling gap in cold start.
+**Correlated cold-start beliefs** — `S7`, ○ open. Let authors declare
+correlations between priors (or specify a joint distribution over a small set of
+beliefs), so "if price lands high, conversion lands low" is representable. This
+is the largest modeling gap in cold start.
 
-**Local linear trend as an opt-in.** A trend with a slope component, for nodes
-with genuine momentum, chosen per node in the YAML. Keep the local level as the
-default — the tight prior is doing deliberate work — but stop forcing momentum
-onto the parents where it does not belong.
+**Local linear trend as an opt-in** — `S8`, ○ open. A trend with a slope
+component, for nodes with genuine momentum, chosen per node in the YAML. Keep
+the local level as the default — the tight prior is doing deliberate work — but
+stop forcing momentum onto the parents where it does not belong.
 
-**Nonlinear edges, narrowly.** A declared log or saturating transform on a
+**Nonlinear edges, narrowly** — `S9`, ○ open. A declared log or saturating transform on a
 specific edge (`response: log` on ad spend → conversions) would cover the most
 common nonlinearity without opening the door to arbitrary model complexity.
 This fits the MVP-first posture: one named transform, not a modeling language.
@@ -730,29 +811,44 @@ This fits the MVP-first posture: one named transform, not a modeling language.
 These do not add rigor; they add the ability to *see* it, which is often what
 determines whether a correct number gets believed.
 
-**Ship the posterior predictive plot.** Once §4.1 computes it, showing observed
-versus replicated series per node is the most persuasive single visual a
-Bayesian tool can offer.
+**Ship the posterior predictive plot** — `S10`, ○ open, blocked on S3. Once S3
+computes it, showing observed versus replicated series per node is the most
+persuasive single visual a Bayesian tool can offer.
 
-**Prior-versus-posterior visualization** per coefficient — "you believed 0.1
-± 0.02; the data says 0.08 ± 0.01" makes the Bayesian update concrete and
-teaches the model at the same time.
+**Prior-versus-posterior visualization** — `S11`, ○ open. Per coefficient: "you
+believed 0.1 ± 0.02; the data says 0.08 ± 0.01" makes the Bayesian update
+concrete and teaches the model at the same time.
 
-**Make `ranked_causes` visibly a heuristic in the UI,** not just in the docs.
-Distinguish "ranked by triage score" from "ranked by evidence," or attach the
-underlying interval to the ranking so a wide-interval cause cannot outrank a
-tight one on a point estimate alone.
+**Make `ranked_causes` visibly a heuristic in the UI** — `S12`, ○ open. Not just
+in the docs. Distinguish "ranked by triage score" from "ranked by evidence," or
+attach the underlying interval to the ranking so a wide-interval cause cannot
+outrank a tight one on a point estimate alone.
 
-**Quantify the DAG assumption.** A sensitivity statement — "if an unmodeled
-confounder explained X% of the parent's movement, this attribution would change
-by Y" — would put a number on the assumption everything rests on. Related work
-exists under sensitivity analysis for unmeasured confounding; adapting it to
-metric trees is a research-flavored project, and the highest-ceiling idea here.
+**A methods appendix in the exported report** — `S13`, ○ open. The HTML export
+already carries a methods footnote; a linkable expansion stating fit window,
+inference method, diagnostics, and the specific caveats that applied to *that*
+analysis would make an exported RCA self-defending when it circulates without
+its author.
 
-**A methods appendix in the exported report.** The HTML export already carries a
-methods footnote; a linkable expansion stating fit window, inference method,
-diagnostics, and the specific caveats that applied to *that* analysis would make
-an exported RCA self-defending when it circulates without its author.
+**Quantify the DAG assumption** — `S14`, ○ open. A sensitivity statement — "if
+an unmodeled confounder explained X% of the parent's movement, this attribution
+would change by Y" — would put a number on the assumption everything rests on.
+Related work exists under sensitivity analysis for unmeasured confounding;
+adapting it to metric trees is a research-flavored project, and the
+highest-ceiling idea here. Note this quantifies the assumption rather than
+removing it: removing it would mean causal discovery, which is deliberately off
+the roadmap (§1.2).
+
+---
+
+## Revision history
+
+Newest first. Material changes only — typo and wording fixes are not logged.
+
+| Date | Change |
+|---|---|
+| 2026-08-05 | §3.2 and §4 given status markers and roadmap IDs; §4 items registered as the roadmap's [Statistical rigor (S) workstream](roadmap.md#statistical-rigor-s--a-standing-workstream), sequenced to start after the 0.1.0 release with S1 first. Added full-rank ADVI (S1) as a §4.1 item, split out of the ADVI diagnostic. Cross-linked [`advi_vs_nuts_in_breakdown.md`](advi_vs_nuts_in_breakdown.md) from §2.2 and §3.2. |
+| 2026-08-04 | First version, against engine 0.1.0. Written after the roadmap 1.1 statistical hardening work (window validation, date-spine contiguity, Nyquist harmonic filtering) — §2.10 describes those guards as shipped. |
 
 ---
 
