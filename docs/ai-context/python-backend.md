@@ -49,6 +49,8 @@ Design rules:
 
 **Cross-node grain rules** (`Parser._validate_grains`, needs both edge endpoints so it runs after the DAG is built): a parent may never be coarser than its child (downward disaggregation undefined); a finer parent must be an auto-aggregatable `flow`/`stock` whose grain **nests** in the child's (days tile weeks/months; weeks straddle month boundaries, so week-under-month is rejected); finer `rate` parents are rejected (declare the rate at the child's grain).
 
+**`MetricTreeConfig`** — `provider` + `metrics`. One tree-level validator: **metric names must be unique** (`check_unique_names`, roadmap C6). The DAG is built in two passes, so a duplicate meant the second definition won `nodes[name]["definition"]` while *both* definitions' edges were added — `list(dag.predecessors(name))` then returned a union that no longer matched `defn.parents`, which is the axis order `beta_raw` is indexed by. Nothing raised; `priors`/`lags`/`expected_signs` simply landed on the wrong axis or fell back to `Normal(0, 1)`, and `_fetch_all_metrics` overwrote the data too.
+
 **`Parser`** — wraps `MetricTreeConfig` + a `networkx.DiGraph`.
 - `parser.dag` — the compiled DAG. **Each node stores its validated model under the `definition` key**: `dag.nodes[name]["definition"]` is a `MetricDefinition` (attribute access, not dict `.get`). This is the single source of truth downstream.
 - `parser.get_metric(name)` — O(1) lookup via the DAG.

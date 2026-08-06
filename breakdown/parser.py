@@ -467,6 +467,38 @@ class MetricTreeConfig(BaseModel):
     provider: DataProviderConfig = Field(default_factory=DataProviderConfig)
     metrics: List[MetricDefinition]
 
+    @model_validator(mode="after")
+    def check_unique_names(self) -> "MetricTreeConfig":
+        """Metric names must be unique (roadmap C6).
+
+        Nothing downstream can survive a duplicate, because the DAG is built in
+        two passes: the second definition wins `nodes[name]["definition"]` while
+        **both** definitions' edges are added. So `list(dag.predecessors(name))`
+        returns the union of two parent lists — and that call is the axis order
+        of `beta_raw`, the invariant AGENTS.md names as load-bearing. Meanwhile
+        `priors`, `lags` and `expected_signs` are validated against the winning
+        `defn.parents`, so every declared prior lands on the wrong axis or
+        silently falls back to `Normal(0, 1)`, and `_fetch_all_metrics`
+        overwrites the data too. None of it raises; it just produces a wrong
+        number with a plausible shape.
+
+        Caught here rather than in `_build_dag` so a duplicate is a config
+        error at parse time — the same place every other schema violation is
+        reported, and before anything has been fetched.
+        """
+        seen: Dict[str, int] = {}
+        for metric in self.metrics:
+            seen[metric.name] = seen.get(metric.name, 0) + 1
+        dupes = sorted(name for name, count in seen.items() if count > 1)
+        if dupes:
+            listed = ", ".join(f"'{name}' ({seen[name]}x)" for name in dupes)
+            raise ValueError(
+                f"Duplicate metric names in the tree: {listed}. Each metric must "
+                "be defined exactly once — a repeated name silently merges the "
+                "definitions' edges while only one definition survives."
+            )
+        return self
+
 class Parser:
     def __init__(self, yaml_content: str):
         self.config = self._parse_yaml(yaml_content)
