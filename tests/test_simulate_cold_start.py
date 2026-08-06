@@ -291,3 +291,162 @@ def test_parser_contract():
             "plausible: {min: 0, max: 150}", "plausible: {min: 150, max: 0}"))
     with pytest.raises(Exception, match="plausible"):
         Parser(COLD_START_YAML.replace("plausible: {min: 0, max: 150}", "plausible: {}"))
+
+
+# --- bounded belief draws and defensible central points (C7) ---
+
+BOUNDED_YAML = """
+metrics:
+  - name: paying_customers
+    source: assumed
+    kind: stock
+    baseline: {low: 20, high: 120}
+    plausible: {min: 0}
+  - name: avg_price
+    source: assumed
+    kind: rate
+    baseline: {low: 30, high: 80}
+    plausible: {min: 0}
+  - name: mrr
+    source: assumed
+    formula: "paying_customers * avg_price"
+    parents: [paying_customers, avg_price]
+    plausible: {min: 0}
+"""
+
+
+def test_baseline_draws_respect_plausible_min():
+    """`plausible: {min: 0}` is the author stating an impossibility. It used to
+    be consulted only when flagging the result, so the shipped example tree
+    drew ~1.1% negative customer counts and `mrr` inherited them (C7)."""
+    dag = make_dag(BOUNDED_YAML)
+    res = run(dag, interventions=[Intervention(metric="avg_price", mode="delta", value=0.0)],
+              n_draws=4000)
+
+    for name in ("paying_customers", "avg_price", "mrr"):
+        ci = res["nodes"][name]["baseline_ci_95"]
+        assert ci[0] >= 0.0, f"{name} lower belief bound went negative: {ci}"
+
+
+def test_truncation_keeps_the_upper_bound_and_shifts_only_the_clipped_tail():
+    """Truncation is rejection, not clipping: no spike of mass piles up on the
+    boundary, and the untouched side of the interval is unmoved."""
+    dag = make_dag(BOUNDED_YAML)
+    res = run(dag, interventions=[Intervention(metric="avg_price", mode="delta", value=0.0)],
+              n_draws=4000)
+
+    lo, hi = res["nodes"]["paying_customers"]["baseline_ci_95"]
+    # Upper tail untouched by a floor at 0; lower tail lifted off the negatives.
+    assert 120 < hi < 140
+    assert lo > 0
+
+
+def test_lognormal_baseline_honours_the_stated_interval_exactly():
+    """A truncated normal renormalizes the belief; a lognormal reproduces the
+    stated central 90% exactly and is positive by construction."""
+    yaml_src = """
+metrics:
+  - name: signups
+    source: assumed
+    baseline: {low: 20, high: 120, distribution: lognormal}
+    plausible: {min: 0}
+"""
+    dag = make_dag(yaml_src)
+    res = run(dag, interventions=[Intervention(metric="signups", mode="delta", value=0.0)],
+              n_draws=20000)
+
+    ci = res["nodes"]["signups"]["baseline_ci_95"]
+    assert ci[0] > 0
+    # The stated belief is reproduced without renormalization: a lognormal
+    # fitted to [20, 120] needs no truncation, so its 95% span brackets that
+    # interval rather than being clipped inside it.
+    assert ci[0] < 20 and ci[1] > 120
+
+    # Right-skewed, so its reported mean (~57) sits well below the normal's 70.
+    # That shift is exactly why the distribution is opt-in rather than the
+    # default: it re-reads the author's interval as a multiplicative belief.
+    assert 52 < res["nodes"]["signups"]["baseline"] < 62
+
+
+def test_lognormal_baseline_rejects_a_nonpositive_low():
+    with pytest.raises(ValueError, match="lognormal baseline must have low > 0"):
+        Parser("""
+metrics:
+  - name: x
+    source: assumed
+    baseline: {low: 0, high: 100, distribution: lognormal}
+""")
+
+
+def test_baseline_contradicting_its_plausible_bounds_raises():
+    """A belief lying essentially outside its own bound is a contradiction in
+    the tree; looping forever to satisfy it would hide the mistake."""
+    yaml_src = """
+metrics:
+  - name: x
+    source: assumed
+    baseline: {low: 500, high: 900}
+    plausible: {max: 10}
+"""
+    with pytest.raises(ValueError, match="lies almost entirely outside"):
+        run(make_dag(yaml_src),
+            interventions=[Intervention(metric="x", mode="delta", value=0.0)])
+
+
+RATIO_YAML = """
+metrics:
+  - name: spend
+    source: assumed
+    baseline: {low: 4000, high: 12000}
+    plausible: {min: 0}
+  - name: signups
+    source: assumed
+    baseline: {low: 2, high: 40}
+    plausible: {min: 0}
+  - name: cac
+    source: assumed
+    kind: rate
+    formula: "spend / signups"
+    parents: [spend, signups]
+    plausible: {min: 0}
+"""
+
+
+def test_ratio_node_reports_a_defensible_point_and_says_it_switched():
+    """"Somewhere between 2 and 40 signups a month" — an ordinary
+    order-of-magnitude belief — produced a CAC of $2.1M with a negative lower
+    bound, because the MC mean of a near-zero-denominator ratio estimates
+    nothing (C7)."""
+    dag = make_dag(RATIO_YAML)
+    res = run(dag, interventions=[Intervention(metric="spend", mode="delta", value=0.0)],
+              n_draws=2000)
+
+    cac = res["nodes"]["cac"]
+    assert 100 < cac["baseline"] < 2000, cac["baseline"]
+    assert cac["baseline_ci_95"][0] > 0, "a cost per acquisition cannot be negative"
+    # The swap is disclosed, and names the node whose number changed meaning.
+    assert any("median" in c and "cac" in c for c in res["caveats"])
+
+
+def test_ratio_point_is_stable_across_seeds():
+    """The property the median fallback exists for: the reported number must
+    not swing several-fold between runs. The mean varied 2.5-6x."""
+    dag = make_dag(RATIO_YAML)
+    points = []
+    for seed in range(6):
+        res = run(dag, interventions=[Intervention(metric="spend", mode="delta", value=0.0)],
+                  n_draws=2000, random_seed=seed)
+        points.append(res["nodes"]["cac"]["baseline"])
+    assert max(points) / min(points) < 1.25, points
+
+
+def test_well_behaved_nodes_keep_the_mean_and_carry_no_swap_caveat():
+    """The fallback must not fire on the node shape cold-start trees are mostly
+    made of: the mean reconciles a product to 0.25% where the median is 5.4%
+    off, so switching everything would have been a regression."""
+    dag = make_dag(BOUNDED_YAML)
+    res = run(dag, interventions=[Intervention(metric="avg_price", mode="delta", value=0.0)],
+              n_draws=4000)
+
+    assert not any("median" in c for c in res["caveats"])
+    assert res["caveats"] == COLD_START_CAVEATS

@@ -352,13 +352,40 @@ A tree with `provider: none` runs what-if simulations with **zero data** —
 every input is a stated belief, and the output must be read that way.
 
 **Where the numbers come from.** Each non-formula node's operating point is
-its asserted `baseline` — `[low, high]` read as the central 90% interval of a
-Normal, sampled per draw (formula nodes derive theirs from parents per draw,
-so identities hold exactly under the stated beliefs). Each probabilistic
-edge's slope is sampled directly from its YAML prior in business units: with
-nothing to fit, the prior *is* the coefficient distribution. Propagation,
-do-operator semantics, and the Shapley source decomposition are identical to
-fitted mode; the response says `mode: "cold_start"`.
+its asserted `baseline` — `[low, high]` read as the central 90% interval,
+sampled per draw (formula nodes derive theirs from parents per draw, so
+identities hold exactly under the stated beliefs). Each probabilistic edge's
+slope is sampled directly from its YAML prior in business units: with nothing
+to fit, the prior *is* the coefficient distribution. Propagation, do-operator
+semantics, and the Shapley source decomposition are identical to fitted mode;
+the response says `mode: "cold_start"`.
+
+**Beliefs are bounded by their `plausible` range.** Draws are truncated to the
+node's declared bounds, so a `plausible: {min: 0}` cannot emit a negative
+customer count. Truncation is by rejection, not clipping — no spike of mass
+piles up on the boundary. One consequence worth knowing: when a belief's tail
+is clipped, its effective central 90% no longer exactly equals the stated
+`[low, high]` (a `[20, 120]` belief against a floor of 0 becomes roughly
+`[23, 120]`). That is the honest resolution of a conflict in the tree —
+`plausible` is a hard constraint, `baseline` a soft belief — and it is
+avoidable:
+
+**`distribution: lognormal`** on a baseline fits the stated interval *exactly*
+while staying positive, so nothing is truncated. Prefer it whenever the
+quantity cannot go negative and the belief spans a wide multiplicative range —
+"somewhere between 2 and 40 signups" is an order-of-magnitude statement, not a
+symmetric one. It is opt-in because it moves the reported centre (a `[20, 120]`
+belief reports ~57 rather than 70), which is a re-reading of what you meant and
+should be your decision.
+
+**Ratio nodes may report a median instead of a mean.** If a node's denominator
+belief admits values near zero, the mean of the resulting ratio is unstable —
+measured at the default 2,000 draws it varied **2.5× to 6× between runs**, and
+in the limit it may not exist at all. The engine detects the non-convergence
+and reports the median instead, naming the node in the response caveats. The
+fix on your side is to narrow the denominator's baseline or declare it
+lognormal; a caveat naming one of your nodes means its central number is the
+least defensible in the response.
 
 **What the intervals mean.** A fitted 95% CI summarizes a posterior — belief
 disciplined by data. A cold-start 95% CI summarizes *only your stated
