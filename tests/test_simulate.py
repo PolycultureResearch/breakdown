@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from breakdown.engine.model import FitResult
+from breakdown.engine.model import FitKey, FitResult
 from breakdown.engine.simulate import (
     Assumption,
     EffectRange,
@@ -73,7 +73,7 @@ def stub_fit(target: str, parents: list, beta_post) -> FitResult:
 def order_count_traces(beta_post):
     """Trace cache with a stubbed order_count fit under the full-window key
     (the baseline in these tests runs to the end of the data)."""
-    return {("order_count", None): stub_fit("order_count", ["daily_sessions"], beta_post)}
+    return {FitKey("order_count", None, draws=500): stub_fit("order_count", ["daily_sessions"], beta_post)}
 
 
 def test_deterministic_chain_exact():
@@ -290,7 +290,7 @@ def test_fit_on_demand_with_real_advi():
         ),
         advi_draws=200,
     )
-    assert ("order_count", "2024-04-01") in traces
+    assert FitKey("order_count", "2024-04-01", draws=200) in traces
     assert result["nodes"]["order_count"]["status"] == "affected"
     assert result["nodes"]["revenue"]["delta"]["estimate"] > 0
     ci = result["nodes"]["revenue"]["delta"]["ci_95"]
