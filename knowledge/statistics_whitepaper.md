@@ -3,7 +3,7 @@
 **A white paper on the models behind Bayesian metric trees, why each was chosen,
 and where each one stops being trustworthy.**
 
-> **Written:** 2026-08-04 · **Last updated:** 2026-08-05 ·
+> **Written:** 2026-08-04 · **Last updated:** 2026-08-06 ·
 > **Engine version:** 0.1.0
 >
 > **This is a living document.** The assessment in §3 and the improvements in §4
@@ -786,11 +786,19 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
     The bias is not symmetric in practice: a founder's beliefs about their own
     funnel are substantially one latent variable (how optimistic they are), and
     treating them as independent systematically *understates* interval width.
-    Two related defects are C7 rather than S7 — baseline draws are unbounded
-    Normals that ignore the declared `plausible` floor, and the central
-    statistic on a ratio node is the Monte-Carlo mean of a ratio distribution
-    whose mean may not exist. Cold start is a demo mode as of 2026-08-05; read
-    its numbers as illustrations of a belief, not as forecasts.
+    That much is still open, and is S7.
+
+    Two related defects were **C7 rather than S7, and are fixed**: baseline
+    draws were unbounded Normals that ignored the declared `plausible` floor
+    (the shipped example tree drew ~1.1% negative customer counts, which `mrr`
+    then inherited), and the central statistic on a ratio node was the
+    Monte-Carlo mean of a distribution whose mean may not exist — a `[2, 40]`
+    signups belief reported a **$2.1M CAC with a negative lower bound**. Draws
+    are now truncated to declared bounds, a `lognormal` baseline is available
+    for positive multiplicative beliefs, and a node whose mean has not
+    converged reports its median with a caveat naming it. Cold start is a demo
+    mode as of 2026-08-05; read its numbers as illustrations of a belief, not
+    as forecasts.
 13. **Causal language rests entirely on the declared DAG.** — ○ open
     ([S14](roadmap.md#statistical-rigor-s--a-standing-workstream))
     This is disclosed everywhere and remains the assumption most likely to be
@@ -857,8 +865,9 @@ weakness ranked first in §3.2.
 **Ahead of all of it:**
 [**Horizon 0**](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend),
 the correctness gate. Nothing in this section is worth building on top of a
-number the engine cannot defend, and two of the items there (C4, C7) are the
-defect halves of S items listed below (S6, S7). C4 in particular blocks any
+number the engine cannot defend. Two of the items there were the defect
+halves of S items listed below — C4 under S6 and C7 under S7 — and both
+have shipped; what remains under S6/S7 is the modelling work, not a bug. C4 in particular blocks any
 honest reading of S17's rebuilt coverage test: measuring calibration against an
 attenuated bootstrap would just relocate the error.
 
@@ -1058,6 +1067,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-08-06 | **C7 shipped.** §3.2 #12 rewritten to separate what was fixed from what remains: cold-start baseline draws are now truncated to their declared `plausible` bounds, a `lognormal` baseline is available for positive multiplicative beliefs, and a ratio node whose Monte-Carlo mean has not converged reports its median with a caveat naming it. The independence of belief draws — the actual statistical weakness — stays open as S7. Recorded because the entry previously bundled two shipped defects with one open limitation under a single "open" marker. |
 | 2026-08-05 | **C5 shipped**; §3.2 #8 moves ○ open → ◑ partially addressed and is re-titled, because only half of it was ever a statistics problem. The inversion (a clamped share handing full influence upward from a metric that did not move) is a fixed defect; the prominence of a triage heuristic rendered as the headline number is a design question and stays open as S12. Separating them matters — a reader who saw "open" would not have known which half they were being warned about. |
 | 2026-08-05 | **C4 shipped, and §3.2 #2 rewritten around what it did *not* fix.** The weakness moves ○ open → ◑ partially addressed: two exactly-derived attenuation biases in the window bootstrap are corrected and the degeneracy guard now keys on resampled spread, but measured coverage of the nominal 95% interval is still 0.84–0.92 (iid) and 0.57–0.83 (AR(1) ρ=0.7). Those figures are quoted in #2 rather than summarized, because "improved" and "honest" are different claims. The residual is split between S6 and the new **S18** (a t-shaped tail for short windows), added by this work rather than by the review. #10 amended to match. |
 | 2026-08-05 | **C3 shipped** — no text changed. §2.3 already claimed that contributions "sum to the true gap exactly" and that `unexplained` on a formula node is "measurement residual only"; that was true of `GET /shapley` and false of what RCA published, which reported a bootstrap mean of a nonlinear decomposition instead. The code now matches the paper rather than the paper being softened to match the code. Logged because a reader comparing editions should be able to see that this section's meaning changed even though its words did not. |

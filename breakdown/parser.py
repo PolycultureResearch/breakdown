@@ -28,20 +28,55 @@ class Prior(BaseModel):
 class AssertedBaseline(BaseModel):
     """Declared operating point for cold-start mode (a tree with no data).
 
-    `[low, high]` is read as the central 90% interval of a Normal — the same
-    elicitation convention as what-if assumption effects — with `low == high`
-    degenerating to a point. Units are mean per native grain period, exactly
-    what a fitted baseline (`window_mean`) would be. Written in YAML either as
-    the shorthand `baseline: 1200` or as `baseline: {low: 800, high: 1600}`.
+    `[low, high]` is read as the central 90% interval — the same elicitation
+    convention as what-if assumption effects — with `low == high` degenerating
+    to a point. Units are mean per native grain period, exactly what a fitted
+    baseline (`window_mean`) would be. Written in YAML either as the shorthand
+    `baseline: 1200` or as `baseline: {low: 800, high: 1600}`.
+
+    `distribution` chooses the shape that interval describes:
+
+    - `normal` (default) — symmetric about the midpoint. Draws are truncated to
+      the node's declared `plausible` bounds, so a belief whose lower tail runs
+      past a hard floor is renormalized rather than emitting impossible values
+      (roadmap C7).
+    - `lognormal` — fitted so the central 90% is *exactly* `[low, high]`, and
+      positive by construction, so it needs no truncation. Its median is the
+      geometric mean `sqrt(lo*hi)`; being right-skewed, its mean sits above
+      that but still below the normal's midpoint. The better choice whenever
+      the quantity cannot go negative and the belief spans a wide
+      multiplicative range: a founder saying "somewhere between 2 and 40
+      signups" means an order-of-magnitude belief, which is a multiplicative
+      statement. It is opt-in rather than the default because it *moves the
+      reported centre* (`[20, 120]` reports ~57 rather than 70), and that is a
+      re-reading of the author's intent they should make explicitly rather
+      than inherit.
     """
 
     low: float
     high: float
+    distribution: str = "normal"
+
+    @field_validator("distribution")
+    @classmethod
+    def check_distribution(cls, v: str) -> str:
+        allowed = {"normal", "lognormal"}
+        if v not in allowed:
+            raise ValueError(
+                f"baseline distribution must be one of {sorted(allowed)}, got '{v}'"
+            )
+        return v
 
     @model_validator(mode="after")
     def check_bounds(self) -> "AssertedBaseline":
         if self.low > self.high:
             raise ValueError(f"baseline low ({self.low}) must be <= high ({self.high})")
+        if self.distribution == "lognormal" and self.low <= 0:
+            raise ValueError(
+                f"a lognormal baseline must have low > 0 (got {self.low}); it is "
+                "defined on the positive reals. Use the default normal "
+                "distribution for a quantity that can be zero or negative."
+            )
         return self
 
     @property
