@@ -173,6 +173,16 @@ class TrendConfig(BaseModel):
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SIMPLE_RATIO = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*/\s*([A-Za-z_][A-Za-z0-9_]*)\s*$")
 
+# Names that read like a ratio: conversion rates, CTRs, shares, averages,
+# durations, and per-unit intensities. Used only for the `kind` lint below —
+# it is a naming heuristic, so it warns and never rejects.
+_RATE_SHAPED_NAME = re.compile(
+    r"(^|_)(rate|ratio|pct|percent|share|ctr)(_|$)"
+    r"|^(average|avg|mean|median)_"
+    r"|^time_to_"
+    r"|_per_"
+)
+
 
 class DimensionSpec(BaseModel):
     """A declared slicing dimension for a metric: the axis along which its
@@ -338,6 +348,31 @@ class MetricDefinition(BaseModel):
                         "%d %ss — periods are in grain steps; check this is intended.",
                         self.name, s.period, self.grain, s.period, self.grain,
                     )
+        return self
+
+    @model_validator(mode="after")
+    def warn_rate_shaped_name_inheriting_flow(self) -> "MetricDefinition":
+        # `kind` defaults to `flow`, which is silently wrong for a ratio: flows
+        # sum when resampled, and the sum of a month of daily conversion rates
+        # is meaningless. The default is also invisible — a tree that declares
+        # nothing looks deliberate — so the only signal that a rate was never
+        # classified is its name.
+        #
+        # Deliberately a warning, not an error. This is a naming heuristic and
+        # a legitimate flow can match it (`orders_per_day` really does sum), so
+        # refusing to parse would be worse than the bug. Writing `kind: flow`
+        # explicitly is the escape hatch: the check only fires when `kind` was
+        # left at its default, which is exactly the "never thought about it"
+        # case it exists to catch.
+        if "kind" not in self.model_fields_set and _RATE_SHAPED_NAME.search(self.name):
+            logger.warning(
+                "Metric '%s' has a ratio-shaped name but no `kind`, so it "
+                "inherits `kind: flow` — it will be SUMMED when resampled to a "
+                "coarser grain, and the sum of a month of daily ratios is not "
+                "that month's ratio. Declare `kind: rate` (or `kind: flow` "
+                "explicitly if it really is additive).",
+                self.name,
+            )
         return self
 
     @field_validator("format", mode="before")

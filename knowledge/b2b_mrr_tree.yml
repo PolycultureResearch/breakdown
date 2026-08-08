@@ -28,6 +28,54 @@
 # semantic-layer metrics to run this against real data. The tree is a DAG;
 # a few of the board's stock/ratio back-references are dropped to keep it acyclic
 # and every metric's `Metric Ref` from the board is kept in a trailing comment.
+#
+# -----------------------------------------------------------------------------
+# GRAINS: this tree is deliberately mixed-grain
+# -----------------------------------------------------------------------------
+#
+#   day    the acquisition funnel — web/ad/email/referral/social traffic, the
+#          signups they produce, trials, and the self-serve conversion rates.
+#          High volume, reported daily; a daily ratio here is meaningful.
+#
+#   month  the MRR waterfall, expansion / contraction / churn / renewals, and
+#          the enterprise sales funnel. These close monthly and run at low
+#          volume, which is exactly where a per-day ratio degenerates.
+#
+# Three edges cross the boundary, and each is a real handoff in the business:
+#
+#   converted_trials (day)    -> new_customers (month)     PLG funnel -> revenue
+#   sales_accepted_leads(day) -> sales_qualified_leads(mo) marketing -> sales
+#   total_customers (day)     -> the monthly expansion / contraction branch
+#
+# Finer *flow* parents resample up by summing and finer *stock* parents by
+# taking the period's last value, both automatically. Finer *rate* parents are
+# a parse error — a rate must be declared at the grain it is consumed at — so
+# every rate below sits at its children's grain, not below it.
+#
+# There is deliberately no `week` anywhere: weeks straddle month boundaries, so
+# a weekly parent under a monthly child does not nest and is rejected at parse
+# time. Every branch of this tree converges on `total_mrr`, so the tree is
+# {day, month} or {day, week}, never all three.
+#
+# Because the apex is monthly, fitting it needs at least 10 whole months, and
+# RCA fits stop at `analysis_start` — so run this tree over years, not weeks:
+#
+#   uv run breakdown serve --tree knowledge/b2b_mrr_tree.yml \
+#     --start-date 2022-01-01 --end-date 2024-12-31
+#
+# -----------------------------------------------------------------------------
+# KINDS
+# -----------------------------------------------------------------------------
+#
+# `kind` is what makes resampling well-defined, and it is not just the metrics
+# whose names end in `_rate`. Averages (`average_new_mrr`), per-unit intensities
+# (`sent_emails_per_contact`, `invites_per_referrer`) and durations
+# (`time_to_lead_response`, `page_speed`) are all ratios: the mean of a month of
+# daily averages is not the month's average. All of them are `kind: rate`.
+#
+# `kind: stock` marks the point-in-time levels — `total_mrr`, `total_customers`,
+# `total_email_subscribers`, `retained_mrr`, `cumulative_churned_customers` —
+# which take the period's last value rather than summing.
 # =============================================================================
 
 provider:
@@ -42,21 +90,25 @@ metrics:
   - name: total_arr
     description: "Total Annual Recurring Revenue. Total MRR annualized."
     source: b2b_saas.metrics.total_arr
+    grain: month
+    kind: stock
     formula: "total_mrr * 12"
     parents: [total_mrr]
-    # No annual component: identifying period 365 needs two full years in the
-    # fit window, and RCA fits stop at `analysis_start`, so in practice it
-    # would soak up degrees of freedom without ever being learned.
-    seasonality:
-      - period: 7
-        name: weekly
+    format: currency
+    # No seasonality. At month grain a component would be `period: 12`, and
+    # identifying an annual cycle needs two full years *inside the fit window* —
+    # and RCA fits stop at `analysis_start`. In practice it would soak up
+    # degrees of freedom without ever being learned. Weekly seasonality lives
+    # on the daily traffic roots, where day-of-week effects actually are.
 
   - name: total_mrr
     description: >-
-      Total Monthly Recurring Revenue at the end of the period — the MRR
+      Total Monthly Recurring Revenue at the end of the month — the MRR
       waterfall: retained base plus the net of new, expansion and resurrection
       against contraction and churn. (Metric Ref: TotMRR)
     source: b2b_saas.metrics.total_mrr
+    grain: month
+    kind: stock
     formula: >-
       retained_mrr + new_mrr + expansion_mrr + resurrection_mrr
       - contraction_mrr - churned_mrr
@@ -67,9 +119,16 @@ metrics:
       - resurrection_mrr
       - contraction_mrr
       - churned_mrr
-    seasonality:
-      - period: 7
-        name: weekly
+    format: currency
+    dimensions:
+      region: customer__region
+      plan_tier: subscription__plan_tier
+      segment: customer__segment
+      # Channel is worth slicing *here* even though the tree decomposes the
+      # acquisition funnel by channel structurally: that decomposition stops at
+      # `new_trials`, so "which channel's cohort is carrying the MRR gap" is a
+      # question only slicing can answer.
+      channel: customer__acquisition_channel
 
   # ===========================================================================
   # NEW MRR — new-business acquisition
@@ -78,41 +137,88 @@ metrics:
   - name: new_mrr
     description: "MRR from newly acquired customers. (Metric Ref: NewMRR)"
     source: b2b_saas.metrics.new_mrr
+    grain: month
+    kind: flow
     formula: "new_customers * average_new_mrr"
     parents: [new_customers, average_new_mrr]
+    format: currency
+    dimensions:
+      region: customer__region
+      plan_tier: subscription__plan_tier
+      segment: customer__segment
+      channel: customer__acquisition_channel
 
   - name: average_new_mrr
     description: "MRR per new customer. (Metric Ref: AvgNewMRR)"
     source: b2b_saas.metrics.average_new_mrr
+    grain: month
+    kind: rate # an average: the mean of daily averages is not the month's
+    format: currency
+    dimensions:
+      plan_tier: { source: subscription__plan_tier, weight: new_customers }
+      segment: { source: customer__segment, weight: new_customers }
 
   - name: new_customers
     description: >-
-      New customers won in the period, from both the self-serve/PLG funnel
+      New customers won in the month, from both the self-serve/PLG funnel
       (converted trials) and the sales-led funnel (new business deals).
       (Metric Ref: NewCust)
     source: b2b_saas.metrics.new_customers
+    grain: month
+    kind: flow
     formula: "converted_trials + new_business_deals"
     parents: [converted_trials, new_business_deals]
+    format:
+      style: number
+      unit: customers / month
+      decimals: 0
+    dimensions:
+      region: customer__region
+      plan_tier: subscription__plan_tier
+      segment: customer__segment
+      channel: customer__acquisition_channel
 
   # --- Self-serve / product-led funnel -------------------------------------
+  # Daily throughout: high trial volume, and the site-experience drivers are
+  # measured daily. `converted_trials` is the day -> month handoff: its daily
+  # values are summed into the month that `new_customers` is declared at.
 
   - name: converted_trials
     description: "Trials that converted to paid customers. (Metric Ref: ConvertedTrials)"
     source: b2b_saas.metrics.converted_trials
+    grain: day
+    kind: flow
     formula: "true_trials * true_trial_conversion_rate"
     parents: [true_trials, true_trial_conversion_rate]
+    format:
+      style: number
+      unit: conversions / day
+      decimals: 0
+    dimensions:
+      region: customer__region
+      segment: customer__segment
+      channel: session__utm_source
 
   - name: true_trial_conversion_rate
     description: >-
       Rate at which genuine (non-tire-kicker) trials convert to paid. Modeled
-      probabilistically: faster activation and higher product-qualification of
-      the trial lift conversion, but not by a fixed formula. Activation speed
-      acts with a lag. (Metric Ref: TrueTrialConvRate)
+      probabilistically: trials that reach product-qualification convert better,
+      and slower activation converts worse, but not by a fixed formula.
+      Activation speed acts with a lag. (Metric Ref: TrueTrialConvRate)
     source: b2b_saas.metrics.true_trial_conversion_rate
+    grain: day
+    kind: rate
+    # Both regressors are themselves rates/durations, deliberately. An earlier
+    # version of this tree also regressed on `product_qualified_leads`, which
+    # was wrong twice over: PQLs is *defined* as `true_trials *
+    # trial_to_pql_rate`, so that regressor already contained this one
+    # (a structural collinearity — the split of credit between them is
+    # unidentified); and it is a *count* driving a *rate*, the scale-confounded
+    # level-on-level shape the README's `expected_signs` section warns about.
+    # The fix there is the fix here: put rates on rates.
     parents:
-      - product_qualified_leads
-      - time_to_trial_activation
       - trial_to_pql_rate
+      - time_to_trial_activation
     priors:
       coefficient:
         distribution: "Normal"
@@ -123,37 +229,77 @@ metrics:
       trial_to_pql_rate: # more trials reaching PQL -> higher conversion
         distribution: "HalfNormal"
         params: { sigma: 0.3 }
+    expected_signs:
+      trial_to_pql_rate: positive
+      time_to_trial_activation: negative
     lags:
-      time_to_trial_activation: 7 # activation friction shows up ~a week later
+      time_to_trial_activation: 7 # grain steps: 7 days on this daily node
+    format: percent
+    dimensions:
+      region: { source: customer__region, weight: true_trials }
+      segment: { source: customer__segment, weight: true_trials }
 
   - name: product_qualified_leads
-    description: "Trials that hit product-qualified-lead thresholds. (Metric Ref: PQLs)"
+    description: >-
+      Trials that hit product-qualified-lead thresholds. Reported in the tree
+      but not used as a regressor — see the note on
+      `true_trial_conversion_rate`. (Metric Ref: PQLs)
     source: b2b_saas.metrics.product_qualified_leads
+    grain: day
+    kind: flow
     formula: "true_trials * trial_to_pql_rate"
     parents: [true_trials, trial_to_pql_rate]
+    format:
+      style: number
+      unit: PQLs / day
+      decimals: 0
 
   - name: trial_to_pql_rate
     description: "Share of true trials reaching PQL status. (Metric Ref: TrialToPQLRate)"
     source: b2b_saas.metrics.trial_to_pql_rate
+    grain: day
+    kind: rate
+    format: percent
 
   - name: time_to_trial_activation
-    description: "Days from trial start to first activation event. (Metric Ref: TimeTrialActiv)"
+    description: "Mean days from trial start to first activation event. (Metric Ref: TimeTrialActiv)"
     source: b2b_saas.metrics.time_to_trial_activation
+    grain: day
+    kind: rate # a mean duration — not summable across days
+    direction: down_is_good
+    format:
+      style: number
+      unit: days
+      decimals: 1
 
   - name: true_trials
     description: "New trials net of low-intent/fraudulent trials. (Metric Ref: TrueTrials)"
     source: b2b_saas.metrics.true_trials
+    grain: day
+    kind: flow
     formula: "new_trials * true_share_of_trials"
     parents: [new_trials, true_share_of_trials]
+    format:
+      style: number
+      unit: trials / day
+      decimals: 0
+    dimensions:
+      region: customer__region
+      channel: session__utm_source
 
   - name: true_share_of_trials
     description: "Share of new trials that are genuine. (Metric Ref: TrueShareTrials)"
     source: b2b_saas.metrics.true_share_of_trials
+    grain: day
+    kind: rate
+    format: percent
 
   - name: new_trials
     description: >-
       New trials started, summed across acquisition channels. (Metric Ref: NewTrials)
     source: b2b_saas.metrics.new_trials
+    grain: day
+    kind: flow
     formula: >-
       organic_signups + ad_sourced_signups + email_sourced_signups
       + referral_signups + social_sourced_signups
@@ -163,18 +309,45 @@ metrics:
       - email_sourced_signups
       - referral_signups
       - social_sourced_signups
+    format:
+      style: number
+      unit: trials / day
+      decimals: 0
+    dimensions:
+      region: customer__region
+      # No `channel` here: the formula above already decomposes this node by
+      # channel exactly, and tree attribution beats slicing when it applies.
 
   # --- Channel: Organic ----------------------------------------------------
 
   - name: organic_signups
     description: "Signups from organic traffic. (Metric Ref: OrgSignups)"
     source: b2b_saas.metrics.organic_signups
+    grain: day
+    kind: flow
     formula: "organic_traffic * organic_traffic_conversion_rate"
     parents: [organic_traffic, organic_traffic_conversion_rate]
+    format:
+      style: number
+      unit: signups / day
+      decimals: 0
+    dimensions:
+      region: customer__region
 
   - name: organic_traffic
     description: "Unique organic visitors. (Metric Ref: OrgVisitors)"
     source: b2b_saas.metrics.organic_traffic
+    grain: day
+    kind: flow
+    format:
+      style: number
+      unit: visitors / day
+      decimals: 0
+    seasonality:
+      - period: 7 # grain steps: weekly on this daily node
+        name: weekly
+    dimensions:
+      region: customer__region
 
   - name: organic_traffic_conversion_rate
     description: >-
@@ -183,6 +356,8 @@ metrics:
       sessions convert better; higher bounce converts worse.
       (Metric Ref: OrgSignupRate)
     source: b2b_saas.metrics.organic_traffic_conversion_rate
+    grain: day
+    kind: rate
     parents:
       - page_speed
       - time_on_site
@@ -200,34 +375,69 @@ metrics:
       time_on_site: # more engaged sessions -> higher conversion
         distribution: "HalfNormal"
         params: { sigma: 0.05 }
+    expected_signs:
+      page_speed: negative
+      time_on_site: positive
+      website_bounce_rate: negative
+    format: percent
+    dimensions:
+      region: { source: customer__region, weight: organic_traffic }
 
   # --- Channel: Paid / Ads --------------------------------------------------
 
   - name: ad_sourced_signups
     description: "Signups from paid/advertising traffic. (Metric Ref: AdSrcSignups)"
     source: b2b_saas.metrics.ad_sourced_signups
+    grain: day
+    kind: flow
     formula: "paid_traffic * paid_traffic_conversion_rate"
     parents: [paid_traffic, paid_traffic_conversion_rate]
+    format:
+      style: number
+      unit: signups / day
+      decimals: 0
+    dimensions:
+      region: customer__region
 
   - name: paid_traffic
     description: "Unique ad-sourced visitors. (Metric Ref: UniqueAdSrcVisitors)"
     source: b2b_saas.metrics.paid_traffic
+    grain: day
+    kind: flow
     formula: "ad_impressions * ad_click_through_rate"
     parents: [ad_impressions, ad_click_through_rate]
+    format:
+      style: number
+      unit: visitors / day
+      decimals: 0
 
   - name: ad_impressions
     description: "Paid ad impressions served. (Metric Ref: AdImps)"
     source: b2b_saas.metrics.ad_impressions
+    grain: day
+    kind: flow
+    format:
+      style: number
+      unit: impressions / day
+      decimals: 0
+    seasonality:
+      - period: 7
+        name: weekly
 
   - name: ad_click_through_rate
     description: "Click-through rate on paid ads. (Metric Ref: AdClickThruRate)"
     source: b2b_saas.metrics.ad_click_through_rate
+    grain: day
+    kind: rate
+    format: percent
 
   - name: paid_traffic_conversion_rate
     description: >-
       Visitor-to-signup rate for paid traffic. Learned; shares the site-
       experience drivers. (Metric Ref: AdSrcSignupRate)
     source: b2b_saas.metrics.paid_traffic_conversion_rate
+    grain: day
+    kind: rate
     parents:
       - page_speed
       - website_bounce_rate
@@ -238,154 +448,303 @@ metrics:
       website_bounce_rate:
         distribution: "Normal"
         params: { mu: -0.2, sigma: 0.1 }
+    expected_signs:
+      page_speed: negative
+      website_bounce_rate: negative
+    format: percent
+    dimensions:
+      region: { source: customer__region, weight: paid_traffic }
 
   # --- Channel: Email -------------------------------------------------------
 
   - name: email_sourced_signups
     description: "Signups from email traffic. (Metric Ref: EmailSrcSignups)"
     source: b2b_saas.metrics.email_sourced_signups
+    grain: day
+    kind: flow
     formula: "email_traffic * email_traffic_conversion_rate"
     parents: [email_traffic, email_traffic_conversion_rate]
+    format:
+      style: number
+      unit: signups / day
+      decimals: 0
+    dimensions:
+      region: customer__region
 
   - name: email_traffic
     description: "Unique email-sourced visitors. (Metric Ref: UniqueEmailSrcVisitors)"
     source: b2b_saas.metrics.email_traffic
+    grain: day
+    kind: flow
     formula: "opened_emails * email_click_through_rate"
     parents: [opened_emails, email_click_through_rate]
+    format:
+      style: number
+      unit: visitors / day
+      decimals: 0
 
   - name: email_traffic_conversion_rate
     description: "Visitor-to-signup rate for email traffic. (Metric Ref: EmailSrcSignupRate)"
     source: b2b_saas.metrics.email_traffic_conversion_rate
+    grain: day
+    kind: rate
+    format: percent
 
   - name: email_click_through_rate
     description: "Click-through rate on delivered/opened emails. (Metric Ref: EmailClickThruRate)"
     source: b2b_saas.metrics.email_click_through_rate
+    grain: day
+    kind: rate
+    format: percent
 
   - name: opened_emails
     description: "Emails opened. (Metric Ref: OpenEmails)"
     source: b2b_saas.metrics.opened_emails
+    grain: day
+    kind: flow
     formula: "delivered_emails * email_open_rate"
     parents: [delivered_emails, email_open_rate]
+    format:
+      style: number
+      unit: opens / day
+      decimals: 0
 
   - name: email_open_rate
     description: "Open rate on delivered emails. (Metric Ref: EmailOpenRate)"
     source: b2b_saas.metrics.email_open_rate
+    grain: day
+    kind: rate
+    format: percent
 
   - name: delivered_emails
     description: "Emails successfully delivered (sent net of bounces). (Metric Ref: DeliverEmails)"
     source: b2b_saas.metrics.delivered_emails
+    grain: day
+    kind: flow
     formula: "sent_emails * (1 - email_bounce_rate)"
     parents: [sent_emails, email_bounce_rate]
+    format:
+      style: number
+      unit: emails / day
+      decimals: 0
 
   - name: email_bounce_rate
     description: "Share of sent emails that bounced. (Metric Ref: EmailBounceRate)"
     source: b2b_saas.metrics.email_bounce_rate
+    grain: day
+    kind: rate
+    direction: down_is_good
+    format: percent
 
   - name: sent_emails
     description: "Marketing emails sent. (Metric Ref: SentEmails)"
     source: b2b_saas.metrics.sent_emails
+    grain: day
+    kind: flow
     formula: "total_email_subscribers * sent_emails_per_contact"
     parents: [total_email_subscribers, sent_emails_per_contact]
+    format:
+      style: number
+      unit: emails / day
+      decimals: 0
 
   - name: sent_emails_per_contact
     description: "Send frequency per subscriber. (Metric Ref: SentEmailsPerCtct)"
     source: b2b_saas.metrics.sent_emails_per_contact
+    grain: day
+    kind: rate # a per-unit intensity, not a count
+    format:
+      style: number
+      unit: sends / subscriber
+      decimals: 2
 
   - name: total_email_subscribers
-    description: "Email subscriber base: net of new subscribes and unsubscribes. (Metric Ref: TotEmailSubs)"
+    description: >-
+      Subscribed contacts on the list — a point-in-time level, not the period's
+      net add. (Metric Ref: TotEmailSubs)
     source: b2b_saas.metrics.total_email_subscribers
-    formula: "new_email_subscribers - new_email_unsubscribes"
-    parents: [new_email_subscribers, new_email_unsubscribes]
-
-  - name: new_email_subscribers
-    description: "New email subscribers added. (Metric Ref: NewEmailSubs)"
-    source: b2b_saas.metrics.new_email_subscribers
-
-  - name: new_email_unsubscribes
-    description: "Email unsubscribes. (Metric Ref: NewEmailUnsubs)"
-    source: b2b_saas.metrics.new_email_unsubscribes
+    grain: day
+    kind: stock
+    # This node used to carry `formula: new_email_subscribers -
+    # new_email_unsubscribes`, i.e. the period's *net add*, which was then
+    # multiplied by send frequency to get `sent_emails`. That is wrong: you
+    # send to the whole list, not to the day's net change, and on any day with
+    # more unsubscribes than subscribes the quantity goes negative. The correct
+    # relationship is an accumulation, `base[t] = base[t-1] + new[t] -
+    # unsub[t]`, which is a self-loop and not expressible in a DAG — so the
+    # base is taken as a measured leaf stock and the two flow terms are not
+    # modeled here. (See roadmap 1.9.)
+    format:
+      style: number
+      unit: subscribers
+      decimals: 0
 
   # --- Channel: Referral ----------------------------------------------------
 
   - name: referral_signups
     description: "Signups from referral-link traffic. (Metric Ref: RefSignups)"
     source: b2b_saas.metrics.referral_signups
+    grain: day
+    kind: flow
     formula: "referral_link_traffic * referral_traffic_conversion_rate"
     parents: [referral_link_traffic, referral_traffic_conversion_rate]
+    format:
+      style: number
+      unit: signups / day
+      decimals: 0
+    dimensions:
+      region: customer__region
 
   - name: referral_traffic_conversion_rate
     description: "Visitor-to-signup rate for referral traffic. (Metric Ref: RefLinkConvRate)"
     source: b2b_saas.metrics.referral_traffic_conversion_rate
+    grain: day
+    kind: rate
+    format: percent
 
   - name: referral_link_traffic
     description: "Unique referral-link views. (Metric Ref: UniqRefLinkViews)"
     source: b2b_saas.metrics.referral_link_traffic
+    grain: day
+    kind: flow
     formula: "sent_referral_links * referral_link_view_rate"
     parents: [sent_referral_links, referral_link_view_rate]
+    format:
+      style: number
+      unit: views / day
+      decimals: 0
 
   - name: referral_link_view_rate
     description: "View rate on sent referral links. (Metric Ref: RefLinkViewRate)"
     source: b2b_saas.metrics.referral_link_view_rate
+    grain: day
+    kind: rate
+    format: percent
 
   - name: sent_referral_links
     description: "Referral invites sent. (Metric Ref: SentRefLinks)"
     source: b2b_saas.metrics.sent_referral_links
+    grain: day
+    kind: flow
     formula: "referrers * invites_per_referrer"
     parents: [referrers, invites_per_referrer]
+    format:
+      style: number
+      unit: invites / day
+      decimals: 0
 
   - name: invites_per_referrer
     description: "Invites sent per referring customer. (Metric Ref: InvitePerRef)"
     source: b2b_saas.metrics.invites_per_referrer
+    grain: day
+    kind: rate # a per-unit intensity
+    format:
+      style: number
+      unit: invites / referrer
+      decimals: 2
 
   - name: referrers
-    description: "Customers who referred at least once. (Metric Ref: Referrs)"
+    description: "Customers who sent at least one referral that day. (Metric Ref: Referrs)"
     source: b2b_saas.metrics.referrers
+    grain: day
+    kind: flow
     formula: "total_customers * referral_participation_rate"
     parents: [total_customers, referral_participation_rate]
+    format:
+      style: number
+      unit: referrers / day
+      decimals: 0
 
   - name: referral_participation_rate
     description: "Share of customers who participate in referrals. (Metric Ref: RefParticRate)"
     source: b2b_saas.metrics.referral_participation_rate
+    grain: day
+    kind: rate
+    format: percent
 
   # --- Channel: Social ------------------------------------------------------
 
   - name: social_sourced_signups
     description: "Signups from social traffic. (Metric Ref: RefSignups/Social)"
     source: b2b_saas.metrics.social_sourced_signups
+    grain: day
+    kind: flow
     formula: "social_media_traffic * social_traffic_conversion_rate"
     parents: [social_media_traffic, social_traffic_conversion_rate]
+    format:
+      style: number
+      unit: signups / day
+      decimals: 0
+    dimensions:
+      region: customer__region
 
   - name: social_traffic_conversion_rate
     description: "Visitor-to-signup rate for social traffic. (Metric Ref: RefLinkConvRate/Social)"
     source: b2b_saas.metrics.social_traffic_conversion_rate
+    grain: day
+    kind: rate
+    format: percent
 
   - name: social_media_traffic
     description: "Social-sourced visitors. (Metric Ref: UniqRefLinkViews/Social)"
     source: b2b_saas.metrics.social_media_traffic
+    grain: day
+    kind: flow
     formula: "social_impressions * social_impressions_ctr"
     parents: [social_impressions, social_impressions_ctr]
+    format:
+      style: number
+      unit: visitors / day
+      decimals: 0
 
   - name: social_impressions
     description: "Organic/social impressions. (Metric Ref: SentRefLinks/Social)"
     source: b2b_saas.metrics.social_impressions
+    grain: day
+    kind: flow
+    format:
+      style: number
+      unit: impressions / day
+      decimals: 0
+    seasonality:
+      - period: 7
+        name: weekly
 
   - name: social_impressions_ctr
     description: "Click-through rate on social impressions. (Metric Ref: RefLinkViewRate/Social)"
     source: b2b_saas.metrics.social_impressions_ctr
+    grain: day
+    kind: rate
+    format: percent
 
   # --- Sales-led / Enterprise new-business funnel ---------------------------
+  # Monthly from `sales_qualified_leads` up: enterprise deal counts are small,
+  # so a per-day win rate is mostly zeros and the occasional 1.0. Only
+  # `sales_accepted_leads` stays daily — marketing hands leads over as they
+  # arrive — and its daily counts are summed into the month.
 
   - name: new_business_deals
     description: "Closed-won new-business deals (sales-led). (Metric Ref: NewBizDeals)"
     source: b2b_saas.metrics.new_business_deals
+    grain: month
+    kind: flow
     formula: "accepted_opportunities * new_business_opportunity_win_rate"
     parents: [accepted_opportunities, new_business_opportunity_win_rate]
+    format:
+      style: number
+      unit: deals / month
+      decimals: 0
+    dimensions:
+      region: customer__region
+      segment: customer__segment
 
   - name: new_business_opportunity_win_rate
     description: >-
       Win rate on accepted new-business opportunities. Learned; longer sales
       cycles and slower proposals depress it. (Metric Ref: NewBizOppWinRate)
     source: b2b_saas.metrics.new_business_opportunity_win_rate
+    grain: month
+    kind: rate
     parents:
       - new_business_opportunity_sales_cycle
       - time_to_sent_new_business_proposal
@@ -396,46 +755,99 @@ metrics:
       time_to_sent_new_business_proposal:
         distribution: "Normal"
         params: { mu: -0.005, sigma: 0.003 }
+    expected_signs:
+      new_business_opportunity_sales_cycle: negative
+      time_to_sent_new_business_proposal: negative
+    format: percent
 
   - name: new_business_opportunity_sales_cycle
-    description: "Days to close a new-business opportunity. (Metric Ref: NewBizOppSalesCycle)"
+    description: "Mean days to close a new-business opportunity. (Metric Ref: NewBizOppSalesCycle)"
     source: b2b_saas.metrics.new_business_opportunity_sales_cycle
+    grain: month
+    kind: rate # a mean duration
+    direction: down_is_good
+    format:
+      style: number
+      unit: days
+      decimals: 1
 
   - name: time_to_sent_new_business_proposal
-    description: "Days to send a proposal after opportunity open. (Metric Ref: TimeSentNewBizProp)"
+    description: "Mean days to send a proposal after opportunity open. (Metric Ref: TimeSentNewBizProp)"
     source: b2b_saas.metrics.time_to_sent_new_business_proposal
+    grain: month
+    kind: rate
+    direction: down_is_good
+    format:
+      style: number
+      unit: days
+      decimals: 1
 
   - name: accepted_opportunities
     description: "Opportunities accepted by sales. (Metric Ref: AcceptOpps)"
     source: b2b_saas.metrics.accepted_opportunities
+    grain: month
+    kind: flow
     formula: "opened_new_business_opportunities * opened_to_accepted_opportunity_rate"
     parents: [opened_new_business_opportunities, opened_to_accepted_opportunity_rate]
+    format:
+      style: number
+      unit: opportunities / month
+      decimals: 0
 
   - name: opened_to_accepted_opportunity_rate
     description: "Open-to-accept rate on opportunities. (Metric Ref: OpenToAcceptOppRate)"
     source: b2b_saas.metrics.opened_to_accepted_opportunity_rate
+    grain: month
+    kind: rate
+    format: percent
 
   - name: opened_new_business_opportunities
     description: "New-business opportunities opened. (Metric Ref: OpenNewBizOpps)"
     source: b2b_saas.metrics.opened_new_business_opportunities
-    parents: [sales_qualified_leads]
-    priors:
-      coefficient:
-        distribution: "HalfNormal"
-        params: { sigma: 0.8 }
+    grain: month
+    kind: flow
+    # Previously a learned edge regressing this count on `sales_qualified_leads`
+    # — a level on a level, where the coefficient was really just the
+    # unmeasured SQL-to-opportunity conversion rate. Naming that rate makes the
+    # step deterministic and gives it exact Shapley attribution, matching every
+    # other funnel step in this tree.
+    formula: "sales_qualified_leads * sql_to_opportunity_rate"
+    parents: [sales_qualified_leads, sql_to_opportunity_rate]
+    format:
+      style: number
+      unit: opportunities / month
+      decimals: 0
+
+  - name: sql_to_opportunity_rate
+    description: "Share of sales-qualified leads that become an opportunity. (Metric Ref: SQLToOppRate)"
+    source: b2b_saas.metrics.sql_to_opportunity_rate
+    grain: month
+    kind: rate
+    format: percent
 
   - name: sales_qualified_leads
     description: "Leads qualified by sales. (Metric Ref: SQLs)"
     source: b2b_saas.metrics.sales_qualified_leads
+    grain: month
+    kind: flow
     formula: "sales_accepted_leads * sales_qualification_rate"
     parents: [sales_accepted_leads, sales_qualification_rate]
+    format:
+      style: number
+      unit: SQLs / month
+      decimals: 0
+    dimensions:
+      region: customer__region
+      segment: customer__segment
 
   - name: sales_qualification_rate
     description: >-
       Rate at which accepted leads become sales-qualified. Learned; faster
       lead response, more SDR talk time and better prospect coverage raise it.
-      Lead-response effect acts with a short lag. (Metric Ref: SalesQualRate)
+      (Metric Ref: SalesQualRate)
     source: b2b_saas.metrics.sales_qualification_rate
+    grain: month
+    kind: rate
     parents:
       - time_to_lead_response
       - sdr_talk_time
@@ -453,24 +865,59 @@ metrics:
       prospect_coverage:
         distribution: "HalfNormal"
         params: { sigma: 0.2 }
-    lags:
-      time_to_lead_response: 3
+    expected_signs:
+      time_to_lead_response: negative
+      sdr_talk_time: positive
+      prospect_coverage: positive
+    # No lag. This node used to declare `time_to_lead_response: 3`, which was
+    # 3 days at the tree's old uniform day grain; `lags` are in grain steps, so
+    # at month grain the same number would mean *three months*. A lead-response
+    # effect that shows up within days is contemporaneous at this grain.
 
   - name: time_to_lead_response
-    description: "Minutes to first lead response. (Metric Ref: TimeLeadResp)"
+    description: "Mean minutes to first lead response. (Metric Ref: TimeLeadResp)"
     source: b2b_saas.metrics.time_to_lead_response
+    grain: month
+    kind: rate # a mean duration
+    direction: down_is_good
+    format:
+      style: number
+      unit: minutes
+      decimals: 0
 
   - name: sdr_talk_time
-    description: "SDR live talk-time minutes. (Metric Ref: SDRTalkTime)"
+    description: >-
+      SDR live talk-time minutes across the team. (Metric Ref: SDRTalkTime)
     source: b2b_saas.metrics.sdr_talk_time
+    grain: month
+    kind: flow
+    # A team total is a level driving a rate, so this edge carries a mild scale
+    # confound: hiring more SDRs raises both talk time and qualified leads
+    # regardless of whether any rep got better. `expected_signs` above will not
+    # catch that — the sign is right for the wrong reason. If your warehouse
+    # can produce it, talk time *per rep* or *per lead worked* is the edge that
+    # answers the intended question.
+    format:
+      style: number
+      unit: minutes / month
+      decimals: 0
 
   - name: prospect_coverage
     description: "Share of target prospects covered. (Metric Ref: ProspCovge)"
     source: b2b_saas.metrics.prospect_coverage
+    grain: month
+    kind: rate
+    format: percent
 
   - name: sales_accepted_leads
     description: "Leads accepted by sales from marketing. (Metric Ref: SALs)"
     source: b2b_saas.metrics.sales_accepted_leads
+    grain: day
+    kind: flow
+    format:
+      style: number
+      unit: SALs / day
+      decimals: 0
 
   # ===========================================================================
   # EXPANSION MRR — in-term expansion + renewal expansion
@@ -479,160 +926,300 @@ metrics:
   - name: expansion_mrr
     description: "Total expansion MRR. (Metric Ref: ExpandMRR)"
     source: b2b_saas.metrics.expansion_mrr
+    grain: month
+    kind: flow
     formula: "in_term_expansion_mrr + incremental_renewal_mrr"
     parents: [in_term_expansion_mrr, incremental_renewal_mrr]
+    format: currency
+    dimensions:
+      plan_tier: subscription__plan_tier
+      segment: customer__segment
 
   - name: in_term_expansion_mrr
     description: "Mid-term expansion: upsells plus attaches/cross-sells. (Metric Ref: InTermExpMRR)"
     source: b2b_saas.metrics.in_term_expansion_mrr
+    grain: month
+    kind: flow
     formula: "upsell_mrr + attach_mrr"
     parents: [upsell_mrr, attach_mrr]
+    format: currency
 
   - name: upsell_mrr
     description: "MRR from upsells to existing customers. (Metric Ref: UpsellMRR)"
     source: b2b_saas.metrics.upsell_mrr
+    grain: month
+    kind: flow
     formula: "upsells * average_upsell_mrr"
     parents: [upsells, average_upsell_mrr]
+    format: currency
 
   - name: average_upsell_mrr
     description: "Average MRR per upsell. (Metric Ref: AvgExpandMRR/Upsell)"
     source: b2b_saas.metrics.average_upsell_mrr
+    grain: month
+    kind: rate
+    format: currency
 
   - name: upsells
     description: "Count of upsells closed. (Metric Ref: Upsells)"
     source: b2b_saas.metrics.upsells
+    grain: month
+    kind: flow
     formula: "upsell_opportunities * upsell_close_rate"
     parents: [upsell_opportunities, upsell_close_rate]
+    format:
+      style: number
+      unit: upsells / month
+      decimals: 0
 
   - name: upsell_close_rate
     description: "Close rate on upsell opportunities. (Metric Ref: UpsellCloseRate)"
     source: b2b_saas.metrics.upsell_close_rate
+    grain: month
+    kind: rate
+    format: percent
 
   - name: upsell_opportunities
-    description: "Open upsell opportunities. (Metric Ref: UpsellOpps)"
+    description: "Upsell opportunities opened in the month. (Metric Ref: UpsellOpps)"
     source: b2b_saas.metrics.upsell_opportunities
+    grain: month
+    kind: flow
     formula: "total_customers * upsell_opportunity_open_rate"
     parents: [total_customers, upsell_opportunity_open_rate]
+    format:
+      style: number
+      unit: opportunities / month
+      decimals: 0
 
   - name: upsell_opportunity_open_rate
     description: "Rate at which customers open an upsell opportunity. (Metric Ref: UpsellOppOpenRate)"
     source: b2b_saas.metrics.upsell_opportunity_open_rate
+    grain: month
+    kind: rate
+    format: percent
 
   - name: attach_mrr
     description: "MRR from cross-sell/attach motions. (Metric Ref: AttachMRR)"
     source: b2b_saas.metrics.attach_mrr
+    grain: month
+    kind: flow
     formula: "cross_sells * average_cross_sell_mrr"
     parents: [cross_sells, average_cross_sell_mrr]
+    format: currency
 
   - name: average_cross_sell_mrr
     description: "Average MRR per cross-sell/attach. (Metric Ref: AvgExpandMRR/CrossSell)"
     source: b2b_saas.metrics.average_cross_sell_mrr
+    grain: month
+    kind: rate
+    format: currency
 
   - name: cross_sells
     description: "Count of cross-sells/attaches closed. (Metric Ref: CrossSells)"
     source: b2b_saas.metrics.cross_sells
+    grain: month
+    kind: flow
     formula: "cross_sell_opportunities * cross_sell_close_rate"
     parents: [cross_sell_opportunities, cross_sell_close_rate]
+    format:
+      style: number
+      unit: cross-sells / month
+      decimals: 0
 
   - name: cross_sell_close_rate
     description: "Close rate on cross-sell opportunities. (Metric Ref: CrossSellCloseRate)"
     source: b2b_saas.metrics.cross_sell_close_rate
+    grain: month
+    kind: rate
+    format: percent
 
   - name: cross_sell_opportunities
-    description: "Open cross-sell opportunities. (Metric Ref: CrossSellOpps)"
+    description: "Cross-sell opportunities opened in the month. (Metric Ref: CrossSellOpps)"
     source: b2b_saas.metrics.cross_sell_opportunities
+    grain: month
+    kind: flow
     formula: "total_customers * cross_sell_opportunity_open_rate"
     parents: [total_customers, cross_sell_opportunity_open_rate]
+    format:
+      style: number
+      unit: opportunities / month
+      decimals: 0
 
   - name: cross_sell_opportunity_open_rate
     description: "Rate at which customers open a cross-sell opportunity. (Metric Ref: CrossSellOppOpenRate)"
     source: b2b_saas.metrics.cross_sell_opportunity_open_rate
+    grain: month
+    kind: rate
+    format: percent
 
   # --- Renewal expansion ----------------------------------------------------
 
   - name: incremental_renewal_mrr
     description: "Net-new MRR from expanded renewals. (Metric Ref: IncRenewalMRR)"
     source: b2b_saas.metrics.incremental_renewal_mrr
+    grain: month
+    kind: flow
     formula: "expanded_renewals * expansion_per_expanded_renewal"
     parents: [expanded_renewals, expansion_per_expanded_renewal]
+    format: currency
 
   - name: expansion_per_expanded_renewal
     description: "Average MRR uplift per expanded renewal. (Metric Ref: ExpandPerExpandRenewal)"
     source: b2b_saas.metrics.expansion_per_expanded_renewal
+    grain: month
+    kind: rate
+    format: currency
 
   - name: expanded_renewals
     description: "Renewals that expanded in value. (Metric Ref: ExpandRenewals)"
     source: b2b_saas.metrics.expanded_renewals
+    grain: month
+    kind: flow
     formula: "won_renewal_deals * expansion_share_of_renewals"
     parents: [won_renewal_deals, expansion_share_of_renewals]
+    format:
+      style: number
+      unit: renewals / month
+      decimals: 0
 
   - name: expansion_share_of_renewals
     description: "Share of won renewals that expanded. (Metric Ref: ExpandShareRenewals)"
     source: b2b_saas.metrics.expansion_share_of_renewals
+    grain: month
+    kind: rate
+    format: percent
 
   - name: won_renewal_deals
-    description: "Contracts renewed in the period. (Metric Ref: WonRenewDeals)"
+    description: "Contracts renewed in the month. (Metric Ref: WonRenewDeals)"
     source: b2b_saas.metrics.won_renewal_deals
+    grain: month
+    kind: flow
     formula: "exposed_contracts * contract_renewal_rate"
     parents: [exposed_contracts, contract_renewal_rate]
+    format:
+      style: number
+      unit: renewals / month
+      decimals: 0
+    dimensions:
+      plan_tier: subscription__plan_tier
+      segment: customer__segment
 
   - name: exposed_contracts
-    description: "Contracts up for renewal in the period. (Metric Ref: ExposedContracts)"
+    description: "Contracts up for renewal in the month. (Metric Ref: ExposedContracts)"
     source: b2b_saas.metrics.exposed_contracts
+    grain: month
+    kind: flow
+    format:
+      style: number
+      unit: contracts / month
+      decimals: 0
 
   - name: contract_renewal_rate
     description: "Share of exposed contracts that renew. (Metric Ref: ContractRenewRate)"
     source: b2b_saas.metrics.contract_renewal_rate
+    grain: month
+    kind: rate
+    format: percent
+    dimensions:
+      plan_tier: { source: subscription__plan_tier, weight: exposed_contracts }
+      segment: { source: customer__segment, weight: exposed_contracts }
 
   # ===========================================================================
   # CONTRACTION MRR — in-term + renewal downgrades
   # ===========================================================================
+  # Contraction and churn are stored positive and *subtracted* in the
+  # `total_mrr` waterfall, so rising values are bad news: `down_is_good`.
 
   - name: contraction_mrr
     description: "Total contraction (downgrade) MRR. (Metric Ref: CtrctMRR)"
     source: b2b_saas.metrics.contraction_mrr
+    grain: month
+    kind: flow
     formula: "in_term_contraction_mrr + renewal_contraction_mrr"
     parents: [in_term_contraction_mrr, renewal_contraction_mrr]
+    direction: down_is_good
+    format: currency
+    dimensions:
+      plan_tier: subscription__plan_tier
+      segment: customer__segment
 
   - name: in_term_contraction_mrr
     description: "Mid-term downgrades. (Metric Ref: InTermCtrctMRR)"
     source: b2b_saas.metrics.in_term_contraction_mrr
+    grain: month
+    kind: flow
     formula: "in_term_contraction_customers * average_in_term_contraction_mrr"
     parents: [in_term_contraction_customers, average_in_term_contraction_mrr]
+    direction: down_is_good
+    format: currency
 
   - name: average_in_term_contraction_mrr
     description: "Average MRR lost per in-term contraction. (Metric Ref: AvgInTermCtrctMRR)"
     source: b2b_saas.metrics.average_in_term_contraction_mrr
+    grain: month
+    kind: rate
+    direction: down_is_good
+    format: currency
 
   - name: in_term_contraction_customers
     description: "Customers who downgraded mid-term. (Metric Ref: InTermCtrctCust)"
     source: b2b_saas.metrics.in_term_contraction_customers
+    grain: month
+    kind: flow
     formula: "total_customers * customer_contraction_rate"
     parents: [total_customers, customer_contraction_rate]
+    direction: down_is_good
+    format:
+      style: number
+      unit: customers / month
+      decimals: 0
 
   - name: customer_contraction_rate
     description: "Rate at which customers contract mid-term. (Metric Ref: CustContrRate)"
     source: b2b_saas.metrics.customer_contraction_rate
+    grain: month
+    kind: rate
+    direction: down_is_good
+    format: percent
 
   - name: renewal_contraction_mrr
     description: "MRR lost to downgrades at renewal. (Metric Ref: RenewContractionMRR)"
     source: b2b_saas.metrics.renewal_contraction_mrr
+    grain: month
+    kind: flow
     formula: "contraction_renewals * contraction_per_contraction_renewal"
     parents: [contraction_renewals, contraction_per_contraction_renewal]
+    direction: down_is_good
+    format: currency
 
   - name: contraction_per_contraction_renewal
     description: "Average MRR lost per contracted renewal. (Metric Ref: CtrctPerCtrctRenewal)"
     source: b2b_saas.metrics.contraction_per_contraction_renewal
+    grain: month
+    kind: rate
+    direction: down_is_good
+    format: currency
 
   - name: contraction_renewals
     description: "Renewals that contracted in value. (Metric Ref: CtrctRenewals)"
     source: b2b_saas.metrics.contraction_renewals
+    grain: month
+    kind: flow
     formula: "won_renewal_deals * contraction_share_of_renewals"
     parents: [won_renewal_deals, contraction_share_of_renewals]
+    direction: down_is_good
+    format:
+      style: number
+      unit: renewals / month
+      decimals: 0
 
   - name: contraction_share_of_renewals
     description: "Share of won renewals that contracted. (Metric Ref: CtrctShareRenewals)"
     source: b2b_saas.metrics.contraction_share_of_renewals
+    grain: month
+    kind: rate
+    direction: down_is_good
+    format: percent
 
   # ===========================================================================
   # CHURNED MRR — attrition
@@ -641,38 +1228,93 @@ metrics:
   - name: churned_mrr
     description: "MRR lost to churned customers. (Metric Ref: ChurnMRR)"
     source: b2b_saas.metrics.churned_mrr
+    grain: month
+    kind: flow
     formula: "churned_customers * average_churned_mrr"
     parents: [churned_customers, average_churned_mrr]
+    direction: down_is_good
+    format: currency
+    dimensions:
+      region: customer__region
+      plan_tier: subscription__plan_tier
+      segment: customer__segment
+      channel: customer__acquisition_channel
 
   - name: average_churned_mrr
     description: "Average MRR per churned customer. (Metric Ref: AvgChurnMRR)"
     source: b2b_saas.metrics.average_churned_mrr
+    grain: month
+    kind: rate
+    direction: down_is_good
+    format: currency
+    dimensions:
+      plan_tier: { source: subscription__plan_tier, weight: churned_customers }
+      segment: { source: customer__segment, weight: churned_customers }
 
   - name: churned_customers
     description: "Customers lost: controllable plus uncontrollable attrition. (Metric Ref: ChurnCust)"
     source: b2b_saas.metrics.churned_customers
+    grain: month
+    kind: flow
     formula: "controllable_attrition + uncontrollable_attrition"
     parents: [controllable_attrition, uncontrollable_attrition]
+    direction: down_is_good
+    format:
+      style: number
+      unit: customers / month
+      decimals: 0
+    dimensions:
+      region: customer__region
+      plan_tier: subscription__plan_tier
+      segment: customer__segment
+      channel: customer__acquisition_channel
 
   - name: controllable_attrition
     description: >-
       Churn the business could have prevented (in-term cancellations that
       weren't saved). (Metric Ref: ContrAttrit)
     source: b2b_saas.metrics.controllable_attrition
+    grain: month
+    kind: flow
     formula: "cancel_requests - saved_cancel_requests"
     parents: [cancel_requests, saved_cancel_requests]
+    direction: down_is_good
+    format:
+      style: number
+      unit: customers / month
+      decimals: 0
 
   - name: cancel_requests
     description: "In-term cancellation requests received. (Metric Ref: CancReqs)"
     source: b2b_saas.metrics.cancel_requests
+    grain: month
+    kind: flow
+    direction: down_is_good
+    format:
+      style: number
+      unit: requests / month
+      decimals: 0
 
   - name: saved_cancel_requests
     description: "Cancellation requests saved by retention motions. (Metric Ref: SavedCancReqs)"
     source: b2b_saas.metrics.saved_cancel_requests
+    grain: month
+    kind: flow
+    format:
+      style: number
+      unit: saves / month
+      decimals: 0
 
   - name: uncontrollable_attrition
     description: "Churn outside the business's control (e.g. company shutdowns). (Metric Ref: UncontrAttrit)"
     source: b2b_saas.metrics.uncontrollable_attrition
+    grain: month
+    kind: flow
+    direction: down_is_good
+    format:
+      style: number
+      unit: customers / month
+      decimals: 0
 
   # ===========================================================================
   # RESURRECTION MRR — win-backs
@@ -681,26 +1323,52 @@ metrics:
   - name: resurrection_mrr
     description: "MRR from resurrected (won-back) customers. (Metric Ref: ResurrMRR)"
     source: b2b_saas.metrics.resurrection_mrr
+    grain: month
+    kind: flow
     formula: "resurrected_customers * average_resurrection_mrr"
     parents: [resurrected_customers, average_resurrection_mrr]
+    format: currency
 
   - name: average_resurrection_mrr
     description: "Average MRR per resurrected customer. (Metric Ref: AvgResurrMRR)"
     source: b2b_saas.metrics.average_resurrection_mrr
+    grain: month
+    kind: rate
+    format: currency
 
   - name: resurrected_customers
     description: "Previously-churned customers won back. (Metric Ref: ResurrCust)"
     source: b2b_saas.metrics.resurrected_customers
+    grain: month
+    kind: flow
     formula: "cumulative_churned_customers * resurrection_rate"
     parents: [cumulative_churned_customers, resurrection_rate]
+    format:
+      style: number
+      unit: customers / month
+      decimals: 0
 
   - name: cumulative_churned_customers
-    description: "Historical churned-customer pool available to resurrect. (Metric Ref: CumChurn)"
+    description: >-
+      Historical churned-customer pool available to resurrect — an accumulating
+      level, not a monthly flow. (Metric Ref: CumChurn)
     source: b2b_saas.metrics.cumulative_churned_customers
+    grain: month
+    kind: stock
+    # Neither good nor bad on its own: a bigger pool means more past churn but
+    # also more win-back headroom, which is the role it plays here.
+    direction: neutral
+    format:
+      style: number
+      unit: customers
+      decimals: 0
 
   - name: resurrection_rate
     description: "Rate at which churned customers resurrect. (Metric Ref: ResurrRate)"
     source: b2b_saas.metrics.resurrection_rate
+    grain: month
+    kind: rate
+    format: percent
 
   # ===========================================================================
   # RETAINED MRR — surviving base (modeled as a stock leaf here)
@@ -708,9 +1376,12 @@ metrics:
 
   - name: retained_mrr
     description: >-
-      MRR retained from the prior period's base (surviving customers at their
+      MRR retained from the prior month's base (surviving customers at their
       prior rate). Treated as an input stock in this example. (Metric Ref: RetainMRR)
     source: b2b_saas.metrics.retained_mrr
+    grain: month
+    kind: stock
+    format: currency
 
   # ===========================================================================
   # SHARED STOCK — customer base
@@ -718,10 +1389,23 @@ metrics:
 
   - name: total_customers
     description: >-
-      Active customer base at period start. An accumulating stock; treated as an
-      input leaf here (it feeds expansion, contraction and referral branches).
+      Active customer base — a point-in-time level, treated as an input leaf
+      here (it feeds the expansion, contraction and referral branches).
       (Metric Ref: TotCust)
     source: b2b_saas.metrics.total_customers
+    # Daily because the referral branch consumes it daily; the monthly
+    # expansion and contraction branches see the month's last value, which is
+    # how a stock aggregates.
+    grain: day
+    kind: stock
+    format:
+      style: number
+      unit: customers
+      decimals: 0
+    dimensions:
+      region: customer__region
+      plan_tier: subscription__plan_tier
+      segment: customer__segment
 
   # ===========================================================================
   # TRAFFIC CONVERSION INFLUENCES — site-experience leaves
@@ -731,11 +1415,28 @@ metrics:
   - name: page_speed
     description: "Median page load time, seconds (lower is better). (Metric Ref: PgSpeed)"
     source: b2b_saas.metrics.page_speed
+    grain: day
+    kind: rate # a median duration — not summable
+    direction: down_is_good
+    format:
+      style: number
+      unit: seconds
+      decimals: 2
 
   - name: time_on_site
     description: "Average time on site, seconds. (Metric Ref: TimeOnSite)"
     source: b2b_saas.metrics.time_on_site
+    grain: day
+    kind: rate
+    format:
+      style: number
+      unit: seconds
+      decimals: 0
 
   - name: website_bounce_rate
     description: "Single-page-session (bounce) rate. (Metric Ref: WebBounceRate)"
     source: b2b_saas.metrics.website_bounce_rate
+    grain: day
+    kind: rate
+    direction: down_is_good
+    format: percent
