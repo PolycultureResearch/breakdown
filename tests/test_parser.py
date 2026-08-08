@@ -622,3 +622,80 @@ metrics:
     assert Parser(yaml_for("assumed")).config.provider.type == "none"
     with pytest.raises(Exception, match="mock, local, cloud, warehouse, none"):
         Parser(yaml_for("nonsense"))
+
+
+# --- duplicate metric names (C6) ---
+
+
+def test_duplicate_metric_name_raises():
+    """A repeated name silently merged both definitions' edges while only the
+    second definition survived, so `dag.predecessors` returned a union that no
+    longer matched `defn.parents` — the axis order of `beta_raw` (C6)."""
+    yaml_content = """
+metrics:
+  - name: a
+    source: dbt.metric.a
+  - name: b
+    source: dbt.metric.b
+  - name: revenue
+    source: dbt.metric.revenue
+    parents: [a]
+  - name: revenue
+    source: dbt.metric.revenue_v2
+    parents: [b]
+"""
+    with pytest.raises(ValueError, match="Duplicate metric names"):
+        Parser(yaml_content)
+
+
+def test_duplicate_metric_name_error_names_every_offender():
+    """The message has to name them: on a 107-node tree, "there is a duplicate"
+    is not an actionable error."""
+    yaml_content = """
+metrics:
+  - name: dup_one
+    source: dbt.metric.a
+  - name: dup_one
+    source: dbt.metric.b
+  - name: fine
+    source: dbt.metric.c
+  - name: dup_two
+    source: dbt.metric.d
+  - name: dup_two
+    source: dbt.metric.e
+  - name: dup_two
+    source: dbt.metric.f
+"""
+    with pytest.raises(ValueError) as excinfo:
+        Parser(yaml_content)
+    message = str(excinfo.value)
+    assert "'dup_one' (2x)" in message
+    assert "'dup_two' (3x)" in message
+    # Scoped to the list we build: pydantic appends its own echo of the input
+    # dict, which mentions every metric, so a bare `"fine" not in message`
+    # would be asserting on pydantic's formatting rather than on ours.
+    listed = message.split("tree: ")[1].split(". Each metric")[0]
+    assert "fine" not in listed
+
+
+def test_parents_axis_order_matches_declared_parents():
+    """The invariant C6 protects, asserted directly: for every node,
+    `list(dag.predecessors(n))` is exactly the declared parent set. This is the
+    axis order `beta_raw` is indexed by."""
+    yaml_content = """
+metrics:
+  - name: a
+    source: dbt.metric.a
+  - name: b
+    source: dbt.metric.b
+  - name: c
+    source: dbt.metric.c
+  - name: total
+    source: dbt.metric.total
+    formula: "a + b + c"
+    parents: [a, b, c]
+"""
+    dag = Parser(yaml_content).dag
+    for name in dag.nodes:
+        declared = dag.nodes[name]["definition"].parents
+        assert sorted(dag.predecessors(name)) == sorted(declared)

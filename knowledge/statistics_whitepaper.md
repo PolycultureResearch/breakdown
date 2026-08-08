@@ -738,18 +738,23 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
    test suite — including its null-case restraint tests, which remain the most
    valuable part — is right; this particular implementation proves less than it
    appears to.
-8. **`ranked_causes` is a heuristic, reads like a result, and inverts on a
-   common input.** — ○ open
-   ([C5](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend),
+8. **`ranked_causes` is a heuristic and reads like a result.** — ◑ partially
+   addressed
+   ([C5](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend) ✅,
    [S12](roadmap.md#statistical-rigor-s--a-standing-workstream))
-   The score propagates |share| products up the tree. It is explicitly
-   documented as triage rather than probability, but it is also the most
-   prominent number in the UI, and prominence implies rigor whatever the docs
-   say. Beyond the framing problem there is a defect: the near-zero-gap guard is
-   an absolute `1e-12` rather than relative to node scale, so a node that barely
-   moved with two large offsetting parents produces shares of ±10⁵ that are then
-   *clamped to 1.0* — the metric that most conclusively did not move hands its
-   full influence score upward. C5 fixes the clamp; S12 fixes the prominence.
+   The score propagates share products up the tree. It is explicitly documented
+   as triage rather than probability, but it is also the most prominent number
+   in the UI, and prominence implies rigor whatever the docs say. That framing
+   problem is **open** — S12.
+
+   The *defect* underneath it is fixed. The hop weight was `min(|share|, 1.0)`
+   and the no-movement guard was an absolute `1e-12`, so a node that barely
+   moved between two large offsetting parents produced shares of ±10⁵ which were
+   then clamped to **1.0** — the metric that most conclusively did not move
+   handed its full influence score to everything above it, and scores accumulate
+   across children. C5 replaced the clamp with `min(|s|, 1/|s|)`, which decays
+   above 1 because a share far above 1 means the parent's movement was cancelled
+   by a sibling's, and made the guard relative to the node's own level.
 9. **The trend interval does not grow with the analysis horizon.** — ○ open
    ([S16](roadmap.md#statistical-rigor-s--a-standing-workstream))
    `components.trend` is reported as the last fitted level's posterior, so a
@@ -1053,6 +1058,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-08-05 | **C5 shipped**; §3.2 #8 moves ○ open → ◑ partially addressed and is re-titled, because only half of it was ever a statistics problem. The inversion (a clamped share handing full influence upward from a metric that did not move) is a fixed defect; the prominence of a triage heuristic rendered as the headline number is a design question and stays open as S12. Separating them matters — a reader who saw "open" would not have known which half they were being warned about. |
 | 2026-08-05 | **C4 shipped, and §3.2 #2 rewritten around what it did *not* fix.** The weakness moves ○ open → ◑ partially addressed: two exactly-derived attenuation biases in the window bootstrap are corrected and the degeneracy guard now keys on resampled spread, but measured coverage of the nominal 95% interval is still 0.84–0.92 (iid) and 0.57–0.83 (AR(1) ρ=0.7). Those figures are quoted in #2 rather than summarized, because "improved" and "honest" are different claims. The residual is split between S6 and the new **S18** (a t-shaped tail for short windows), added by this work rather than by the review. #10 amended to match. |
 | 2026-08-05 | **C3 shipped** — no text changed. §2.3 already claimed that contributions "sum to the true gap exactly" and that `unexplained` on a formula node is "measurement residual only"; that was true of `GET /shapley` and false of what RCA published, which reported a bootstrap mean of a nonlinear decomposition instead. The code now matches the paper rather than the paper being softened to match the code. Logged because a reader comparing editions should be able to see that this section's meaning changed even though its words did not. |
 | 2026-08-05 | **C1/C2 shipped** — the two provider-boundary correctness defects are fixed, and §3.3 now says so, including what to re-run. Every provider shares one date-alignment contract (tz coercion, period spine, trailing trim, kind-aware interior fill). No §3.2 weakness changed status: neither defect was ever a numbered statistical weakness, which is exactly why §3.3 had to carry them. |
