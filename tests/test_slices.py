@@ -383,3 +383,30 @@ def test_warehouse_slicing_not_supported():
     )
     with pytest.raises(SliceNotSupported, match="does not support dimensional"):
         fetcher.fetch_metric_sliced("signups", "customer__region", "2026-01-01", "2026-02-01")
+
+
+def test_near_zero_reference_total_withholds_the_interval_not_a_500():
+    """Replicates whose reference total resamples to ~zero have no defined
+    baseline share, so their excess is NaN. That used to poison the whole
+    percentile and reach Starlette's `allow_nan=False` as an unhandled 500
+    (roadmap C8). Sparse counts hit it easily."""
+    import numpy as np
+
+    from breakdown.engine.slices import _excess_fields
+
+    # Mostly-undefined replicates: interval withheld rather than computed off
+    # the handful that survived.
+    mostly_nan = np.full(500, np.nan)
+    mostly_nan[:100] = np.random.default_rng(0).normal(0, 1, 100)
+    out = _excess_fields(mostly_nan, single_period=False)
+    assert out["ci_95"] is None
+    assert out["prob_concentrated"] is None
+
+    # A minority undefined: the interval is computed from the finite ones and
+    # every reported number is JSON-serializable (no NaN reaches the response).
+    some_nan = np.random.default_rng(1).normal(0, 1, 500)
+    some_nan[:50] = np.nan
+    out = _excess_fields(some_nan, single_period=False)
+    assert out["ci_95"] is not None
+    assert all(np.isfinite(v) for v in out["ci_95"])
+    assert np.isfinite(out["prob_concentrated"])

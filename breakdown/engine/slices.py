@@ -261,14 +261,32 @@ def slice_attribution(
 def _excess_fields(
     excess_b: Optional[np.ndarray], single_period: bool
 ) -> Dict[str, Any]:
-    """CI / direction-probability fields for one slice's excess replicates."""
+    """CI / direction-probability fields for one slice's excess replicates.
+
+    Replicates whose *reference total* resampled to ~zero have no defined
+    baseline share, so their excess is NaN. That used to flow straight into
+    `np.percentile`, poisoning the whole interval, and then into Starlette's
+    `allow_nan=False` as an unhandled **500** rather than a diagnosable
+    response (roadmap C8). Sparse enterprise deal counts hit it easily: in one
+    28-day realization at 10% nonzero days, 23% of replicates had a zero total.
+
+    So the undefined replicates are dropped, and if too few survive the
+    interval is withheld rather than computed from a handful — the same
+    posture as RCA's degeneracy guard. A withheld interval is a reportable
+    finding; a 500 is not.
+    """
     if single_period or excess_b is None:
         return {"ci_95": None, "prob_concentrated": None, "noise_level": None}
-    prob = float(max((excess_b > 0).mean(), (excess_b < 0).mean()))
+
+    finite = excess_b[np.isfinite(excess_b)]
+    if finite.size < max(2, 0.5 * excess_b.size):
+        return {"ci_95": None, "prob_concentrated": None, "noise_level": None}
+
+    prob = float(max((finite > 0).mean(), (finite < 0).mean()))
     return {
         "ci_95": [
-            float(np.percentile(excess_b, 2.5)),
-            float(np.percentile(excess_b, 97.5)),
+            float(np.percentile(finite, 2.5)),
+            float(np.percentile(finite, 97.5)),
         ],
         "prob_concentrated": prob,
         "noise_level": prob < _NOISE_PROB,

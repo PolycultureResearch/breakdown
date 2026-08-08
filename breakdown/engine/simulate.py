@@ -53,7 +53,7 @@ import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field, model_validator
 
-from breakdown.engine.model import fit_metric
+from breakdown.engine.model import FitKey, fit_metric
 from breakdown.engine.rca import window_mean
 from breakdown.formula import eval_formula
 from breakdown.grains import ensure_grained, fit_grain, snap_window
@@ -356,7 +356,7 @@ def validate_cold_start(dag: nx.DiGraph) -> List[str]:
 def run_scenario(
     dag: nx.DiGraph,
     data: Optional[pd.DataFrame],
-    traces: Dict[Tuple[str, Optional[str]], Any],
+    traces: Dict[Any, Any],
     scenario: ScenarioRequest,
     advi_draws: int = 500,
     n_draws: int = _N_DRAWS,
@@ -534,8 +534,8 @@ def run_scenario(
         parents = list(dag.predecessors(node))
         if parents and not defn.formula and set(parents) & affected:
             needs_beta.add(node)
-            if not cold_start and (node, fit_end_key) not in traces:
-                traces[(node, fit_end_key)] = fit_metric(
+            if not cold_start and FitKey(node, fit_end_key, draws=advi_draws) not in traces:
+                traces[FitKey(node, fit_end_key, draws=advi_draws)] = fit_metric(
                     dag, data, node, draws=advi_draws,
                     inference_method="advi", fit_end=fit_end_key,
                     random_seed=0,
@@ -561,7 +561,7 @@ def run_scenario(
             )
             beta_means[node] = np.array([_prior_mean(pr) for pr in priors])
         else:
-            arr = traces[(node, fit_end_key)].trace.posterior["beta_raw"].values.reshape(
+            arr = traces[FitKey(node, fit_end_key, draws=advi_draws)].trace.posterior["beta_raw"].values.reshape(
                 -1, len(parents)
             )
             beta_draws[node] = arr[rng.choice(arr.shape[0], size=n_draws)]
@@ -793,7 +793,7 @@ def run_scenario(
 
         fit_quality = None
         if not cold_start and node in needs_beta:
-            fit_quality = traces[(node, fit_end_key)].diagnostics.get("fit_quality")
+            fit_quality = traces[FitKey(node, fit_end_key, draws=advi_draws)].diagnostics.get("fit_quality")
 
         contribs = [
             {"source": sid, "estimate": est}

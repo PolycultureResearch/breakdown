@@ -125,9 +125,17 @@ def test_compact_rca():
     assert len(out["ranked_causes"]) == 10  # capped
 
     node = out["nodes"]["revenue"]
-    # windows collapse to period counts; components to point estimates
+    # windows collapse to period counts; components keep their intervals —
+    # collapsing them handed the narrator a trend number with no uncertainty,
+    # and the trend interval is the engine's least confident (C9, S16).
     assert node["n_periods"] == {"reference": 46, "analysis": 54}
-    assert node["components"] == {"trend": -0.13, "seasonal": 0.0}
+    assert node["components"] == {
+        "trend": {"estimate": -0.13, "ci_95": [-0.2, -0.05]},
+        "seasonal": {"estimate": 0.0, "ci_95": [-0.01, 0.01]},
+    }
+    # `interaction` is absent: it is already inside each contribution's
+    # estimate, so publishing it beside them invited double-counting (C9).
+    assert "interaction" not in node
     # null node fields are omitted, not serialized
     assert "fit_quality" not in node and "sign_warnings" not in node
     # contributions keep the narration channels and drop the decomposition
@@ -367,3 +375,37 @@ def test_compact_rca_passes_lag_windows_through():
     assert lagged["parent_windows"] == windows
     for c in out["nodes"]["revenue"]["contributions"][1:]:
         assert "lag" not in c and "parent_windows" not in c
+
+
+def test_agent_payload_cannot_double_count_the_interaction():
+    """The defect C9 fixed: `compact_rca` dropped each contribution's
+    `decomposition` but kept the node-level `interaction`. Contribution
+    estimates already contain their co-movement share and `interaction` is the
+    sum of exactly those shares, so an LLM narrating "parents contributed X and
+    Y, plus an interaction of Z" double-counted the whole term.
+
+    Pinned as a property rather than a field list: the payload must never carry
+    both a per-parent estimate and a separate term already inside it.
+    """
+    out = compact_rca(_rca_fixture())
+
+    for node in out["nodes"].values():
+        if not node.get("contributions"):
+            continue
+        assert "interaction" not in node
+        # And no contribution re-exposes its own split, which would invite the
+        # same arithmetic one level down.
+        for c in node["contributions"]:
+            assert "decomposition" not in c
+
+    # The narrator is told so explicitly, not just left to infer it from an
+    # absent field.
+    assert "no separate interaction term" in RCA_HOW_TO_READ
+
+
+def test_whatif_how_to_read_does_not_claim_contributions_sum_to_the_estimate():
+    """They sum to the *point* delta. On a nonlinear node the two differ — ~1%
+    on a multilinear tree, ~8.5% on a cold-start ratio node — so the old
+    wording invited a reconciliation that does not hold (C9)."""
+    assert "delta estimate" not in WHATIF_HOW_TO_READ
+    assert "**point** delta" in WHATIF_HOW_TO_READ

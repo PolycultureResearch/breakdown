@@ -35,13 +35,18 @@ little and when its contribution dwarfs the child's net movement. It is meant
 as a triage ordering, not a rigorous multi-hop uncertainty propagation.
 """
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import networkx as nx
 import numpy as np
 import pandas as pd
 
-from breakdown.engine.model import compute_shapley, fit_metric, seasonal_window_delta
+from breakdown.engine.model import (
+    FitKey,
+    compute_shapley,
+    fit_metric,
+    seasonal_window_delta,
+)
 from breakdown.formula import eval_formula
 from breakdown.grains import (
     BOOT_BLOCK,
@@ -460,7 +465,7 @@ def shapley_attribution(
 def run_rca(
     dag: nx.DiGraph,
     data: pd.DataFrame,
-    traces: Dict[Tuple[str, Optional[str]], Any],
+    traces: Dict[Any, Any],
     target: str,
     reference_start: str,
     reference_end: str,
@@ -495,14 +500,14 @@ def run_rca(
     for node in nodes_in_scope:
         defn = dag.nodes[node]["definition"]
         parents = list(dag.predecessors(node))
-        if parents and not defn.formula and (node, analysis_start) not in traces:
+        if parents and not defn.formula and FitKey(node, analysis_start, draws=advi_draws) not in traces:
             g = fit_grain(dag, node)
             if (
                 snap_window(reference_start, reference_end, g) is None
                 or snap_window(analysis_start, analysis_end, g) is None
             ):
                 continue
-            traces[(node, analysis_start)] = fit_metric(
+            traces[FitKey(node, analysis_start, draws=advi_draws)] = fit_metric(
                 dag, data, node, draws=advi_draws,
                 inference_method="advi", fit_end=analysis_start,
                 random_seed=0,
@@ -735,7 +740,7 @@ def run_rca(
             unexplained = gap - sh["gap"]
         else:
             attribution_method = "posterior"
-            fit = traces[(node, analysis_start)]
+            fit = traces[FitKey(node, analysis_start, draws=advi_draws)]
             inference_method = fit.inference_method
             fit_quality = fit.diagnostics.get("fit_quality")
             sign_warnings = fit.diagnostics.get("sign_warnings")

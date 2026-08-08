@@ -27,7 +27,12 @@ RCA_HOW_TO_READ = (
     "'the modeled drivers don't account for this move' — do not force the gap onto the parents.\n"
     "- `ranked_causes` is a triage order ('look here first'), not a probability that a "
     "metric is the cause.\n"
-    "- `share_of_gap` is unclamped: opposing parents can legitimately sum past 100% or go negative.\n"
+    "- `share_of_gap` is unclamped: opposing parents can legitimately sum past 100% or go negative. "
+    "A null `share_of_gap` means the node did not meaningfully move, so shares of its gap "
+    "would be meaningless — do not narrate it as a driver.\n"
+    "- Each contribution already includes that parent's share of any within-window "
+    "co-movement between parents. There is no separate interaction term to add on top; "
+    "the contributions and `unexplained` account for the gap on their own.\n"
     "- `ci_95` is a 95% credible interval; `prob_same_direction` near 1.0 means the sign is "
     "near-certain, near 0.5 means it could go either way. A null `ci_95` means the interval "
     "was honestly withheld (see `ci_status`), not that it is zero.\n"
@@ -39,7 +44,9 @@ RCA_HOW_TO_READ = (
     "and reuse those windows for any follow-up analysis of that parent (drill-down "
     "run_rca, slice_metric).\n"
     "- `components` (trend/seasonal) are model structure, not causes: a seasonal gap from an "
-    "uneven weekday mix is nobody's fault.\n"
+    "uneven weekday mix is nobody's fault. Each carries its own `ci_95`; the trend "
+    "interval in particular does not widen with the analysis horizon, so treat it as a "
+    "lower bound on that component's uncertainty.\n"
     "- `sign_warnings` mean a fitted slope contradicts its declared sign, the classic mark of "
     "scale confounding — do not narrate that edge causally.\n"
     "- Fits use ADVI, which can understate uncertainty; treat this as triage and confirm "
@@ -83,7 +90,11 @@ WHATIF_HOW_TO_READ = (
     "(detail in `warnings`) means the scenario leaves that range — call the result speculative.\n"
     "- Assumption edges are user-asserted beliefs sampled from the stated 90% range, not "
     "fitted from data; say so when they drive the answer.\n"
-    "- Per-source `contributions` are exact Shapley shares and sum to the node's delta estimate.\n"
+    "- Per-source `contributions` are exact Shapley shares and sum to the node's "
+    "**point** delta — the propagation of the mean coefficients — not to the reported "
+    "`delta.estimate`, which is the mean over draws. On a nonlinear node the two differ "
+    "(measurably: ~1% on a multilinear tree, ~8.5% on a cold-start ratio node), so do "
+    "not present the contributions as a decomposition of the headline number.\n"
     "- The `caveats` list applies to every number here; weave it into the narrative rather "
     "than dropping it."
 )
@@ -174,12 +185,18 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
             "sign_warnings": node["sign_warnings"],
             "ci_status": node["ci_status"],
             "unexplained": node["unexplained"],
-            "components": (
-                {k: v["estimate"] for k, v in node["components"].items()}
-                if node["components"]
-                else None
-            ),
-            "interaction": node["interaction"],
+            # Components keep their intervals. Collapsing them to point
+            # estimates handed the narrator a trend number with no uncertainty
+            # attached — and the trend interval is the one the engine is least
+            # confident about (roadmap S16), so it is the last number that
+            # should reach an LLM looking exact (roadmap C9).
+            "components": node["components"],
+            # `interaction` is deliberately absent. It is the summed co-movement
+            # shift, which is *already inside* each contribution's `estimate` —
+            # publishing it beside them invited "parents contributed X and Y,
+            # plus an interaction of Z", double-counting the whole term. It
+            # remains available, with its per-parent split, in the full
+            # `GET /rca` and `GET /shapley` responses (C9).
             "contributions": [
                 {
                     # ci_95: null is meaningful (withheld interval) and stays;

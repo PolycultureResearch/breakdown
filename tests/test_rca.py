@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from breakdown.engine.model import FitKey
 from breakdown.engine.rca import _block_bootstrap_indices, run_rca, shapley_attribution
 from breakdown.parser import Parser
 from tests.synthetic import generate_mock_data
@@ -110,7 +111,7 @@ def test_rca_on_demand_fitting_minimal():
 
     rca_on(dag, data, traces, "revenue")
 
-    assert set(traces.keys()) == {("order_count", AN[0])}
+    assert set(traces.keys()) == {FitKey("order_count", AN[0], draws=300)}
 
 
 def test_rca_trace_reuse():
@@ -119,11 +120,11 @@ def test_rca_trace_reuse():
     dag, data = make_tree()
     traces = {}
     rca_on(dag, data, traces, "revenue")
-    trace = traces[("order_count", AN[0])]
+    trace = traces[FitKey("order_count", AN[0], draws=300)]
 
     rca_on(dag, data, traces, "revenue")
 
-    assert traces[("order_count", AN[0])] is trace
+    assert traces[FitKey("order_count", AN[0], draws=300)] is trace
 
 
 def test_rca_trace_keyed_by_fit_end():
@@ -134,7 +135,7 @@ def test_rca_trace_keyed_by_fit_end():
 
     rca_on(dag, data, traces, "order_count")
 
-    assert ("order_count", AN[0]) in traces
+    assert FitKey("order_count", AN[0], draws=300) in traces
     assert "order_count" not in traces
 
 

@@ -10,9 +10,12 @@ Window-over-window attribution (Shapley and posterior-based) lives in
 """
 import logging
 import math
+import threading
+from collections import OrderedDict
+from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from itertools import combinations
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Tuple
 
 import arviz as az
 import networkx as nx
@@ -30,6 +33,114 @@ logger = logging.getLogger(__name__)
 # Minimum whole periods (at the node's grain, after lag trimming) a fit needs.
 # `breakdown doctor` reports per-metric readiness against the same number.
 MIN_FIT_PERIODS = 10
+
+# Fits kept in a `TraceCache` before the least-recently-used one is evicted.
+# A fit holds an InferenceData with a latent trend state per period, so this is
+# the difference between a bounded process and one a caller can grow without
+# limit. Sized so a large tree's full RCA (the reference tree is 107 metrics)
+# plus a second analysis window still fits without thrashing.
+MAX_CACHED_FITS = 256
+
+
+class FitKey(NamedTuple):
+    """Identity of a fit: everything that changes the result.
+
+    The cache used to be keyed `(metric, fit_end)`, which is *not* an identity —
+    it says which series and window, but nothing about how it was fitted. So
+    `POST /analyze/x?draws=50&inference_method=advi&fit_end=D` wrote the very
+    entry `run_rca` would later reuse for analysis window `D`, and every
+    subsequent `ci_95` on that node became percentiles of 50 unseeded samples
+    (roadmap C8). That silently falsified `shaping.py`'s promise that a
+    `report_url` deep link reproduces the numbers it links to.
+
+    Defaults match the engine's own on-demand fits, so `FitKey(node, window)`
+    from `run_rca`/`run_scenario` is the seeded ADVI fit those paths mean. A
+    fit requested with different settings gets a different key rather than
+    overwriting this one — two entries, no poisoning.
+    """
+
+    metric: str
+    fit_end: Optional[str]
+    inference_method: str = "advi"
+    draws: int = 500
+    tune: int = 500
+    chains: int = 1
+    # Seeded engine fits are reproducible and shareable; an unseeded one is a
+    # different object even with identical settings, so it must not collide.
+    random_seed: Optional[int] = 0
+
+
+class TraceCache(MutableMapping):
+    """Bounded, thread-safe LRU of `FitKey -> FitResult`.
+
+    Two defects made this a class rather than a dict (roadmap C8).
+
+    **Unbounded growth.** Nothing evicted. The reference tree has 107 metrics,
+    so one RCA adds ~100 `InferenceData` objects — each carrying `trend_z` and
+    a `Deterministic("trend")` of length T — and a second `analysis_start`
+    adds ~100 more. A handful of requests exhausted the process.
+
+    **Unsynchronized iteration.** `run_rca` mutates the cache from a worker
+    thread (`asyncio.to_thread`) while `/meta` and `_pick_fit` iterated it,
+    raising `RuntimeError: dictionary changed size during iteration` — most
+    likely exactly when the UI polls during a long RCA. Note the existing
+    `asyncio.Lock` could never have fixed this: it serializes coroutines, and
+    the mutation is happening off-loop in a thread. The correct primitive is a
+    `threading.Lock`, held here so readers need no cooperation and, crucially,
+    do not have to queue behind a multi-minute fit to read cache metadata.
+
+    Iteration returns a snapshot for the same reason.
+    """
+
+    def __init__(self, max_entries: int = MAX_CACHED_FITS):
+        if max_entries < 1:
+            raise ValueError("max_entries must be >= 1")
+        self._max = max_entries
+        self._lock = threading.Lock()
+        self._store: "OrderedDict[FitKey, Any]" = OrderedDict()
+        self.evictions = 0
+
+    def __getitem__(self, key) -> Any:
+        with self._lock:
+            value = self._store[key]
+            self._store.move_to_end(key)      # a read is a use
+            return value
+
+    def __setitem__(self, key, value: Any) -> None:
+        with self._lock:
+            if key in self._store:
+                self._store.move_to_end(key)
+            self._store[key] = value
+            while len(self._store) > self._max:
+                evicted, _ = self._store.popitem(last=False)
+                self.evictions += 1
+                logger.info(
+                    "Trace cache full (%d fits); evicted least-recently-used "
+                    "fit for '%s' (fit_end=%s). It will be refit on demand.",
+                    self._max, evicted.metric, evicted.fit_end,
+                )
+
+    def __delitem__(self, key) -> None:
+        with self._lock:
+            del self._store[key]
+
+    def __iter__(self) -> Iterator:
+        with self._lock:
+            return iter(list(self._store))    # snapshot: safe under mutation
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._store)
+
+    def __contains__(self, key) -> bool:
+        with self._lock:
+            return key in self._store
+
+    def snapshot(self) -> "OrderedDict[FitKey, Any]":
+        """A shallow copy taken under the lock — for readers that need several
+        entries and must not see a torn view."""
+        with self._lock:
+            return OrderedDict(self._store)
 
 
 @dataclass

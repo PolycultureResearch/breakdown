@@ -6,7 +6,7 @@ import math
 import os
 from contextlib import asynccontextmanager
 from importlib.resources import files
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -20,7 +20,7 @@ from breakdown.data_fetch import (
     SliceNotSupported,
     WarehouseDataFetcher,
 )
-from breakdown.engine.model import fit_metric, summarize_trace
+from breakdown.engine.model import FitKey, TraceCache, fit_metric, summarize_trace
 from breakdown.engine.rca import run_rca, shapley_attribution
 from breakdown.engine.simulate import ScenarioRequest, run_scenario, validate_cold_start
 from breakdown.engine.slices import slice_attribution
@@ -152,15 +152,22 @@ def _require_data(request: Request) -> None:
         )
 
 
-def _pick_fit(traces: Dict[Tuple[str, Optional[str]], Any], name: str):
-    """Best cached fit to summarize for a metric: prefer the full-window fit,
-    else the one with the latest fit_end, else None."""
-    if (name, None) in traces:
-        return traces[(name, None)]
-    dated = [(fit_end, fit) for (n, fit_end), fit in traces.items() if n == name]
-    if not dated:
+def _pick_fit(traces, name: str):
+    """Best cached fit to summarize for a metric: prefer a full-window fit,
+    else the one with the latest fit_end, else None.
+
+    Reads a snapshot rather than iterating the live cache: `run_rca` mutates
+    it from a worker thread, and iterating during that raised
+    `RuntimeError: dictionary changed size during iteration` (roadmap C8).
+    """
+    entries = traces.snapshot() if hasattr(traces, "snapshot") else dict(traces)
+    mine = [(key, fit) for key, fit in entries.items() if key[0] == name]
+    if not mine:
         return None
-    return max(dated, key=lambda item: item[0])[1]
+    full = [fit for key, fit in mine if key[1] is None]
+    if full:
+        return full[0]
+    return max(mine, key=lambda item: item[0][1])[1]
 
 
 class _McpMount:
@@ -209,7 +216,7 @@ async def lifespan(app: FastAPI):
     app.state.startup_error = None
     # Keyed by (metric name, fit_end): a full-window fit (fit_end=None) and a
     # pre-anomaly RCA fit are different objects and must not shadow each other.
-    app.state.traces: Dict[Tuple[str, Optional[str]], Any] = {}
+    app.state.traces = TraceCache()
     # Sliced frames fetched on demand for slice attribution, keyed by
     # (metric, dimension source, grain, start, end). Deliberately separate
     # from the startup GrainedData — slices never enter the fit path.
@@ -390,7 +397,7 @@ async def get_meta(request: Request):
         # period) — the honest data edge, which may lag the requested window
         # when a source mart is behind.
         "data_through": data_through,
-        "fitted": sorted({name for (name, _) in request.app.state.traces}),
+        "fitted": sorted({key[0] for key in request.app.state.traces}),
     }
 
 
@@ -501,7 +508,10 @@ async def analyze_metric(
             draws=draws, tune=tune, inference_method=inference_method,
             chains=chains, fit_end=fit_end,
         )
-        request.app.state.traces[(name, fit_end)] = fit
+        request.app.state.traces[FitKey(
+            name, fit_end, inference_method=inference_method,
+            draws=draws, tune=tune, chains=chains, random_seed=None,
+        )] = fit
 
     return {
         "status": "success",

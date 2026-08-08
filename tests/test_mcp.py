@@ -12,6 +12,7 @@ pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
 from breakdown.api.main import app
+from breakdown.engine.model import FitKey
 
 HEADERS = {
     "Accept": "application/json, text/event-stream",
@@ -143,7 +144,7 @@ def test_run_rca():
         assert "effective_windows" not in out["nodes"]["revenue"]
 
         # the on-demand fit landed in the shared cache (visible to the UI too)
-        assert ("order_count", WINDOWS["analysis_start"]) in app.state.traces
+        assert FitKey("order_count", WINDOWS["analysis_start"], draws=500) in app.state.traces
 
         # seeded engine: identical call, identical answer
         res2 = _call_tool(client, "run_rca", {"target": "revenue", **WINDOWS}, id=4)
