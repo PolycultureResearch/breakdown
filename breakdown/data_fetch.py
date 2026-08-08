@@ -1,6 +1,7 @@
 import importlib
 import importlib.util
 import logging
+import re
 import shutil
 from abc import ABC, abstractmethod
 from types import ModuleType
@@ -552,6 +553,61 @@ class WarehouseDataFetcher(BaseDataFetcher):
         )
 
 
+# --- Mock-only scale heuristics ---------------------------------------------
+# `kind: rate` says a metric is a ratio, but not what it is a ratio *of*: a
+# conversion rate lives in (0,1), a mean page-load time in seconds, an ARPU in
+# dollars. The generator has to invent a scale for every leaf, and inventing an
+# impression-count scale for a conversion rate is what made a funnel of
+# `count × rate` identities compound once per level — 10²⁵ MRR on the reference
+# tree, and five-digit percentages on every `format: percent` node (C11).
+#
+# A name is the only signal available, so it splits rates into two bands. These
+# are mock-only: nothing in the engine reads them, and a miss costs realism in
+# a fixture, never correctness. Flows and stocks keep their original scale so
+# all-flow trees stay byte-identical (pinned by `test_mock_all_day_tree_pinned_values`).
+_MOCK_RATE_MAGNITUDE_NAME = re.compile(
+    r"^(average|avg|mean|median)_|_per_|^time_to_|^time_on_|_speed$|_cycle$|_latency$"
+)
+
+
+def _mock_rate_scale(name: str, rng) -> Tuple[float, float, float]:
+    """Base level and (lo, hi) clip band for a `kind: rate` mock series."""
+    if _MOCK_RATE_MAGNITUDE_NAME.search(name):
+        # A magnitude per unit — a mean duration, an ARPU, sends per subscriber.
+        # Bounded below at ~0 because none of them can go negative.
+        return float(rng.uniform(1.0, 200.0)), 1e-3, np.inf
+    # A share of something, so it belongs strictly inside (0, 1).
+    return float(rng.uniform(0.01, 0.6)), 1e-3, 0.999
+
+
+def _mock_coef(prior, rng) -> float:
+    """A representative coefficient for one learned edge.
+
+    Reads the *per-parent* prior when there is one. The previous version used
+    `priors["coefficient"].params["mu"]` for every parent and fell back to
+    `uniform(0.1, 0.5)`, so per-parent priors were never read and no
+    coefficient was ever negative — a correctly declared
+    `expected_signs: negative` edge then produced a guaranteed spurious
+    `sign_warnings`, training authors to ignore the engine's own honesty
+    diagnostic (C11).
+    """
+    if prior is None:
+        return float(rng.uniform(0.1, 0.5))
+    params = prior.params
+    if prior.distribution == "Normal":
+        return float(params.get("mu", 0.0))
+    if prior.distribution == "HalfNormal":
+        # E[HalfNormal(sigma)] = sigma * sqrt(2/pi); positive by construction,
+        # which is the whole point of declaring one.
+        return float(params.get("sigma", 1.0)) * 0.7979
+    if prior.distribution == "LogNormal":
+        return float(np.exp(params.get("mu", 0.0)))
+    if prior.distribution == "Exponential":
+        lam = float(params.get("lam", params.get("lambda", 1.0))) or 1.0
+        return 1.0 / lam
+    return float(rng.uniform(0.1, 0.5))
+
+
 class MockDataFetcher(BaseDataFetcher):
     """
     Generates synthetic data for development and testing.
@@ -565,6 +621,14 @@ class MockDataFetcher(BaseDataFetcher):
     mock-only convenience (real rates are recomputed from components; the
     mock generates the rate series directly). Without a DAG, each metric is
     an independent random walk at the requested grain.
+
+    Generation is **kind-aware**: a `kind: rate` node is generated on a rate's
+    scale (a share inside (0,1), or a per-unit magnitude for a duration/ARPU
+    name — see `_mock_rate_scale`) rather than a volume metric's, so a funnel
+    of `count × rate` identities composes instead of compounding once per
+    level. Learned edges read their **per-parent** prior, so a declared
+    negative effect really is generated negative. Flows and stocks are
+    unchanged, which keeps all-flow trees byte-identical.
     """
     def __init__(self, dag: Optional[nx.DiGraph] = None):
         self.dag = dag
@@ -627,8 +691,7 @@ class MockDataFetcher(BaseDataFetcher):
                     noise_scale = 0.02 * float(np.abs(base).mean()) or 1.0
                     vals = base + rng.normal(0, noise_scale, n)
                 else:
-                    coef_prior = defn.priors.get("coefficient")
-                    default_coef = coef_prior.params.get("mu") if coef_prior else None
+                    rate_child = getattr(defn, "kind", "flow") == "rate"
                     signal = np.zeros(n)
                     for p in parents:
                         parent_vals = arrs[p]
@@ -639,20 +702,57 @@ class MockDataFetcher(BaseDataFetcher):
                             parent_vals = np.concatenate(
                                 [np.full(lag, parent_vals[0]), parent_vals[:-lag]]
                             )
-                        coef = default_coef if default_coef is not None else float(rng.uniform(0.1, 0.5))
-                        signal += coef * parent_vals
-                    noise_scale = 0.05 * float(np.abs(signal).mean()) or 1.0
-                    vals = signal + rng.normal(0, noise_scale, n)
+                        coef = _mock_coef(
+                            defn.priors.get(p) or defn.priors.get("coefficient"), rng
+                        )
+                        # On a rate child the coefficient is a per-unit effect
+                        # *on the rate*, not a share of the parent's level, so
+                        # `sum(coef * parent)` would put a conversion rate on
+                        # its regressors' scale (seconds of page load). Take
+                        # deviations and let the rate carry its own level.
+                        signal += coef * (
+                            parent_vals - parent_vals.mean() if rate_child else parent_vals
+                        )
+
+                    if rate_child:
+                        base, lo, hi = _mock_rate_scale(name, rng)
+                        # Rescale the composite to a modest swing around the
+                        # level. A positive scalar, so every parent keeps its
+                        # sign and its share of the signal — which is what the
+                        # fit is meant to recover — while the series stays a
+                        # plausible rate whatever units the priors were in.
+                        sd = float(signal.std())
+                        if sd > 0:
+                            signal = signal * (0.12 * base / sd)
+                        vals = np.clip(
+                            base + signal + rng.normal(0, 0.03 * base, n), lo, hi
+                        )
+                    else:
+                        noise_scale = 0.05 * float(np.abs(signal).mean()) or 1.0
+                        vals = signal + rng.normal(0, noise_scale, n)
                 series[name] = pd.Series(vals, index=idx)
             else:
                 n = len(spine)
                 t = np.arange(n)
-                level = float(rng.uniform(50, 5000))
-                vals = (
-                    level
-                    + np.cumsum(rng.normal(0, 0.02 * level, n))
-                    + 0.1 * level * np.sin(2 * np.pi * t / 7)
-                )
+                if getattr(defn, "kind", "flow") == "rate":
+                    # A rate wanders far less than a volume metric and cannot
+                    # leave its band, so the walk is damped and clipped — an
+                    # undamped one drifts a share negative over a long window.
+                    base, lo, hi = _mock_rate_scale(name, rng)
+                    vals = np.clip(
+                        base
+                        + np.cumsum(rng.normal(0, 0.005 * base, n))
+                        + 0.03 * base * np.sin(2 * np.pi * t / 7),
+                        lo,
+                        hi,
+                    )
+                else:
+                    level = float(rng.uniform(50, 5000))
+                    vals = (
+                        level
+                        + np.cumsum(rng.normal(0, 0.02 * level, n))
+                        + 0.1 * level * np.sin(2 * np.pi * t / 7)
+                    )
                 series[name] = pd.Series(vals, index=spine)
 
         self._cache[key] = series
