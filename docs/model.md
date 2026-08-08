@@ -157,19 +157,13 @@ Given a reference window and an analysis window, each metric's change is its
   of three exact Shapley games: a **window-means bridge** (reference means →
   analysis means), plus the parent's share of the **within-analysis-window
   co-movement term**, minus its share of the **within-reference-window**
-  counterpart. The parts telescope, so the attribution sums exactly to
+  counterpart. The parts telescope, so contributions sum exactly to
   `mean over analysis days of formula(parents that day) − mean over reference
-  days of formula(parents that day)`.
-
-  > **Caveat (open, roadmap C3).** That exactness is what `GET /shapley`
-  > returns. `run_rca` currently publishes each contribution's `estimate` as the
-  > *bootstrap mean* of the same decomposition rather than the exact value, and
-  > because the decomposition is nonlinear in jointly-resampled window means the
-  > two differ slightly — so RCA contributions reconcile with `gap` only
-  > approximately, and the residual lands in neither `unexplained` nor any
-  > reported row. The exact values are already computed; C3 publishes them. Until
-  > it lands, use `GET /shapley` when the numbers have to tie.
-
+  days of formula(parents that day)`. This holds for the numbers RCA publishes,
+  not only for `GET /shapley`: each contribution's `estimate` **is** the exact
+  Shapley value, and the bootstrap supplies only its interval. Together with
+  `unexplained` (below, computed from the same exact decomposition), the
+  contributions reconcile with the node's own gap to machine precision.
   Compared to Shapley on window means,
   this attributes *shifts* in the parents' within-window covariance to the
   parents — for `revenue = orders × aov`, "the big orders disappeared" is

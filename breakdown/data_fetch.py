@@ -72,6 +72,35 @@ def provider_extra_missing(provider: str) -> Optional[str]:
     return None
 
 
+def _to_naive_dates(df: pd.DataFrame, metric_name: str) -> pd.DataFrame:
+    """Parse the `date` column and drop any timezone, keeping the wall-clock
+    label the source attached to the row.
+
+    This has to happen before anything else touches the dates. `floor_period`
+    normalizes but *preserves* tzinfo, so a tz-aware midnight satisfies every
+    period-start check and then matches nothing against the tz-naive spine —
+    which used to leave the metric identically zero (roadmap C1). Any SQL
+    returning `TIMESTAMP` rather than `DATE` hits this (Databricks attaches
+    UTC), as does a session timezone setting.
+
+    The zone is dropped rather than converted: a row labelled midnight
+    `+09:00` means that calendar date to whoever wrote the query, and
+    converting through UTC would move it to the day before.
+    """
+    df = df.copy()
+    idx = pd.DatetimeIndex(pd.to_datetime(df["date"]))
+    if idx.tz is not None:
+        logger.warning(
+            "Metric '%s': date column is timezone-aware (%s); dropping the zone "
+            "and keeping the labelled date. Return DATE rather than TIMESTAMP to "
+            "make this explicit.",
+            metric_name, idx.tz,
+        )
+        idx = idx.tz_localize(None)
+    df["date"] = idx
+    return df
+
+
 def _floor_labels(df: pd.DataFrame, metric_name: str, grain: str) -> pd.DataFrame:
     """Snap returned date labels to period starts (day midnight, week Monday,
     month 1st), warning if any label moved — e.g. a dbt project configured
@@ -87,6 +116,93 @@ def _floor_labels(df: pd.DataFrame, metric_name: str, grain: str) -> pd.DataFram
         df = df.copy()
         df["date"] = floored
     return df
+
+
+def _align_to_spine(
+    df: pd.DataFrame,
+    metric_name: str,
+    grain: str,
+    kind: str,
+    start_date: str,
+    end_date: str,
+    value_col: str,
+) -> pd.DataFrame:
+    """Reindex a `[date, <value_col>]` frame onto the spine of whole `grain`
+    periods inside the window, and fill what is missing by `kind`.
+
+    Every provider goes through here, which is the point: this contract used to
+    live inside the warehouse fetcher, so `cloud` and `local` floored their
+    labels and returned raw rows (roadmap C2). A window ending Tuesday on a
+    `grain: week` metric handed back a two-day partial week as a full row at
+    ~2/7 normal volume, and `snap_window` treated it as whole — a manufactured
+    −71% gap. The mock provider snapped correctly, which is why the suite never
+    saw it.
+
+    The rules, unchanged from the warehouse path that proved them:
+
+    - Rows for periods only *partially* inside the window are dropped, never
+      zero-filled into fake periods.
+    - **Trailing** gaps are trimmed, not filled: periods after the last row the
+      source returned mean "not loaded yet" far more often than "genuinely
+      zero", and filling them bakes a lying tail into every headline number.
+    - **Interior** gaps are filled by kind — flow → 0, stock → forward-fill
+      (a leading gap is an error), rate → an error, because a rate cannot be
+      invented. Filling one is a judgement call rather than a fact, so it is
+      logged: a three-day ETL outage becomes three zero days otherwise, which
+      is indistinguishable from a real collapse and which RCA will happily name
+      as the root cause.
+    - A source returning *no rows at all* keeps the full fill for flows — an
+      all-quiet window is a legitimate flow series. Rows that all miss the
+      spine is a different thing entirely (a query ignoring its bound window),
+      and raises.
+    """
+    spine = period_spine(start_date, end_date, grain)
+    s = df.set_index("date")[value_col].astype(float)
+
+    kept = s.index.isin(spine)
+    if len(s) and len(spine) and not kept.any():
+        raise RuntimeError(
+            f"Metric '{metric_name}' returned {len(s)} rows, none of which fall "
+            f"on a '{grain}' period inside [{start_date}, {end_date}] "
+            f"(returned {s.index.min().date()} to {s.index.max().date()}). "
+            "Zero-filling would report the metric as identically zero, so this "
+            "is an error: check that the query honours its window parameters."
+        )
+    s = s[kept].reindex(spine)
+
+    if s.notna().any():
+        s = s.loc[: s.last_valid_index()]
+
+    first = s.first_valid_index()
+    interior = s.index[s.isna() & (s.index > first)] if first is not None else s.index[:0]
+    if len(interior) and kind in ("flow", "stock"):
+        shown = [str(d.date()) for d in interior[:5]]
+        logger.warning(
+            "Metric '%s': %d interior %s period(s) had no row and were filled "
+            "(%s → %s); %s. A gap in the source is not the same as a zero.",
+            metric_name, len(interior), grain, ", ".join(shown),
+            "0.0" if kind == "flow" else "the previous value",
+            "…" if len(interior) > 5 else "that is all of them",
+        )
+
+    if kind == "flow":
+        s = s.fillna(0.0)
+    elif kind == "stock":
+        s = s.ffill()
+        if s.isna().any():
+            raise RuntimeError(
+                f"Stock metric '{metric_name}' has no value at or before the "
+                f"first {grain} period ({spine[0].date()}) of the window."
+            )
+    else:  # rate
+        if s.isna().any():
+            missing = [str(d.date()) for d in s.index[s.isna()][:5]]
+            raise RuntimeError(
+                f"Rate metric '{metric_name}' is missing {grain} periods "
+                f"{missing}; a rate cannot be gap-filled — fix the source or "
+                "narrow the window."
+            )
+    return s.rename(metric_name).rename_axis("date").reset_index()
 
 
 class SliceNotSupported(RuntimeError):
@@ -189,9 +305,12 @@ class CloudDataFetcher(BaseDataFetcher):
         df = table.to_pandas()
         date_col = next(c for c in df.columns if "metric_time" in c.lower())
         df = df.rename(columns={date_col: "date"})
-        df["date"] = pd.to_datetime(df["date"])
+        df = _to_naive_dates(df, metric_name)
         df = _floor_labels(df, metric_name, grain)
-        return df[["date", metric_name]].sort_values("date").reset_index(drop=True)
+        df = df.sort_values("date")
+        return _align_to_spine(
+            df, metric_name, grain, kind, start_date, end_date, value_col=metric_name
+        )
 
     def fetch_metric_sliced(
         self, metric_name: str, dimension_source: str,
@@ -275,9 +394,12 @@ class LocalDataFetcher(BaseDataFetcher):
         if date_col is None:
             raise RuntimeError(f"No metric_time column found in mf output. Columns: {list(df.columns)}")
         df = df.rename(columns={date_col: "date"})
-        df["date"] = pd.to_datetime(df["date"])
+        df = _to_naive_dates(df, metric_name)
         df = _floor_labels(df, metric_name, grain)
-        return df[["date", metric_name]].sort_values("date").reset_index(drop=True)
+        df = df.sort_values("date")
+        return _align_to_spine(
+            df, metric_name, grain, kind, start_date, end_date, value_col=metric_name
+        )
 
     def fetch_metric_sliced(
         self, metric_name: str, dimension_source: str,
@@ -407,11 +529,14 @@ class WarehouseDataFetcher(BaseDataFetcher):
                 f"SQL for metric '{metric_name}' must return columns named 'date' and "
                 f"'value'; got {list(df.columns)}."
             )
-        df["date"] = pd.to_datetime(df["date"])
+        df = _to_naive_dates(df, metric_name)
         df["value"] = df["value"].astype(float)
 
-        # The SQL author owns the aggregation to the declared grain; the
-        # engine only validates the labels and fills gaps by kind.
+        # The SQL author owns the aggregation to the declared grain, so a
+        # misaligned label here is a bug in the query rather than a dbt
+        # convention to accommodate — unlike the semantic-layer providers,
+        # which floor with a warning. Runs on tz-naive dates: comparing two
+        # tz-aware values is what let C1 through this guard.
         idx = pd.DatetimeIndex(df["date"])
         aligned = floor_period(idx, grain)
         if (idx != aligned).any():
@@ -422,35 +547,9 @@ class WarehouseDataFetcher(BaseDataFetcher):
                 "weekly periods start Monday, monthly on the 1st."
             )
 
-        # Reindex onto the spine of whole periods inside the window (rows for
-        # partial edge periods are dropped) so missing periods become explicit
-        # rather than dropping rows from the tree-wide join. Trailing periods
-        # with no returned row are trimmed, not filled: they mean "not loaded
-        # yet" far more often than "genuinely zero", and filling them would
-        # bake a lying tail into every headline number downstream.
-        spine = period_spine(start_date, end_date, grain)
-        s = df.set_index("date")["value"]
-        s = s[s.index.isin(spine)].reindex(spine)
-        if s.notna().any():
-            s = s.loc[: s.last_valid_index()]
-        if kind == "flow":
-            s = s.fillna(0.0)
-        elif kind == "stock":
-            s = s.ffill()
-            if s.isna().any():
-                raise RuntimeError(
-                    f"Stock metric '{metric_name}' has no value at or before the "
-                    f"first {grain} period ({spine[0].date()}) of the window."
-                )
-        else:  # rate
-            if s.isna().any():
-                missing = [str(d.date()) for d in s.index[s.isna()][:5]]
-                raise RuntimeError(
-                    f"Rate metric '{metric_name}' is missing {grain} periods "
-                    f"{missing}; a rate cannot be gap-filled — fix the SQL or "
-                    "narrow the window."
-                )
-        return s.rename(metric_name).rename_axis("date").reset_index()
+        return _align_to_spine(
+            df, metric_name, grain, kind, start_date, end_date, value_col="value"
+        )
 
 
 class MockDataFetcher(BaseDataFetcher):

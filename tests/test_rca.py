@@ -40,8 +40,8 @@ def rca_on(dag, data, traces, target):
 
 
 def test_rca_formula_attribution():
-    """Formula node revenue uses Shapley; bootstrap-mean estimates approximately
-    sum to gap - unexplained, and carry CIs (T7)."""
+    """Formula node revenue uses Shapley; the published estimates are the exact
+    Shapley values and reconcile with the gap to machine precision (T7, C3)."""
     dag, data = make_tree()
     result = rca_on(dag, data, {}, "revenue")
 
@@ -51,16 +51,31 @@ def test_rca_formula_attribution():
     parents = {c["parent"] for c in rev["contributions"]}
     assert parents == {"order_count", "average_order_value"}
 
-    # Estimates are bootstrap means, so the identity holds only approximately.
+    # The identity is exact, not approximate: the estimates are the exact
+    # Shapley values and `unexplained` comes from the same exact call, so the
+    # two halves reconcile. This used to hold only to ~5% because the estimate
+    # was the mean over bootstrap replicates of a nonlinear decomposition.
     total = sum(c["estimate"] for c in rev["contributions"])
-    gap = rev["gap"]
-    assert abs(total - (gap - rev["unexplained"])) < 0.05 * max(1, abs(gap))
+    assert abs(total - (rev["gap"] - rev["unexplained"])) < 1e-9
 
     for c in rev["contributions"]:
         assert c["ci_95"] is not None and c["ci_95"][0] <= c["ci_95"][1]
+        # The two-level split is exact too, not just exact in expectation.
+        d = c["decomposition"]
+        assert abs(
+            d["means"]["estimate"] + d["comovement"]["estimate"] - c["estimate"]
+        ) < 1e-9
         # unlagged contributions carry no lag surfacing keys at all
         assert "lag" not in c and "parent_windows" not in c
         assert 0.5 <= c["prob_same_direction"] <= 1.0
+
+    # The interaction row is a readout of co-movement already inside the
+    # contributions, so it must equal their comovement parts — adding it on top
+    # of the contributions double-counts (see roadmap C9).
+    comovement_total = sum(
+        c["decomposition"]["comovement"]["estimate"] for c in rev["contributions"]
+    )
+    assert abs(rev["interaction"]["estimate"] - comovement_total) < 1e-9
 
 
 def test_rca_posterior_attribution():
@@ -433,10 +448,21 @@ def test_rca_deterministic():
 
 
 def test_rca_day_grain_golden_pinned():
-    """The grain refactor must leave the day-grain path bit-for-bit
-    identical: golden numbers captured before per-node grain landed. Only the
-    formula node is pinned — its contributions come solely from the seeded
-    bootstrap, independent of the ADVI posterior."""
+    """The day-grain path stays bit-for-bit stable. Only the formula node is
+    pinned — it is deterministic given the seed, independent of ADVI.
+
+    Re-pinned once, for C3. `gap` and `unexplained` are unchanged from the
+    original capture (they always came from the exact Shapley call); the two
+    contributions moved because they are now that same exact call's values
+    rather than means over bootstrap replicates:
+
+        order_count         715.6923261624328 -> 713.9109253339559
+        average_order_value 239.8411235487748 -> 237.8407751158013
+
+    The old numbers were the bug: they overshot `gap - unexplained` by 3.78,
+    which this test pinned as correct. Any *future* movement in these is a
+    regression.
+    """
     dag, data = make_tree()
     result = rca_on(dag, data, {}, "revenue")
 
@@ -449,5 +475,10 @@ def test_rca_day_grain_golden_pinned():
     assert abs(rev["gap"] - 943.1485825183736) < 1e-9
     assert abs(rev["unexplained"] - (-8.603117931383167)) < 1e-9
     contribs = {c["parent"]: c["estimate"] for c in rev["contributions"]}
-    assert abs(contribs["order_count"] - 715.6923261624328) < 1e-9
-    assert abs(contribs["average_order_value"] - 239.8411235487748) < 1e-9
+    assert abs(contribs["order_count"] - 713.9109253339559) < 1e-9
+    assert abs(contribs["average_order_value"] - 237.8407751158013) < 1e-9
+
+    # The property those numbers exist to protect: contributions reconcile with
+    # the node's own gap. Pinning values that violated it is how the bug
+    # survived a golden test in the first place.
+    assert abs(sum(contribs.values()) - (rev["gap"] - rev["unexplained"])) < 1e-9

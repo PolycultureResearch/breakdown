@@ -801,12 +801,25 @@ An earlier edition of this paper made that claim without qualification. The
 quietly wrong rather than disclosed, including two that could silently turn real
 data into fabricated movement at the provider boundary, and one — the coverage
 test in #7 — where this document's own headline evidence proved less than it
-appeared to. Those are now enumerated as
+appeared to. Those are enumerated as
 [Horizon 0](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend) and
-they gate everything else. Until they close, the honest statement is: the
-*statistical* limitations are documented; a short, named list of *correctness*
-defects is documented and open. We would rather you read that list than trust the
-claim it replaced.
+they gate everything else.
+
+**The two provider-boundary defects are fixed** (`C1`/`C2`, shipped 2026-08-05).
+A timezone-aware date column used to leave a metric identically zero — the
+alignment guard compared two tz-aware values and passed, and the zeros were then
+written to snapshots and served from there. And only two of the four providers
+snapped to a period spine, so a window ending mid-week could return a partial
+week as a whole one. Both now go through a single shared contract, and both have
+tests that fail against the previous code. If you ran an analysis on the `cloud`
+or `local` provider at a non-period-aligned window boundary before that date, or
+against a warehouse returning `TIMESTAMP`, re-run it — and delete any snapshot
+written from it, because a snapshot of the old behavior is still wrong.
+
+The remaining Horizon 0 items are open. Until they close, the honest statement
+is: the *statistical* limitations are documented; a short, named list of
+*correctness* defects is documented, and shrinking. We would rather you read that
+list than trust the claim it replaced.
 
 ---
 
@@ -1010,6 +1023,8 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-08-05 | **C3 shipped** — no text changed. §2.3 already claimed that contributions "sum to the true gap exactly" and that `unexplained` on a formula node is "measurement residual only"; that was true of `GET /shapley` and false of what RCA published, which reported a bootstrap mean of a nonlinear decomposition instead. The code now matches the paper rather than the paper being softened to match the code. Logged because a reader comparing editions should be able to see that this section's meaning changed even though its words did not. |
+| 2026-08-05 | **C1/C2 shipped** — the two provider-boundary correctness defects are fixed, and §3.3 now says so, including what to re-run. Every provider shares one date-alignment contract (tz coercion, period spine, trailing trim, kind-aware interior fill). No §3.2 weakness changed status: neither defect was ever a numbered statistical weakness, which is exactly why §3.3 had to carry them. |
 | 2026-08-05 | **Acted on a hostile external review** of the engine, docs and tests (against 0.1.0). §3.2 gained four weaknesses it had not named — the short-window bootstrap attenuation (#2, `C4`), unacknowledged multiplicity and selection (#3, `S15`), the horizon-invariant trend interval (#9, `S16`), and the structural bias in the coverage test this paper had offered as its headline calibration evidence (#7, `S17`) — and #6, #8, #10 and #12 were amended with the specific defects behind them. §3.3's unqualified claim that the failure modes are "documented rather than hidden" was **corrected**: it was not fully earned, and the exceptions are now enumerated as the roadmap's [Horizon 0](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend) correctness gate, which runs ahead of the S track. §4 gained `S15`/`S16`/`S17` with rationale, and `S4` (parent collinearity) was promoted. |
 | 2026-08-05 | §3.2 and §4 given status markers and roadmap IDs; §4 items registered as the roadmap's [Statistical rigor (S) workstream](roadmap.md#statistical-rigor-s--a-standing-workstream), sequenced to start after the 0.1.0 release with S1 first. Added full-rank ADVI (S1) as a §4.1 item, split out of the ADVI diagnostic. Cross-linked [`advi_vs_nuts_in_breakdown.md`](advi_vs_nuts_in_breakdown.md) from §2.2 and §3.2. |
 | 2026-08-04 | First version, against engine 0.1.0. Written after the roadmap 1.1 statistical hardening work (window validation, date-spine contiguity, Nyquist harmonic filtering) — §2.10 describes those guards as shipped. |
