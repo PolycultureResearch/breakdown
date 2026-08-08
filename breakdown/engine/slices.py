@@ -49,7 +49,9 @@ from breakdown.engine.rca import (
     _N_BOOT,
     _block_bootstrap_indices,
     _sample_summary,
+    _widen,
     _window_info,
+    _window_mean_correction,
 )
 from breakdown.grains import BOOT_BLOCK, period_spine, snap_window
 
@@ -317,8 +319,18 @@ def _sum_attribution(
         # One index set per window shared across slices (joint resampling), so
         # cross-slice correlation within a window is preserved — same rationale
         # as tree RCA's cross-parent joint bootstrap.
-        ref_means_b = X_ref[ref_idx].mean(axis=1)   # (n_boot, m)
-        an_means_b = X_an[an_idx].mean(axis=1)
+        # Same finite-sample attenuation correction as tree RCA (roadmap C4):
+        # this is the same estimator on the same kind of window mean, so
+        # leaving it out here would make a slice interval narrower than the
+        # RCA interval for the very same movement.
+        ref_means_b = _widen(
+            X_ref[ref_idx].mean(axis=1), ref_means,          # (n_boot, m)
+            _window_mean_correction(len(X_ref), block),
+        )
+        an_means_b = _widen(
+            X_an[an_idx].mean(axis=1), an_means,
+            _window_mean_correction(len(X_an), block),
+        )
         total_ref_b = ref_means_b.sum(axis=1)
         total_an_b = an_means_b.sum(axis=1)
         gap_b = total_an_b - total_ref_b

@@ -659,20 +659,32 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
    one**, and most users will never leave it. This is the single largest gap
    between what the intervals claim and what they deliver — worked through in
    detail in [`advi_vs_nuts_in_breakdown.md`](advi_vs_nuts_in_breakdown.md).
-2. **The short-window block bootstrap is attenuated by construction.** — ○ open
-   ([C4](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend))
-   `_block_bootstrap_indices` caps the effective block length at `n // 2`, which
-   lands on the midpoint of the very degeneracy curve its docstring reasons
-   about: the resampled variance of a window mean is systematically too small,
-   worst on short windows, and not even monotone in `n`. **Formula-node
-   contribution intervals come entirely from this path**, with no offsetting
-   term — and §2.5 sells the bootstrap as the honesty mechanism for exactly the
-   two-to-three-period windows where it is least honest. Separately, the
-   degeneracy guard keys on `n_periods == 1` rather than on the resampled
-   spread, so a window in which a parent is *constant* (an unlaunched feature, a
-   zero-inflated series) ships a **zero-width interval flagged `ci_status:
-   "ok"`**. Until C4 lands, treat short-window formula CIs as a lower bound on
-   the true uncertainty.
+2. **Short-window intervals are too narrow.** — ◑ partially addressed
+   ([C4](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend) ✅,
+   [S6](roadmap.md#statistical-rigor-s--a-standing-workstream),
+   [S18](roadmap.md#statistical-rigor-s--a-standing-workstream))
+   **Formula-node contribution intervals come entirely from the window
+   bootstrap**, with no offsetting term — and §2.5 sells that bootstrap as the
+   honesty mechanism for exactly the two-to-three-period windows where it was
+   least honest.
+
+   C4 fixed two exactly-derivable downward biases in it: circular block
+   resampling attenuates a window mean's variance by `(1 − ℓ/n)`, and the
+   observed periods' variance about their own mean is `(1 − 1/n)` of the
+   unbiased estimate. It also re-keyed the degeneracy guard onto the resampled
+   *spread* rather than the period count, so a constant parent no longer ships a
+   zero-width interval flagged `ci_status: "ok"`.
+
+   **It is not enough, and the numbers are worth stating rather than
+   summarizing.** Measured coverage of the nominal 95% window-mean interval,
+   before → after C4: iid `0.75 → 0.84` at n=3 and `0.79 → 0.90` at n=7; AR(1)
+   ρ=0.7 `0.46 → 0.59` at n=7 and `0.53 → 0.68` at n=14. Strictly better
+   everywhere, short of 95% everywhere. A short-window contribution interval is
+   still a **lower bound** on the true uncertainty, most of all when the series
+   is genuinely autocorrelated — which most business metrics are. The remainder
+   is S6 (the block length is a fixed per-grain constant, not estimated — this
+   is what keeps the AR(1) figures low) and S18 (a percentile interval uses
+   effectively normal quantiles where a short window needs a t-shaped tail).
 3. **Nothing accounts for multiplicity or selection.** — ○ open
    ([S15](roadmap.md#statistical-rigor-s--a-standing-workstream))
    One `run_rca` on a 15-node tree emits 25–30 intervals plus a
@@ -753,10 +765,11 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
     [C4](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend))
     Composing a frequentist resampling interval with a Bayesian posterior is
     pragmatic and defensible but not a coherent joint posterior; block length is
-    fixed rather than estimated. C4 fixes the block *cap* (a defect); S6
-    estimates the block *length* from the data. The deeper composition question
-    is not currently scheduled, and would mean moving window-sampling
-    uncertainty inside the model.
+    fixed rather than estimated. C4 corrected the estimator's finite-sample
+    *bias* (shipped, see #2); S6 would estimate the block *length* from the data,
+    and is now the largest single lever on short-window coverage. The deeper
+    composition question is not currently scheduled, and would mean moving
+    window-sampling uncertainty inside the model.
 11. **The flat trend forecast understates counterfactual movement** for nodes
     with genuine momentum (§2.4). — ○ open
     ([3.4](roadmap.md#horizon-3--make-it-findable-and-sticky-it-comes-to-you),
@@ -863,6 +876,7 @@ attenuated bootstrap would just relocate the error.
 | S15 | Multiplicity and selection-aware reporting | ○ open |
 | S16 | Forward-simulation variance in the trend interval | ○ open |
 | S17 | Rebuild the calibration suite's coverage test | ○ open |
+| S18 | A t-shaped tail for short-window intervals | ○ open — **added by C4** |
 | 3.4 | Counterfactual RCA (Horizon 3, not the S track) | ○ open |
 
 Below, the reasoning behind each — ordered by value per unit of effort.
@@ -938,6 +952,22 @@ interval for a window `H` periods out is strictly wider — and today's is flat 
 measurement first: simulate forward from fitted posteriors across grains and
 horizons, report the actual understatement, then correct it. This is separate
 from S8 and 3.4, which concern the point forecast.
+
+**A t-shaped tail for short-window intervals** — `S18`, ○ open, added by C4.
+The percentile bootstrap reports the 2.5/97.5 quantiles of the replicate
+distribution, which behaves like a normal quantile; a window of five periods
+needs a t-shaped one. In the same measurement that justified C4, scaling the
+replicate spread by `t(0.975, n-1) / z(0.975)` takes iid coverage from 0.84 to
+0.96 at n=3 and from 0.90 to 0.95 at n=7 — the largest remaining piece of the
+short-window gap, and the cheapest to close.
+
+It was deliberately left out of C4. C4 corrected two biases with exact
+derivations; this is a choice about the *shape* of an interval, and `df = n - 1`
+is right only if the periods are independent — which is the assumption the block
+bootstrap exists to deny. The work is establishing what `df` should be under
+block dependence, which is why it composes with S6 rather than standing alone.
+Smuggling it into a correctness fix would have made a modeling decision look
+like a bug fix.
 
 ### 4.2 Substantial but well-scoped
 
@@ -1023,6 +1053,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-08-05 | **C4 shipped, and §3.2 #2 rewritten around what it did *not* fix.** The weakness moves ○ open → ◑ partially addressed: two exactly-derived attenuation biases in the window bootstrap are corrected and the degeneracy guard now keys on resampled spread, but measured coverage of the nominal 95% interval is still 0.84–0.92 (iid) and 0.57–0.83 (AR(1) ρ=0.7). Those figures are quoted in #2 rather than summarized, because "improved" and "honest" are different claims. The residual is split between S6 and the new **S18** (a t-shaped tail for short windows), added by this work rather than by the review. #10 amended to match. |
 | 2026-08-05 | **C3 shipped** — no text changed. §2.3 already claimed that contributions "sum to the true gap exactly" and that `unexplained` on a formula node is "measurement residual only"; that was true of `GET /shapley` and false of what RCA published, which reported a bootstrap mean of a nonlinear decomposition instead. The code now matches the paper rather than the paper being softened to match the code. Logged because a reader comparing editions should be able to see that this section's meaning changed even though its words did not. |
 | 2026-08-05 | **C1/C2 shipped** — the two provider-boundary correctness defects are fixed, and §3.3 now says so, including what to re-run. Every provider shares one date-alignment contract (tz coercion, period spine, trailing trim, kind-aware interior fill). No §3.2 weakness changed status: neither defect was ever a numbered statistical weakness, which is exactly why §3.3 had to carry them. |
 | 2026-08-05 | **Acted on a hostile external review** of the engine, docs and tests (against 0.1.0). §3.2 gained four weaknesses it had not named — the short-window bootstrap attenuation (#2, `C4`), unacknowledged multiplicity and selection (#3, `S15`), the horizon-invariant trend interval (#9, `S16`), and the structural bias in the coverage test this paper had offered as its headline calibration evidence (#7, `S17`) — and #6, #8, #10 and #12 were amended with the specific defects behind them. §3.3's unqualified claim that the failure modes are "documented rather than hidden" was **corrected**: it was not fully earned, and the exceptions are now enumerated as the roadmap's [Horizon 0](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend) correctness gate, which runs ahead of the S track. §4 gained `S15`/`S16`/`S17` with rationale, and `S4` (parent collinearity) was promoted. |

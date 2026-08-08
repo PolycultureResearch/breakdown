@@ -225,24 +225,38 @@ contributions; posterior nodes keep their coefficient-posterior CI but are
 flagged `"posterior_only_single_period"` because the window-sampling
 component is absent.
 
-> **Caveat (open, roadmap C4).** Two known defects sit in this path today, both
-> in the direction of *overconfidence*, and formula-node contribution intervals
-> come entirely from it.
+Two finite-sample biases in this estimator are corrected before the interval is
+reported (roadmap C4). Both were downward — the interval was too narrow — and
+both are worst on short windows, which is exactly where it is load-bearing:
+circular block resampling attenuates a window mean's variance by `(1 − ℓ/n)`,
+and the observed periods' variance about their own mean is `(1 − 1/n)` of the
+unbiased estimate. The replicate spread is rescaled by
+`1 / √((1 − ℓ/n)(1 − 1/n))`, which for a 7-day window is a **~1.4× widening**.
+
+The degeneracy guard is keyed on the **resampled spread**, not the period
+count. A single period is only one way to get identical replicates; a parent
+that is constant across the window — an unlaunched feature, an unmoved stock, a
+zero-inflated series — is another, and used to yield a zero-width `ci_95`
+reported as `ci_status: "ok"`. Those now report `ci_95: null` with
+`ci_status: "degenerate_constant_window"`, judged per contribution, so a parent
+that did move keeps its interval.
+
+> **Short-window intervals are still too narrow (open, roadmap S6 and S18).**
+> The correction above is not a fix, and you should not read it as one. Measured
+> coverage of the nominal 95% window-mean interval, before → after:
 >
-> - **Short windows are worse than they look.** The bootstrap's effective block
->   length is capped at half the window, which systematically shrinks the
->   resampled variance of a window mean. The shrinkage is largest on the short
->   windows this mechanism exists to be honest about, and it is not monotone in
->   window length — a 14-day daily window is not necessarily better off than a
->   5-day one. Treat a short-window formula CI as a **lower bound** on the true
->   uncertainty until C4 lands.
-> - **The degeneracy guard is keyed on the wrong quantity.** It fires on a
->   single-period window, but the failure it exists to catch is *any* resampling
->   that produces identical replicates. A parent that is constant across the
->   window — an unlaunched feature, an unmoved stock, a zero-inflated series —
->   collapses every replicate to the same value and yields a **zero-width
->   `ci_95` reported with `ci_status: "ok"`**. A zero-width interval is never a
->   real result; read it as a withheld one.
+> | n | 3 | 5 | 7 | 14 | 28 | 60 |
+> |---|---|---|---|----|----|----|
+> | iid | 0.75 → 0.84 | 0.78 → 0.88 | 0.79 → 0.90 | 0.74 → 0.87 | 0.86 → 0.90 | 0.91 → 0.92 |
+> | AR(1) ρ=0.7 | 0.41 → 0.57 | 0.43 → 0.57 | 0.46 → 0.59 | 0.53 → 0.68 | 0.71 → 0.77 | 0.80 → 0.83 |
+>
+> Better everywhere, still short of 95% everywhere. **A short-window formula CI
+> remains a lower bound on the true uncertainty** — most of all when the series
+> is genuinely autocorrelated, which most business metrics are. What remains is
+> a block length that is a fixed per-grain constant rather than estimated from
+> the data (S6 — this is what keeps the AR(1) row low, and why n=14 is worse
+> than n=7), and a percentile interval using effectively normal quantiles where
+> a short window needs a t-shaped tail (S18).
 
 ### `components`: trend and seasonal, made explicit
 
