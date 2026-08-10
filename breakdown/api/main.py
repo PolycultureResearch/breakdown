@@ -393,10 +393,7 @@ async def _discover_earliest(app: FastAPI, parser, fetcher, provider_type: str) 
     earliest_date never raises by contract, and a surprise here must not
     take the app down with it."""
     for metric in parser.config.metrics:
-        if provider_type in ("mock", "warehouse"):
-            query_name = metric.name
-        else:
-            query_name = metric.source.split(".")[-1]
+        query_name = provider_query_name(provider_type, metric)
         try:
             earliest = await asyncio.to_thread(
                 fetcher.earliest_date, query_name, metric.grain
