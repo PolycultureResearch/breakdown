@@ -42,6 +42,10 @@ metrics:
         params: { mu: 0.1, sigma: 0.02 }
   - name: average_order_value
     source: dbt.metric.average_order_value
+    # Explicitly flow, against its own name: this fixture exists to pin the
+    # flow/stock generation path byte-for-byte, and declaring the kind is also
+    # how an author silences the parse-time rate-name lint.
+    kind: flow
   - name: revenue
     source: dbt.metric.revenue
     formula: "order_count * average_order_value"
@@ -77,7 +81,9 @@ def test_mock_fetcher_tree_aware_formula_holds():
 
     revenue = fetcher.fetch_metric("revenue", "2024-01-01", "2024-03-31")["revenue"]
     orders = fetcher.fetch_metric("order_count", "2024-01-01", "2024-03-31")["order_count"]
-    aov = fetcher.fetch_metric("average_order_value", "2024-01-01", "2024-03-31")["average_order_value"]
+    aov = fetcher.fetch_metric("average_order_value", "2024-01-01", "2024-03-31")[
+        "average_order_value"
+    ]
 
     corr = np.corrcoef(revenue, orders * aov)[0, 1]
     assert corr > 0.99
@@ -129,7 +135,9 @@ metrics:
 """
     parser = Parser(yaml_content)
     fetcher = MockDataFetcher(dag=parser.dag)
-    sessions = fetcher.fetch_metric("daily_sessions", "2024-01-01", "2024-04-30")["daily_sessions"].values
+    sessions = fetcher.fetch_metric("daily_sessions", "2024-01-01", "2024-04-30")[
+        "daily_sessions"
+    ].values
     orders = fetcher.fetch_metric("order_count", "2024-01-01", "2024-04-30")["order_count"].values
 
     L = 5
@@ -216,7 +224,9 @@ def test_warehouse_fetcher_reindexes_and_zero_fills(monkeypatch):
     ]
     cursor = _StubCursor(rows)
     fetcher = WarehouseDataFetcher(
-        host="h", http_path="p", token="t",
+        host="h",
+        http_path="p",
+        token="t",
         metric_sql={"new_mrr": "SELECT ... :start_date ... :end_date"},
     )
     monkeypatch.setattr(fetcher, "_cursor", lambda: cursor)
@@ -271,8 +281,11 @@ def test_warehouse_fetcher_profile_uses_credentials_provider(monkeypatch):
     monkeypatch.setattr(dbsql_mod, "connect", _fake_connect)
 
     fetcher = WarehouseDataFetcher(
-        host=None, http_path="/sql/1.0/warehouses/x", token=None,
-        metric_sql={}, profile="narrative",
+        host=None,
+        http_path="/sql/1.0/warehouses/x",
+        token=None,
+        metric_sql={},
+        profile="narrative",
     )
     fetcher._cursor()
 
@@ -312,14 +325,16 @@ def test_mock_all_day_tree_pinned_values():
     np.testing.assert_allclose(
         df["revenue"].head(3).to_numpy(),
         [793860.4244541493, 959272.2559016624, 1017094.0476589967],
-        rtol=0, atol=1e-6,
+        rtol=0,
+        atol=1e-6,
     )
     np.testing.assert_allclose(df["revenue"].sum(), 79884063.93374, atol=1e-4)
     sessions = fetcher.fetch_metric("daily_sessions", "2024-01-01", "2024-04-09")
     np.testing.assert_allclose(
         sessions["daily_sessions"].head(3).to_numpy(),
         [1890.3967010755, 2019.680210048, 2028.7438671543],
-        rtol=0, atol=1e-6,
+        rtol=0,
+        atol=1e-6,
     )
 
 
@@ -335,10 +350,14 @@ def test_mock_mixed_grain_identity_holds_at_node_grain():
     rate = fetcher.fetch_metric("trial_conversion_rate", *window, grain="week", kind="rate")
 
     weekly_starts = (
-        starts.set_index("date")["trial_starts"].resample("W-MON", label="left", closed="left").sum()
+        starts.set_index("date")["trial_starts"]
+        .resample("W-MON", label="left", closed="left")
+        .sum()
     )
-    joined = conv.set_index("date").join(weekly_starts, how="inner").join(
-        rate.set_index("date"), how="inner"
+    joined = (
+        conv.set_index("date")
+        .join(weekly_starts, how="inner")
+        .join(rate.set_index("date"), how="inner")
     )
     expected = joined["trial_starts"] * joined["trial_conversion_rate"]
     assert len(joined) >= 10
@@ -361,9 +380,12 @@ def test_mock_fetcher_coarse_fallback_walk():
 
 def _wh_fetcher(rows):
     import datetime  # noqa: F401
+
     cursor = _StubCursor(rows)
     fetcher = WarehouseDataFetcher(
-        host="h", http_path="p", token="t",
+        host="h",
+        http_path="p",
+        token="t",
         metric_sql={"m": "SELECT ... :start_date ... :end_date"},
     )
     fetcher._cursor = lambda: cursor
@@ -372,8 +394,9 @@ def _wh_fetcher(rows):
 
 def test_warehouse_weekly_flow_zero_fills_interior_trims_trailing():
     import datetime
+
     rows = [
-        (datetime.date(2024, 1, 1), 100.0),   # Monday
+        (datetime.date(2024, 1, 1), 100.0),  # Monday
         (datetime.date(2024, 1, 15), 250.0),  # Monday, gap week between
     ]
     df = _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week")
@@ -384,6 +407,7 @@ def test_warehouse_weekly_flow_zero_fills_interior_trims_trailing():
 
 def test_warehouse_weekly_stock_forward_fills():
     import datetime
+
     rows = [
         (datetime.date(2024, 1, 1), 100.0),
         (datetime.date(2024, 1, 15), 250.0),
@@ -401,6 +425,7 @@ def test_warehouse_empty_result_keeps_full_zero_fill_for_flow():
 
 def test_warehouse_stock_leading_gap_raises():
     import datetime
+
     rows = [(datetime.date(2024, 1, 15), 250.0)]
     with pytest.raises(RuntimeError, match="no value at or before the first week period"):
         _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week", kind="stock")
@@ -408,6 +433,7 @@ def test_warehouse_stock_leading_gap_raises():
 
 def test_warehouse_rate_missing_interior_period_raises():
     import datetime
+
     # Interior gap (Jan 8) between returned rows: a rate cannot be invented.
     # (A trailing gap is trimmed like any other kind — data not loaded yet.)
     rows = [
@@ -420,6 +446,7 @@ def test_warehouse_rate_missing_interior_period_raises():
 
 def test_warehouse_misaligned_labels_raise():
     import datetime
+
     rows = [(datetime.date(2024, 1, 3), 100.0)]  # a Wednesday at week grain
     with pytest.raises(RuntimeError, match="not aligned to period starts"):
         _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week")
@@ -429,6 +456,7 @@ def test_warehouse_partial_period_rows_dropped():
     """Rows for periods only partially inside the window are dropped, not
     zero-filled into fake periods."""
     import datetime
+
     rows = [
         (datetime.date(2024, 1, 1), 100.0),
         (datetime.date(2024, 1, 8), 200.0),
@@ -485,6 +513,7 @@ def test_warehouse_rows_entirely_off_the_spine_raise():
     An empty *result* is legitimate (all-quiet flow window); rows that all miss
     is a bug in the query, and must say so."""
     import datetime
+
     rows = [
         (datetime.date(2024, 5, 1), 100.0),
         (datetime.date(2024, 5, 2), 250.0),
@@ -499,6 +528,7 @@ def test_warehouse_interior_gap_fill_warns(caplog):
     and RCA will name the metric as the root cause."""
     import datetime
     import logging
+
     rows = [
         (datetime.date(2024, 1, 1), 100.0),
         (datetime.date(2024, 1, 15), 250.0),
@@ -546,9 +576,7 @@ def test_local_fetcher_drops_partial_edge_periods(monkeypatch):
     """A window ending mid-week used to hand back a two-day partial week as a
     full row at ~2/7 normal volume, which `snap_window` then treated as whole —
     a manufactured −71% gap."""
-    frame = _sl_frame(
-        [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-08")], [100.0, 30.0]
-    )
+    frame = _sl_frame([pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-08")], [100.0, 30.0])
     df = _local_fetcher(frame, monkeypatch).fetch_metric(
         "m", "2024-01-01", "2024-01-10", grain="week"
     )
@@ -556,19 +584,13 @@ def test_local_fetcher_drops_partial_edge_periods(monkeypatch):
 
 
 def test_cloud_fetcher_drops_partial_edge_periods():
-    frame = _sl_frame(
-        [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-08")], [100.0, 30.0]
-    )
-    df = _cloud_fetcher(frame).fetch_metric(
-        "m", "2024-01-01", "2024-01-10", grain="week"
-    )
+    frame = _sl_frame([pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-08")], [100.0, 30.0])
+    df = _cloud_fetcher(frame).fetch_metric("m", "2024-01-01", "2024-01-10", grain="week")
     assert df["m"].tolist() == [100.0]
 
 
 def test_local_fetcher_fills_interior_gap_and_trims_trailing(monkeypatch):
-    frame = _sl_frame(
-        [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-15")], [100.0, 250.0]
-    )
+    frame = _sl_frame([pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-15")], [100.0, 250.0])
     df = _local_fetcher(frame, monkeypatch).fetch_metric(
         "m", "2024-01-01", "2024-01-28", grain="week"
     )
@@ -577,9 +599,7 @@ def test_local_fetcher_fills_interior_gap_and_trims_trailing(monkeypatch):
 
 
 def test_cloud_fetcher_stock_forward_fills_interior_gap():
-    frame = _sl_frame(
-        [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-15")], [100.0, 250.0]
-    )
+    frame = _sl_frame([pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-15")], [100.0, 250.0])
     df = _cloud_fetcher(frame).fetch_metric(
         "m", "2024-01-01", "2024-01-28", grain="week", kind="stock"
     )
@@ -589,9 +609,7 @@ def test_cloud_fetcher_stock_forward_fills_interior_gap():
 def test_local_fetcher_rate_missing_period_raises(monkeypatch):
     """A rate cannot be gap-filled — the same rule the warehouse path already
     enforced, now shared."""
-    frame = _sl_frame(
-        [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-15")], [0.5, 0.6]
-    )
+    frame = _sl_frame([pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-15")], [0.5, 0.6])
     with pytest.raises(RuntimeError, match="Rate metric 'm' is missing week periods"):
         _local_fetcher(frame, monkeypatch).fetch_metric(
             "m", "2024-01-01", "2024-01-28", grain="week", kind="rate"
@@ -604,25 +622,26 @@ def test_cloud_fetcher_tz_aware_dates_do_not_become_zeros():
         [pd.Timestamp("2024-01-01", tz="UTC"), pd.Timestamp("2024-01-08", tz="UTC")],
         [100.0, 250.0],
     )
-    df = _cloud_fetcher(frame).fetch_metric(
-        "m", "2024-01-01", "2024-01-14", grain="week"
-    )
+    df = _cloud_fetcher(frame).fetch_metric("m", "2024-01-01", "2024-01-14", grain="week")
     assert df["m"].tolist() == [100.0, 250.0]
     assert df["date"].dt.tz is None
 
 
 # --- sliced-fetch reshape (_sliced_long) ---
 
+
 def test_sliced_long_reshapes_semantic_layer_frame():
     import pandas as pd
 
     from breakdown.data_fetch import _sliced_long
 
-    raw = pd.DataFrame({
-        "METRIC_TIME__DAY": ["2026-01-05", "2026-01-05", "2026-01-06"],
-        "CUSTOMER__REGION": ["emea", "amer", None],
-        "signups": [10.0, 20.0, 5.0],
-    })
+    raw = pd.DataFrame(
+        {
+            "METRIC_TIME__DAY": ["2026-01-05", "2026-01-05", "2026-01-06"],
+            "CUSTOMER__REGION": ["emea", "amer", None],
+            "signups": [10.0, 20.0, 5.0],
+        }
+    )
     out = _sliced_long(raw, "signups", "day")
     assert list(out.columns) == ["date", "slice", "value"]
     assert set(out["slice"]) == {"emea", "amer", "__null__"}
@@ -635,12 +654,14 @@ def test_sliced_long_ambiguous_columns_raise():
 
     from breakdown.data_fetch import _sliced_long
 
-    raw = pd.DataFrame({
-        "METRIC_TIME__DAY": ["2026-01-05"],
-        "CUSTOMER__REGION": ["emea"],
-        "CUSTOMER__PLAN": ["pro"],
-        "signups": [10.0],
-    })
+    raw = pd.DataFrame(
+        {
+            "METRIC_TIME__DAY": ["2026-01-05"],
+            "CUSTOMER__REGION": ["emea"],
+            "CUSTOMER__PLAN": ["pro"],
+            "signups": [10.0],
+        }
+    )
     with pytest.raises(RuntimeError, match="exactly one dimension column"):
         _sliced_long(raw, "signups", "day")
 
@@ -715,9 +736,7 @@ def test_api_import_does_not_pull_provider_sdks():
         "if m == 'dbtsl' or m.split('.')[0] in ('databricks', 'dbt', 'metricflow')]; "
         "print(leaked)"
     )
-    proc = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=180
-    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=180)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "[]", f"provider SDKs imported eagerly: {proc.stdout}"
 
@@ -734,3 +753,121 @@ def test_local_fetcher_constructs_without_mf_so_snapshots_still_serve():
         LocalDataFetcher(project_path="/tmp/nonexistent")  # must not raise
     finally:
         shutil.which = real_which
+
+
+# --- Kind-aware generation (roadmap C11) -------------------------------------
+
+C11_TREE = """
+metrics:
+  - name: visitors
+    source: mock.visitors
+  - name: signup_rate
+    source: mock.signup_rate
+    kind: rate
+  - name: signups
+    source: mock.signups
+    formula: "visitors * signup_rate"
+    parents: [visitors, signup_rate]
+  - name: trial_rate
+    source: mock.trial_rate
+    kind: rate
+  - name: trials
+    source: mock.trials
+    formula: "signups * trial_rate"
+    parents: [signups, trial_rate]
+  - name: average_order_value
+    source: mock.average_order_value
+    kind: rate
+  - name: time_to_first_response
+    source: mock.time_to_first_response
+    kind: rate
+"""
+
+
+def test_mock_rate_leaves_are_generated_on_a_rate_scale():
+    """C11: a `kind: rate` leaf used to be drawn from `uniform(50, 5000)` — the
+    same scale as an impression count."""
+    parser = Parser(C11_TREE)
+    fetcher = MockDataFetcher(dag=parser.dag)
+    window = ("2022-01-01", "2024-12-31")
+
+    for share in ("signup_rate", "trial_rate"):
+        v = fetcher.fetch_metric(share, *window, kind="rate")[share]
+        assert v.min() > 0, share
+        assert v.max() < 1, share
+
+    # Durations and averages are ratios too, but not shares — they only have to
+    # stay positive and on a human scale.
+    for magnitude in ("average_order_value", "time_to_first_response"):
+        v = fetcher.fetch_metric(magnitude, *window, kind="rate")[magnitude]
+        assert 0 < v.min()
+        assert v.max() < 1e4, magnitude
+
+
+def test_mock_count_times_rate_funnel_does_not_compound():
+    """The C11 defect itself: each `count × rate` level multiplied the scale by
+    ~10³, so the reference tree's apex reached 10²⁵."""
+    parser = Parser(C11_TREE)
+    fetcher = MockDataFetcher(dag=parser.dag)
+    window = ("2022-01-01", "2024-12-31")
+
+    visitors = fetcher.fetch_metric("visitors", *window)["visitors"]
+    signups = fetcher.fetch_metric("signups", *window)["signups"]
+    trials = fetcher.fetch_metric("trials", *window)["trials"]
+
+    # Each level multiplies by a share, so the funnel narrows monotonically
+    # instead of exploding.
+    assert signups.mean() < visitors.mean()
+    assert trials.mean() < signups.mean()
+    assert trials.mean() > 0
+
+
+PRIOR_SIGN_TREE = """
+metrics:
+  - name: page_load_seconds
+    source: mock.page_load_seconds
+    kind: rate
+  - name: engaged_share
+    source: mock.engaged_share
+    kind: rate
+  - name: conversion_rate
+    source: mock.conversion_rate
+    kind: rate
+    parents: [page_load_seconds, engaged_share]
+    priors:
+      coefficient:
+        distribution: "Normal"
+        params: { mu: 0.0, sigma: 0.02 }
+      page_load_seconds:
+        distribution: "Normal"
+        params: { mu: -0.01, sigma: 0.005 }
+      engaged_share:
+        distribution: "HalfNormal"
+        params: { sigma: 0.05 }
+    expected_signs:
+      page_load_seconds: negative
+      engaged_share: positive
+"""
+
+
+def test_mock_reads_per_parent_priors_and_can_generate_a_negative_edge():
+    """C11: every coefficient came from `priors["coefficient"].mu` with a
+    `uniform(0.1, 0.5)` fallback, so per-parent priors were never read and no
+    generated edge was ever negative — a correctly declared
+    `expected_signs: negative` was then guaranteed to warn.
+
+    Here the shared `coefficient` prior is `mu: 0.0`; only the per-parent
+    priors carry direction, so the old code produced a flat zero signal.
+    """
+    parser = Parser(PRIOR_SIGN_TREE)
+    fetcher = MockDataFetcher(dag=parser.dag)
+    window = ("2022-01-01", "2024-12-31")
+
+    rate = fetcher.fetch_metric("conversion_rate", *window, kind="rate")["conversion_rate"]
+    load = fetcher.fetch_metric("page_load_seconds", *window, kind="rate")["page_load_seconds"]
+    engaged = fetcher.fetch_metric("engaged_share", *window, kind="rate")["engaged_share"]
+
+    assert np.corrcoef(rate, load)[0, 1] < 0, "declared-negative edge generated positive"
+    assert np.corrcoef(rate, engaged)[0, 1] > 0, "declared-positive edge generated negative"
+    # The child is still a rate, not its regressors' scale (seconds).
+    assert 0 < rate.min() and rate.max() < 1

@@ -3,7 +3,7 @@
 **A white paper on the models behind Bayesian metric trees, why each was chosen,
 and where each one stops being trustworthy.**
 
-> **Written:** 2026-08-04 · **Last updated:** 2026-08-05 ·
+> **Written:** 2026-08-04 · **Last updated:** 2026-08-08 ·
 > **Engine version:** 0.1.0
 >
 > **This is a living document.** The assessment in §3 and the improvements in §4
@@ -705,8 +705,14 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
    Correlated parents produce a well-determined *sum* and an unstable *split*,
    and the split is exactly what RCA reports. Nothing warns — and mean-field
    ADVI will report a *narrow* interval around whichever arbitrary split it
-   landed on, so weakness #1 and this one compound rather than add. The
-   reference tree in `knowledge/` contains the structure itself.
+   landed on, so weakness #1 and this one compound rather than add. Until
+   2026-08-08 the reference tree in `knowledge/` contained the structure itself
+   — a conversion rate regressed on a parent that was *defined* as a product
+   involving another of its parents — which is how easily it is authored
+   without noticing. It was removed there
+   ([C10](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend))
+   rather than kept as a specimen, since that file is what new authors copy;
+   the diagnostic is still missing.
 7. **Interval calibration is tested by a test that is structurally unable to
    fail.** — ○ open
    ([S17](roadmap.md#statistical-rigor-s--a-standing-workstream),
@@ -722,7 +728,9 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
    interval) has no power to reject true coverage of 0.85; all 20 worlds share
    one data-generating process varying only the noise seed. Two things are
    consequently **untested anywhere**: formula-node CIs, which come 100% from
-   the bootstrap in #2, and the collinear-parent case in #6. The *design* of the
+   the bootstrap in #2, and the collinear-parent case in #6 — which since
+   2026-08-08 has no live example to borrow from either, so the fixture has to
+   be built. The *design* of the
    test suite — including its null-case restraint tests, which remain the most
    valuable part — is right; this particular implementation proves less than it
    appears to.
@@ -1023,6 +1031,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-08-08 | **C10 shipped** — no weakness changed status, but §3.2 #6 (parent collinearity) and #7 (the coverage test) each made a factual claim that C10 falsified: both cited the reference tree as containing a live collinear structure. It was removed there rather than preserved as a specimen, since that file is the one new authors copy — so #6 now records that the structure *was* there and how easily it was authored, and #7 records that S17's collinear fixture has to be built rather than borrowed. The diagnostic itself is still missing; nothing about the engine's statistical position improved. |
 | 2026-08-05 | **C3 shipped** — no text changed. §2.3 already claimed that contributions "sum to the true gap exactly" and that `unexplained` on a formula node is "measurement residual only"; that was true of `GET /shapley` and false of what RCA published, which reported a bootstrap mean of a nonlinear decomposition instead. The code now matches the paper rather than the paper being softened to match the code. Logged because a reader comparing editions should be able to see that this section's meaning changed even though its words did not. |
 | 2026-08-05 | **C1/C2 shipped** — the two provider-boundary correctness defects are fixed, and §3.3 now says so, including what to re-run. Every provider shares one date-alignment contract (tz coercion, period spine, trailing trim, kind-aware interior fill). No §3.2 weakness changed status: neither defect was ever a numbered statistical weakness, which is exactly why §3.3 had to carry them. |
 | 2026-08-05 | **Acted on a hostile external review** of the engine, docs and tests (against 0.1.0). §3.2 gained four weaknesses it had not named — the short-window bootstrap attenuation (#2, `C4`), unacknowledged multiplicity and selection (#3, `S15`), the horizon-invariant trend interval (#9, `S16`), and the structural bias in the coverage test this paper had offered as its headline calibration evidence (#7, `S17`) — and #6, #8, #10 and #12 were amended with the specific defects behind them. §3.3's unqualified claim that the failure modes are "documented rather than hidden" was **corrected**: it was not fully earned, and the exceptions are now enumerated as the roadmap's [Horizon 0](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend) correctness gate, which runs ahead of the S track. §4 gained `S15`/`S16`/`S17` with rationale, and `S4` (parent collinearity) was promoted. |
