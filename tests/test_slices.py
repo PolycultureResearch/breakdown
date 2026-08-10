@@ -383,3 +383,30 @@ def test_warehouse_slicing_not_supported():
     )
     with pytest.raises(SliceNotSupported, match="does not support dimensional"):
         fetcher.fetch_metric_sliced("signups", "customer__region", "2026-01-01", "2026-02-01")
+
+
+def test_excess_fields_drops_non_finite_replicates():
+    """`share_b` is NaN for bootstrap replicates whose reference total came out
+    ~0 (no defined share). That NaN reached `np.percentile` and then Starlette's
+    `allow_nan=False` encoder as an unhandled **500** — the slice endpoint
+    failing outright rather than the interval widening (C8)."""
+    import numpy as np
+
+    from breakdown.engine.slices import _excess_fields
+
+    clean = np.concatenate([np.full(600, 5.0), np.full(400, 7.0)])
+    fields = _excess_fields(clean.copy(), single_period=False)
+    assert fields["ci_95"] is not None
+
+    # Same replicates with a minority poisoned: still answerable, and finite.
+    poisoned = clean.copy()
+    poisoned[:150] = np.nan
+    fields = _excess_fields(poisoned, single_period=False)
+    assert fields["ci_95"] is not None
+    assert all(np.isfinite(v) for v in fields["ci_95"]), "NaN reached the response"
+    assert np.isfinite(fields["prob_concentrated"])
+
+    # Too few survive to quote an interval: withheld, not fabricated.
+    mostly_nan = clean.copy()
+    mostly_nan[:-20] = np.nan
+    assert _excess_fields(mostly_nan, single_period=False)["ci_95"] is None

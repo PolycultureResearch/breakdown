@@ -153,12 +153,54 @@ def _require_data(request: Request) -> None:
         )
 
 
+# Cap on `app.state.traces`. Each entry is an InferenceData object holding
+# every posterior draw, so an unbounded cache grows with distinct
+# (metric, analysis_start) pairs until the process is OOM-killed — reachable
+# without malice on the public demo, where each visitor picks their own windows
+# (C8). Insertion-ordered eviction: dicts preserve order, so the oldest key is
+# the first, and a refit re-inserts at the end. Generous enough that a normal
+# session never evicts; a fit that is dropped is simply recomputed.
+MAX_CACHED_TRACES = 256
+
+
+def _remember_fit(traces: Dict[Tuple[str, Optional[str]], Any], key, fit) -> None:
+    """Publish a fit into the shared cache, bounded and never downgrading.
+
+    Two viewers share one process and one cache, so a fit that one of them
+    requests is a fit the other may be shown. `/analyze` exposes
+    `inference_method` and `draws` while the cache key carries neither, so a
+    cheap 50-draw ADVI run would otherwise silently replace a NUTS fit that a
+    previous RCA had already paid for. Ordering fits by quality — NUTS over
+    ADVI, then by draw count — keeps the deliberate "confirm this with NUTS"
+    upgrade working while blocking the accidental downgrade (C8).
+    """
+    existing = traces.get(key)
+    if existing is not None and _fit_rank(existing) > _fit_rank(fit):
+        return
+    traces[key] = fit
+    while len(traces) > MAX_CACHED_TRACES:
+        traces.pop(next(iter(traces)))
+
+
+def _fit_rank(fit) -> Tuple[int, int]:
+    """(method quality, draws) — NUTS is exact MCMC, ADVI an approximation."""
+    method = getattr(fit, "inference_method", "advi")
+    draws = 0
+    try:
+        draws = int(fit.trace.posterior.sizes.get("draw", 0))
+    except Exception:  # pragma: no cover - a trace without a posterior dim
+        pass
+    return (1 if method == "nuts" else 0, draws)
+
+
 def _pick_fit(traces: Dict[Tuple[str, Optional[str]], Any], name: str):
     """Best cached fit to summarize for a metric: prefer the full-window fit,
     else the one with the latest fit_end, else None."""
     if (name, None) in traces:
         return traces[(name, None)]
-    dated = [(fit_end, fit) for (n, fit_end), fit in traces.items() if n == name]
+    # Snapshot before filtering: `run_rca` inserts into this dict from a worker
+    # thread, and `.items()` is a live view (C8). Same race as /meta's.
+    dated = [(fit_end, fit) for (n, fit_end), fit in list(traces.items()) if n == name]
     if not dated:
         return None
     return max(dated, key=lambda item: item[0])[1]
@@ -402,7 +444,14 @@ async def get_meta(request: Request):
         # period) — the honest data edge, which may lag the requested window
         # when a source mart is behind.
         "data_through": data_through,
-        "fitted": sorted({name for (name, _) in request.app.state.traces}),
+        # `list(...)` snapshots the keys in one bytecode op rather than
+        # iterating lazily: `run_rca` mutates this dict from a worker thread
+        # (it is handed the cache directly and fits on demand), so a lazy
+        # comprehension here raced it into "dictionary changed size during
+        # iteration" — an intermittent 500 for one viewer precisely while
+        # another's analysis ran, which is the single most likely way a
+        # multi-viewer demo breaks (C8).
+        "fitted": sorted({name for (name, _) in list(request.app.state.traces)}),
     }
 
 
@@ -513,7 +562,7 @@ async def analyze_metric(
             draws=draws, tune=tune, inference_method=inference_method,
             chains=chains, fit_end=fit_end,
         )
-        request.app.state.traces[(name, fit_end)] = fit
+        _remember_fit(request.app.state.traces, (name, fit_end), fit)
 
     return {
         "status": "success",

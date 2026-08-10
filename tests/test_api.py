@@ -591,3 +591,89 @@ def test_lifespan_warms_the_inference_stack_in_the_background():
         "lifespan did not warm the inference stack; the first fit will pay the "
         f"full import cost. stdout={result.stdout!r} stderr={result.stderr[-500:]!r}"
     )
+
+
+# --- C8: one process, several viewers -------------------------------------
+
+def test_meta_survives_concurrent_trace_mutation():
+    """`/meta` used to iterate `app.state.traces` lazily while `run_rca`
+    inserted into it from a worker thread — an intermittent 500 for one viewer
+    exactly while another's analysis ran (C8).
+
+    The race needs the GIL to switch *inside* the comprehension, so the switch
+    interval is pinned tiny to make it near-certain rather than occasional:
+    against the pre-fix code this reproduces ~95% of iterations, against the
+    snapshot ~0%.
+    """
+    import sys
+    import threading
+
+    from breakdown.api.main import app
+
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    with TestClient(app) as client:
+        traces = app.state.traces
+        for i in range(400):
+            traces[(f"synthetic_{i}", "2024-02-01")] = object()
+        stop = threading.Event()
+
+        def churn():
+            i = 400
+            while not stop.is_set():
+                traces[(f"synthetic_{i}", "2024-02-01")] = object()
+                traces.pop((f"synthetic_{i - 300}", "2024-02-01"), None)
+                i += 1
+
+        t = threading.Thread(target=churn, daemon=True)
+        t.start()
+        try:
+            for _ in range(40):
+                assert client.get("/meta").status_code == 200
+        finally:
+            stop.set()
+            t.join(timeout=5)
+            sys.setswitchinterval(old_interval)
+            for key in [k for k in list(traces) if k[0].startswith("synthetic_")]:
+                traces.pop(key, None)
+
+
+def test_a_cheap_refit_cannot_displace_a_better_cached_fit():
+    """`/analyze` exposes `inference_method` and `draws`; the cache key carries
+    neither. One viewer running a 50-draw ADVI fit would silently replace the
+    NUTS fit another viewer's analysis had already paid for (C8)."""
+    from breakdown.api.main import _remember_fit
+
+    class Fit:
+        def __init__(self, method, draws):
+            self.inference_method = method
+            self.trace = type(
+                "T", (), {"posterior": type("P", (), {"sizes": {"draw": draws}})()}
+            )()
+
+    traces = {}
+    good = Fit("nuts", 1000)
+    _remember_fit(traces, ("sessions", None), good)
+    _remember_fit(traces, ("sessions", None), Fit("advi", 50))
+    assert traces[("sessions", None)] is good, "a 50-draw ADVI fit displaced NUTS"
+
+    # The deliberate upgrade still works: confirming an ADVI fit with NUTS.
+    traces2 = {}
+    _remember_fit(traces2, ("sessions", None), Fit("advi", 500))
+    better = Fit("nuts", 1000)
+    _remember_fit(traces2, ("sessions", None), better)
+    assert traces2[("sessions", None)] is better
+
+
+def test_trace_cache_is_bounded():
+    """Unbounded, each entry holding every posterior draw: on the public demo
+    every visitor picks their own windows, so the process OOMs eventually with
+    nobody doing anything wrong (C8)."""
+    from breakdown.api.main import MAX_CACHED_TRACES, _remember_fit
+
+    traces = {}
+    for i in range(MAX_CACHED_TRACES + 25):
+        _remember_fit(traces, (f"m{i}", None), object())
+    assert len(traces) == MAX_CACHED_TRACES
+    assert ("m0", None) not in traces, "eviction should drop the oldest key first"
+    assert (f"m{MAX_CACHED_TRACES + 24}", None) in traces
