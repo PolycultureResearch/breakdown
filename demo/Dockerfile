@@ -40,5 +40,12 @@ EXPOSE 9090
 
 # Set BREAKDOWN_API_TOKEN to gate /mcp, and BREAKDOWN_PUBLIC_URL to the public
 # hostname so MCP report_url deep links resolve for the client, not for us.
-CMD ["uv", "run", "--no-sync", "breakdown", "serve", \
+#
+# The console script directly, not `uv run --no-sync`. uv's project discovery
+# and lockfile read cost ~0.5s on a warm cache and every container start is a
+# cold one — time spent before the port is bound, which is exactly the budget
+# that made Fly's proxy give up and serve 503s to the first visitor after an
+# idle period. `uv sync` above put the environment at /app/.venv; nothing here
+# needs uv at runtime.
+CMD ["/app/.venv/bin/breakdown", "serve", \
      "--host", "0.0.0.0", "--tree", "/demo/white_cube_tree.yml"]

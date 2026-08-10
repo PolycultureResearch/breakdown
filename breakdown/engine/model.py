@@ -14,16 +14,26 @@ from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Any, Dict, List, Optional, Tuple
 
-import arviz as az
 import networkx as nx
 import numpy as np
 import pandas as pd
-import pymc as pm
-import pytensor.tensor as pt
 
 from breakdown.formula import eval_formula
 from breakdown.grains import ensure_grained, fit_grain, next_start
 from breakdown.parser import MetricDefinition
+
+# `pymc`, `arviz` and `pytensor` are imported *inside* the five functions that
+# use them, not here. They are ~80% of the process's import cost (2.3s of 2.5s
+# locally, and this module sits on `breakdown.api.main`'s import path), which on
+# a shared-CPU VM is the difference between a server that binds its port in
+# seconds and one that takes ~43s — long enough that Fly's proxy gave up on the
+# public demo and returned 503 to the first visitor after every idle period.
+# Nothing at module scope touches them, so deferring costs nothing at runtime:
+# the first fit pays a one-time import, and `warm_inference_imports` below is
+# what keeps even that off the user's first click.
+#
+# `test_api_import_does_not_load_pymc` pins this — it is easy to undo by adding
+# one convenient top-level import.
 
 logger = logging.getLogger(__name__)
 
@@ -79,12 +89,12 @@ def scale_prior_params(distribution: str, params: Dict[str, Any], scale: float) 
     )
 
 
-_PRIOR_DISTRIBUTIONS = {
-    "Normal": pm.Normal,
-    "HalfNormal": pm.HalfNormal,
-    "Exponential": pm.Exponential,
-    "LogNormal": pm.LogNormal,
-}
+# Prior distributions supported on an edge. Names, not the PyMC classes
+# themselves, so this module imports without pymc (see the import note above);
+# resolved with `getattr(pm, ...)` at the one call site. `Prior` in parser.py
+# validates against the same set at parse time, so an unknown name cannot
+# reach that lookup from a tree — the guard there is for direct callers.
+_PRIOR_DISTRIBUTIONS = frozenset({"Normal", "HalfNormal", "Exponential", "LogNormal"})
 
 
 def compute_shapley(
@@ -152,8 +162,31 @@ def compute_shapley(
     return shapley
 
 
+def warm_inference_imports() -> None:
+    """Import the inference stack now, so the first fit doesn't pay for it.
+
+    Deferring `pymc`/`arviz`/`pytensor` out of module scope moves ~27s (on a
+    shared-CPU VM) off startup — but onto whoever clicks *Run analysis* first,
+    which in a live demo is strictly worse than a slow boot. The server calls
+    this on a background thread once it is already listening, so the cost lands
+    in the gap between the page rendering and the first analysis.
+
+    Safe to call repeatedly and from any thread: after the first call these are
+    satisfied from `sys.modules`. Never raises — a failure here only means the
+    first fit pays full price, and the fit itself will report the real error.
+    """
+    try:
+        import arviz  # noqa: F401
+        import pymc  # noqa: F401
+        import pytensor.tensor  # noqa: F401
+    except Exception:  # pragma: no cover - diagnostics only
+        logger.debug("inference import warm-up failed; first fit will pay for it", exc_info=True)
+
+
 def summarize_trace(trace: Any) -> pd.DataFrame:
     """ArviZ posterior summary (mean, sd, 95% HDI, diagnostics) for a trace."""
+    import arviz as az
+
     return az.summary(trace, hdi_prob=0.95)
 
 
@@ -165,6 +198,8 @@ def _nuts_diagnostics(trace: Any, draws: int, chains: int) -> Dict[str, Any]:
     that flag only fits whose credible intervals should not be trusted as-is.
     Nothing blocks on "suspect"; it is information, not an error.
     """
+    import arviz as az
+
     summary = az.summary(trace)
     divergences = int(trace.sample_stats.diverging.sum())
     rhat_vals = summary["r_hat"].to_numpy(dtype=float)
@@ -335,6 +370,8 @@ def _seasonal_component(seasonality: List[Any], t: np.ndarray):
     """Fourier seasonality: up to 2 sin/cos harmonic pairs per YAML entry,
     Nyquist-filtered by `identifiable_harmonics`.
     Must be called inside a pm.Model context."""
+    import pymc as pm
+
     terms = []
     for s in seasonality:
         for k in identifiable_harmonics(s.period):
@@ -388,14 +425,21 @@ def _regression_component(defn: MetricDefinition, parents: List[str], X, scale):
     `coefficient` prior, else weakly informative Normal(0, 1) in normalized
     space. Priors from YAML are stated in business units and rescaled here.
     Must be called inside a pm.Model context."""
+    import pymc as pm
+
     if X is None:
         return 0.0
     betas = []
     for i, p in enumerate(parents):
         prior = defn.priors.get(p) or defn.priors.get("coefficient")
         if prior:
+            if prior.distribution not in _PRIOR_DISTRIBUTIONS:
+                raise ValueError(
+                    f"Unsupported prior distribution: '{prior.distribution}'. "
+                    f"Must be one of {sorted(_PRIOR_DISTRIBUTIONS)}"
+                )
             scaled = scale_prior_params(prior.distribution, prior.params, scale[i])
-            betas.append(_PRIOR_DISTRIBUTIONS[prior.distribution](f"beta_{p}", **scaled))
+            betas.append(getattr(pm, prior.distribution)(f"beta_{p}", **scaled))
         else:
             betas.append(pm.Normal(f"beta_{p}", mu=0.0, sigma=1.0))
     beta = pm.Deterministic("beta", pm.math.stack(betas))
@@ -463,6 +507,9 @@ def fit_metric(
     (= beta / scale): the coefficient on each parent in business units,
     i.e. d(target) per unit change of that parent.
     """
+    import pymc as pm
+    import pytensor.tensor as pt
+
     if inference_method not in ("nuts", "advi"):
         raise ValueError(f"inference_method must be 'nuts' or 'advi', got '{inference_method}'")
 

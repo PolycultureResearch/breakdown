@@ -4,6 +4,7 @@ import hmac
 import logging
 import math
 import os
+import threading
 from contextlib import asynccontextmanager
 from importlib.resources import files
 from typing import Any, Dict, Optional, Tuple
@@ -20,7 +21,7 @@ from breakdown.data_fetch import (
     SliceNotSupported,
     WarehouseDataFetcher,
 )
-from breakdown.engine.model import fit_metric, summarize_trace
+from breakdown.engine.model import fit_metric, summarize_trace, warm_inference_imports
 from breakdown.engine.rca import run_rca, shapley_attribution
 from breakdown.engine.simulate import ScenarioRequest, run_scenario, validate_cold_start
 from breakdown.engine.slices import slice_attribution
@@ -273,6 +274,17 @@ async def lifespan(app: FastAPI):
             "Run `breakdown doctor --tree %s` to diagnose. %s",
             tree_path, tree_path, e,
         )
+    # PyMC/ArviZ/PyTensor are deferred out of `engine.model`'s module scope so
+    # the port binds without paying for them (~27s on a shared-CPU VM, which is
+    # what made Fly's proxy 503 the first visitor after an idle period). That
+    # only moves the cost unless someone absorbs it, so absorb it here: a
+    # daemon thread, started after the data load, importing while the operator
+    # is still looking at the page. `fit_metric` re-imports from `sys.modules`
+    # either way, so a slow or failed warm-up costs correctness nothing.
+    threading.Thread(
+        target=warm_inference_imports, name="warm-inference", daemon=True
+    ).start()
+
     # The MCP sub-app's own lifespan never runs under a Starlette mount, so
     # its session manager must be driven from here.
     _mcp_mount.rebuild()

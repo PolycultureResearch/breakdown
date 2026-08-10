@@ -47,9 +47,41 @@ async function api(path, opts) {
   if (!resp.ok) {
     let detail;
     try { detail = (await resp.json()).detail; } catch { /* not json */ }
-    throw new Error(detail || `HTTP ${resp.status}`);
+    const err = new Error(detail || `HTTP ${resp.status}`);
+    err.status = resp.status;
+    throw err;
   }
   return resp.json();
+}
+
+// A host that suspends idle instances (the hosted demo does) can take the
+// server away between one click and the next, and can still be booting when
+// the page loads. Both surface as a fetch rejection or a 502/503/504 from the
+// edge — transient, and indistinguishable from "down" only if you give up on
+// the first try. Retry those with backoff; anything else (404, 422, a real
+// 500) is an answer, not an outage, and is rethrown immediately.
+const WAKE_STATUSES = new Set([502, 503, 504]);
+
+function isTransient(err) {
+  // A rejected fetch (no `status`) is a dropped connection: the machine went
+  // away mid-request, which is exactly the case worth retrying.
+  return err.status === undefined || WAKE_STATUSES.has(err.status);
+}
+
+async function apiWithWake(path, { attempts = 6, onWaiting = null } = {}) {
+  let delay = 500;
+  for (let i = 0; ; i++) {
+    try {
+      const result = await api(path);
+      if (i > 0 && onWaiting) onWaiting(null); // recovered — clear the notice
+      return result;
+    } catch (err) {
+      if (i >= attempts - 1 || !isTransient(err)) throw err;
+      if (onWaiting) onWaiting(i);
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(delay * 2, 8000); // ~0.5+1+2+4+8+8s ≈ 23s of patience
+    }
+  }
 }
 
 function fmt(x) {
@@ -2980,7 +3012,16 @@ async function init() {
     // The server keeps serving when the startup data load fails (bad
     // credentials, unreachable warehouse); surface that instead of eight
     // opaque 503s.
-    const health = await api("/health");
+    //
+    // /health is also the wake probe: on a host that suspends idle instances
+    // this is the request that boots one, so it gets the retry treatment and
+    // says so rather than failing once and leaving a blank page.
+    const health = await apiWithWake("/health", {
+      onWaiting: (i) =>
+        i === null
+          ? setStatus("Loading…", "busy")
+          : setStatus("Waking the server up… (this takes a few seconds on first visit)", "busy"),
+    });
     if (health.status !== "ok") {
       showDegradedBanner(health.error);
       setStatus("No data loaded", "error");
@@ -3019,8 +3060,29 @@ async function init() {
     applyDeepLink();
     updateShareMenu();
   } catch (err) {
-    setStatus(`Failed to load: ${err.message}`, "error");
+    // Distinguish "could not reach the server" from "the server answered with
+    // a problem": the first is worth another click, the second is not.
+    if (isTransient(err)) {
+      setStatus("Could not reach the server — it may still be starting.", "error");
+      showRetryBanner();
+    } else {
+      setStatus(`Failed to load: ${err.message}`, "error");
+    }
   }
+}
+
+function showRetryBanner() {
+  if ($("retry-banner")) return;
+  const banner = document.createElement("div");
+  banner.id = "retry-banner";
+  banner.innerHTML =
+    `<strong>Can't reach the server.</strong> If this is the hosted demo it may ` +
+    `be waking from idle. <button id="retry-now" type="button">Try again</button>`;
+  document.body.prepend(banner);
+  $("retry-now").addEventListener("click", () => {
+    banner.remove();
+    init();
+  });
 }
 
 init();
