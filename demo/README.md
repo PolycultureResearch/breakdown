@@ -89,6 +89,33 @@ restore the file from git afterwards to keep the reasoning.
   visitor who has never seen the tool before. Idle cost is no longer the thing
   to optimize.
 
+### Two things that will bite you (verified 2026-08-10)
+
+**The Fly account must not be on a trial.** Trial machines are force-stopped
+after **5 minutes** of runtime — regardless of traffic, `min_machines_running`,
+or `auto_stop_machines = "suspend"`, none of which override it. The log line is
+`Trial machine stopping. To run for longer than 5m0s, add a credit card`. While
+that cap is in force every visitor arriving after a five-minute gap pays a cold
+boot, and the trace cache `prewarm.py` fills is discarded along with the
+process, so the prewarm buys nothing. Add a payment method; the free allowance
+still covers an app this size.
+
+**The deploy workflow needs a token that has never existed.** `Deploy demo` has
+failed on every run with `no access token available` — there is no
+`FLY_API_TOKEN` at repo level or in the `demo` environment. Its own prerequisite
+comment says how, but note the environment scope:
+
+```bash
+fly tokens create deploy --app white-cube-demo
+gh secret set FLY_API_TOKEN --env demo --body "<token>"   # --env, not repo-level
+```
+
+Until that exists every deploy is manual, and `fly.toml` changes silently never
+reach production — which is how `min_machines_running = 1` sat committed but
+undeployed. Check what the live machine actually runs with
+`fly machine status <id> --app white-cube-demo --display-config`, not by reading
+`fly.toml`.
+
 Give clients the plain URL. Give them the token only if you want them driving it
 from Claude:
 

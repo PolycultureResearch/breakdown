@@ -118,6 +118,8 @@ Name + type chip (Source / Probabilistic / Formula) + fitted chip. Description, 
 | Endpoint | Used for |
 |---|---|
 | `GET /health` | first request in `init()`; on `status: "degraded"` show `#degraded-banner` with the startup error + a `breakdown doctor` hint and skip loading the DAG |
+
+**Transient failures vs. answers.** `api()` attaches the HTTP status to the error it throws, and `apiWithWake()` retries `502/503/504` and outright fetch rejections with exponential backoff (~23s of patience over 6 attempts); every other status is an answer, not an outage, and is rethrown at once. `init()` uses it for the `/health` probe — on a host that suspends idle instances that request *is* what boots the machine — and reports "Waking the server up…" while it retries instead of leaving a blank page. If it still fails, `#retry-banner` (amber, distinct from `#degraded-banner`'s red, which means *misconfigured* rather than *unreachable*) offers a **Try again** button that re-runs `init()` without a page reload. The case this exists for is the hosted demo taking the server away mid-session, not first load.
 | `GET /meta` | metric names, data date range, provider, fitted list — bootstraps header controls |
 | `GET /dag` | nodes + edges |
 | `GET /series` | every metric's native-grain series, per-metric `{grain, dates, values}` (one call) — hydrates the node cards |

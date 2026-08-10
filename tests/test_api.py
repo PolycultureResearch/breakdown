@@ -506,3 +506,88 @@ def test_slice_endpoint_provider_without_slicing_422(sliced_env):
         resp = client.post("/rca/signups/slices", params=_SLICE_WINDOWS)
         assert resp.status_code == 422
         assert "does not support dimensional" in resp.json()["detail"]
+
+
+def test_api_import_does_not_load_pymc():
+    """Boot cost guard: `breakdown.api.main` must import without the inference
+    stack (roadmap C14).
+
+    pymc/arviz/pytensor are ~80% of the process's import time. On a shared-CPU
+    VM that was ~27s of a ~43s startup — long enough that Fly's proxy gave up
+    on the White Cube demo and served **503** to the first visitor after every
+    idle period, which reads as a white screen. Deferring them is one
+    `import pymc` at module scope away from silently regressing, and the symptom
+    only shows up in production, so it is pinned here.
+
+    A fresh interpreter is required: pytest has almost certainly imported pymc
+    already via the engine tests.
+    """
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys; import breakdown.api.main; "
+        "print(','.join(m for m in ('pymc', 'arviz', 'pytensor') if m in sys.modules))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    leaked = result.stdout.strip()
+    assert leaked == "", (
+        f"breakdown.api.main pulled in the inference stack ({leaked}). Import it "
+        "inside the functions that use it — see the note at the top of "
+        "breakdown/engine/model.py."
+    )
+
+
+def test_warm_inference_imports_actually_loads_the_stack():
+    """The other half of the deferral: something must absorb the cost, or it
+    just moves from startup onto the first *Run analysis* click."""
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys; from breakdown.engine.model import warm_inference_imports; "
+        "warm_inference_imports(); "
+        "print(','.join(sorted(m for m in ('pymc', 'arviz', 'pytensor') if m in sys.modules)))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    assert result.stdout.strip() == "arviz,pymc,pytensor"
+
+
+def test_lifespan_warms_the_inference_stack_in_the_background():
+    """The deferral only helps if startup absorbs the cost it moved.
+
+    Without this, the ~27s (shared-CPU) import lands on whoever clicks *Run
+    analysis* first — a worse trade than the slow boot it replaced, and one
+    that would show up only in a live demo. Runs in a subprocess because
+    pytest has almost certainly imported pymc already.
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    probe = textwrap.dedent(
+        """
+        import sys, time
+        from fastapi.testclient import TestClient
+        import breakdown.api.main as m
+        assert "pymc" not in sys.modules, "pymc imported before lifespan ran"
+        with TestClient(m.app) as c:
+            c.get("/health")
+            for _ in range(200):        # warm-up is a daemon thread; give it a moment
+                if "pymc" in sys.modules:
+                    break
+                time.sleep(0.05)
+        print("warmed=" + str("pymc" in sys.modules))
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    assert "warmed=True" in result.stdout, (
+        "lifespan did not warm the inference stack; the first fit will pay the "
+        f"full import cost. stdout={result.stdout!r} stderr={result.stderr[-500:]!r}"
+    )
