@@ -194,10 +194,10 @@ async def explain_metric(name: str) -> Dict[str, Any]:
 @mcp.tool()
 async def run_rca(
     target: str,
-    reference_start: str,
-    reference_end: str,
     analysis_start: str,
     analysis_end: str,
+    reference_start: Optional[str] = None,
+    reference_end: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Root-cause analysis: explain why `target` moved between a reference
     (baseline) window and an analysis window. Returns per-node gaps with
@@ -206,23 +206,34 @@ async def run_rca(
     a ranked triage list — plus a how_to_read guide and a report_url deep
     link to the interactive analysis.
 
+    The model always trains on **all loaded history before
+    `analysis_start`** — the reference window is *not* the training window,
+    only the comparison baseline the gap is measured against. **Usually omit
+    `reference_start`/`reference_end`**: the engine defaults to the matched
+    adjacent block — ~4× the analysis length (min 28 days, whole weeks when
+    seasonality is in scope), ending the day before `analysis_start`. The
+    response's `reference_window` and `reference_defaulted` say what was
+    used. Override only for a deliberate baseline (e.g. the same fiscal
+    period a quarter earlier) — and a non-adjacent reference absorbs
+    underlying trend into the comparison on a growing metric, so say so when
+    you narrate one.
+
     Dates are YYYY-MM-DD, inclusive, and must lie inside the loaded data
-    window (see get_tree). Windows snap to whole periods at each node's
-    grain. Choosing windows from a phrase like 'last week': analysis window
-    = the period in question; reference window = an equal-length window
-    immediately before it (or a comparable earlier period). Prefer
-    whole-week spans (7/14/28 days) so weekday mix doesn't manufacture
-    seasonal gaps. For windows shorter than a week, compare like with
-    like: pick a reference covering the same days of the week — a weekend
-    vs. the prior weekend, a Monday vs. recent Mondays — or the gap will
-    be dominated by weekday-mix seasonality rather than anything
-    actionable. Trees with monthly metrics need windows covering whole
-    months. The first call fits models on demand and can take a minute or
-    two; repeat calls on the same tree are fast (fits are cached).
+    window (see get_tree); the analysis window cannot start on the first
+    loaded day when the reference is omitted (no room for a baseline).
+    Windows snap to whole periods at each node's grain. Analysis window =
+    the period in question. When you do pass an explicit reference shorter
+    than a week, compare like with like: cover the same days of the week —
+    a weekend vs. the prior weekend — or the gap will be dominated by
+    weekday-mix seasonality rather than anything actionable. Trees with
+    monthly metrics need windows covering whole months. The first call fits
+    models on demand and can take a minute or two; repeat calls on the same
+    tree are fast (fits are cached).
 
     Follow-up: when a top cause declares dimensions (see get_tree), call
-    slice_metric on it to localize the gap within the metric. For a lagged
-    edge, the contribution's `parent_windows` are the windows to reuse."""
+    slice_metric on it to localize the gap within the metric — reuse the
+    resolved windows from this response. For a lagged edge, the
+    contribution's `parent_windows` are the windows to reuse."""
     state = _state()
     _require_data(state)
     _known_metric(state, target)
@@ -240,8 +251,14 @@ async def run_rca(
         )
     out = round_floats(compact_rca(result))
     out["how_to_read"] = RCA_HOW_TO_READ
+    # Deep link from the *resolved* windows, so a defaulted reference replays
+    # identically even if the server later boots with a different data range.
     out["report_url"] = rca_link(
-        target, reference_start, reference_end, analysis_start, analysis_end
+        target,
+        result["reference_window"]["start"],
+        result["reference_window"]["end"],
+        analysis_start,
+        analysis_end,
     )
     return out
 
@@ -266,11 +283,12 @@ async def slice_metric(
 
     `dimension` must be declared on the metric (get_tree lists each metric's
     `dimensions`). Dates are YYYY-MM-DD, inclusive, snapped to whole periods
-    at the metric's grain — normally the same windows as the run_rca that
-    pointed here, but for a lagged parent use the `parent_windows` its
-    run_rca contribution carries. Slices are fetched on demand from the
-    provider; the first call for a (metric, dimension, window) queries the
-    data source, repeats are cached."""
+    at the metric's grain. Unlike run_rca, all four dates are required here:
+    pass the resolved windows from the run_rca response that pointed here
+    (its `reference_window`/`analysis_window`), and for a lagged parent use
+    the `parent_windows` its run_rca contribution carries. Slices are
+    fetched on demand from the provider; the first call for a (metric,
+    dimension, window) queries the data source, repeats are cached."""
     state = _state()
     _require_data(state)
     _known_metric(state, name)

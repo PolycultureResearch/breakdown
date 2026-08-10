@@ -710,3 +710,50 @@ def test_trace_cache_is_bounded():
     assert len(traces) == MAX_CACHED_TRACES
     assert ("m0", None) not in traces, "eviction should drop the oldest key first"
     assert (f"m{MAX_CACHED_TRACES + 24}", None) in traces
+
+
+def test_rca_endpoint_defaults_reference():
+    """Omitting both reference params defaults to the matched adjacent block;
+    passing exactly one is a 422."""
+    analysis = {"analysis_start": "2024-02-16", "analysis_end": "2024-04-09"}
+    with TestClient(app) as client:
+        resp = client.post("/rca/revenue", params=analysis)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["reference_defaulted"] is True
+        # 4x the 54-day analysis clamps to the loaded data start, then trims
+        # to whole weeks (the example tree declares seasonality): 42 days.
+        assert body["reference_window"] == {"start": "2024-01-05", "end": "2024-02-15"}
+        assert body["nodes"]["revenue"]["gap"] is not None
+
+        resp = client.post("/rca/revenue", params={**analysis, "reference_start": "2024-01-01"})
+        assert resp.status_code == 422
+        assert "both reference_start and reference_end" in resp.json()["detail"]
+
+
+def test_shapley_endpoint_defaults_reference():
+    analysis = {"analysis_start": "2024-02-16", "analysis_end": "2024-04-09"}
+    with TestClient(app) as client:
+        resp = client.get("/shapley/revenue", params=analysis)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["reference_defaulted"] is True
+        assert body["reference_window"]["end"] == "2024-02-15"
+        assert body["analysis_window"] == {
+            "start": "2024-02-16", "end": "2024-04-09",
+        }
+
+
+def test_slice_endpoint_defaults_reference(sliced_env):
+    params = {
+        "dimension": "region",
+        "analysis_start": "2024-03-04",
+        "analysis_end": "2024-03-10",
+    }
+    with TestClient(app) as client:
+        resp = client.post("/rca/signups/slices", params=params)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["reference_defaulted"] is True
+        # 7-day analysis -> 28-day floor, ending the day before it.
+        assert body["effective_windows"]["reference"]["n_periods"] == 28

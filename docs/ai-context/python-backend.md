@@ -500,11 +500,11 @@ Static files and the default tree resolve via `importlib.resources` (`files("bre
 
 **`POST /analyze/{name}`** — `inference_method` (`nuts`|`advi`), `draws`, `tune` (50–5000). Runs `fit_metric` via `asyncio.to_thread` under the lock; stores the trace in `app.state.traces`.
 
-**`GET /shapley/{name}`** — window params; thin wrapper over `rca.shapley_attribution`. 422 if no formula or bad windows.
+**`GET /shapley/{name}`** — analysis params required, reference params optional (omit both → engine default; exactly one → 422); thin wrapper over `rca.shapley_attribution`. 422 if no formula or bad windows.
 
-**`POST /rca/{name}`** — window params (required). Runs `run_rca` via `asyncio.to_thread` under the lock, passing `app.state.traces` directly — on-demand fits land in the cache with no copying. 404 unknown metric; `ValueError` → 422.
+**`POST /rca/{name}`** — analysis params required, reference params optional (same rule). Runs `run_rca` via `asyncio.to_thread` under the lock, passing `app.state.traces` directly — on-demand fits land in the cache with no copying. 404 unknown metric; `ValueError` → 422.
 
-**`POST /rca/{name}/slices`** — `dimension` + window params (all required, dates validated). 404 unknown metric; 422 for an undeclared dimension, a provider that raises `SliceNotSupported`, or engine `ValueError`s. `_run_slice` (sync, via `asyncio.to_thread` under the lock) computes the fetch span (`min(starts)..max(ends)` — lag-shifted windows are the *caller's* to pass when slicing a lagged parent), reads through `slice_cache` (querying by the same `source`-last-segment rule as startup for SL providers), fetches the `weight` metric's slices too for rates (must share the rate's grain), and calls the pure `slice_attribution`.
+**`POST /rca/{name}/slices`** — `dimension` + analysis params required, reference params optional (resolved in `_run_slice` via `resolve_reference_window`, since `slice_attribution` keeps concrete dates — the engine stays pure; result carries `reference_defaulted`). 404 unknown metric; 422 for an undeclared dimension, a provider that raises `SliceNotSupported`, or engine `ValueError`s. `_run_slice` (sync, via `asyncio.to_thread` under the lock) computes the fetch span (`min(starts)..max(ends)` — lag-shifted windows are the *caller's* to pass when slicing a lagged parent), reads through `slice_cache` (querying by the same `source`-last-segment rule as startup for SL providers), fetches the `weight` metric's slices too for rates (must share the rate's grain), and calls the pure `slice_attribution`.
 
 **`POST /simulate`** — `ScenarioRequest` body. Runs `run_scenario` via `asyncio.to_thread` under the lock; `app.state.data` is passed straight through, so a cold-start tree (data `None`) selects the engine's cold-start branch with no route logic. `ValueError` → 422.
 

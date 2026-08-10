@@ -23,7 +23,7 @@ from breakdown.data_fetch import (
     provider_query_name,
 )
 from breakdown.engine.model import fit_metric, summarize_trace, warm_inference_imports
-from breakdown.engine.rca import run_rca, shapley_attribution
+from breakdown.engine.rca import resolve_reference_window, run_rca, shapley_attribution
 from breakdown.engine.simulate import ScenarioRequest, run_scenario, validate_cold_start
 from breakdown.engine.slices import entity_flows, slice_attribution
 from breakdown.grains import GrainedData, build_grained
@@ -711,10 +711,16 @@ async def analyze_metric(
 async def get_shapley(
     name: str,
     request: Request,
-    reference_start: str = Query(..., description="Start of baseline window (YYYY-MM-DD)"),
-    reference_end: str = Query(..., description="End of baseline window (YYYY-MM-DD)"),
     analysis_start: str = Query(..., description="Start of analysis window (YYYY-MM-DD)"),
     analysis_end: str = Query(..., description="End of analysis window (YYYY-MM-DD)"),
+    reference_start: Optional[str] = Query(
+        default=None,
+        description="Start of baseline window (YYYY-MM-DD); omit both reference "
+        "dates to default to the matched adjacent block before the analysis window",
+    ),
+    reference_end: Optional[str] = Query(
+        default=None, description="End of baseline window (YYYY-MM-DD)"
+    ),
 ):
     _require_data(request)
     parser = request.app.state.parser
@@ -743,10 +749,16 @@ async def get_shapley(
 async def root_cause_analysis(
     name: str,
     request: Request,
-    reference_start: str = Query(..., description="Start of baseline window (YYYY-MM-DD)"),
-    reference_end: str = Query(..., description="End of baseline window (YYYY-MM-DD)"),
     analysis_start: str = Query(..., description="Start of analysis window (YYYY-MM-DD)"),
     analysis_end: str = Query(..., description="End of analysis window (YYYY-MM-DD)"),
+    reference_start: Optional[str] = Query(
+        default=None,
+        description="Start of baseline window (YYYY-MM-DD); omit both reference "
+        "dates to default to the matched adjacent block before the analysis window",
+    ),
+    reference_end: Optional[str] = Query(
+        default=None, description="End of baseline window (YYYY-MM-DD)"
+    ),
 ):
     _require_data(request)
     parser = request.app.state.parser
@@ -829,7 +841,12 @@ def _run_slice(
 ):
     """Fetch the sliced frames (and the weight's, for a rate) and attribute.
     Sync — called via asyncio.to_thread under the app lock. The engine stays
-    pure: all I/O happens here."""
+    pure: all I/O happens here (slice_attribution keeps concrete dates, so
+    omitted references resolve here too)."""
+    reference_start, reference_end, reference_defaulted = resolve_reference_window(
+        parser.dag, data, defn.name,
+        analysis_start, analysis_end, reference_start, reference_end,
+    )
     spec = defn.dimensions[dimension]
     span_start = min(reference_start, analysis_start)
     span_end = max(reference_end, analysis_end)
@@ -863,6 +880,7 @@ def _run_slice(
         weight_sliced=weight_sliced,
         additivity=additivity,
     )
+    result["reference_defaulted"] = reference_defaulted
 
     # Entity flows are a *diagnostic alongside* the attribution, never a second
     # decomposition of the same gap: they compare window-level sets, which do
@@ -897,16 +915,23 @@ async def slice_metric_gap(
     name: str,
     request: Request,
     dimension: str = Query(..., description="Declared dimension name on the metric"),
-    reference_start: str = Query(..., description="Start of baseline window (YYYY-MM-DD)"),
-    reference_end: str = Query(..., description="End of baseline window (YYYY-MM-DD)"),
     analysis_start: str = Query(..., description="Start of analysis window (YYYY-MM-DD)"),
     analysis_end: str = Query(..., description="End of analysis window (YYYY-MM-DD)"),
+    reference_start: Optional[str] = Query(
+        default=None,
+        description="Start of baseline window (YYYY-MM-DD); omit both reference "
+        "dates to default to the matched adjacent block before the analysis window",
+    ),
+    reference_end: Optional[str] = Query(
+        default=None, description="End of baseline window (YYYY-MM-DD)"
+    ),
 ):
     """Attribute `name`'s window-over-window gap across one dimension's slices.
 
     The traverse-then-slice follow-up to POST /rca/{name}: tree RCA says which
     upstream metric moved; this says where inside it. When slicing a lagged
-    parent, pass the parent's own lag-shifted windows.
+    parent, pass the parent's own lag-shifted windows (a defaulted reference
+    matches the metric's own timeline, not a lag-shifted one).
     """
     _require_data(request)
     parser = request.app.state.parser
@@ -927,6 +952,8 @@ async def slice_metric_gap(
         ("analysis_start", analysis_start),
         ("analysis_end", analysis_end),
     ]:
+        if value is None:  # omitted reference dates default downstream
+            continue
         try:
             datetime.date.fromisoformat(value)
         except ValueError:

@@ -682,10 +682,19 @@ Query parameters:
 
 | Param | Description |
 |-------|-------------|
-| `reference_start` | Start of the baseline window (`YYYY-MM-DD`) |
-| `reference_end` | End of the baseline window (`YYYY-MM-DD`) |
 | `analysis_start` | Start of the analysis window (`YYYY-MM-DD`) |
 | `analysis_end` | End of the analysis window (`YYYY-MM-DD`) |
+| `reference_start` | *(optional)* Start of the baseline window (`YYYY-MM-DD`) |
+| `reference_end` | *(optional)* End of the baseline window (`YYYY-MM-DD`) |
+
+Omit **both** reference dates (passing exactly one is a 422) and the engine
+defaults to the **matched adjacent block**: the window ending the day before
+`analysis_start`, 4× the analysis length (min 28 days, whole weeks when
+seasonality is in the target's scope), clamped to the loaded data. The
+response echoes the resolved `reference_window`/`analysis_window` and sets
+`reference_defaulted`. The reference is only the comparison baseline — the
+model always fits on all loaded history before `analysis_start` — see
+[docs/model.md](docs/model.md).
 
 Example response:
 
@@ -718,10 +727,16 @@ Example response:
 
 Walks the ancestor DAG of `name` and attributes the change between a reference window and an analysis window to upstream metrics. Any probabilistic node in scope that hasn't been fit yet is fit on demand with ADVI and its trace is cached (a second call is much faster).
 
-Query parameters (all required, `YYYY-MM-DD`): `reference_start`, `reference_end`, `analysis_start`, `analysis_end`.
+Query parameters (`YYYY-MM-DD`): `analysis_start`, `analysis_end` (required),
+`reference_start`, `reference_end` (optional — omitting both uses the matched
+adjacent block, exactly as on `GET /shapley/{name}` above; the response carries
+`reference_defaulted`).
 
 ```bash
+# explicit reference
 curl -X POST "http://localhost:9090/rca/revenue?reference_start=2024-01-01&reference_end=2024-02-15&analysis_start=2024-02-16&analysis_end=2024-04-09"
+# defaulted reference
+curl -X POST "http://localhost:9090/rca/revenue?analysis_start=2024-02-16&analysis_end=2024-04-09"
 ```
 
 Trimmed response:
@@ -796,7 +811,7 @@ See [docs/model.md](https://github.com/PolycultureResearch/breakdown/blob/main/d
 
 ### `POST /rca/{name}/slices`
 
-The traverse-then-slice follow-up: attribute one metric's window-over-window gap across a declared dimension's values.
+The traverse-then-slice follow-up: attribute one metric's window-over-window gap across a declared dimension's values. The reference dates are optional here too (same defaulting rule; the response carries `reference_defaulted`) — but when slicing a **lagged parent** surfaced by an RCA, pass its `parent_windows` explicitly: the default matches the metric's own timeline, not a lag-shifted one.
 
 ```bash
 curl -X POST "http://localhost:9090/rca/signups/slices?dimension=region&reference_start=2024-02-05&reference_end=2024-03-03&analysis_start=2024-03-04&analysis_end=2024-03-10"
