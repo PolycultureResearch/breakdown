@@ -551,3 +551,47 @@ def test_shapley_defaults_reference_and_echoes_windows():
     assert result["reference_window"]["end"] == "2024-02-15"
     assert result["analysis_window"] == {"start": AN[0], "end": AN[1]}
     assert abs(sum(result["attribution"].values()) - result["gap"]) < 1e-3
+
+
+# --- Fit-window provenance and seasonality warnings (1.10) ---
+
+def test_rca_surfaces_fit_window_and_seasonality_warnings():
+    """Posterior nodes report what the model actually trained on (all loaded
+    history before analysis_start) and any seasonality-identifiability
+    warnings; formula and root nodes carry neither."""
+    yaml_content = """
+metrics:
+  - name: daily_sessions
+    source: dbt.metric.daily_sessions
+  - name: order_count
+    source: dbt.metric.order_count
+    parents: [daily_sessions]
+    seasonality:
+      - period: 60
+        name: bimonthly
+  - name: average_order_value
+    source: dbt.metric.average_order_value
+  - name: revenue
+    source: dbt.metric.revenue
+    formula: "order_count * average_order_value"
+    parents: [order_count, average_order_value]
+"""
+    parser = Parser(yaml_content)
+    data = generate_mock_data(n_days=100)
+
+    result = run_rca(parser.dag, data, {}, "revenue", **win(REF, AN), advi_draws=300)
+
+    oc = result["nodes"]["order_count"]
+    # Fit = whole days from data start to the day before the analysis window,
+    # regardless of the reference dates.
+    assert oc["fit_window"] == {
+        "start": "2024-01-01", "end": "2024-02-15", "n_periods": 46,
+    }
+    # 46 fitted days < 2 x 60: the declared seasonality is unidentifiable
+    # and the warning must reach the RCA response, not just the log.
+    assert oc["seasonality_warnings"]
+    assert any("bimonthly" in w or "60" in w for w in oc["seasonality_warnings"])
+
+    assert result["nodes"]["revenue"]["fit_window"] is None
+    assert result["nodes"]["daily_sessions"]["fit_window"] is None
+    assert result["nodes"]["revenue"]["seasonality_warnings"] is None

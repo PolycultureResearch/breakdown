@@ -2050,6 +2050,16 @@ function renderRcaTab() {
         node.sign_warnings && node.sign_warnings.length
           ? ` · <span class="sign-flag" title="${esc(node.sign_warnings.join("\n\n"))}">⚠ learned sign contradicts expectation</span>`
           : "";
+      // The fit window is all loaded history before the analysis window —
+      // surfacing it here is what keeps it from being confused with the
+      // reference window.
+      const fitNote = node.fit_window
+        ? ` · fitted on ${node.fit_window.n_periods} ${esc(node.grain)}s (${esc(node.fit_window.start)} → ${esc(node.fit_window.end)})`
+        : "";
+      const seasNote =
+        node.seasonality_warnings && node.seasonality_warnings.length
+          ? ` · <span class="sign-flag" title="${esc(node.seasonality_warnings.join("\n\n"))}">⚠ seasonality unidentifiable from fitted history</span>`
+          : "";
       const twoLevel = node.contributions.some((c) => c.decomposition);
       let header, rows, nCols;
 
@@ -2121,7 +2131,7 @@ function renderRcaTab() {
       }
       return `
         <div class="attr-block">
-          <h4>${esc(name)} <span class="method">· ${method}${snapNote}${ciNote}${signNote}</span></h4>
+          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${signNote}${seasNote}</span></h4>
           <table class="data-table">
             ${header}
             ${rows}

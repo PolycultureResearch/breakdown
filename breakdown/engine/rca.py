@@ -520,6 +520,8 @@ def run_rca(
                 "inference_method": None,
                 "fit_quality": None,
                 "sign_warnings": None,
+                "fit_window": None,
+                "seasonality_warnings": None,
                 "ci_status": None,
                 "unexplained": None,
                 "components": None,
@@ -543,6 +545,8 @@ def run_rca(
         inference_method = None
         fit_quality = None
         sign_warnings = None
+        fit_window = None
+        seasonality_warnings = None
         interaction = None
         if not parents:
             attribution_method = None
@@ -696,6 +700,14 @@ def run_rca(
             inference_method = fit.inference_method
             fit_quality = fit.diagnostics.get("fit_quality")
             sign_warnings = fit.diagnostics.get("sign_warnings")
+            # What the model actually trained on: all loaded whole periods
+            # before analysis_start — not the reference window.
+            fit_window = {
+                "start": str(fit.dates[0].date()),
+                "end": str(fit.dates[-1].date()),
+                "n_periods": int(len(fit.dates)),
+            }
+            seasonality_warnings = fit.diagnostics.get("seasonality_warnings")
             arr = fit.trace.posterior["beta_raw"].values.reshape(-1, len(parents))
             n_post = arr.shape[0]
 
@@ -817,6 +829,8 @@ def run_rca(
             "inference_method": inference_method,
             "fit_quality": fit_quality,
             "sign_warnings": sign_warnings,
+            "fit_window": fit_window,
+            "seasonality_warnings": seasonality_warnings,
             "ci_status": ci_status,
             "unexplained": unexplained,
             "components": components,

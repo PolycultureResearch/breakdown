@@ -433,7 +433,7 @@ Each seasonality component is modeled with up to 2 Fourier harmonics (4 paramete
 **Declare only seasonality your fit window can see.** Two constraints, both enforced:
 
 - **Period vs. grain.** A harmonic needs more than two steps per cycle to be distinguishable from the level (Nyquist), so `period` must be ≥ 3, and the second harmonic is dropped below `period: 5`. Dropped harmonics are reported in the fit's `seasonality_warnings` diagnostic.
-- **Period vs. data.** Identifying a component takes at least two full periods *inside the fit window* — and RCA fits stop at `analysis_start`, so the window is shorter than your data. A `period: 365` component on a few months of history is unidentifiable and will soak up degrees of freedom the parents need; it too lands in `seasonality_warnings`.
+- **Period vs. data.** Identifying a component takes at least two full periods *inside the fit window* — and RCA fits stop at `analysis_start`, so the window is shorter than your data. A `period: 365` component on a few months of history is unidentifiable and will soak up degrees of freedom the parents need; it too lands in `seasonality_warnings`. RCA responses surface these warnings per node (with the fitted window under `fit_window`), so an unidentifiable component is flagged in the result, not just the server log — the fix is more history (an earlier `--start-date`), not a different reference window.
 
 ### Formula
 
