@@ -759,15 +759,9 @@ async def root_cause_analysis(
         # run_rca adds any traces it fits on demand to app.state.traces itself.
         try:
             result = await asyncio.to_thread(
-                run_rca,
-                parser.dag,
-                data,
-                request.app.state.traces,
-                name,
-                reference_start,
-                reference_end,
-                analysis_start,
-                analysis_end,
+                run_rca, parser.dag, data, request.app.state.traces, name,
+                analysis_start=analysis_start, analysis_end=analysis_end,
+                reference_start=reference_start, reference_end=reference_end,
             )
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))

@@ -191,6 +191,87 @@ def period_spine(start, end, grain: str) -> pd.DatetimeIndex:
     return pd.date_range(snapped.first_start, snapped.last_start, freq=_FREQ[grain])
 
 
+# Default reference-window policy: the "matched adjacent block". The reference
+# is only the comparison baseline (the fit already uses all loaded history
+# before the analysis window), so it should be adjacent (no trend gap),
+# composition-matched (whole weeks when seasonality is in scope), and long
+# enough for a stable mean — but not so long it mixes regimes.
+MIN_REFERENCE_DAYS = 28
+REFERENCE_MULTIPLE = 4
+
+
+def default_reference_window(
+    analysis_start,
+    analysis_end,
+    data_start,
+    *,
+    week_align: bool = False,
+    coarsest_grain: str = "day",
+) -> tuple:
+    """Matched adjacent reference block for an analysis window.
+
+    The block immediately preceding the analysis window, sized
+    ``REFERENCE_MULTIPLE`` × the analysis length with a floor of
+    ``MIN_REFERENCE_DAYS``, rounded up to a whole-week length when
+    `week_align` (per-node Monday alignment stays `snap_window`'s job),
+    and clamped to the loaded data range. When `coarsest_grain` is coarser
+    than a day, the block is extended backwards if needed so it contains at
+    least one whole period at that grain (data permitting).
+
+    Returns ``(reference_start, reference_end)`` as ISO date strings.
+    Raises ValueError when no reference day exists before the analysis
+    window.
+    """
+    _check_grain(coarsest_grain)
+    try:
+        an_s = pd.Timestamp(analysis_start).normalize()
+        an_e = pd.Timestamp(analysis_end).normalize()
+    except (ValueError, TypeError):
+        raise ValueError("analysis_start/analysis_end is not a valid date")
+    if an_s > an_e:
+        raise ValueError("analysis_start must be on or before analysis_end")
+    d0 = pd.Timestamp(data_start).normalize()
+
+    ref_end = an_s - pd.Timedelta(days=1)
+    if ref_end < d0:
+        raise ValueError(
+            f"The analysis window starts at the beginning of the loaded data "
+            f"({d0.date()}), so no reference block exists before it. Pass "
+            f"reference dates explicitly, or load more history (an earlier "
+            f"--start-date)."
+        )
+
+    an_len = (an_e - an_s).days + 1
+    length = max(REFERENCE_MULTIPLE * an_len, MIN_REFERENCE_DAYS)
+    if week_align:
+        length = -(-length // 7) * 7  # round up to a whole-week length
+    ref_start = ref_end - pd.Timedelta(days=length - 1)
+
+    if ref_start < d0:  # loaded data is the hard bound
+        ref_start = d0
+        if week_align:
+            avail = (ref_end - ref_start).days + 1
+            if avail >= 7:
+                # Trim down to whole weeks ending at ref_end: a balanced
+                # weekday mix beats raw length. A <7-day stub is kept —
+                # advisories, not this function, own that warning.
+                ref_start = ref_end - pd.Timedelta(days=7 * (avail // 7) - 1)
+
+    if coarsest_grain != "day" and snap_window(ref_start, ref_end, coarsest_grain) is None:
+        # Reach back to cover the last whole coarse period ending on/before
+        # ref_end, so coarse-grain nodes get at least one period to average —
+        # but only when the data can actually cover it. Otherwise the block
+        # stands and the node reports the existing window_shorter_than_grain
+        # status downstream.
+        last = floor_period(ref_end, coarsest_grain)
+        if next_start(last, coarsest_grain) - pd.Timedelta(days=1) > ref_end:
+            last = shift_periods(last, -1, coarsest_grain)
+        if last >= d0:
+            ref_start = min(ref_start, last)
+
+    return (str(ref_start.date()), str(ref_end.date()))
+
+
 def resample_up(
     series: pd.Series,
     from_grain: str,

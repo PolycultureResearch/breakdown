@@ -4,7 +4,7 @@ import pytest
 
 from breakdown.engine.rca import _block_bootstrap_indices, run_rca, shapley_attribution
 from breakdown.parser import Parser
-from tests.synthetic import generate_mock_data
+from tests.synthetic import generate_mock_data, win
 
 JAFFLE_YAML = """
 metrics:
@@ -36,7 +36,7 @@ def make_tree():
 
 
 def rca_on(dag, data, traces, target):
-    return run_rca(dag, data, traces, target, REF[0], REF[1], AN[0], AN[1], advi_draws=300)
+    return run_rca(dag, data, traces, target, **win(REF, AN), advi_draws=300)
 
 
 def test_rca_formula_attribution():
@@ -173,7 +173,7 @@ def test_rca_unknown_target_raises():
 def test_shapley_attribution_sums_to_gap():
     dag, data = make_tree()
 
-    result = shapley_attribution(dag, data, "revenue", REF[0], REF[1], AN[0], AN[1])
+    result = shapley_attribution(dag, data, "revenue", **win(REF, AN))
 
     assert set(result["attribution"].keys()) == {"order_count", "average_order_value"}
     assert abs(result["gap"] - (result["actual"] - result["baseline"])) < 1e-3
@@ -186,7 +186,7 @@ def test_shapley_attribution_no_formula_raises():
     dag, data = make_tree()
 
     with pytest.raises(ValueError, match="no formula"):
-        shapley_attribution(dag, data, "order_count", REF[0], REF[1], AN[0], AN[1])
+        shapley_attribution(dag, data, "order_count", **win(REF, AN))
 
 
 # --- Trend & seasonal components (T5) ---
@@ -219,7 +219,7 @@ metrics:
     ref = (str(dates[56].date()), str(dates[83].date()))  # 4 whole weeks
     an = (str(dates[84].date()), str(dates[93].date()))  # 10 days, weekday-skewed
 
-    result = run_rca(parser.dag, data, {}, "y", ref[0], ref[1], an[0], an[1], advi_draws=300)
+    result = run_rca(parser.dag, data, {}, "y", **win(ref, an), advi_draws=300)
 
     node = result["nodes"]["y"]
     comps = node["components"]
@@ -249,17 +249,9 @@ metrics:
     data = generate_mock_data(n_days=100)  # starts 2024-01-01
 
     with pytest.raises(ValueError) as excinfo:
-        run_rca(
-            parser.dag,
-            data,
-            {},
-            "order_count",
-            "2024-01-01",
-            "2024-02-15",
-            "2024-02-16",
-            "2024-03-14",
-            advi_draws=100,
-        )
+        run_rca(parser.dag, data, {}, "order_count",
+                **win(("2024-01-01", "2024-02-15"), ("2024-02-16", "2024-03-14")),
+                advi_draws=100)
     message = str(excinfo.value)
     assert "daily_sessions" in message
     assert "lag 5" in message
@@ -294,7 +286,7 @@ def test_overlapping_windows_raise(entry_point):
     )
 
     with pytest.raises(ValueError, match="overlap"):
-        entry_point(*args, "2024-01-01", "2024-02-15", "2024-02-10", "2024-03-14")
+        entry_point(*args, **win(("2024-01-01", "2024-02-15"), ("2024-02-10", "2024-03-14")))
 
 
 @pytest.mark.parametrize("entry_point", [run_rca, shapley_attribution])
@@ -308,7 +300,7 @@ def test_inverted_window_raises(entry_point):
     )
 
     with pytest.raises(ValueError, match="analysis_start.*on or before.*analysis_end"):
-        entry_point(*args, "2024-01-01", "2024-01-31", "2024-03-14", "2024-02-16")
+        entry_point(*args, **win(("2024-01-01", "2024-01-31"), ("2024-03-14", "2024-02-16")))
 
 
 def test_reference_window_starting_before_data_raises():
@@ -318,9 +310,8 @@ def test_reference_window_starting_before_data_raises():
     data = generate_mock_data(n_days=100)  # starts 2024-01-01
 
     with pytest.raises(ValueError, match="not fully covered by its data"):
-        run_rca(
-            parser.dag, data, {}, "revenue", "2023-12-01", "2024-01-31", "2024-02-01", "2024-02-28"
-        )
+        run_rca(parser.dag, data, {}, "revenue",
+                **win(("2023-12-01", "2024-01-31"), ("2024-02-01", "2024-02-28")))
 
 
 def test_analysis_window_running_past_data_raises():
@@ -328,9 +319,8 @@ def test_analysis_window_running_past_data_raises():
     data = generate_mock_data(n_days=100)  # ends 2024-04-09
 
     with pytest.raises(ValueError, match="not fully covered by its data"):
-        run_rca(
-            parser.dag, data, {}, "revenue", "2024-01-01", "2024-01-31", "2024-02-01", "2024-05-31"
-        )
+        run_rca(parser.dag, data, {}, "revenue",
+                **win(("2024-01-01", "2024-01-31"), ("2024-02-01", "2024-05-31")))
 
 
 def test_windows_fully_inside_the_data_are_accepted():
@@ -338,9 +328,8 @@ def test_windows_fully_inside_the_data_are_accepted():
     parser = Parser(_WINDOW_TREE)
     data = generate_mock_data(n_days=100)
 
-    result = run_rca(
-        parser.dag, data, {}, "revenue", "2024-01-01", "2024-01-31", "2024-02-01", "2024-02-28"
-    )
+    result = run_rca(parser.dag, data, {}, "revenue",
+                     **win(("2024-01-01", "2024-01-31"), ("2024-02-01", "2024-02-28")))
     assert result["nodes"]["revenue"]["gap"] is not None
 
 
@@ -380,13 +369,8 @@ metrics:
     parser = Parser(yaml_content)
 
     result = shapley_attribution(
-        parser.dag,
-        data,
-        "revenue",
-        "2024-01-01",
-        "2024-01-30",
-        "2024-01-31",
-        "2024-02-29",
+        parser.dag, data, "revenue",
+        **win(("2024-01-01", "2024-01-30"), ("2024-01-31", "2024-02-29")),
     )
 
     gap = result["actual"] - result["baseline"]
@@ -446,12 +430,10 @@ metrics:
     ref = ("2024-01-01", "2024-02-29")
     # Both analyses start 2024-03-01 -> same fit_end -> the same cached fit,
     # so the only difference is window-sampling uncertainty.
-    r3 = run_rca(
-        parser.dag, data, traces, "y", ref[0], ref[1], "2024-03-01", "2024-03-03", advi_draws=300
-    )
-    r28 = run_rca(
-        parser.dag, data, traces, "y", ref[0], ref[1], "2024-03-01", "2024-03-28", advi_draws=300
-    )
+    r3 = run_rca(parser.dag, data, traces, "y",
+                 **win(ref, ("2024-03-01", "2024-03-03")), advi_draws=300)
+    r28 = run_rca(parser.dag, data, traces, "y",
+                  **win(ref, ("2024-03-01", "2024-03-28")), advi_draws=300)
 
     def ci_width(result):
         ci = result["nodes"]["y"]["contributions"][0]["ci_95"]
@@ -511,3 +493,61 @@ def test_rca_day_grain_golden_pinned():
     # the node's own gap. Pinning values that violated it is how the bug
     # survived a golden test in the first place.
     assert abs(sum(contribs.values()) - (rev["gap"] - rev["unexplained"])) < 1e-9
+
+
+# --- Default reference window (the matched adjacent block) ---
+
+def test_rca_defaults_reference_to_matched_adjacent_block():
+    """Omitting both reference dates uses the matched adjacent block; the
+    response echoes the resolved window and flags it as defaulted. The 54-day
+    analysis wants a 216-day reference, so it clamps to the loaded data."""
+    dag, data = make_tree()
+
+    result = run_rca(dag, data, {}, "revenue",
+                     analysis_start=AN[0], analysis_end=AN[1], advi_draws=300)
+
+    assert result["reference_defaulted"] is True
+    # Adjacent (ends the day before the analysis window), clamped to the
+    # start of the loaded data.
+    assert result["reference_window"] == {"start": "2024-01-01", "end": "2024-02-15"}
+    assert result["nodes"]["revenue"]["gap"] is not None
+
+
+def test_rca_explicit_reference_is_unchanged_and_not_flagged():
+    dag, data = make_tree()
+
+    defaulted = run_rca(dag, data, {}, "revenue",
+                        analysis_start=AN[0], analysis_end=AN[1], advi_draws=300)
+    explicit = run_rca(dag, data, {}, "revenue", **win(
+        (defaulted["reference_window"]["start"], defaulted["reference_window"]["end"]),
+        AN), advi_draws=300)
+
+    assert explicit["reference_defaulted"] is False
+    assert explicit["reference_window"] == defaulted["reference_window"]
+    assert explicit["nodes"]["revenue"]["gap"] == defaulted["nodes"]["revenue"]["gap"]
+
+
+def test_rca_single_reference_date_raises():
+    dag, data = make_tree()
+    with pytest.raises(ValueError, match="both reference_start and reference_end"):
+        run_rca(dag, data, {}, "revenue",
+                analysis_start=AN[0], analysis_end=AN[1], reference_start=REF[0])
+
+
+def test_rca_analysis_at_data_start_raises():
+    dag, data = make_tree()
+    with pytest.raises(ValueError, match="beginning of the loaded data"):
+        run_rca(dag, data, {}, "revenue",
+                analysis_start="2024-01-01", analysis_end="2024-01-14")
+
+
+def test_shapley_defaults_reference_and_echoes_windows():
+    dag, data = make_tree()
+
+    result = shapley_attribution(dag, data, "revenue",
+                                 analysis_start=AN[0], analysis_end=AN[1])
+
+    assert result["reference_defaulted"] is True
+    assert result["reference_window"]["end"] == "2024-02-15"
+    assert result["analysis_window"] == {"start": AN[0], "end": AN[1]}
+    assert abs(sum(result["attribution"].values()) - result["gap"]) < 1e-3

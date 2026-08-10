@@ -10,6 +10,7 @@ from breakdown.engine.rca import run_rca, shapley_attribution
 from breakdown.engine.simulate import ScenarioRequest, run_scenario
 from breakdown.grains import build_grained
 from breakdown.parser import Parser
+from tests.synthetic import win
 
 MIXED_YAML = """
 metrics:
@@ -60,7 +61,7 @@ def test_mixed_grain_rca_end_to_end():
     dag = Parser(MIXED_YAML).dag
     data = mixed_grain_data()
 
-    result = run_rca(dag, data, {}, "conversions", *REF, *AN)
+    result = run_rca(dag, data, {}, "conversions", **win(REF, AN))
 
     node = result["nodes"]["conversions"]
     assert node["status"] == "ok"
@@ -80,7 +81,7 @@ def test_mixed_grain_shapley_attribution_efficiency():
     dag = Parser(MIXED_YAML).dag
     data = mixed_grain_data()
 
-    sh = shapley_attribution(dag, data, "conversions", *REF, *AN)
+    sh = shapley_attribution(dag, data, "conversions", **win(REF, AN))
 
     assert sh["grain"] == "week"
     assert sh["effective_windows"]["analysis"]["n_periods"] == 8
@@ -93,14 +94,8 @@ def test_window_shorter_than_grain_degrades_not_errors():
     data = mixed_grain_data()
 
     result = run_rca(
-        dag,
-        data,
-        {},
-        "conversions",
-        "2024-01-02",
-        "2024-01-05",
-        "2024-01-06",
-        "2024-01-09",
+        dag, data, {}, "conversions",
+        **win(("2024-01-02", "2024-01-05"), ("2024-01-06", "2024-01-09")),
     )
 
     node = result["nodes"]["conversions"]
@@ -119,13 +114,8 @@ def test_shapley_endpoint_errors_loudly_on_short_window():
 
     with pytest.raises(ValueError, match="contains no whole 'week' period"):
         shapley_attribution(
-            dag,
-            data,
-            "conversions",
-            "2024-01-02",
-            "2024-01-05",
-            "2024-01-06",
-            "2024-01-09",
+            dag, data, "conversions",
+            **win(("2024-01-02", "2024-01-05"), ("2024-01-06", "2024-01-09")),
         )
 
 
@@ -136,14 +126,8 @@ def test_single_period_window_suppresses_bootstrap_ci():
     data = mixed_grain_data()
 
     result = run_rca(
-        dag,
-        data,
-        {},
-        "conversions",
-        "2024-01-01",
-        "2024-01-28",
-        "2024-02-26",
-        "2024-03-03",
+        dag, data, {}, "conversions",
+        **win(("2024-01-01", "2024-01-28"), ("2024-02-26", "2024-03-03")),
     )
 
     node = result["nodes"]["conversions"]
@@ -191,14 +175,8 @@ def test_monthly_lag_shifts_whole_months_across_year_boundary():
     dag = Parser(MONTHLY_LAG_YAML).dag
 
     result = run_rca(
-        dag,
-        data,
-        {},
-        "signups",
-        "2024-01-01",
-        "2024-06-30",
-        "2024-11-01",
-        "2025-01-31",
+        dag, data, {}, "signups",
+        **win(("2024-01-01", "2024-06-30"), ("2024-11-01", "2025-01-31")),
         advi_draws=300,
     )
 
@@ -310,7 +288,7 @@ def test_lagged_identity_rca_recovers_lagged_change():
     ref = ("2024-01-11", "2024-02-09")
     an = ("2024-03-04", "2024-04-02")
 
-    result = run_rca(dag, frame, {}, "conversions", *ref, *an)
+    result = run_rca(dag, frame, {}, "conversions", **win(ref, an))
 
     node = result["nodes"]["conversions"]
     assert abs(node["unexplained"]) < 1e-9
@@ -331,7 +309,7 @@ def test_lagged_identity_rca_recovers_lagged_change():
     assert "lag" not in by_parent["cohort_rate"]
     assert "parent_windows" not in by_parent["cohort_rate"]
 
-    sh = shapley_attribution(dag, frame, "conversions", *ref, *an)
+    sh = shapley_attribution(dag, frame, "conversions", **win(ref, an))
     assert abs(sum(sh["attribution"].values()) - sh["gap"]) < 1e-9
     # The standalone Shapley response carries the same map, lagged parents only.
     assert set(sh["parent_windows"]) == {"starts"}

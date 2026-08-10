@@ -43,6 +43,8 @@ from breakdown.engine.model import compute_shapley, fit_metric, seasonal_window_
 from breakdown.formula import eval_formula
 from breakdown.grains import (
     BOOT_BLOCK,
+    coarsest,
+    default_reference_window,
     ensure_grained,
     fit_grain,
     next_start,
@@ -54,6 +56,51 @@ from breakdown.grains import (
 # Bootstrap replicates per window; fixed so contribution CIs are comparable
 # across nodes and runs.
 _N_BOOT = 500
+
+
+def _reference_alignment(dag: nx.DiGraph, target: str) -> Tuple[bool, str]:
+    """Alignment inputs for the default reference window, derived from the
+    target's ancestor scope: whether any node in scope declares seasonality
+    (whole-week reference lengths keep the weekday mix balanced) and the
+    coarsest fit grain in scope (the reference must hold at least one whole
+    period at it)."""
+    scope = nx.ancestors(dag, target) | {target}
+    week_align = any(dag.nodes[n]["definition"].seasonality for n in scope)
+    coarsest_grain = coarsest(fit_grain(dag, n) for n in scope)
+    return week_align, coarsest_grain
+
+
+def resolve_reference_window(
+    dag: nx.DiGraph,
+    data,
+    target: str,
+    analysis_start: str,
+    analysis_end: str,
+    reference_start: Optional[str],
+    reference_end: Optional[str],
+) -> Tuple[str, str, bool]:
+    """Resolve possibly-omitted reference dates to concrete ones.
+
+    Both omitted → the matched adjacent block (`default_reference_window`)
+    aligned for the target's scope. Exactly one omitted is an error.
+    Returns ``(reference_start, reference_end, defaulted)``.
+    """
+    if (reference_start is None) != (reference_end is None):
+        raise ValueError(
+            "Pass both reference_start and reference_end, or neither "
+            "(omitting both uses the default reference window)."
+        )
+    if reference_start is not None:
+        return reference_start, reference_end, False
+    week_align, coarsest_grain = _reference_alignment(dag, target)
+    ref_start, ref_end = default_reference_window(
+        analysis_start,
+        analysis_end,
+        ensure_grained(data).date_start,
+        week_align=week_align,
+        coarsest_grain=coarsest_grain,
+    )
+    return ref_start, ref_end, True
 
 
 def _validate_windows(
@@ -243,10 +290,11 @@ def shapley_attribution(
     dag: nx.DiGraph,
     data: pd.DataFrame,
     target: str,
-    reference_start: str,
-    reference_end: str,
+    *,
     analysis_start: str,
     analysis_end: str,
+    reference_start: Optional[str] = None,
+    reference_end: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Symmetric per-day Shapley decomposition of a formula metric's
     window-over-window gap.
@@ -274,10 +322,17 @@ def shapley_attribution(
     denominator in a ratio formula) affects `baseline` symmetrically with the
     analysis side — resolve those at the data grain, not here.
 
+    Omitting both reference dates uses the default reference window (the
+    matched adjacent block before the analysis window); the reference is only
+    the comparison baseline, never the fit window.
+
     Returns the `GET /shapley` response shape; `decomposition` carries the
     per-parent parts with `attribution = means + covariance_analysis −
     covariance_reference`.
     """
+    reference_start, reference_end, reference_defaulted = resolve_reference_window(
+        dag, data, target, analysis_start, analysis_end, reference_start, reference_end
+    )
     _validate_windows(reference_start, reference_end, analysis_start, analysis_end)
     data = ensure_grained(data)
     defn = dag.nodes[target]["definition"]
@@ -348,6 +403,9 @@ def shapley_attribution(
         "target": target,
         "formula": defn.formula,
         "grain": grain,
+        "reference_window": {"start": reference_start, "end": reference_end},
+        "analysis_window": {"start": analysis_start, "end": analysis_end},
+        "reference_defaulted": reference_defaulted,
         "effective_windows": {
             "reference": _window_info(snapped_ref),
             "analysis": _window_info(snapped_an),
@@ -375,10 +433,11 @@ def run_rca(
     data: pd.DataFrame,
     traces: Dict[Tuple[str, Optional[str]], Any],
     target: str,
-    reference_start: str,
-    reference_end: str,
+    *,
     analysis_start: str,
     analysis_end: str,
+    reference_start: Optional[str] = None,
+    reference_end: Optional[str] = None,
     advi_draws: int = 500,
 ) -> Dict[str, Any]:
     """Attribute `target`'s window-over-window change to its ancestors.
@@ -388,10 +447,19 @@ def run_rca(
     strictly before `analysis_start` (so the anomaly window is excluded) and added
     to it. A full-window fit (`fit_end=None`) is never reused here — it is
     contaminated by the anomaly for attribution purposes.
+
+    Omitting both reference dates uses the default reference window: the
+    matched adjacent block before the analysis window. The reference is only
+    the comparison baseline — the fit window is all loaded history before
+    `analysis_start` either way. The response echoes the resolved windows and
+    `reference_defaulted`.
     """
     if target not in dag:
         raise ValueError(f"Metric '{target}' not found in the metric tree.")
 
+    reference_start, reference_end, reference_defaulted = resolve_reference_window(
+        dag, data, target, analysis_start, analysis_end, reference_start, reference_end
+    )
     _validate_windows(reference_start, reference_end, analysis_start, analysis_end)
     data = ensure_grained(data)
 
@@ -483,7 +551,13 @@ def run_rca(
         elif defn.formula:
             attribution_method = "shapley"
             sh = shapley_attribution(
-                dag, data, node, reference_start, reference_end, analysis_start, analysis_end
+                dag,
+                data,
+                node,
+                analysis_start=analysis_start,
+                analysis_end=analysis_end,
+                reference_start=reference_start,
+                reference_end=reference_end,
             )
 
             # Bootstrap the windows jointly across parents (one set of day
@@ -754,6 +828,7 @@ def run_rca(
         "target": target,
         "reference_window": {"start": reference_start, "end": reference_end},
         "analysis_window": {"start": analysis_start, "end": analysis_end},
+        "reference_defaulted": reference_defaulted,
         "nodes": nodes_out,
         "ranked_causes": _rank_causes(dag, target, nodes_in_scope, nodes_out),
     }

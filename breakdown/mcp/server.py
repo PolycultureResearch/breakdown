@@ -233,10 +233,10 @@ async def run_rca(
             state.data,
             state.traces,
             target,
-            reference_start,
-            reference_end,
-            analysis_start,
-            analysis_end,
+            analysis_start=analysis_start,
+            analysis_end=analysis_end,
+            reference_start=reference_start,
+            reference_end=reference_end,
         )
     out = round_floats(compact_rca(result))
     out["how_to_read"] = RCA_HOW_TO_READ

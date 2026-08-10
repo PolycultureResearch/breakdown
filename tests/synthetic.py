@@ -4,6 +4,17 @@ import numpy as np
 import pandas as pd
 
 
+def win(ref, an):
+    """Window kwargs for run_rca/shapley_attribution, whose window arguments
+    are keyword-only (the reference pair is optional and defaults)."""
+    return {
+        "reference_start": ref[0],
+        "reference_end": ref[1],
+        "analysis_start": an[0],
+        "analysis_end": an[1],
+    }
+
+
 def generate_mock_data(n_days: int = 100, seed: int = 42) -> pd.DataFrame:
     """Generate a correlated mock dataset for the jaffle-shop metric tree."""
     rng = np.random.default_rng(seed=seed)
