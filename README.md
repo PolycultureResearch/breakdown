@@ -203,7 +203,7 @@ uv run breakdown doctor --tree path/to/my_tree.yml
 
 It walks the provider's auth chain step by step (tree parses → env vars set → CLI/profile/token valid → connection opens → every metric's query actually runs) and prints `[PASS]`/`[FAIL]` per step with copy-paste remediation for each failure. Exit code is non-zero if anything failed. Probes run over the last 7 days by default; override with `--start-date`/`--end-date`.
 
-Two mode-specific checks ride along: a cold-start tree (`provider: none`) gets its declarations validated instead of a connection probe, and when you pass an explicit `--start-date`/`--end-date` window the doctor adds a **fit readiness** report — each metric's whole-period count against the 10-period fit minimum, the graduation check for a tree [moving from cold start to fitted mode](#cold-start-mode-what-if-with-no-data).
+Two mode-specific checks ride along: a cold-start tree (`provider: none`) gets its declarations validated instead of a connection probe, and when you pass an explicit `--start-date`/`--end-date` window the doctor adds a **fit readiness** report — each metric's whole-period count against the 10-period fit minimum, the graduation check for a tree [moving from cold start to fitted mode](#cold-start-mode-what-if-with-no-data) — plus a **history headroom** report: whether the provider has history before your `--start-date`. Breakdown trains on everything you load, so an earlier start date strengthens every fit (and the default RCA reference windows) at no cost beyond fetch time.
 
 For the **`dbt` provider**, `doctor` walks manifest → profile → connection →
 bindings → dimensions → grain claims, in the order a failure cascades. The last
@@ -645,7 +645,7 @@ It reports every metric's whole-period count against the fit minimum (`signups: 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), fitted models (UI bootstrap) |
+| `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), fitted models, per-metric `earliest_available` history discovery (UI bootstrap) |
 | `GET` | `/dag` | Full metric DAG (nodes + edges) |
 | `GET` | `/metrics/{name}` | Metric definition, time series, and posterior summary |
 | `POST` | `/analyze/{name}` | Run Bayesian sampling for a metric |

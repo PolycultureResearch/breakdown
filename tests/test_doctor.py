@@ -617,3 +617,20 @@ def test_the_migration_check_is_part_of_the_local_chain():
     from breakdown.doctor import _DOWNSTREAM_CHECKS
 
     assert "dbt provider migration" in _DOWNSTREAM_CHECKS["local"]
+
+
+def test_doctor_history_headroom(tmp_path):
+    tree = tmp_path / "tree.yml"
+    tree.write_text(MOCK_TREE)
+    # Mock history reaches back to its 2020-01-01 epoch, so any later
+    # --start-date has headroom to report.
+    results = {r.name: r for r in run_doctor(str(tree), "2024-01-01", "2024-01-31")}
+    check = results["history headroom"]
+    assert check.status == "pass"
+    assert "2020-01-01" in check.detail
+    assert "--start-date" in check.detail
+
+    # Without an explicit window the whole readiness block (including
+    # headroom) is skipped.
+    results = {r.name: r for r in run_doctor(str(tree))}
+    assert "history headroom" not in results

@@ -97,6 +97,12 @@ def fetch_metric_sliced(self, metric_name: str, dimension_source: str,
 ```
 Returns **long format** `["date", "slice", "value"]` — one row per (period, dimension value), NULL dimension values mapped to `"__null__"`. The base implementation raises the typed `SliceNotSupported` (API → 422 naming the provider); `local`/`cloud` implement it by appending `dimension_source` to the existing time-grain `group_by` and reshaping via `_sliced_long`; the warehouse provider does not support it yet; `SnapshotFetcher` passes it through uncached (sliced snapshot persistence deferred). Sliced frames are analysis-time only — they never enter `GrainedData` or the fit path.
 
+A third, non-abstract method backs history discovery (roadmap 1.10):
+```python
+def earliest_date(self, metric_name: str, grain: str = "day") -> Optional[str]
+```
+A **capability, not a contract**: the earliest period-start the source has, or `None` when the provider can't answer — and implementations never raise (log + `None`). Mock returns its `_EPOCH` (`2020-01-01`); warehouse wraps the metric's own SQL in `SELECT MIN(date) FROM (…)` bound over an effectively unbounded window; local runs `mf query --order <grain dim> --limit 1`; cloud queries the SDK with `order_by`/`limit=1`; `SnapshotFetcher` passes through with a belt-and-braces try/except (a snapshot-only deployment has no SDK and must simply not know). Consumed by `lifespan`'s background `_discover_earliest` task, which fills `app.state.earliest` metric by metric off the startup path (one provider round-trip per metric would roughly double cold boot; `/meta` reports whatever has arrived) and is cancelled-and-awaited on shutdown, and by the doctor's **history headroom** check, which probes synchronously through the same fetcher as fit readiness.
+
 ### `MockDataFetcher`
 Constructed with an optional metric DAG (`MockDataFetcher(dag=parser.dag)`). With a DAG, series are generated in topological order **at each node's declared grain** so they respect the tree: formula nodes satisfy their formula against parents aggregated to the node's grain plus ~2% noise, probabilistic nodes are a coefficient-weighted sum of aligned parents (lag-shifted when `lags` is set) plus ~5% noise, and roots are random walks with weekly seasonality on their native period spine.
 
@@ -490,7 +496,7 @@ Static files and the default tree resolve via `importlib.resources` (`files("bre
 
 **`GET /health`** — always 200: `{status: "ok", provider, metrics}` or `{status: "degraded", error}`. Liveness for orchestrators (the body, not the code, carries degraded-ness) and the UI's first request.
 
-**`GET /meta`** — `mode` (`"fitted"` | `"cold_start"` — which surface the UI should boot), metrics, data window (null in cold start), provider, per-metric `grains`/`kinds`/`data_through` maps (`data_through` = each metric's honest data edge, which may lag the requested window), fitted list (UI bootstrap).
+**`GET /meta`** — `mode` (`"fitted"` | `"cold_start"` — which surface the UI should boot), metrics, data window (null in cold start), provider, per-metric `grains`/`kinds`/`data_through` maps (`data_through` = each metric's honest data edge, which may lag the requested window), `earliest_available` (per-metric earliest provider date from the background discovery task — `{}` until it fills, null per metric when the provider can't say; drives the UI's "history exists before --start-date" nudge), fitted list (UI bootstrap).
 
 **`GET /dag`** — nodes (`[name, definition.model_dump()]`) and edges.
 

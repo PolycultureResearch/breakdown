@@ -757,3 +757,19 @@ def test_slice_endpoint_defaults_reference(sliced_env):
         assert body["reference_defaulted"] is True
         # 7-day analysis -> 28-day floor, ending the day before it.
         assert body["effective_windows"]["reference"]["n_periods"] == 28
+
+
+def test_meta_reports_earliest_available():
+    """Background discovery fills earliest_available; the mock provider
+    answers with its epoch for every metric."""
+    import time
+
+    with TestClient(app) as client:
+        meta = {}
+        for _ in range(100):  # discovery is async; poll briefly
+            meta = client.get("/meta").json()
+            if len(meta.get("earliest_available", {})) == len(meta["metrics"]):
+                break
+            time.sleep(0.05)
+        assert set(meta["earliest_available"]) == set(meta["metrics"])
+        assert all(v == "2020-01-01" for v in meta["earliest_available"].values())

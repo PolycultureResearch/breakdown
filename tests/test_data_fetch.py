@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from breakdown.data_fetch import (
+    BaseDataFetcher,
     CloudDataFetcher,
     LocalDataFetcher,
     MissingProviderExtra,
@@ -207,6 +208,9 @@ class _StubCursor:
 
     def fetchall(self):
         return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
 
     def close(self):
         pass
@@ -871,3 +875,133 @@ def test_mock_reads_per_parent_priors_and_can_generate_a_negative_edge():
     assert np.corrcoef(rate, engaged)[0, 1] > 0, "declared-positive edge generated negative"
     # The child is still a rate, not its regressors' scale (seconds).
     assert 0 < rate.min() and rate.max() < 1
+
+
+# --- earliest_date discovery (roadmap 1.10) ---
+
+def test_base_earliest_date_defaults_to_none():
+    class _Minimal(BaseDataFetcher):
+        def fetch_metric(self, metric_name, start_date, end_date, grain="day", kind="flow"):
+            raise NotImplementedError
+
+    assert _Minimal().earliest_date("anything") is None
+
+
+def test_mock_earliest_date_is_the_epoch():
+    fetcher = MockDataFetcher()
+    assert fetcher.earliest_date("revenue") == "2020-01-01"
+    assert fetcher.earliest_date("revenue", grain="month") == "2020-01-01"
+
+
+def test_warehouse_earliest_date_wraps_the_metric_sql(monkeypatch):
+    import datetime
+
+    cursor = _StubCursor([(datetime.date(2023, 1, 5),)])
+    fetcher = WarehouseDataFetcher(
+        host="h", http_path="p", token="t",
+        metric_sql={"new_mrr": "SELECT ... :start_date ... :end_date"},
+    )
+    monkeypatch.setattr(fetcher, "_cursor", lambda: cursor)
+
+    assert fetcher.earliest_date("new_mrr") == "2023-01-05"
+    sql, params = cursor.executed
+    # The metric's own SELECT is probed as a subquery over an effectively
+    # unbounded window — the named params live inside it and must be bound.
+    assert sql.startswith("SELECT MIN(date) AS date FROM (")
+    assert params == {"start_date": "1900-01-01", "end_date": "9999-12-31"}
+
+
+def test_warehouse_earliest_date_null_and_unknown_metric(monkeypatch):
+    fetcher = WarehouseDataFetcher(
+        host="h", http_path="p", token="t",
+        metric_sql={"new_mrr": "SELECT ..."},
+    )
+    monkeypatch.setattr(fetcher, "_cursor", lambda: _StubCursor([(None,)]))
+    assert fetcher.earliest_date("new_mrr") is None  # empty source table
+    assert fetcher.earliest_date("nope") is None  # no sql declared
+
+
+def test_warehouse_earliest_date_never_raises(monkeypatch):
+    fetcher = WarehouseDataFetcher(
+        host="h", http_path="p", token="t", metric_sql={"new_mrr": "SELECT ..."},
+    )
+
+    def boom():
+        raise RuntimeError("warehouse down")
+
+    monkeypatch.setattr(fetcher, "_cursor", boom)
+    assert fetcher.earliest_date("new_mrr") is None
+
+
+def test_local_earliest_date_parses_probe_csv(monkeypatch, tmp_path):
+    import subprocess
+
+    fetcher = LocalDataFetcher(project_path=str(tmp_path))
+    monkeypatch.setattr(
+        "breakdown.data_fetch.provider_extra_missing", lambda p: None
+    )
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        csv_path = cmd[cmd.index("--csv") + 1]
+        with open(csv_path, "w") as f:
+            f.write("metric_time__day,revenue\n2022-07-01,10.0\n")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert fetcher.earliest_date("revenue") == "2022-07-01"
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--order") + 1] == "metric_time__day"
+    assert cmd[cmd.index("--limit") + 1] == "1"
+
+
+def test_local_earliest_date_never_raises(monkeypatch, tmp_path):
+    fetcher = LocalDataFetcher(project_path=str(tmp_path))
+    # Missing extra (snapshot-only deployment): quiet None, no crash.
+    monkeypatch.setattr(
+        "breakdown.data_fetch.provider_extra_missing", lambda p: "mf not on PATH"
+    )
+    assert fetcher.earliest_date("revenue") is None
+
+
+def test_cloud_earliest_date_orders_and_limits(monkeypatch):
+    from contextlib import contextmanager
+
+    class _StubTable:
+        def to_pandas(self):
+            return pd.DataFrame({"METRIC_TIME__DAY": [pd.Timestamp("2021-03-01")]})
+
+    class _StubClient:
+        def __init__(self):
+            self.kwargs = None
+
+        @contextmanager
+        def session(self):
+            yield
+
+        def query(self, **kwargs):
+            self.kwargs = kwargs
+            return _StubTable()
+
+    fetcher = CloudDataFetcher.__new__(CloudDataFetcher)  # skip SDK __init__
+    fetcher.client = _StubClient()
+
+    assert fetcher.earliest_date("revenue") == "2021-03-01"
+    assert fetcher.client.kwargs == {
+        "metrics": ["revenue"],
+        "group_by": ["metric_time__day"],
+        "order_by": ["metric_time__day"],
+        "limit": 1,
+    }
+
+
+def test_cloud_earliest_date_never_raises():
+    class _DownClient:
+        def session(self):
+            raise ConnectionError("SL unreachable")
+
+    fetcher = CloudDataFetcher.__new__(CloudDataFetcher)
+    fetcher.client = _DownClient()
+    assert fetcher.earliest_date("revenue") is None

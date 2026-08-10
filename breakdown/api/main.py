@@ -289,6 +289,11 @@ async def lifespan(app: FastAPI):
     # OUTER JOIN over two windows on the warehouse.
     app.state.flow_cache: Dict[Tuple[str, str, str, str, str, str], Any] = {}
     app.state.lock = asyncio.Lock()
+    # Filled by the background discovery task: metric -> earliest ISO date the
+    # provider has (None = provider can't say). Read by /meta so the UI can
+    # nudge "history exists before --start-date".
+    app.state.earliest: Dict[str, Optional[str]] = {}
+    app.state.earliest_task: Optional[asyncio.Task] = None
 
     try:
         with open(tree_path, "r") as f:
@@ -334,6 +339,13 @@ async def lifespan(app: FastAPI):
             app.state.fetcher = fetcher
             app.state.data = data
 
+            # History discovery runs in the background: one provider
+            # round-trip per metric would roughly double a cold startup, and
+            # /meta must stay instant — it reports whatever has arrived.
+            app.state.earliest_task = asyncio.create_task(
+                _discover_earliest(app, parser, fetcher, provider_cfg.type)
+            )
+
             logger.info(
                 "breakdown API started: tree=%s provider=%s window=[%s, %s] rows=%s",
                 tree_path,
@@ -363,8 +375,36 @@ async def lifespan(app: FastAPI):
     # The MCP sub-app's own lifespan never runs under a Starlette mount, so
     # its session manager must be driven from here.
     _mcp_mount.rebuild()
-    async with mcp.session_manager.run():
-        yield
+    try:
+        async with mcp.session_manager.run():
+            yield
+    finally:
+        task = app.state.earliest_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+
+async def _discover_earliest(app: FastAPI, parser, fetcher, provider_type: str) -> None:
+    """Fill app.state.earliest metric by metric. Failure-soft per metric:
+    earliest_date never raises by contract, and a surprise here must not
+    take the app down with it."""
+    for metric in parser.config.metrics:
+        if provider_type in ("mock", "warehouse"):
+            query_name = metric.name
+        else:
+            query_name = metric.source.split(".")[-1]
+        try:
+            earliest = await asyncio.to_thread(
+                fetcher.earliest_date, query_name, metric.grain
+            )
+        except Exception as e:  # pragma: no cover - belt over the contract
+            logger.info("earliest_date failed for '%s': %s", metric.name, e)
+            earliest = None
+        app.state.earliest[metric.name] = earliest
 
 
 app = FastAPI(title="breakdown API", lifespan=lifespan)
@@ -458,6 +498,7 @@ async def get_meta(request: Request):
             "grains": {m.name: m.grain for m in parser.config.metrics},
             "kinds": {m.name: m.kind for m in parser.config.metrics},
             "data_through": {},
+            "earliest_available": {},
             "fitted": [],
         }
     data_through = {}
@@ -477,6 +518,11 @@ async def get_meta(request: Request):
         # period) — the honest data edge, which may lag the requested window
         # when a source mart is behind.
         "data_through": data_through,
+        # Earliest date the provider has per metric (null = can't say), from
+        # the background discovery task — dict(...) snapshots it for the same
+        # worker-thread reason as `fitted` below. Lets the UI say "history
+        # exists before --start-date; widen it to train on more".
+        "earliest_available": dict(request.app.state.earliest),
         # `list(...)` snapshots the keys in one bytecode op rather than
         # iterating lazily: `run_rca` mutates this dict from a worker thread
         # (it is handed the cache directly and fits on demand), so a lazy
