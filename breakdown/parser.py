@@ -25,6 +25,7 @@ class Prior(BaseModel):
             raise ValueError(f"Invalid distribution: {v}. Must be one of {valid_dists}")
         return v
 
+
 class AssertedBaseline(BaseModel):
     """Declared operating point for cold-start mode (a tree with no data).
 
@@ -92,7 +93,7 @@ def _expand_env(value: Optional[str]) -> Optional[str]:
 
 
 class DataProviderConfig(BaseModel):
-    type: str = "mock" # "mock", "local", "cloud", "warehouse", "none" (alias "assumed")
+    type: str = "mock"  # "mock", "local", "cloud", "warehouse", "none" (alias "assumed")
     project_path: Optional[str] = None
     environment_id: Optional[str] = None
     host: Optional[str] = None
@@ -122,12 +123,20 @@ class DataProviderConfig(BaseModel):
         return v
 
     @field_validator(
-        "project_path", "environment_id", "host", "token",
-        "http_path", "profile", "catalog", "db_schema", mode="after",
+        "project_path",
+        "environment_id",
+        "host",
+        "token",
+        "http_path",
+        "profile",
+        "catalog",
+        "db_schema",
+        mode="after",
     )
     @classmethod
     def expand_env_vars(cls, v: Optional[str]) -> Optional[str]:
         return _expand_env(v)
+
 
 class Seasonality(BaseModel):
     period: int
@@ -149,10 +158,12 @@ class Seasonality(BaseModel):
             )
         return v
 
+
 class TrendConfig(BaseModel):
     """Local-level (random-walk) trend configuration. `sigma` is the prior scale
     on the per-step drift in z-scored space — the knob that controls how much
     movement the trend is allowed to absorb before parents/seasonality must."""
+
     type: str = "linear"
     sigma: float = 0.05
 
@@ -169,6 +180,7 @@ class TrendConfig(BaseModel):
         if v <= 0:
             raise ValueError("trend sigma must be > 0")
         return v
+
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SIMPLE_RATIO = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*/\s*([A-Za-z_][A-Za-z0-9_]*)\s*$")
@@ -220,23 +232,216 @@ class DimensionSpec(BaseModel):
         return v
 
 
+class BindingDimension(BaseModel):
+    """One sliceable dimension reachable from a binding's relation.
+
+    Either a column on the relation itself (`{column: region}`) or a column on
+    a conformed dimension table reached by a **many-to-one** join
+    (`{join: dim_customers, key: customer_id, column: region}`). Many-to-one is
+    the only join shape the contract admits: fan-out is definitionally
+    impossible on it, so symmetric aggregates are never required. Anything
+    else — chasm traps, bridge tables, multi-hop — belongs in an inline `sql:`
+    relation, where the author owns the grain and the warehouse owns the
+    testing.
+    """
+
+    column: str
+    # The dimension relation to join, and the foreign key on the fact side.
+    # `key` names the column on *this* binding's relation; the dimension table
+    # is matched on its own column of the same name unless `to` says otherwise.
+    #
+    # `key`, not `on`: PyYAML is YAML 1.1, where a bare `on:` parses as the
+    # boolean True, so an `on` field would silently drop the join key from
+    # every unquoted declaration and leave the join unprovable. Pinned by
+    # test_join_key_is_not_named_on_because_yaml_would_eat_it.
+    join: Optional[str] = None
+    key: Optional[str] = None
+    to: Optional[str] = None
+
+    @model_validator(mode="after")
+    def check_join(self) -> "BindingDimension":
+        if self.join is None and (self.key is not None or self.to is not None):
+            raise ValueError(
+                "Binding dimension declares `key`/`to` without `join`; drop them "
+                "if the column is on the relation itself."
+            )
+        if self.join is not None and self.key is None:
+            raise ValueError(
+                f"Binding dimension joins '{self.join}' but declares no `key` "
+                "(the foreign-key column on this binding's relation). A join "
+                "with no key cannot be proven many-to-one."
+            )
+        return self
+
+
+# Aggregations the binding contract admits. Deliberately small: each one has a
+# defined decomposition (see semantic_layer_connectivity_design.md §7), and a
+# metric whose aggregation is not on this list must supply an inline `sql:`
+# relation that reduces it to one that is.
+BINDING_AGGS = ("sum", "count", "count_distinct", "ratio", "average", "last")
+
+# Aggregations whose slices do not sum, so the engine may never auto-aggregate
+# them across time (`resample_up` sums flows — summing daily distinct users is
+# not monthly distinct users).
+NON_ADDITIVE_AGGS = ("count_distinct",)
+
+
+class BindingSpec(BaseModel):
+    """How one node gets one series: a **fetch descriptor**, not a semantic
+    layer (semantic_layer_connectivity_design.md §4).
+
+    The boundary test for every field here is whether it describes fetching a
+    single series for a single node, rather than shared org-wide semantics.
+    Reusable dimension groups, metric-on-metric references (that is `formula` —
+    the DAG, which is already ours), joins beyond fact -> conformed dimension,
+    governance and caching are all permanently out of scope, and the escape
+    hatch absorbs the pressure: **`sql:` answers every feature request first.**
+
+    Note `bind.sql` and the legacy top-level `MetricDefinition.sql` are
+    different contracts and are mutually exclusive. `MetricDefinition.sql` is
+    the `warehouse` provider's finished series (`SELECT ... -> date, value`);
+    `bind.sql` is a *relation* standing in for a table — one row per
+    `grain_key` — which the binding then aggregates. Naming them alike is
+    deliberate (both are "write SQL instead"), but confusing them silently
+    produces a wrong shape, so declaring both is rejected.
+    """
+
+    # Exactly one of these: a table reference, or an inline relation.
+    relation: Optional[str] = None
+    sql: Optional[str] = None
+
+    # The column making the relation one row per grain. Load-bearing: `doctor`
+    # asserts count(*) == count(distinct grain_key) at bind time, which turns
+    # silent fan-out into a startup error. MetricFlow and Cube cannot do this —
+    # they accept declared relationships on trust.
+    grain_key: str
+    time_column: str
+
+    agg: str
+    # The aggregated column/expression, for every agg except `ratio`.
+    measure: Optional[str] = None
+    # Required for `ratio`, as separate measures — this is what makes a ratio
+    # decomposable into within-slice movement, denominator mix shift, and the
+    # cross term. Without them a ratio can only be approximated, and applying
+    # additive attribution to a ratio produces a confidently wrong root cause.
+    numerator: Optional[str] = None
+    denominator: Optional[str] = None
+    # The entity a non-additive metric counts. Decomposition happens at the
+    # grain where the metric becomes a sum (§8), which requires knowing what
+    # the distinct thing *is*.
+    entity_key: Optional[str] = None
+
+    dimensions: Dict[str, BindingDimension] = Field(default_factory=dict)
+
+    @field_validator("agg")
+    @classmethod
+    def check_agg(cls, v: str) -> str:
+        if v not in BINDING_AGGS:
+            raise ValueError(f"binding agg must be one of {list(BINDING_AGGS)}, got '{v}'")
+        return v
+
+    @field_validator("relation")
+    @classmethod
+    def check_relation_is_a_reference(cls, v: Optional[str]) -> Optional[str]:
+        # A relation is a table reference, not a query. Catching this here is
+        # worth a validator because the failure is otherwise a warehouse syntax
+        # error thrown from inside a generated query at startup.
+        if v is not None and (";" in v or any(c.isspace() for c in v)):
+            raise ValueError(
+                f"binding relation '{v}' looks like SQL rather than a table "
+                "reference; use `sql:` for an inline relation."
+            )
+        return v
+
+    @model_validator(mode="after")
+    def check_source(self) -> "BindingSpec":
+        if (self.relation is None) == (self.sql is None):
+            raise ValueError(
+                "A binding needs exactly one of `relation` (a table reference) "
+                "or `sql` (an inline relation producing one row per grain_key)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def check_measures(self) -> "BindingSpec":
+        if self.agg == "ratio":
+            missing = [f for f in ("numerator", "denominator") if getattr(self, f) is None]
+            if missing:
+                raise ValueError(
+                    f"A `ratio` binding needs {' and '.join(missing)}. A ratio "
+                    "must be fetched as two separate measures so its change can "
+                    "be split into within-slice movement and mix shift; "
+                    "attributing a pre-divided ratio additively reports a "
+                    "confidently wrong cause."
+                )
+            if self.measure is not None:
+                raise ValueError(
+                    "A `ratio` binding declares `numerator` and `denominator`, not `measure`."
+                )
+        else:
+            if self.measure is None:
+                raise ValueError(
+                    f"A `{self.agg}` binding needs a `measure` (the column or "
+                    "expression it aggregates)."
+                )
+            offenders = [f for f in ("numerator", "denominator") if getattr(self, f) is not None]
+            if offenders:
+                raise ValueError(
+                    f"`{'`/`'.join(offenders)}` only apply to `agg: ratio`, not '{self.agg}'."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def check_entity_key(self) -> "BindingSpec":
+        if self.agg == "count_distinct" and self.entity_key is None:
+            raise ValueError(
+                "A `count_distinct` binding needs an `entity_key`. Its slices "
+                "genuinely do not sum — one entity appears in several — so "
+                "decomposition has to happen at the grain where the metric "
+                "becomes a sum, and that needs to know what the entity is."
+            )
+        if self.agg == "last" and self.dimensions and self.entity_key is None:
+            raise ValueError(
+                "A sliced `last` binding needs an `entity_key`. A stock is "
+                "additive across dimensions but not across time, so attributing "
+                "its change across slices requires stock-and-flow at the entity "
+                "grain. Drop the dimensions to serve trend only."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def check_dimension_names(self) -> "BindingSpec":
+        for key in self.dimensions:
+            if not _IDENTIFIER.match(key):
+                raise ValueError(
+                    f"Binding dimension name '{key}' must be an identifier "
+                    "(letters, digits, underscores; not starting with a digit)."
+                )
+        return self
+
+    @property
+    def is_non_additive(self) -> bool:
+        """Slices do not sum, so the series may never be auto-aggregated across
+        time. Consulted by the grain rules in `Parser._validate_grains`."""
+        return self.agg in NON_ADDITIVE_AGGS
+
+
 class MetricFormat(BaseModel):
     """How a metric's big number is displayed on its node card. Presentation
     only — never affects modeling. Written in YAML either as the shorthand
     `format: currency` or as a mapping with any of these keys."""
-    style: str = "number"           # "currency" | "percent" | "number"
-    unit: Optional[str] = None      # small caption under the value, e.g. "sessions", "ms"
+
+    style: str = "number"  # "currency" | "percent" | "number"
+    unit: Optional[str] = None  # small caption under the value, e.g. "sessions", "ms"
     decimals: Optional[int] = None  # fixed fraction digits; None = automatic
     compact: Optional[bool] = None  # k/M/B notation; None = auto (currency compacts large values)
-    symbol: str = "$"               # currency symbol, when style == "currency"
+    symbol: str = "$"  # currency symbol, when style == "currency"
 
     @field_validator("style")
     @classmethod
     def check_style(cls, v: str) -> str:
         if v not in ("currency", "percent", "number"):
-            raise ValueError(
-                f"format.style must be 'currency', 'percent', or 'number', got '{v}'"
-            )
+            raise ValueError(f"format.style must be 'currency', 'percent', or 'number', got '{v}'")
         return v
 
     @field_validator("decimals")
@@ -258,6 +463,11 @@ class MetricDefinition(BaseModel):
     # value, rates can never be auto-aggregated (recompute from components).
     kind: str = "flow"
     sql: Optional[str] = None
+    # How this node gets its series, when it does not inherit the tree-level
+    # `provider`. A node is *bound* (this is set, or the tree provider serves
+    # it) or *unbound* (priors only). Mutually exclusive with the legacy
+    # top-level `sql` — see BindingSpec's docstring for why they differ.
+    bind: Optional[BindingSpec] = None
     formula: Optional[str] = None
     parents: List[str] = Field(default_factory=list)
     priors: Dict[str, Prior] = Field(default_factory=dict)
@@ -346,7 +556,11 @@ class MetricDefinition(BaseModel):
                     logger.warning(
                         "Metric '%s': seasonality period %d at grain '%s' spans "
                         "%d %ss — periods are in grain steps; check this is intended.",
-                        self.name, s.period, self.grain, s.period, self.grain,
+                        self.name,
+                        s.period,
+                        self.grain,
+                        s.period,
+                        self.grain,
                     )
         return self
 
@@ -441,8 +655,7 @@ class MetricDefinition(BaseModel):
         # shorthand: `region: customer__region` is `region: {source: ...}`
         if isinstance(v, dict):
             return {
-                key: ({"source": val} if isinstance(val, str) else val)
-                for key, val in v.items()
+                key: ({"source": val} if isinstance(val, str) else val) for key, val in v.items()
             }
         return v
 
@@ -478,6 +691,33 @@ class MetricDefinition(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def check_bind(self) -> "MetricDefinition":
+        if self.bind is None:
+            return self
+        if self.sql is not None:
+            raise ValueError(
+                f"Metric '{self.name}' declares both `sql` and `bind`. They are "
+                "two different contracts: top-level `sql` returns the finished "
+                "series (`date, value`) for the warehouse provider, while "
+                "`bind.sql` is a relation the binding then aggregates. Keep one."
+            )
+        # A ratio is never a flow: it cannot be summed over time, which is
+        # exactly what `kind: flow` licenses `resample_up` to do.
+        if self.bind.agg == "ratio" and self.kind != "rate":
+            raise ValueError(
+                f"Metric '{self.name}' binds `agg: ratio` but declares "
+                f"`kind: {self.kind}`. A ratio is a rate — declare `kind: rate` "
+                "so it is never summed or gap-filled as though it were a flow."
+            )
+        if self.kind == "rate" and self.bind.agg == "sum":
+            raise ValueError(
+                f"Rate metric '{self.name}' binds `agg: sum`. Summing a rate is "
+                "definitionally wrong; use `agg: ratio` with a `numerator` and "
+                "`denominator`, or recompute the rate in a `bind.sql` relation."
+            )
+        return self
+
+    @model_validator(mode="after")
     def check_lags(self) -> "MetricDefinition":
         # With `formula`, lags declare a cohort-aligned lagged identity:
         # A[t] = f(each parent shifted back by its lag, in grain steps) —
@@ -498,9 +738,11 @@ class MetricDefinition(BaseModel):
                 )
         return self
 
+
 class MetricTreeConfig(BaseModel):
     provider: DataProviderConfig = Field(default_factory=DataProviderConfig)
     metrics: List[MetricDefinition]
+
 
 class Parser:
     def __init__(self, yaml_content: str):
@@ -522,7 +764,9 @@ class Parser:
         for metric in self.config.metrics:
             for parent in metric.parents:
                 if parent not in G:
-                    raise ValueError(f"Parent metric '{parent}' not found for metric '{metric.name}'")
+                    raise ValueError(
+                        f"Parent metric '{parent}' not found for metric '{metric.name}'"
+                    )
                 G.add_edge(parent, metric.name)
 
         if not nx.is_directed_acyclic_graph(G):
@@ -552,7 +796,8 @@ class Parser:
         """Cross-node grain rules (need both edge endpoints, so they can't
         live on MetricDefinition): a parent may never be coarser than its
         child, and a finer parent must be auto-aggregatable up to the child's
-        grain — flow/stock kinds whose grain nests in the child's."""
+        grain — flow/stock kinds whose grain nests in the child's, and never a
+        binding whose aggregation is non-additive."""
         for parent, child in G.edges:
             pdefn = G.nodes[parent]["definition"]
             cdefn = G.nodes[child]["definition"]
@@ -571,6 +816,15 @@ class Parser:
                         f"'{parent}' at finer grain '{pg}'. Rates cannot be "
                         f"aggregated automatically; declare '{parent}' at grain "
                         f"'{cg}', recomputed from its components at that grain."
+                    )
+                if pdefn.bind is not None and pdefn.bind.is_non_additive:
+                    raise ValueError(
+                        f"Metric '{child}' (grain '{cg}') has parent '{parent}' "
+                        f"at finer grain '{pg}' bound with "
+                        f"`agg: {pdefn.bind.agg}`, which is not re-aggregable: "
+                        f"summing {pg}-grain distinct counts does not give the "
+                        f"{cg}-grain distinct count. Declare '{parent}' at grain "
+                        f"'{cg}' so it is counted once over the whole period."
                     )
                 if not nests_in(pg, cg):
                     raise ValueError(
