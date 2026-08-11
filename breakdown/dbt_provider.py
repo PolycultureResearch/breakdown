@@ -399,6 +399,21 @@ class DbtDataFetcher(BaseDataFetcher):
         df["value"] = df["value"].astype(float)
         return df.sort_values(["date", "slice"]).reset_index(drop=True)
 
+    def slice_additivity(self, metric_name: str, dimension_source: str) -> str:
+        """`overlapping` for a non-additive aggregation, else `exact`.
+
+        This is the conservative reading of what the binding can prove today:
+        `count_distinct` *may* double-count an entity that holds several values
+        of the dimension inside a period. Whether it actually does is a
+        property of the data, and settling it needs the entity-grain resolution
+        of roadmap 3.8 — until then, claiming `exact` for a distinct count
+        would be a guess in the direction that hides a real overstatement.
+        """
+        bind = self.bindings.get(metric_name)
+        if bind is None or dimension_source not in bind.dimensions:
+            return "unknown"
+        return "overlapping" if bind.is_non_additive else "exact"
+
     def query_provenance(
         self,
         metric_name: str,

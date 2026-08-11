@@ -195,10 +195,25 @@ the metric's served series; rates compare the per-date weighted blend vs the
 unsliced rate. The response block —
 `{mean_residual, max_abs_residual, residual_share_of_baseline, status}` —
 flags `discrepant` above 0.5% of |baseline|. A discrepancy is a **measurement
-caveat, never a silent correction**: typical causes are a non-additive
-dimension (overlapping membership, distinct counts), a sliced query diverging
+caveat, never a silent correction**: typical causes are a sliced query diverging
 from the governed metric definition, or freshness skew between the startup
-snapshot and the live slice query. The guidance line: treat slice attributions
+snapshot and the live slice query.
+
+**Amended (2026-08-11, roadmap 3.8 §5.)** This list used to open with "a
+non-additive dimension (overlapping membership, distinct counts)", and lumping
+that in was the error. The other two are defects a user must go and fix; a
+non-additive dimension is a mathematical property, knowable from the binding
+before any query runs and unfixable by definition. Flagging it `discrepant` told
+people their pipeline might be broken when nothing was, *and* cost the flag its
+credibility for the cases that are real.
+
+The response now carries `additivity` (`exact` / `overlapping` / `unknown`),
+taken from the binding rather than inferred from the residual — which cannot
+tell overlap apart from a diverging query. When it is `overlapping` the residual
+is reported as its own `overlap` quantity, `reconciliation.status` becomes
+`not_applicable`, contribution **shares of the gap are withheld** (a share whose
+denominator does not reconcile is not a share), and the UI drops the error
+styling. `discrepant` keeps its meaning: an *unexplained* divergence. The guidance line: treat slice attributions
 as approximate and say so.
 
 ## 8. Surfaces

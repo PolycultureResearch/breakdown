@@ -57,6 +57,19 @@ from breakdown.grains import BOOT_BLOCK, period_spine, snap_window
 # analysis input — the response would localize nothing.
 MAX_DISTINCT = 100
 
+# Whether `Σ_g slices == metric` is *expected* to hold, decided from the
+# binding rather than inferred from the residual — which cannot tell
+# deduplication overlap apart from a query that diverged from the governed
+# definition or a stale snapshot.
+#
+#   exact       every entity has one slice value per period, so the sum holds
+#   overlapping an entity may appear in several slices, so the slices overstate
+#               the total by their overlap. A property of the (metric,
+#               dimension) pair, not of the metric: the same count_distinct
+#               sliced by a single-valued attribute sums exactly.
+#   unknown     no binding to ask; behave as before
+ADDITIVITY = ("exact", "overlapping", "unknown")
+
 # A slice is flagged noise-level when its excess direction probability is
 # below this — the bootstrap can't tell its concentration from zero.
 _NOISE_PROB = 0.8
@@ -147,6 +160,24 @@ def _reconciliation(residual: np.ndarray, baseline: float) -> Dict[str, Any]:
     }
 
 
+def _overlap(residual: np.ndarray, baseline: float) -> Dict[str, Any]:
+    """The amount by which known-overlapping slices exceed the metric.
+
+    Same arithmetic as `_reconciliation`, reported as a quantity rather than a
+    status. Signed: a positive mean means the slices overstate the total, which
+    is the expected direction for a distinct count. A *negative* mean is not
+    overlap and is left visible rather than smoothed, because slices summing to
+    less than the metric is a different problem (a dropped slice, a filtered
+    query) that this label must not hide.
+    """
+    scale = max(abs(baseline), 1e-12)
+    return {
+        "mean": float(residual.mean()),
+        "max_abs": float(np.abs(residual).max()),
+        "share_of_baseline": float(residual.mean()) / scale,
+    }
+
+
 def slice_attribution(
     defn: Any,
     dimension: str,
@@ -157,6 +188,7 @@ def slice_attribution(
     analysis_start: str,
     analysis_end: str,
     weight_sliced: Optional[pd.DataFrame] = None,
+    additivity: str = "unknown",
 ) -> Dict[str, Any]:
     """Attribute `defn`'s window-over-window gap across one dimension's slices.
 
@@ -169,6 +201,14 @@ def slice_attribution(
     periods at the metric's grain, exactly as in tree RCA. When slicing a
     lagged parent of an RCA target, pass the parent's own lag-shifted windows
     (the ones its contribution was measured over).
+
+    `additivity` says whether the slices are *expected* to sum, and comes from
+    the caller's binding rather than from the residual. Declaring it
+    `overlapping` turns a residual from a suspected defect into a named
+    quantity: the slices genuinely overstate the total by their deduplication
+    overlap, contribution shares are withheld because a share whose denominator
+    does not reconcile is not a share, and `reconciliation.status` keeps its
+    meaning of *unexplained* divergence.
     """
     if dimension not in defn.dimensions:
         raise ValueError(
@@ -242,6 +282,7 @@ def slice_attribution(
             block,
             single_period,
             caveats,
+            additivity,
         )
     else:
         result = _sum_attribution(
@@ -256,6 +297,7 @@ def slice_attribution(
             block,
             single_period,
             caveats,
+            additivity,
         )
 
     result.update(
@@ -313,6 +355,7 @@ def _sum_attribution(
     block,
     single_period,
     caveats,
+    additivity="unknown",
 ) -> Dict[str, Any]:
     """Flows and stocks: the sum identity's closed-form attribution.
 
@@ -396,7 +439,24 @@ def _sum_attribution(
 
     residual = X[in_ref | in_an].sum(axis=1) - u_series.to_numpy(float)[in_ref | in_an]
     recon = _reconciliation(residual, float(u_series[in_ref].mean()))
-    if recon["status"] == "discrepant":
+    overlap = None
+    if additivity == "overlapping":
+        # The residual is arithmetic, not a defect: an entity holding several
+        # values of this dimension inside a period is counted once in the total
+        # and once per value. Naming it keeps `discrepant` meaning *unexplained*
+        # — a flag that fires on a known property stops being worth reading.
+        overlap = _overlap(residual, float(u_series[in_ref].mean()))
+        recon = dict(recon, status="not_applicable")
+        caveats.append(
+            f"These slices share entities: they overstate the metric by "
+            f"{overlap['mean']:.4g} on average ({overlap['share_of_baseline']:.1%} "
+            "of baseline), which is deduplication overlap rather than an "
+            "unexplained cause. Contribution shares are withheld — they would "
+            "be shares of a total the slices do not sum to."
+        )
+        for row in rows:
+            row["share_of_gap"] = None
+    elif recon["status"] == "discrepant":
         caveats.append(
             "Slices do not sum to the metric within tolerance — the dimension "
             "does not cleanly partition it; treat slice attributions as "
@@ -405,6 +465,8 @@ def _sum_attribution(
 
     return {
         "attribution_method": "slice_sum",
+        "additivity": additivity,
+        "overlap": overlap,
         "baseline": baseline,
         "actual": actual,
         "gap": gap,
@@ -458,6 +520,7 @@ def _rate_attribution(
     block,
     single_period,
     caveats,
+    additivity="unknown",
 ) -> Dict[str, Any]:
     """Rates: the weight-blended mix/within decomposition."""
     weights = weights.reindex(all_dates).fillna(0.0)
@@ -596,6 +659,11 @@ def _rate_attribution(
 
     return {
         "attribution_method": "slice_blend",
+        # A rate is recomposed by weighted blend, not by summing slices, so
+        # additivity is reported for shape consistency but never drives the
+        # blend path — its reconciliation is against the blend, not a sum.
+        "additivity": additivity,
+        "overlap": None,
         "baseline": baseline,
         "actual": actual,
         "gap": gap,
