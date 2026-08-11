@@ -228,6 +228,133 @@ def build_query(
     return query.sql(dialect=dialect, pretty=True)
 
 
+def build_resolved_slice_query(
+    bind: BindingSpec,
+    *,
+    dimension: str,
+    grain: str,
+    start_date: str,
+    end_date: str,
+    dialect: str = "",
+) -> str:
+    """A sliced query that sums back to the metric exactly (roadmap 3.8 §4).
+
+    The plain sliced query groups rows, so an entity holding several values of
+    the dimension inside a period lands in each of them — the slices then
+    overstate the metric by that overlap. This one first collapses the relation
+    to **one row per (entity, period)** using the declared `resolve` rule, so
+    every entity contributes to exactly one slice and `Σ_g slices` is the
+    distinct-entity count, which *is* the metric.
+
+    `resolve: error` generates the plain query unchanged: it asserts the data is
+    already single-valued rather than correcting it, and `doctor` is what proves
+    the assertion. Correcting silently under `error` would defeat the point of
+    choosing it.
+    """
+    spec = bind.entity_grain
+    if spec is None:
+        raise UnsupportedBinding(
+            "binding declares no `entity_grain`, so its slices cannot be "
+            "resolved to one row per entity per period"
+        )
+    if dimension not in bind.dimensions:
+        raise UnsupportedBinding(
+            f"binding declares no dimension '{dimension}' (has {sorted(bind.dimensions) or 'none'})"
+        )
+    if spec.resolve == "error":
+        return build_query(
+            bind,
+            grain=grain,
+            start_date=start_date,
+            end_date=end_date,
+            dialect=dialect,
+            dimension=dimension,
+        )
+
+    sqlglot = _require_sqlglot()
+    read = _parse_dialect(dialect)
+    fact = "bd_fact"
+    relation = spec.relation or bind.relation
+    source = f"({bind.sql}) AS {fact}" if (relation is None) else f"{relation} AS {fact}"
+    time_col = _qualified(bind.time_column, fact)
+    date_expr = _truncate(time_col, grain, dialect)
+    entity = _qualified(bind.entity_key, fact)
+    dim = bind.dimensions[dimension]
+    if dim.join is not None:
+        # A joined dimension would have to be resolved after the join, which
+        # changes what "one row per entity per period" ranks over. Refused
+        # rather than guessed.
+        raise UnsupportedBinding(
+            f"dimension '{dimension}' is reached through a join; entity-grain "
+            "resolution supports dimensions on the binding's own relation. "
+            "Express the join in a `bind.sql` relation instead."
+        )
+    slice_expr = _qualified(dim.column, fact)
+    start, end_exclusive = _window_bounds(start_date, end_date)
+    # `first` keeps the earliest row in the period, `last` the latest — the two
+    # answer different business questions, which is why neither is a default.
+    order = "ASC" if spec.resolve == "first" else "DESC"
+
+    ranked = (
+        sqlglot.select(
+            f'{date_expr} AS "{DATE_COL}"',
+            f'{slice_expr} AS "{SLICE_COL}"',
+            f"ROW_NUMBER() OVER (PARTITION BY {entity}, {date_expr} "
+            f"ORDER BY {time_col} {order}) AS bd_rn",
+            dialect=read,
+        )
+        .from_(source, dialect=read)
+        .where(f"{time_col} >= '{start}'", dialect=read)
+        .where(f"{time_col} < '{end_exclusive}'", dialect=read)
+    )
+    return (
+        sqlglot.select(
+            f'"{DATE_COL}"', f'"{SLICE_COL}"', f'COUNT(*) AS "{VALUE_COL}"', dialect=read
+        )
+        .from_(ranked.subquery("bd_resolved"), dialect=read)
+        .where("bd_rn = 1", dialect=read)
+        .group_by("1", "2", dialect=read)
+        .order_by("1", "2", dialect=read)
+        .sql(dialect=dialect, pretty=True)
+    )
+
+
+def build_multivalue_assertion(
+    bind: BindingSpec, *, dimension: str, grain: str, dialect: str = ""
+) -> str:
+    """Count (entity, period) pairs holding more than one value of `dimension`.
+
+    Zero means the slices already sum and no resolution is needed; non-zero
+    with `resolve: error` is the binding failing its own assertion. `doctor`
+    runs it so the answer arrives at startup rather than at the first
+    *slice by* click.
+    """
+    sqlglot = _require_sqlglot()
+    read = _parse_dialect(dialect)
+    fact = "bd_fact"
+    spec = bind.entity_grain
+    relation = (spec.relation if spec else None) or bind.relation
+    source = f"({bind.sql}) AS {fact}" if (relation is None) else f"{relation} AS {fact}"
+    time_col = _qualified(bind.time_column, fact)
+    date_expr = _truncate(time_col, grain, dialect)
+    entity = _qualified(bind.entity_key, fact)
+    slice_expr = _qualified(bind.dimensions[dimension].column, fact)
+    per_pair = (
+        sqlglot.select(
+            f"COUNT(DISTINCT {slice_expr}) AS bd_n_values",
+            dialect=read,
+        )
+        .from_(source, dialect=read)
+        .group_by(entity, date_expr, dialect=read)
+    )
+    return (
+        sqlglot.select('COUNT(*) AS "multivalued_pairs"', dialect=read)
+        .from_(per_pair.subquery("bd_pairs"), dialect=read)
+        .where("bd_n_values > 1", dialect=read)
+        .sql(dialect=dialect, pretty=True)
+    )
+
+
 def build_grain_assertion(bind: BindingSpec, *, dialect: str = "") -> str:
     """The grain-claim query: total rows vs. distinct `grain_key`.
 

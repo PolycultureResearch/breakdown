@@ -280,6 +280,43 @@ class BindingDimension(BaseModel):
         return self
 
 
+class EntityGrainSpec(BaseModel):
+    """How to resolve a non-additive metric to one row per (entity, period),
+    where it becomes an exact sum over slices (roadmap 3.8 §4).
+
+    A `count_distinct` metric's slices overstate the total whenever an entity
+    holds several values of a dimension inside a period — a subscription
+    `active` in the morning and `cancelled` by evening is counted once in the
+    metric and once in each status. Picking one value per entity per period
+    makes `Σ_g slices == metric` hold exactly, and the existing sum attribution
+    then runs unchanged with a zero residual for a real reason.
+
+    `resolve` has **no default on purpose**. `first` and `last` answer different
+    business questions — *what state did they arrive in* versus *what state did
+    they end in* — and which is right is not ours to guess. `error` is for an
+    author who believes their data is already single-valued and wants that
+    enforced rather than silently corrected.
+    """
+
+    # Defaults to the binding's own relation; declared separately only when the
+    # entity-grain table is a different one.
+    relation: Optional[str] = None
+    resolve: str
+
+    @field_validator("resolve")
+    @classmethod
+    def check_resolve(cls, v: str) -> str:
+        if v not in ENTITY_RESOLUTIONS:
+            raise ValueError(
+                f"entity_grain.resolve must be one of {list(ENTITY_RESOLUTIONS)}, got '{v}'"
+            )
+        return v
+
+
+# How a multi-valued entity collapses to one row per period. `error` resolves
+# nothing — it asserts the data is already single-valued, which `doctor` checks.
+ENTITY_RESOLUTIONS = ("first", "last", "error")
+
 # Aggregations the binding contract admits. Deliberately small: each one has a
 # defined decomposition (see semantic_layer_connectivity_design.md §7), and a
 # metric whose aggregation is not on this list must supply an inline `sql:`
@@ -336,6 +373,9 @@ class BindingSpec(BaseModel):
     # grain where the metric becomes a sum (§8), which requires knowing what
     # the distinct thing *is*.
     entity_key: Optional[str] = None
+    # Resolution to one row per (entity, period). Present means slices are
+    # expected to sum exactly; absent means they may overlap.
+    entity_grain: Optional[EntityGrainSpec] = None
 
     dimensions: Dict[str, BindingDimension] = Field(default_factory=dict)
 
@@ -414,6 +454,34 @@ class BindingSpec(BaseModel):
                 "grain. Drop the dimensions to serve trend only."
             )
         return self
+
+    @model_validator(mode="after")
+    def check_entity_grain(self) -> "BindingSpec":
+        if self.entity_grain is None:
+            return self
+        if self.entity_key is None:
+            raise ValueError(
+                "`entity_grain` needs an `entity_key`: resolving to one row per "
+                "entity per period requires knowing what the entity is."
+            )
+        if self.agg == "count_distinct" and self.measure != self.entity_key:
+            # Resolving to entity grain makes `Σ_g slices` the distinct entity
+            # count. If the metric counts something else, that sum is not the
+            # metric and the reconciliation it promises would be false.
+            raise ValueError(
+                f"`entity_grain` on a `count_distinct` binding requires "
+                f"`entity_key` to be the counted column: this counts "
+                f"'{self.measure}' but resolves entity '{self.entity_key}'. "
+                "Resolving a different entity would make the slices sum to a "
+                "number that is not this metric."
+            )
+        return self
+
+    @property
+    def resolves_to_entity_grain(self) -> bool:
+        """Slices are expected to sum exactly, because each entity contributes
+        to exactly one of them per period."""
+        return self.entity_grain is not None
 
     @model_validator(mode="after")
     def check_dimension_names(self) -> "BindingSpec":

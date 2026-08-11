@@ -15,7 +15,9 @@ import pytest
 from breakdown.dbt_sql import (
     UnsupportedBinding,
     build_grain_assertion,
+    build_multivalue_assertion,
     build_query,
+    build_resolved_slice_query,
     dialect_for_adapter,
 )
 from breakdown.parser import BindingDimension, BindingSpec
@@ -332,3 +334,114 @@ def test_adapter_dialects_map_and_unknown_falls_back_to_generic(caplog):
     with caplog.at_level("WARNING"):
         assert dialect_for_adapter("exasol") == ""
     assert "generic" in caplog.text
+
+
+# --- entity-grain resolution (roadmap 3.8 §4) -------------------------------
+#
+# The claim these tests exist to prove is a numeric one: resolved slices sum
+# back to the metric *exactly*, where the naive ones overstate it. Asserting
+# that on generated SQL strings would prove nothing, so they run.
+
+
+EVENTS = """
+CREATE TABLE ev AS SELECT * FROM (VALUES
+    -- u1 is 'active' in the morning and 'cancelled' by evening on day 1:
+    -- one entity holding two values of the dimension inside one period.
+    (1, 'u1', TIMESTAMP '2024-01-01 09:00', 'active'),
+    (2, 'u1', TIMESTAMP '2024-01-01 18:00', 'cancelled'),
+    (3, 'u2', TIMESTAMP '2024-01-01 10:00', 'active'),
+    (4, 'u1', TIMESTAMP '2024-01-02 10:00', 'cancelled'),
+    (5, 'u2', TIMESTAMP '2024-01-02 11:00', 'active')
+) AS t(row_id, user_id, seen_at, status);
+"""
+
+WINDOW = dict(grain="day", start_date="2024-01-01", end_date="2024-01-02", dialect="duckdb")
+
+
+@pytest.fixture
+def events():
+    c = duckdb.connect()
+    c.execute(EVENTS)
+    return c
+
+
+def _dau(resolve=None):
+    kw = dict(
+        relation="ev",
+        grain_key="row_id",
+        time_column="seen_at",
+        agg="count_distinct",
+        measure="user_id",
+        entity_key="user_id",
+        dimensions={"status": BindingDimension(column="status")},
+    )
+    if resolve is not None:
+        kw["entity_grain"] = {"resolve": resolve}
+    return BindingSpec(**kw)
+
+
+def test_naive_slices_overstate_a_distinct_count(events):
+    total = events.execute(build_query(_dau(), **WINDOW)).df()["value"].sum()
+    naive = events.execute(build_query(_dau(), **WINDOW, dimension="status")).df()["value"].sum()
+    assert total == 4  # 2 distinct users on each of 2 days
+    assert naive == 5  # u1 counted in both statuses on day 1
+
+
+@pytest.mark.parametrize("resolve", ["first", "last"])
+def test_resolved_slices_sum_to_the_metric_exactly(events, resolve):
+    total = events.execute(build_query(_dau(), **WINDOW)).df()["value"].sum()
+    resolved = events.execute(
+        build_resolved_slice_query(_dau(resolve), dimension="status", **WINDOW)
+    ).df()
+    assert resolved["value"].sum() == total
+
+
+def test_first_and_last_give_different_answers(events):
+    # Which is right is a business question, which is why neither is a default.
+    def by_slice(resolve):
+        df = events.execute(
+            build_resolved_slice_query(_dau(resolve), dimension="status", **WINDOW)
+        ).df()
+        day1 = df[df["date"].astype(str).str.startswith("2024-01-01")]
+        return dict(zip(day1["slice"], day1["value"]))
+
+    assert by_slice("first") == {"active": 2}
+    assert by_slice("last") == {"active": 1, "cancelled": 1}
+
+
+def test_resolve_error_does_not_silently_correct(events):
+    # `error` asserts the data is already single-valued. Correcting under it
+    # would defeat the point of choosing it; doctor is what proves it.
+    assert (
+        events.execute(build_resolved_slice_query(_dau("error"), dimension="status", **WINDOW))
+        .df()["value"]
+        .sum()
+        == 5
+    )
+
+
+def test_the_multivalue_assertion_counts_offending_pairs(events):
+    sql = build_multivalue_assertion(
+        _dau("last"), dimension="status", grain="day", dialect="duckdb"
+    )
+    assert events.execute(sql).fetchone()[0] == 1  # u1 on day 1
+
+
+def test_resolution_needs_an_entity_grain_block():
+    with pytest.raises(UnsupportedBinding, match="no `entity_grain`"):
+        build_resolved_slice_query(_dau(), dimension="status", **WINDOW)
+
+
+def test_a_joined_dimension_is_refused_rather_than_resolved_after_the_join():
+    bind = BindingSpec(
+        relation="ev",
+        grain_key="row_id",
+        time_column="seen_at",
+        agg="count_distinct",
+        measure="user_id",
+        entity_key="user_id",
+        entity_grain={"resolve": "last"},
+        dimensions={"plan": BindingDimension(column="tier", join="dim_users", key="user_id")},
+    )
+    with pytest.raises(UnsupportedBinding, match="reached through a join"):
+        build_resolved_slice_query(bind, dimension="plan", **WINDOW)

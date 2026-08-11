@@ -269,6 +269,28 @@ provider:
 | `warehouse` | Runs each metric's own `sql` directly against a warehouse (currently Databricks SQL). Use when the semantic layer isn't queryable — the analyst mirrors governed definitions in SQL. Requires `http_path` plus **one of**: a PAT `token` (with `host`), or a Databricks CLI OAuth `profile` created by `databricks auth login --profile <name>` (host is read from the profile). |
 | `none` | No data is ever fetched — a **cold-start tree** of declared beliefs (`assumed` is an accepted alias). Only what-if simulation is available; every non-formula node needs a `baseline` and every probabilistic edge an explicit prior. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
 
+**Distinct counts and slicing.** A `count_distinct` metric's slices overstate
+it whenever one entity holds several values of a dimension inside a period — a
+subscription `active` in the morning and `cancelled` by evening is counted once
+in the metric and once in each status. Declare how to resolve it and the slices
+sum exactly:
+
+```yaml
+bind:
+  agg: count_distinct
+  measure: user_id
+  entity_key: user_id
+  entity_grain:
+    resolve: last        # last | first | error
+```
+
+`resolve` has no default: `first` and `last` answer different questions (*what
+state did they arrive in* vs *what state did they end in*), and `error` asserts
+the data is already single-valued — which `breakdown doctor` then verifies.
+Without it the slices are reported as overlapping, the overlap is quantified,
+and contribution shares are withheld rather than computed against a total the
+slices do not sum to.
+
 For `local`, `cloud` and `dbt`, the metric queried from the semantic layer is the last segment of `source` (e.g., `source: jaffle_shop.metrics.revenue` queries the metric `revenue`); the result is exposed in the tree under `name`. For `warehouse`, each metric carries its own `sql` (see the `metrics` table) and is keyed by `name`. The data window defaults to `2024-01-01`–`2024-04-09` and is set with `--start-date` / `--end-date` (or the `BREAKDOWN_START_DATE` / `BREAKDOWN_END_DATE` / `BREAKDOWN_TREE` environment variables).
 
 **Secrets in config.** Any provider string field may reference an environment variable with `${VAR}` syntax (e.g. `token: ${DATABRICKS_TOKEN}`), so a tree can be committed without embedding credentials. A referenced variable that isn't set raises a clear error at load time. The `warehouse` provider's `profile` avoids secrets entirely — credentials come from the Databricks CLI's OAuth token cache, so nothing sensitive lives in the tree or the environment.

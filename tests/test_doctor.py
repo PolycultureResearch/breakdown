@@ -350,7 +350,10 @@ def _results(tree_yaml):
 
 def test_dbt_chain_passes_on_a_healthy_project(tmp_path):
     results = _results(_tree(_dbt_project(tmp_path)))
-    assert [r.status for r in results.values()] == ["pass"] * 6
+    # The entity-grain check skips: this fixture's metric is a plain sum, so
+    # there is no non-additive slice to resolve.
+    assert [r.status for r in results.values()] == ["pass"] * 6 + ["skip"]
+    assert "no non-additive metrics" in results["entity grain resolves"].detail
     assert "one row per grain" in results["grain claims hold"].detail
     assert "duckdb" in results["dbt profile"].detail
 
@@ -429,3 +432,124 @@ def test_the_dbt_provider_reports_its_own_extra(monkeypatch):
     r = check_provider_extra("dbt")
     assert r.status == "fail"
     assert "metric-breakdown[dbt-bridge]" in r.remediation
+
+
+# --- entity-grain resolution (roadmap 3.8 §4) -------------------------------
+
+
+def _distinct_count_project(tmp_path, *, rows, entity_grain=None):
+    """A dbt project whose one metric is a distinct count over an events table,
+    sliced by a status that may be multi-valued within a day."""
+    db = tmp_path / "warehouse.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute(
+        "CREATE SCHEMA IF NOT EXISTS main; "
+        f"CREATE TABLE main.ev AS SELECT * FROM (VALUES {rows}) "
+        "AS t(row_id, user_id, seen_at, status)"
+    )
+    con.close()
+    (tmp_path / "dbt_project.yml").write_text("name: demo\nprofile: demo\n")
+    (tmp_path / "profiles.yml").write_text(
+        f"demo:\n  target: dev\n  outputs:\n    dev:\n      type: duckdb\n      path: {db}\n"
+    )
+    target = tmp_path / "target"
+    target.mkdir(exist_ok=True)
+    (target / "semantic_manifest.json").write_text(
+        json.dumps(
+            {
+                "semantic_models": [
+                    {
+                        "name": "ev",
+                        "node_relation": {
+                            "alias": "ev",
+                            "schema_name": "main",
+                            "database": None,
+                            "relation_name": "x",
+                        },
+                        "defaults": {"agg_time_dimension": "seen_at"},
+                        "entities": [{"name": "row", "type": "primary", "expr": "row_id"}],
+                        "dimensions": [
+                            {
+                                "name": "seen_at",
+                                "type": "time",
+                                "type_params": {"time_granularity": "day"},
+                            },
+                            {"name": "status", "type": "categorical"},
+                        ],
+                        "measures": [{"name": "dau", "agg": "count_distinct", "expr": "user_id"}],
+                    }
+                ],
+                "metrics": [
+                    {"name": "dau", "type": "simple", "type_params": {"measure": {"name": "dau"}}}
+                ],
+                "project_configuration": {
+                    "time_spine_table_configurations": [],
+                    "metadata": None,
+                },
+            }
+        )
+    )
+    bind = ""
+    if entity_grain is not None:
+        bind = (
+            "    bind:\n"
+            "      relation: main.ev\n"
+            "      grain_key: row_id\n"
+            "      time_column: seen_at\n"
+            "      agg: count_distinct\n"
+            "      measure: user_id\n"
+            "      entity_key: user_id\n"
+            f"      entity_grain: {{resolve: {entity_grain}}}\n"
+            "      dimensions:\n"
+            "        status: {column: status}\n"
+        )
+    return f"""
+provider:
+  type: dbt
+  project_path: {tmp_path}
+metrics:
+  - name: dau
+    source: dbt.metrics.dau
+    dimensions:
+      status: status
+{bind}"""
+
+
+# u1 is 'active' in the morning and 'cancelled' by evening: multi-valued.
+MULTIVALUED = (
+    "(1,'u1',TIMESTAMP '2024-01-01 09:00','active'), "
+    "(2,'u1',TIMESTAMP '2024-01-01 18:00','cancelled'), "
+    "(3,'u2',TIMESTAMP '2024-01-01 10:00','active')"
+)
+SINGLE_VALUED = (
+    "(1,'u1',TIMESTAMP '2024-01-01 09:00','active'), "
+    "(2,'u2',TIMESTAMP '2024-01-01 10:00','cancelled')"
+)
+
+
+def test_overlapping_slices_with_no_entity_grain_are_reported(tmp_path):
+    r = _results(_distinct_count_project(tmp_path, rows=MULTIVALUED))["entity grain resolves"]
+    assert r.status == "fail"
+    assert "dau.status" in r.detail and "overstate" in r.detail
+    assert "resolve: first|last" in r.remediation
+
+
+def test_resolve_error_is_held_to_its_own_assertion(tmp_path):
+    # `error` means "my data is already single-valued". This is what proves it.
+    tree = _distinct_count_project(tmp_path, rows=MULTIVALUED, entity_grain="error")
+    r = _results(tree)["entity grain resolves"]
+    assert r.status == "fail"
+    assert "asserted but violated" in r.detail
+
+
+def test_resolve_error_passes_when_the_data_really_is_single_valued(tmp_path):
+    tree = _distinct_count_project(tmp_path, rows=SINGLE_VALUED, entity_grain="error")
+    assert _results(tree)["entity grain resolves"].status == "pass"
+
+
+@pytest.mark.parametrize("resolve", ["first", "last"])
+def test_a_declared_resolution_clears_the_check(tmp_path, resolve):
+    tree = _distinct_count_project(tmp_path, rows=MULTIVALUED, entity_grain=resolve)
+    r = _results(tree)["entity grain resolves"]
+    assert r.status == "pass"
+    assert "resolve to one value per period" in r.detail
