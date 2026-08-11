@@ -19,6 +19,7 @@ breakdown/
                    # (provider SDKs are optional extras — imported lazily, never at module scope)
   dbt_bridge.py    # dbt's target/semantic_manifest.json → BindingSpec per node (MSI, no dbt Cloud)
   dbt_sql.py       # BindingSpec + grain + window (+ dimension) → dialect SQL via sqlglot
+  dbt_provider.py  # the `dbt` provider: profiles.yml → connection → generated SQL → spine
   engine/
     model.py       # fit_metric() — BSTS via PyMC; compute_shapley(); summarize_trace()
     rca.py         # run_rca() + shapley_attribution() — all window-over-window attribution
@@ -204,6 +205,53 @@ is refused rather than approximated, with `bind.sql` as the escape hatch.
 Joins are many-to-one only and emitted as `LEFT JOIN`, so fan-out is
 definitionally impossible; `build_grain_assertion` proves the claim by comparing
 `COUNT(*)` against `COUNT(DISTINCT grain_key)`.
+
+## `dbt_provider.py`
+
+The `dbt` provider. Joins the three preceding pieces — manifest → binding → SQL
+— to a connection resolved from the project's **own `profiles.yml`**, so the
+practitioner supplies no new credentials. `fetcher_from_project(path, target=…,
+profiles_dir=…, overrides=…)` is the entry point; `_build_fetcher` calls it for
+`provider.type == "dbt"`.
+
+It lives outside `data_fetch.py` on purpose: `dbt_sql` and `dbt_bridge` both
+import from there, so a fetcher in `data_fetch` would close an import cycle.
+`SnapshotFetcher` in `snapshots.py` is the same shape.
+
+`connect` is a **zero-argument callable**, not a live connection, so the fetcher
+constructs without touching the warehouse — a tree whose metrics all have
+snapshots has to boot with the warehouse down, the same rule `LocalDataFetcher`
+follows for `mf`.
+
+`resolve_profile` reads `dbt_project.yml` for the `profile:` name, then that
+profile's target from `profiles.yml` (searching `profiles_dir` →
+`$DBT_PROFILES_DIR` → the project dir → `~/.dbt`). It renders `env_var()` and
+**refuses any other Jinja** rather than passing a template through to a driver,
+because `{{ var('x') }}` arriving as a literal password fails unreadably.
+Connectors are one function per adapter (`databricks`, `duckdb`, `postgres`,
+`snowflake`), each importing its driver lazily and naming the package to
+install — breakdown ships no warehouse drivers of its own beyond the existing
+`databricks` extra, since the driver a user needs is the one their dbt adapter
+already depends on.
+
+`fetch_metric_sliced` builds `[date, slice, value]` **directly** rather than via
+`_sliced_long`, which finds its date column by looking for `metric_time` — a
+MetricFlow name this provider never emits, because it names the column itself.
+
+Slicing a **non-additive** binding logs why its slices will not sum: measured on
+a real warehouse, `active_subscription_count` sliced by status gave 2,106
+against an unsliced 2,069, because one subscription changing status inside a day
+is counted once in the total and once per status. That is deduplication overlap
+rather than an unexplained cause, and saying so is what keeps the slice panel
+honest until roadmap 3.8 decomposes at the grain where the metric becomes a sum.
+
+`check_grain(name)` runs the fan-out assertion; `last_sql` records the statement
+behind each number, which is the hook 2.11 reads.
+
+**`provider_query_name`** (in `data_fetch.py`) replaced a ternary duplicated at
+three call sites — startup fetch, sliced fetch, and doctor's fit-readiness check
+— which had to be edited in all three to add a provider. Missing one shipped a
+provider that worked at startup and failed on slice.
 
 ## `engine/model.py`
 

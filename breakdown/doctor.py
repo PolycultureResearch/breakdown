@@ -118,7 +118,8 @@ def check_provider_extra(provider: str) -> Optional[CheckResult]:
     problem = provider_extra_missing(provider)
     if problem:
         return CheckResult.fail(
-            f"{extra} extra installed", problem,
+            f"{extra} extra installed",
+            problem,
             f"pip install 'metric-breakdown[{extra}]'"
             + (
                 "\nor, to keep MetricFlow out of this environment:"
@@ -149,14 +150,19 @@ def check_warehouse(config: MetricTreeConfig, start_date: str, end_date: str) ->
 
     try:
         fetcher = WarehouseDataFetcher(
-            host=cfg.host, http_path=cfg.http_path, token=cfg.token,
-            metric_sql=metric_sql, catalog=cfg.catalog, schema=cfg.db_schema,
+            host=cfg.host,
+            http_path=cfg.http_path,
+            token=cfg.token,
+            metric_sql=metric_sql,
+            catalog=cfg.catalog,
+            schema=cfg.db_schema,
             profile=cfg.profile,
         )
     except ValueError as e:
         results.append(
             CheckResult.fail(
-                "auth configured", str(e),
+                "auth configured",
+                str(e),
                 "Set `token: ${DATABRICKS_TOKEN}` or `profile: <name>` in the provider block.",
             )
         )
@@ -171,7 +177,8 @@ def check_warehouse(config: MetricTreeConfig, start_date: str, end_date: str) ->
             # partner cannot mint the OAuth session in the first place.
             results.append(
                 CheckResult.fail(
-                    "databricks CLI", "`databricks` not found on PATH",
+                    "databricks CLI",
+                    "`databricks` not found on PATH",
                     "brew install databricks   # or https://docs.databricks.com/dev-tools/cli/install",
                 )
             )
@@ -187,7 +194,8 @@ def check_warehouse(config: MetricTreeConfig, start_date: str, end_date: str) ->
         except Exception as e:
             results.append(
                 CheckResult.fail(
-                    "profile resolves", f"profile '{cfg.profile}': {e}",
+                    "profile resolves",
+                    f"profile '{cfg.profile}': {e}",
                     f"databricks auth login --host https://<workspace-host> --profile {cfg.profile}",
                 )
             )
@@ -209,7 +217,8 @@ def check_warehouse(config: MetricTreeConfig, start_date: str, end_date: str) ->
     except Exception as e:
         results.append(
             CheckResult.fail(
-                "warehouse connection", str(e),
+                "warehouse connection",
+                str(e),
                 "Check `http_path` (SQL Warehouses -> your warehouse -> Connection details),\n"
                 "that the warehouse is running or can auto-start, and that the token/profile\n"
                 f"is valid: databricks auth login --profile {cfg.profile or '<name>'}",
@@ -249,7 +258,8 @@ def check_cloud(config: MetricTreeConfig) -> List[CheckResult]:
     if missing:
         results.append(
             CheckResult.fail(
-                "cloud config", f"provider is missing: {', '.join(missing)}",
+                "cloud config",
+                f"provider is missing: {', '.join(missing)}",
                 "environment_id: dbt Cloud -> Deploy -> Environments -> your prod environment URL.\n"
                 "host: your account's cell-based Semantic Layer host, e.g.\n"
                 "  hx123.semantic-layer.us1.dbt.com (NOT cloud.getdbt.com — find it under\n"
@@ -257,9 +267,13 @@ def check_cloud(config: MetricTreeConfig) -> List[CheckResult]:
                 "token: a service token with Semantic Layer Only permissions, e.g. ${DBT_SL_TOKEN}.",
             )
         )
-        results.extend(_skip_rest(["semantic layer reachable", "tree metrics exist"], "config incomplete"))
+        results.extend(
+            _skip_rest(["semantic layer reachable", "tree metrics exist"], "config incomplete")
+        )
         return results
-    results.append(CheckResult.ok("cloud config", f"environment {cfg.environment_id} at {cfg.host}"))
+    results.append(
+        CheckResult.ok("cloud config", f"environment {cfg.environment_id} at {cfg.host}")
+    )
 
     try:
         client = CloudDataFetcher(
@@ -270,11 +284,14 @@ def check_cloud(config: MetricTreeConfig) -> List[CheckResult]:
         # credential. Each is a documented way a dbt Cloud SL setup half-works.
         with client.session():
             available = {m.name for m in client.metrics()}
-        results.append(CheckResult.ok("semantic layer reachable", f"{len(available)} metrics listed"))
+        results.append(
+            CheckResult.ok("semantic layer reachable", f"{len(available)} metrics listed")
+        )
     except Exception as e:
         results.append(
             CheckResult.fail(
-                "semantic layer reachable", str(e),
+                "semantic layer reachable",
+                str(e),
                 "Walk the chain in dbt Cloud:\n"
                 "  1. Host must be your cell-based SL host (Account settings -> Semantic Layer),\n"
                 "     e.g. hx123.semantic-layer.us1.dbt.com — not cloud.getdbt.com.\n"
@@ -288,9 +305,7 @@ def check_cloud(config: MetricTreeConfig) -> List[CheckResult]:
         results.extend(_skip_rest(["tree metrics exist"], "semantic layer unreachable"))
         return results
 
-    missing_metrics = sorted(
-        {m.source.split(".")[-1] for m in config.metrics} - available
-    )
+    missing_metrics = sorted({m.source.split(".")[-1] for m in config.metrics} - available)
     if missing_metrics:
         results.append(
             CheckResult.fail(
@@ -312,7 +327,8 @@ def check_local(config: MetricTreeConfig) -> List[CheckResult]:
     if shutil.which("mf") is None:
         results.append(
             CheckResult.fail(
-                "metricflow CLI", "`mf` not found on PATH",
+                "metricflow CLI",
+                "`mf` not found on PATH",
                 "pip install 'metric-breakdown[dbt]'   # or: uv tool install dbt-metricflow",
             )
         )
@@ -324,7 +340,8 @@ def check_local(config: MetricTreeConfig) -> List[CheckResult]:
     if not os.path.isdir(project) or not os.path.isfile(os.path.join(project, "dbt_project.yml")):
         results.append(
             CheckResult.fail(
-                "dbt project", f"no dbt_project.yml at project_path '{project}'",
+                "dbt project",
+                f"no dbt_project.yml at project_path '{project}'",
                 "Point `project_path` in the provider block at the dbt project root.",
             )
         )
@@ -334,16 +351,22 @@ def check_local(config: MetricTreeConfig) -> List[CheckResult]:
 
     try:
         proc = subprocess.run(
-            ["mf", "list", "metrics"], cwd=project,
-            capture_output=True, text=True, timeout=120,
+            ["mf", "list", "metrics"],
+            cwd=project,
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
     except subprocess.TimeoutExpired:
-        results.append(CheckResult.fail("metrics listable", "`mf list metrics` timed out after 120s"))
+        results.append(
+            CheckResult.fail("metrics listable", "`mf list metrics` timed out after 120s")
+        )
         return results
     if proc.returncode != 0:
         results.append(
             CheckResult.fail(
-                "metrics listable", proc.stderr.strip() or proc.stdout.strip(),
+                "metrics listable",
+                proc.stderr.strip() or proc.stdout.strip(),
                 "Run `mf list metrics` in the project for the full error; usually a\n"
                 "profiles.yml / warehouse-credentials problem.",
             )
@@ -359,6 +382,7 @@ def check_fit_readiness(parser, start_date: str, end_date: str) -> CheckResult:
     Fetches through the real provider path (never a lookalike), so it also
     exercises every metric's query end to end."""
     from breakdown.api.main import _build_fetcher  # lazy: pulls FastAPI
+    from breakdown.data_fetch import provider_query_name
     from breakdown.engine.model import MIN_FIT_PERIODS
 
     cfg = parser.config.provider
@@ -369,7 +393,7 @@ def check_fit_readiness(parser, start_date: str, end_date: str) -> CheckResult:
 
     lines, short = [], []
     for m in parser.config.metrics:
-        query_name = m.name if cfg.type in ("mock", "warehouse") else m.source.split(".")[-1]
+        query_name = provider_query_name(cfg.type, m)
         try:
             df = fetcher.fetch_metric(query_name, start_date, end_date, grain=m.grain, kind=m.kind)
             n = len(df)
@@ -378,7 +402,9 @@ def check_fit_readiness(parser, start_date: str, end_date: str) -> CheckResult:
             short.append(m.name)
             continue
         ready = n >= MIN_FIT_PERIODS
-        lines.append(f"{m.name}: {n}/{MIN_FIT_PERIODS} whole {m.grain} periods{'' if ready else ' — not fittable yet'}")
+        lines.append(
+            f"{m.name}: {n}/{MIN_FIT_PERIODS} whole {m.grain} periods{'' if ready else ' — not fittable yet'}"
+        )
         if not ready:
             short.append(m.name)
 
@@ -507,7 +533,5 @@ def print_report(results: List[CheckResult]) -> int:
             for rem_line in r.remediation.splitlines():
                 print(f"       {rem_line}")
     counts = {s: sum(1 for r in results if r.status == s) for s in ("pass", "fail", "skip")}
-    print(
-        f"\n{counts['pass']} passed, {counts['fail']} failed, {counts['skip']} skipped"
-    )
+    print(f"\n{counts['pass']} passed, {counts['fail']} failed, {counts['skip']} skipped")
     return 1 if counts["fail"] else 0

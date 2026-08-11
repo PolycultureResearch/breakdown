@@ -59,9 +59,15 @@ AGG_MAP = {
 # equivalent, so a metric whose source column cannot go finer than a quarter is
 # skipped rather than silently modelled monthly.
 GRAIN_MAP = {
-    "nanosecond": "day", "microsecond": "day", "millisecond": "day",
-    "second": "day", "minute": "day", "hour": "day",
-    "day": "day", "week": "week", "month": "month",
+    "nanosecond": "day",
+    "microsecond": "day",
+    "millisecond": "day",
+    "second": "day",
+    "minute": "day",
+    "hour": "day",
+    "day": "day",
+    "week": "week",
+    "month": "month",
 }
 
 # Aggregations whose natural breakdown `kind` is not `flow`. An average is a
@@ -221,7 +227,9 @@ def _categorical_dimensions(model: Any) -> Dict[str, BindingDimension]:
     }
 
 
-def _measure_source(manifest: Any, metric: Any) -> Tuple[Optional[Any], Optional[str], Optional[str], Optional[str]]:
+def _measure_source(
+    manifest: Any, metric: Any
+) -> Tuple[Optional[Any], Optional[str], Optional[str], Optional[str]]:
     """Resolve a simple metric to (semantic_model, agg, column, agg_time_dim),
     across both manifest shapes. Returns (None, ...) when it resolves to
     neither, which the caller reports rather than defaults.
