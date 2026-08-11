@@ -635,3 +635,266 @@ metrics:
     assert Parser(yaml_for("assumed")).config.provider.type == "none"
     with pytest.raises(Exception, match="mock, local, cloud, warehouse, none"):
         Parser(yaml_for("nonsense"))
+
+
+# --- Node binding contract (roadmap 2.9) -----------------------------------
+#
+# The binding is a fetch descriptor, not a semantic layer: every rule below
+# exists because breaking it produces a plausible wrong number rather than an
+# error. See knowledge/semantic_layer_connectivity_design.md §4.
+
+
+def _bound_tree(bind_block: str, *, name: str = "revenue", extra: str = "") -> str:
+    return f"""
+metrics:
+  - name: {name}
+    source: warehouse.{name}
+{extra}    bind:
+{bind_block}
+"""
+
+
+SUM_BIND = """      relation: analytics.fct_orders
+      grain_key: order_id
+      time_column: ordered_at
+      agg: sum
+      measure: amount
+"""
+
+
+def test_binding_parses_and_lands_on_the_dag_node():
+    defn = Parser(_bound_tree(SUM_BIND)).get_metric("revenue")
+    assert defn.bind.relation == "analytics.fct_orders"
+    assert defn.bind.grain_key == "order_id"
+    assert defn.bind.agg == "sum"
+    assert defn.bind.is_non_additive is False
+
+
+def test_binding_dimension_join_parses():
+    bind = (
+        SUM_BIND
+        + """      dimensions:
+        region: {join: dim_customers, key: customer_id, column: region}
+        channel: {column: channel}
+"""
+    )
+    dims = Parser(_bound_tree(bind)).get_metric("revenue").bind.dimensions
+    assert dims["region"].join == "dim_customers"
+    assert dims["region"].key == "customer_id"
+    assert dims["channel"].join is None
+
+
+def test_relation_and_sql_are_mutually_exclusive():
+    bind = SUM_BIND + "      sql: select 1\n"
+    with pytest.raises(ValueError, match="exactly one of `relation`"):
+        Parser(_bound_tree(bind))
+
+
+def test_binding_needs_a_relation_or_sql():
+    bind = """      grain_key: order_id
+      time_column: ordered_at
+      agg: sum
+      measure: amount
+"""
+    with pytest.raises(ValueError, match="exactly one of `relation`"):
+        Parser(_bound_tree(bind))
+
+
+def test_sql_in_the_relation_field_is_rejected():
+    bind = SUM_BIND.replace("relation: analytics.fct_orders", "relation: select * from t")
+    with pytest.raises(ValueError, match="looks like SQL rather than a table"):
+        Parser(_bound_tree(bind))
+
+
+def test_inline_sql_relation_is_accepted():
+    bind = """      sql: "select * from analytics.orders where is_test = false"
+      grain_key: order_id
+      time_column: ordered_at
+      agg: sum
+      measure: amount
+"""
+    assert Parser(_bound_tree(bind)).get_metric("revenue").bind.relation is None
+
+
+RATIO_BIND = """      relation: analytics.fct_funnel
+      grain_key: session_id
+      time_column: session_at
+      agg: ratio
+      numerator: converted
+      denominator: sessions
+"""
+
+
+def test_ratio_binding_requires_kind_rate():
+    parser = Parser(_bound_tree(RATIO_BIND, name="cvr", extra="    kind: rate\n"))
+    assert parser.get_metric("cvr").bind.numerator == "converted"
+
+    with pytest.raises(ValueError, match="A ratio is a rate"):
+        Parser(_bound_tree(RATIO_BIND, name="cvr"))
+
+
+def test_ratio_without_denominator_is_refused_not_approximated():
+    bind = RATIO_BIND.replace("      denominator: sessions\n", "")
+    with pytest.raises(ValueError, match="confidently wrong cause"):
+        Parser(_bound_tree(bind, name="cvr", extra="    kind: rate\n"))
+
+
+def test_ratio_may_not_declare_measure():
+    bind = RATIO_BIND + "      measure: amount\n"
+    with pytest.raises(ValueError, match="not `measure`"):
+        Parser(_bound_tree(bind, name="cvr", extra="    kind: rate\n"))
+
+
+def test_non_ratio_requires_measure():
+    bind = SUM_BIND.replace("      measure: amount\n", "")
+    with pytest.raises(ValueError, match="needs a `measure`"):
+        Parser(_bound_tree(bind))
+
+
+def test_numerator_on_a_non_ratio_is_rejected():
+    bind = SUM_BIND + "      numerator: converted\n"
+    with pytest.raises(ValueError, match="only apply to `agg: ratio`"):
+        Parser(_bound_tree(bind))
+
+
+def test_summing_a_rate_is_rejected():
+    with pytest.raises(ValueError, match="Summing a rate is"):
+        Parser(_bound_tree(SUM_BIND, name="cvr", extra="    kind: rate\n"))
+
+
+def test_unknown_agg_is_rejected():
+    bind = SUM_BIND.replace("agg: sum", "agg: median")
+    with pytest.raises(ValueError, match="binding agg must be one of"):
+        Parser(_bound_tree(bind))
+
+
+COUNT_DISTINCT_BIND = """      relation: analytics.fct_sessions
+      grain_key: session_id
+      time_column: started_at
+      agg: count_distinct
+      measure: user_id
+"""
+
+
+def test_count_distinct_requires_an_entity_key():
+    with pytest.raises(ValueError, match="needs an `entity_key`"):
+        Parser(_bound_tree(COUNT_DISTINCT_BIND, name="active_users"))
+
+    bind = COUNT_DISTINCT_BIND + "      entity_key: user_id\n"
+    defn = Parser(_bound_tree(bind, name="active_users")).get_metric("active_users")
+    assert defn.bind.is_non_additive is True
+
+
+def test_sliced_stock_requires_an_entity_key_but_trend_only_does_not():
+    last = """      relation: analytics.dim_subscriptions
+      grain_key: subscription_id
+      time_column: as_of
+      agg: last
+      measure: mrr
+"""
+    assert Parser(_bound_tree(last, name="mrr")).get_metric("mrr").bind.agg == "last"
+
+    sliced = last + "      dimensions:\n        plan: {column: plan_tier}\n"
+    with pytest.raises(ValueError, match="sliced `last` binding needs an"):
+        Parser(_bound_tree(sliced, name="mrr"))
+
+
+def test_join_without_a_key_cannot_be_proven_many_to_one():
+    bind = SUM_BIND + "      dimensions:\n        region: {join: dim_customers, column: region}\n"
+    with pytest.raises(ValueError, match="cannot be proven many-to-one"):
+        Parser(_bound_tree(bind))
+
+
+def test_join_key_without_a_join_is_rejected():
+    bind = SUM_BIND + "      dimensions:\n        region: {key: customer_id, column: region}\n"
+    with pytest.raises(ValueError, match="without `join`"):
+        Parser(_bound_tree(bind))
+
+
+def test_join_key_is_not_named_on_because_yaml_would_eat_it():
+    # PyYAML is YAML 1.1: a bare `on:` key parses as the boolean True, so an
+    # `on` field would silently vanish and leave the join unprovable rather
+    # than erroring. This pins the field name against a well-meaning rename.
+    import yaml as _yaml
+
+    assert _yaml.safe_load("{on: customer_id}") == {True: "customer_id"}
+    assert _yaml.safe_load("{key: customer_id}") == {"key": "customer_id"}
+
+
+def test_binding_dimension_name_must_be_an_identifier():
+    bind = SUM_BIND + '      dimensions:\n        "2region": {column: region}\n'
+    with pytest.raises(ValueError, match="must be an identifier"):
+        Parser(_bound_tree(bind))
+
+
+def test_bind_and_legacy_sql_are_mutually_exclusive():
+    yaml_content = """
+metrics:
+  - name: revenue
+    source: warehouse.revenue
+    sql: "SELECT d AS date, v AS value FROM t"
+    bind:
+      relation: analytics.fct_orders
+      grain_key: order_id
+      time_column: ordered_at
+      agg: sum
+      measure: amount
+"""
+    with pytest.raises(ValueError, match="both `sql` and `bind`"):
+        Parser(yaml_content)
+
+
+def test_non_additive_parent_may_not_be_resampled_up_to_a_coarser_child():
+    # Summing daily distinct users is not the monthly distinct user count, and
+    # `resample_up` sums flows — so the tree must be refused at parse time.
+    yaml_content = """
+metrics:
+  - name: daily_active_users
+    source: warehouse.dau
+    grain: day
+    bind:
+      relation: analytics.fct_sessions
+      grain_key: session_id
+      time_column: started_at
+      agg: count_distinct
+      measure: user_id
+      entity_key: user_id
+  - name: revenue
+    source: warehouse.revenue
+    grain: month
+    parents: [daily_active_users]
+"""
+    with pytest.raises(ValueError, match="not re-aggregable"):
+        Parser(yaml_content)
+
+
+def test_non_additive_parent_at_the_childs_grain_is_fine():
+    yaml_content = """
+metrics:
+  - name: monthly_active_users
+    source: warehouse.mau
+    grain: month
+    bind:
+      relation: analytics.fct_sessions
+      grain_key: session_id
+      time_column: started_at
+      agg: count_distinct
+      measure: user_id
+      entity_key: user_id
+  - name: revenue
+    source: warehouse.revenue
+    grain: month
+    parents: [monthly_active_users]
+"""
+    assert Parser(yaml_content).dag.has_edge("monthly_active_users", "revenue")
+
+
+def test_trees_without_bindings_are_unchanged():
+    parser = Parser(
+        """
+metrics:
+  - name: dau
+    source: dbt.metric.dau
+"""
+    )
+    assert parser.get_metric("dau").bind is None
