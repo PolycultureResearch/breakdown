@@ -138,12 +138,29 @@ plain `dbt parse` on **dbt Core**, with no dbt Cloud, SL credential or plan tier
 `BridgeResult` of `bindings`, `formulas`, `skipped`, plus inferred `grains` and
 `kinds`.
 
-**Parse with `metricflow_semantic_interfaces` (MSI), never
-`dbt_semantic_interfaces` (DSI).** This is the module's load-bearing decision.
-DSI is deprecated, and against a manifest in dbt's new metrics spec it does not
-fail — it ignores the fields it does not recognise, returns every simple metric
-with **no aggregation at all**, and then validates with zero errors. `_require_msi`
-is the only import path, and there is deliberately no DSI fallback.
+**The manifest models are in tree** (`dbt_manifest.py`), so the `dbt-bridge`
+extra depends on nothing from dbt Labs. It used to parse with
+`metricflow_semantic_interfaces`, which ships inside the `metricflow` wheel —
+twelve transitive packages and a `<3.15` Python ceiling for one `parse_obj`
+call. The manifest is a *resolved* JSON artifact (dbt has already expanded every
+`ref()`, default and Jinja expression), so reading it is parsing a versioned
+document, not reimplementing dbt's parser — a different thing from what
+Sidemantic does with source YAML, and the reason this trade is defensible where
+that one was not.
+
+`metricflow` stays in the **dev group** as a differential oracle:
+`tests/test_dbt_manifest.py` parses the same fixtures both ways and asserts every
+field the bridge consumes agrees, plus that our reading survives MSI's own
+normalisation. Schema drift fails a test instead of reaching a user. Never make
+it a runtime dependency again without deleting that reasoning first.
+
+⚠️ Unknown keys are **ignored**, which is exactly how the older
+`dbt_semantic_interfaces` returned every new-spec metric with no aggregation
+while validating cleanly. That is safe here *only* because `_translate_simple`
+hard-fails when a metric resolves to neither `measure` nor
+`metric_aggregation_params`, and every unknown aggregation and metric type is
+reported rather than defaulted. The models cannot catch that class of drift;
+the refusals must.
 
 Both manifest shapes are supported and must stay so: the **classic** spec puts
 the aggregation on a `measure` the metric points at, while the **new spec** (and

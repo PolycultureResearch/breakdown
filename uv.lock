@@ -1650,7 +1650,6 @@ all = [
     { name = "databricks-sql-connector" },
     { name = "dbt-metricflow", marker = "python_full_version < '3.14'" },
     { name = "dbt-sl-sdk", extra = ["sync"], marker = "python_full_version < '3.14'" },
-    { name = "metricflow" },
     { name = "sqlglot" },
 ]
 databricks = [
@@ -1662,7 +1661,6 @@ dbt = [
     { name = "dbt-sl-sdk", extra = ["sync"] },
 ]
 dbt-bridge = [
-    { name = "metricflow" },
     { name = "sqlglot" },
 ]
 
@@ -1671,6 +1669,7 @@ dev = [
     { name = "duckdb" },
     { name = "httpx" },
     { name = "metric-breakdown", extra = ["all"] },
+    { name = "metricflow" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -1687,7 +1686,6 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "mcp", specifier = ">=2.0.0" },
     { name = "metric-breakdown", extras = ["databricks", "dbt-bridge"], marker = "extra == 'all'" },
-    { name = "metricflow", marker = "extra == 'dbt-bridge'", specifier = ">=0.211.0" },
     { name = "networkx", specifier = ">=3.1" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "pandas", specifier = ">=2.1.0" },
@@ -1705,6 +1703,7 @@ dev = [
     { name = "duckdb", specifier = ">=1.0.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "metric-breakdown", extras = ["all"] },
+    { name = "metricflow", specifier = ">=0.211.0" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "ruff", specifier = ">=0.9.0" },
 ]

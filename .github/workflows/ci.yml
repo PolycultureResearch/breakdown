@@ -101,8 +101,8 @@ jobs:
               ],
               "dbt-bridge": [
                   lambda: __import__(
-                      "breakdown.dbt_bridge", fromlist=["_require_msi"]
-                  )._require_msi(),
+                      "breakdown.dbt_sql", fromlist=["_require_sqlglot"]
+                  )._require_sqlglot(),
               ],
           }
           for extra, builders in cases.items():
