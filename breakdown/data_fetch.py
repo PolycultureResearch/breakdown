@@ -87,9 +87,9 @@ def provider_extra_missing(provider: str) -> Optional[str]:
         return None
     modules = {
         "cloud": ("dbtsl",),
-        # MSI ships inside the metricflow wheel, so the distribution name says
-        # nothing about whether the module is importable — probe the module.
-        "dbt": ("metricflow_semantic_interfaces", "sqlglot"),
+        # The manifest models are in-tree (breakdown/dbt_manifest.py), so the
+        # only third-party piece left is the SQL generator.
+        "dbt": ("sqlglot",),
         "warehouse": ("databricks.sql", "databricks.sdk"),
     }[provider]
     for module in modules:

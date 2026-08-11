@@ -15,8 +15,11 @@ the aggregation. In dbt's **new metrics spec** (also what Fusion emits) the
 measure layer is gone and the metric carries its own aggregation inline under
 `type_params.metric_aggregation_params`, with the aggregated column in
 `type_params.expr`. A metric resolving to neither is an error rather than a
-default, because the failure mode this guards against is silent: see
-`_require_msi`.
+default, because the failure mode this guards against is silent — the older
+`dbt_semantic_interfaces` ignored the field it did not recognise and returned
+every new-spec metric with no aggregation, validating cleanly. The schema this
+reads is modelled in `dbt_manifest`, in tree, with `metricflow` kept as a
+dev-only differential oracle.
 
 What this module deliberately does not do is guess. Every metric it cannot
 translate exactly comes back in `BridgeResult.skipped` with a reason naming the
@@ -28,10 +31,9 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from types import ModuleType
 from typing import Any, Dict, List, Optional, Tuple
 
-from breakdown.data_fetch import MissingProviderExtra, _extra_hint
+from breakdown.dbt_manifest import SemanticManifest, parse_manifest
 from breakdown.formula import referenced_names, validate_formula
 from breakdown.parser import _SIMPLE_RATIO, BindingDimension, BindingSpec
 
@@ -115,32 +117,16 @@ class BridgeResult:
         self.skipped.append(SkippedMetric(name=name, reason=reason))
 
 
-def _require_msi() -> ModuleType:
-    """Import `metricflow_semantic_interfaces`, or say which extra installs it.
+def _require_sqlglot_only() -> None:
+    """The bridge itself needs no third-party parser — see `dbt_manifest`.
 
-    It must be MSI and not the older `dbt_semantic_interfaces`. DSI is
-    deprecated, and against a new-spec manifest it does not fail — it ignores
-    the fields it does not know, returns every simple metric with no
-    aggregation at all, and then *validates with zero errors*. A bridge built on
-    it would emit silently broken bindings that passed their own checks, which
-    is why this module never falls back to it.
+    This used to import `metricflow_semantic_interfaces`, which ships inside the
+    `metricflow` wheel: twelve transitive packages and a `<3.15` Python ceiling
+    for one `parse_obj` call. The models moved in-tree; `metricflow` stays in
+    the dev group as a differential oracle, so schema drift fails a test rather
+    than reaching a user.
     """
-    try:
-        import metricflow_semantic_interfaces  # noqa: F401
-        from metricflow_semantic_interfaces.implementations.semantic_manifest import (
-            PydanticSemanticManifest,
-        )
-    except ImportError as e:
-        raise MissingProviderExtra(
-            _extra_hint(
-                "dbt",
-                "dbt-bridge",
-                "missing module 'metricflow_semantic_interfaces' (it ships in "
-                "metricflow>=0.210; the older dbt-semantic-interfaces is "
-                "deprecated and mis-parses new-spec manifests)",
-            )
-        ) from e
-    return PydanticSemanticManifest
+    return None
 
 
 def manifest_path(project_path: str) -> str:
@@ -151,7 +137,7 @@ def manifest_path(project_path: str) -> str:
     return os.path.join(project_path, "target", SEMANTIC_MANIFEST_FILE)
 
 
-def load_manifest(project_path: str) -> Any:
+def load_manifest(project_path: str) -> SemanticManifest:
     """Parse a dbt semantic manifest with MSI."""
     path = manifest_path(project_path)
     if not os.path.exists(path):
@@ -161,9 +147,8 @@ def load_manifest(project_path: str) -> Any:
             "for projects still on the legacy `semantic_models:` spec — those "
             "must migrate to the new metrics spec first.)"
         )
-    PydanticSemanticManifest = _require_msi()
     with open(path) as fh:
-        return PydanticSemanticManifest.parse_obj(json.load(fh))
+        return parse_manifest(json.load(fh))
 
 
 def _relation(model: Any) -> str:
@@ -194,7 +179,7 @@ def _grain_key(model: Any) -> Optional[str]:
     contract exists to catch.
     """
     for entity in model.entities:
-        if entity.type.value == "primary":
+        if entity.type == "primary":
             return _column(entity)
     return None
 
@@ -222,7 +207,7 @@ def _categorical_dimensions(model: Any) -> Dict[str, BindingDimension]:
     return {
         d.name: BindingDimension(column=_column(d))
         for d in model.dimensions
-        if d.type.value == "categorical"
+        if d.type == "categorical"
     }
 
 
@@ -244,7 +229,7 @@ def _measure_source(
             return None, None, None, None
         # `metric_aggregation_params` omits the aggregated column; it is
         # mirrored on `type_params.expr`, which is where dbt puts it.
-        return model, params.agg.value, tp.expr, params.agg_time_dimension
+        return model, params.agg, tp.expr, params.agg_time_dimension
 
     # Classic spec: the metric points at a measure that carries the aggregation.
     if tp.measure is not None:
@@ -253,7 +238,7 @@ def _measure_source(
                 if measure.name == tp.measure.name:
                     return (
                         model,
-                        measure.agg.value,
+                        measure.agg,
                         _column(measure),
                         measure.agg_time_dimension,
                     )
@@ -308,7 +293,7 @@ def _translate_simple(manifest: Any, metric: Any, result: BridgeResult) -> None:
         return
 
     mf_grain = getattr(time_dim.type_params, "time_granularity", None)
-    mf_grain = mf_grain.value if mf_grain is not None else "day"
+    mf_grain = mf_grain or "day"
     if mf_grain not in GRAIN_MAP:
         result.skip(
             name,
@@ -429,7 +414,7 @@ def _translate_derived(metric: Any, result: BridgeResult) -> None:
             result.kinds[metric.name] = "rate"
 
 
-def translate(manifest: Any) -> BridgeResult:
+def translate(manifest: SemanticManifest) -> BridgeResult:
     """Translate every metric in a parsed semantic manifest.
 
     Nothing here raises on an untranslatable metric: they are collected in
@@ -445,7 +430,7 @@ def translate(manifest: Any) -> BridgeResult:
         # metric — reading it off the metric silently never matches.
         if getattr(metric.type_params, "is_private", False):
             continue
-        kind = metric.type.value
+        kind = metric.type
         if kind == "simple":
             _translate_simple(manifest, metric, result)
         elif kind == "ratio":

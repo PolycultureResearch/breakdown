@@ -87,8 +87,15 @@ dbt = [
 # Reading a dbt project's own semantic definitions. Deliberately NOT the `dbt`
 # extra: this path needs neither dbt-core, an adapter, nor the `mf` binary —
 # only the manifest `dbt parse` already wrote and a SQL generator.
+#
+# It also needs nothing from dbt Labs. `metricflow` used to be here, purely for
+# `metricflow_semantic_interfaces`, and cost twelve transitive packages and a
+# `<3.15` Python ceiling for a single `parse_obj` call. The manifest is a
+# resolved JSON artifact rather than a language, so `breakdown/dbt_manifest.py`
+# models the subset we read; `metricflow` stays in the dev group as a
+# differential oracle (tests/test_dbt_manifest.py), which is what keeps owning
+# the schema honest.
 dbt-bridge = [
-    "metricflow>=0.211.0",
     "sqlglot>=20.0.0",
 ]
 databricks = [
@@ -164,6 +171,10 @@ dev = [
     "duckdb>=1.0.0",
     "httpx>=0.28.1",
     "metric-breakdown[all]",
+    # Not a runtime dependency of anything. It is the oracle the in-tree
+    # manifest models are checked against, so dbt changing the artifact fails a
+    # test instead of reaching a user.
+    "metricflow>=0.211.0",
     "pytest>=9.0.2",
     "ruff>=0.9.0",
 ]

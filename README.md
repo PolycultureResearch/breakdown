@@ -115,12 +115,15 @@ those are **extras** you opt into:
 | `mock`, or cold-start `none` | `pip install metric-breakdown` | — |
 | `local` (MetricFlow CLI) or `cloud` (dbt Cloud Semantic Layer) | `pip install 'metric-breakdown[dbt]'` | `dbt-metricflow`, `dbt-sl-sdk` |
 | `warehouse` (direct SQL) | `pip install 'metric-breakdown[databricks]'` | `databricks-sdk`, `databricks-sql-connector` |
-| reading a dbt project's own metric definitions | `pip install 'metric-breakdown[dbt-bridge]'` | `metricflow`, `sqlglot` |
+| reading a dbt project's own metric definitions | `pip install 'metric-breakdown[dbt-bridge]'` | `sqlglot` |
 | all of them | `pip install 'metric-breakdown[all]'` | all of the above — **except on Python 3.14**, where it installs `databricks` and `dbt-bridge` and omits `dbt` (see below) |
 
-`dbt-bridge` is deliberately not part of `dbt`: reading the semantic manifest
-`dbt parse` already wrote needs neither dbt-core, a warehouse adapter, nor the
-`mf` binary — so it is much lighter, and unlike `dbt` it works on Python 3.14.
+`dbt-bridge` is deliberately not part of `dbt`, and depends on nothing from dbt
+Labs: reading the semantic manifest `dbt parse` already wrote needs neither
+dbt-core, a warehouse adapter, nor the `mf` binary. The manifest is a resolved
+JSON artifact, so breakdown models the subset it reads itself and the extra is
+one package. That is what keeps the `dbt` provider free of anyone else's Python
+ceiling.
 
 This is not cosmetic: the extras are ~66 packages and ~120 MB that most installs
 never touch, and dbt-core in particular drags in a large tree of its own.

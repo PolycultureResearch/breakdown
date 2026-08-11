@@ -4,6 +4,10 @@ Fixtures are built inline rather than checked in as JSON: the interesting axis
 is the *shape* of a manifest (classic measure layer vs. new-spec inline
 aggregation), and a builder makes that difference legible instead of burying it
 in two near-identical blobs.
+
+These parse through breakdown's own models (`dbt_manifest`). That the models
+agree with `metricflow_semantic_interfaces` on every field the bridge consumes
+is asserted separately, in `test_dbt_manifest.py`.
 """
 
 import json
@@ -11,15 +15,7 @@ import json
 import pytest
 
 from breakdown.dbt_bridge import bridge_project, load_manifest, translate
-
-msi = pytest.importorskip(
-    "metricflow_semantic_interfaces",
-    reason="needs the dbt-bridge extra (pip install 'metric-breakdown[dbt-bridge]')",
-)
-
-from metricflow_semantic_interfaces.implementations.semantic_manifest import (  # noqa: E402
-    PydanticSemanticManifest,
-)
+from breakdown.dbt_manifest import parse_manifest
 
 
 def _model(
@@ -49,7 +45,7 @@ def _model(
 
 
 def _manifest(models, metrics):
-    return PydanticSemanticManifest.parse_obj(
+    return parse_manifest(
         {
             "semantic_models": list(models),
             "metrics": list(metrics),
