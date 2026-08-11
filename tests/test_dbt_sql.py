@@ -152,6 +152,36 @@ def test_snowflake_week_does_not_depend_on_the_session_parameter():
     assert "DAYOFWEEKISO" in sql and "WEEK" not in sql.replace("DAYOFWEEKISO", "")
 
 
+@pytest.mark.parametrize("dialect", ["databricks", "spark"])
+def test_databricks_day_grain_uses_date_trunc_not_trunc(dialect):
+    # Spark's TRUNC(col, fmt) accepts only YEAR/MONTH/WEEK/QUARTER and returns
+    # NULL for DAY rather than erroring — so translating a portable
+    # DATE_TRUNC('DAY', …) into Databricks collapsed every row into one
+    # NULL-labelled bucket holding the whole window's total. Found by running
+    # the generated SQL against a real Databricks warehouse; no local engine
+    # could see it, because sqlglot transpiled it without complaint.
+    sql = build_query(
+        _bind(), grain="day", start_date="2024-01-01", end_date="2024-01-31", dialect=dialect
+    )
+    assert "DATE_TRUNC('DAY'" in sql
+    assert "TRUNC(bd_fact.ordered_at, 'DAY')" not in sql
+
+
+@pytest.mark.parametrize(
+    "dialect", ["", "duckdb", "postgres", "databricks", "spark", "bigquery", "snowflake", "trino"]
+)
+@pytest.mark.parametrize("grain", ["day", "week", "month"])
+def test_every_dialect_and_grain_emits_a_date_expression(dialect, grain):
+    sql = build_query(
+        _bind(), grain=grain, start_date="2024-01-01", end_date="2024-01-31", dialect=dialect
+    )
+    # Every dialect must bucket the real time column and alias the result
+    # `date`. The expression that does it differs per dialect, so assert on the
+    # whole statement — a naive per-line search matches Snowflake's `DATEADD`.
+    assert "bd_fact.ordered_at" in sql
+    assert 'AS "date"' in sql or "AS `date`" in sql
+
+
 def test_month_grain_buckets_to_the_first(con):
     df = _run(con, _bind(), grain="month")
     assert df["date"].item() == pd.Timestamp("2024-01-01")

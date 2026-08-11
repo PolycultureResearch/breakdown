@@ -33,32 +33,39 @@ DATE_COL = "date"
 SLICE_COL = "slice"
 VALUE_COL = "value"
 
-# Week truncation is the one grain where dialects genuinely disagree, and the
-# disagreement is silent: it shifts every bucket's composition by up to six days
-# while still producing one label per week, so nothing downstream can detect it.
+# Truncation is where dialects disagree, so every expression here is parsed *in
+# the target dialect* (see `_parse_dialect`) rather than translated into it from
+# a portable form. Two separate hazards made that necessary.
 #
-# `DATE_TRUNC('week', …)` is ISO Monday on DuckDB and Postgres, and Spark's
-# `TRUNC(…, 'WEEK')` is Monday too. The two that are not:
+# **Week boundaries.** `DATE_TRUNC('WEEK', …)` is ISO Monday on DuckDB, Postgres
+# and Spark, but **BigQuery** defaults `WEEK` to *Sunday* and **Snowflake**
+# honours the session's `WEEK_START`, so the same query buckets differently for
+# different users. Either shifts a bucket's composition by up to six days while
+# still emitting exactly one label per week — and `grains.floor_period` then
+# relabels it to the previous Monday, landing it on the spine and hiding the
+# shift completely. Nothing downstream could detect it, which is why it is fixed
+# at the source: `ISOWEEK` on BigQuery, a session-independent `DAYOFWEEKISO`
+# offset on Snowflake.
 #
-#   - **BigQuery** defaults `WEEK` to *Sunday*; `ISOWEEK` is the Monday form.
-#   - **Snowflake** honours the session's `WEEK_START` parameter, so the same
-#     query returns different buckets for different users. `DAYOFWEEKISO` is
-#     Monday=1 regardless of session state, so the offset form is deterministic.
-#
-# breakdown floors week labels to ISO Monday (`grains.floor_period`), so a
-# Sunday-start bucket would be relabelled to the *previous* Monday — every label
-# still lands on the spine, and the data inside it is shifted by a day. That is
-# precisely the plausible-wrong-number failure the engine exists to avoid, and
-# owning the SQL is what lets us close it here instead of warning about it.
-_WEEK_TRUNC = {
-    "bigquery": "DATE_TRUNC({col}, ISOWEEK)",
-    "snowflake": "DATEADD(DAY, -(DAYOFWEEKISO({col}) - 1), CAST({col} AS DATE))",
-}
-_DEFAULT_WEEK_TRUNC = "DATE_TRUNC('WEEK', {col})"
-
+# **Databricks day truncation.** Translating a portable `DATE_TRUNC('DAY', …)`
+# into Databricks yields `TRUNC(col, 'DAY')` — and Spark's `trunc` accepts only
+# YEAR/MONTH/WEEK/QUARTER, returning **NULL** for DAY rather than erroring. Every
+# row then collapses into a single NULL-labelled bucket holding the whole
+# window's total. `_align_to_spine` does catch it (no row lands on the spine, so
+# it raises), but day grain was simply unusable on Databricks, and no local test
+# could see it: sqlglot transpiled happily and DuckDB was never asked. It was
+# found by running the generated SQL against a real Databricks warehouse.
+# Parsing in-dialect keeps Spark's `DATE_TRUNC`, which does support DAY.
 _TRUNC = {
     "day": "DATE_TRUNC('DAY', {col})",
+    "week": "DATE_TRUNC('WEEK', {col})",
     "month": "DATE_TRUNC('MONTH', {col})",
+}
+
+# Per-(dialect, grain) overrides where the portable form is wrong or unsupported.
+_TRUNC_OVERRIDES = {
+    ("bigquery", "week"): "DATE_TRUNC({col}, ISOWEEK)",
+    ("snowflake", "week"): ("DATEADD(DAY, -(DAYOFWEEKISO({col}) - 1), CAST({col} AS DATE))"),
 }
 
 
@@ -76,13 +83,17 @@ def _require_sqlglot() -> ModuleType:
     return sqlglot
 
 
+def _parse_dialect(dialect: str) -> Optional[str]:
+    """The dialect sqlglot should *read* with. Passing the target dialect makes
+    every expression below round-trip as written instead of being translated
+    from a portable form that may not have an equivalent."""
+    return dialect or None
+
+
 def _truncate(column: str, grain: str, dialect: str) -> str:
     if grain not in GRAINS:
         raise ValueError(f"grain must be one of {list(GRAINS)}, got '{grain}'")
-    if grain == "week":
-        template = _WEEK_TRUNC.get(dialect, _DEFAULT_WEEK_TRUNC)
-    else:
-        template = _TRUNC[grain]
+    template = _TRUNC_OVERRIDES.get((dialect, grain), _TRUNC[grain])
     return template.format(col=column)
 
 
@@ -204,14 +215,15 @@ def build_query(
         value_expr = _aggregate(bind, _qualified(bind.measure, fact))
     selects.append(f'{value_expr} AS "{VALUE_COL}"')
 
-    query = sqlglot.select(*selects).from_(source)
+    read = _parse_dialect(dialect)
+    query = sqlglot.select(*selects, dialect=read).from_(source, dialect=read)
     for join in joins:
-        query = query.join(join, join_type="LEFT")
+        query = query.join(join, join_type="LEFT", dialect=read)
     query = (
-        query.where(f"{time_col} >= '{start}'")
-        .where(f"{time_col} < '{end_exclusive}'")
-        .group_by(*group_by)
-        .order_by(*group_by)
+        query.where(f"{time_col} >= '{start}'", dialect=read)
+        .where(f"{time_col} < '{end_exclusive}'", dialect=read)
+        .group_by(*group_by, dialect=read)
+        .order_by(*group_by, dialect=read)
     )
     return query.sql(dialect=dialect, pretty=True)
 
