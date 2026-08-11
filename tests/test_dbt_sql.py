@@ -445,3 +445,39 @@ def test_a_joined_dimension_is_refused_rather_than_resolved_after_the_join():
     )
     with pytest.raises(UnsupportedBinding, match="reached through a join"):
         build_resolved_slice_query(bind, dimension="plan", **WINDOW)
+
+
+@pytest.mark.parametrize("dialect", ["databricks", "spark", "bigquery", "duckdb", "snowflake"])
+def test_resolved_query_never_emits_a_quoted_identifier_as_a_column_ref(dialect):
+    # A quoted `"date"` is an identifier on DuckDB and Postgres but a **string
+    # literal** on Spark and BigQuery. Referencing one in the outer SELECT
+    # produced a constant column of the word "date" on Databricks — every row
+    # unparseable as a date, and invisible to every local test because DuckDB
+    # reads it the other way. Found by running it against a real warehouse.
+    sql = build_resolved_slice_query(
+        _dau("last"),
+        dimension="status",
+        grain="day",
+        start_date="2024-01-01",
+        end_date="2024-01-02",
+        dialect=dialect,
+    )
+    assert "'date'" not in sql
+    assert "'slice'" not in sql
+    assert "'value'" not in sql
+
+
+@pytest.mark.parametrize("dialect", ["databricks", "bigquery"])
+def test_resolved_query_still_aliases_the_output_columns(dialect):
+    # The public names must survive as *aliases* on the dialects where the
+    # quoting differs — the fix must not have dropped them.
+    sql = build_resolved_slice_query(
+        _dau("last"),
+        dimension="status",
+        grain="day",
+        start_date="2024-01-01",
+        end_date="2024-01-02",
+        dialect=dialect,
+    )
+    for col in ("date", "slice", "value"):
+        assert f"`{col}`" in sql

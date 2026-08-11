@@ -164,6 +164,12 @@ def _reconciliation(residual: np.ndarray, baseline: float) -> Dict[str, Any]:
 # value. Mirrors `dbt_sql.ABSENT`.
 _ABSENT = "__absent__"
 
+# Below this share of reference-window entities persisting into the analysis
+# window, the relation probably records *events* rather than daily state, and
+# the flow classes do not mean what their names suggest. A signal, not a
+# verdict — see `entity_flows`.
+_LOW_RETENTION = 0.05
+
 
 def entity_flows(transitions: pd.DataFrame) -> Dict[str, Any]:
     """Classify a two-window entity transition matrix into flows (3.8 §6).
@@ -236,9 +242,34 @@ def entity_flows(transitions: pd.DataFrame) -> Dict[str, Any]:
     rows.sort(key=lambda r: -abs(r["net"]))
     migrations.sort(key=lambda m: -m["entities"])
 
+    # Whether "present in the window" means membership at all. On an event-grained
+    # relation — one row per status change rather than per entity per day — an
+    # entity appears only in windows where something happened to it, so `new`
+    # means "first event here", not "new entity". Measured against Narrative:
+    # `active_subscription_count` binds to a status-change table and retains 2
+    # entities out of ~2,340, which is the signature of exactly this. The
+    # arithmetic is unaffected; what the labels *mean* is not, so it is said
+    # rather than left for the reader to infer from an odd-looking number.
+    in_reference = totals["retained"] + totals["churned"] + totals["migrated"]
+    retention_share = (
+        (totals["retained"] + totals["migrated"]) / in_reference if in_reference else None
+    )
+    caveats: List[str] = []
+    if retention_share is not None and retention_share < _LOW_RETENTION:
+        caveats.append(
+            f"Only {retention_share:.1%} of reference-window entities appear in the "
+            "analysis window. If this relation records events rather than daily "
+            "state, an entity shows up only in windows where something happened "
+            "to it — so `new` means its first event here, not a new entity. Bind "
+            "to a relation with one row per entity per period for these labels to "
+            "mean membership."
+        )
+
     return {
         "totals": totals,
         "slices": rows,
+        "retention_share": retention_share,
+        "caveats": caveats,
         # Exactly zero by construction. Published rather than asserted so a
         # consumer can see the reallocation is balanced, the same way
         # `mix_total` is published for rates.
