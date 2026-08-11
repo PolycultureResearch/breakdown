@@ -44,6 +44,7 @@ Propagation, do-operator semantics, draw alignment, and the Shapley source
 decomposition are identical; the response is labeled `mode: "cold_start"` and
 carries cold-start caveats. See `knowledge/cold_start_design.md`.
 """
+
 import math
 from itertools import combinations
 from typing import Any, Dict, List, Literal, Optional, Tuple
@@ -142,9 +143,7 @@ def _intervention_label(iv: Intervention) -> str:
     return f"{iv.metric} = {iv.value:g}"
 
 
-def _validate_scenario(
-    dag: nx.DiGraph, scenario: ScenarioRequest
-) -> List[Assumption]:
+def _validate_scenario(dag: nx.DiGraph, scenario: ScenarioRequest) -> List[Assumption]:
     """Cross-field validation; returns assumptions with ids filled in."""
     if not scenario.interventions and not scenario.assumptions:
         raise ValueError("Scenario must contain at least one intervention or assumption.")
@@ -276,9 +275,7 @@ def run_scenario(
             raise ValueError("Tree is not cold-start ready: " + "; ".join(problems))
     else:
         if scenario.baseline_start is None or scenario.baseline_end is None:
-            raise ValueError(
-                "baseline_start and baseline_end are required when the tree has data."
-            )
+            raise ValueError("baseline_start and baseline_end are required when the tree has data.")
         data = ensure_grained(data)
         b_start = pd.to_datetime(scenario.baseline_start)
         b_end = pd.to_datetime(scenario.baseline_end)
@@ -350,9 +347,7 @@ def run_scenario(
                     f"{scenario.baseline_end}] contains no whole '{g}' period for "
                     f"metric '{n}' (grain '{g}')."
                 )
-            base_mu[n] = window_mean(
-                data.series(n), n, snapped.first_start, snapped.last_start
-            )
+            base_mu[n] = window_mean(data.series(n), n, snapped.first_start, snapped.last_start)
             base_draws[n] = np.full(n_draws, base_mu[n])
 
     # Resolve interventions to per-draw steady-state deltas, plus the point
@@ -378,14 +373,16 @@ def run_scenario(
     warnings: List[Dict[str, str]] = []
     for a in assumptions:
         if a.target in intervened:
-            warnings.append({
-                "kind": "override",
-                "metric": a.target,
-                "detail": (
-                    f"'{a.target}' is pinned by an intervention (do-operator), so "
-                    f"assumption '{a.id}' has no effect while that intervention is active."
-                ),
-            })
+            warnings.append(
+                {
+                    "kind": "override",
+                    "metric": a.target,
+                    "detail": (
+                        f"'{a.target}' is pinned by an intervention (do-operator), so "
+                        f"assumption '{a.id}' has no effect while that intervention is active."
+                    ),
+                }
+            )
 
     # Affected scope: seeds and everything downstream of them. Deltas never
     # flow parent-ward.
@@ -415,8 +412,12 @@ def run_scenario(
             needs_beta.add(node)
             if not cold_start and (node, fit_end_key) not in traces:
                 traces[(node, fit_end_key)] = fit_metric(
-                    dag, data, node, draws=advi_draws,
-                    inference_method="advi", fit_end=fit_end_key,
+                    dag,
+                    data,
+                    node,
+                    draws=advi_draws,
+                    inference_method="advi",
+                    fit_end=fit_end_key,
                     random_seed=0,
                 )
 
@@ -435,13 +436,13 @@ def run_scenario(
         if cold_start:
             defn = dag.nodes[node]["definition"]
             priors = [defn.priors.get(p) or defn.priors.get("coefficient") for p in parents]
-            beta_draws[node] = np.column_stack(
-                [_sample_prior(pr, n_draws, rng) for pr in priors]
-            )
+            beta_draws[node] = np.column_stack([_sample_prior(pr, n_draws, rng) for pr in priors])
             beta_means[node] = np.array([_prior_mean(pr) for pr in priors])
         else:
-            arr = traces[(node, fit_end_key)].trace.posterior["beta_raw"].values.reshape(
-                -1, len(parents)
+            arr = (
+                traces[(node, fit_end_key)]
+                .trace.posterior["beta_raw"]
+                .values.reshape(-1, len(parents))
             )
             beta_draws[node] = arr[rng.choice(arr.shape[0], size=n_draws)]
             beta_means[node] = arr.mean(axis=0)
@@ -463,9 +464,7 @@ def run_scenario(
             effect_draws[a.id] = draws
             effect_means[a.id] = mu
 
-    source_ids = [f"i:{iv.metric}" for iv in scenario.interventions] + [
-        a.id for a in assumptions
-    ]
+    source_ids = [f"i:{iv.metric}" for iv in scenario.interventions] + [a.id for a in assumptions]
     assumptions_by_target: Dict[str, List[Assumption]] = {}
     for a in assumptions:
         assumptions_by_target.setdefault(a.target, []).append(a)
@@ -489,8 +488,7 @@ def run_scenario(
         for node in order:
             if node in intervened and f"i:{node}" in active:
                 deltas[node] = (
-                    tgt_delta_draws[node] if use_draws
-                    else np.array([tgt_delta_point[node]])
+                    tgt_delta_draws[node] if use_draws else np.array([tgt_delta_point[node]])
                 )
                 continue
             defn = dag.nodes[node]["definition"]
@@ -501,10 +499,7 @@ def run_scenario(
                 # enter as their per-child-period sum (baseline and delta
                 # alike scaled by the edge's periods-per-period factor).
                 base = {p: base_vec(p, node) for p in parents}
-                shifted = {
-                    p: base[p] + deltas.get(p, 0.0) * edge_scale[(p, node)]
-                    for p in parents
-                }
+                shifted = {p: base[p] + deltas.get(p, 0.0) * edge_scale[(p, node)] for p in parents}
                 d = d + np.asarray(
                     eval_formula(defn.formula, shifted) - eval_formula(defn.formula, base),
                     dtype=float,
@@ -541,16 +536,13 @@ def run_scenario(
         others = [s for s in source_ids if s != sid]
         for r in range(n_sources):
             weight = (
-                math.factorial(r) * math.factorial(n_sources - r - 1)
-                / math.factorial(n_sources)
+                math.factorial(r) * math.factorial(n_sources - r - 1) / math.factorial(n_sources)
             )
             for coalition in combinations(others, r):
                 without = point_deltas(frozenset(coalition))
                 with_sid = point_deltas(frozenset(coalition) | {sid})
                 for node in order:
-                    contributions[node][sid] += weight * float(
-                        with_sid[node][0] - without[node][0]
-                    )
+                    contributions[node][sid] += weight * float(with_sid[node][0] - without[node][0])
 
     # Honesty stats: full-history bands in fitted mode; declared `plausible`
     # bounds in cold-start mode (no bounds -> no flag, and the block says so
@@ -574,8 +566,10 @@ def run_scenario(
             observed = vals[~np.isnan(vals)]
             if observed.size == 0:
                 hist_stats[n] = {
-                    "hist_min": None, "hist_max": None,
-                    "hist_mean": None, "hist_std": None,
+                    "hist_min": None,
+                    "hist_max": None,
+                    "hist_mean": None,
+                    "hist_std": None,
                 }
                 continue
             hist_stats[n] = {
@@ -639,8 +633,7 @@ def run_scenario(
         else:
             outside_range = simulated < hist["hist_min"] or simulated > hist["hist_max"]
             outside_band = (
-                hist["hist_std"] > 0
-                and abs(simulated - hist["hist_mean"]) > 2 * hist["hist_std"]
+                hist["hist_std"] > 0 and abs(simulated - hist["hist_mean"]) > 2 * hist["hist_std"]
             )
             flag = outside_range or outside_band
             if flag:
@@ -661,14 +654,16 @@ def run_scenario(
                     )
                 warnings.append({"kind": "extrapolation", "metric": node, "detail": detail})
             if simulated < 0 and hist["hist_min"] >= 0:
-                warnings.append({
-                    "kind": "non_physical",
-                    "metric": node,
-                    "detail": (
-                        f"Simulated value {simulated:.4g} for '{node}' is negative but "
-                        "the metric has never been negative historically."
-                    ),
-                })
+                warnings.append(
+                    {
+                        "kind": "non_physical",
+                        "metric": node,
+                        "detail": (
+                            f"Simulated value {simulated:.4g} for '{node}' is negative but "
+                            "the metric has never been negative historically."
+                        ),
+                    }
+                )
 
         fit_quality = None
         if not cold_start and node in needs_beta:
@@ -713,8 +708,7 @@ def run_scenario(
     return {
         "mode": "cold_start" if cold_start else "fitted",
         "baseline_window": (
-            None if cold_start
-            else {"start": scenario.baseline_start, "end": scenario.baseline_end}
+            None if cold_start else {"start": scenario.baseline_start, "end": scenario.baseline_end}
         ),
         "n_draws": n_draws,
         "seed": 0,

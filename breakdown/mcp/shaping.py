@@ -89,7 +89,7 @@ WHATIF_HOW_TO_READ = (
 )
 
 COLD_START_HOW_TO_READ = (
-    "- This tree runs in COLD START mode (`mode: \"cold_start\"`): it has no data provider. "
+    '- This tree runs in COLD START mode (`mode: "cold_start"`): it has no data provider. '
     "Every baseline and slope is a stated belief (asserted operating points, YAML priors) — "
     "present results as consequences of the assumptions, never as evidence. "
     "`baseline_ci_95` is the belief interval around a node's operating point; extrapolation "
@@ -186,13 +186,15 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
                     # lag/parent_windows appear only on lagged contributions.
                     **{
                         k: c.get(k)
-                        for k in ("parent", "estimate", "share_of_gap", "ci_95", "prob_same_direction")
+                        for k in (
+                            "parent",
+                            "estimate",
+                            "share_of_gap",
+                            "ci_95",
+                            "prob_same_direction",
+                        )
                     },
-                    **{
-                        k: c[k]
-                        for k in ("lag", "parent_windows")
-                        if c.get(k) is not None
-                    },
+                    **{k: c[k] for k in ("lag", "parent_windows") if c.get(k) is not None},
                 }
                 for c in node["contributions"]
             ],
@@ -228,14 +230,10 @@ def compact_slice(result: Dict[str, Any]) -> Dict[str, Any]:
         "gap": result["gap"],
         "attribution_method": result["attribution_method"],
         "mix_total": result["mix_total"],
-        "slices": [
-            {k: v for k, v in row.items() if v is not None} for row in result["slices"]
-        ],
+        "slices": [{k: v for k, v in row.items() if v is not None} for row in result["slices"]],
         "reconciliation": {
             "status": result["reconciliation"]["status"],
-            "residual_share_of_baseline": result["reconciliation"][
-                "residual_share_of_baseline"
-            ],
+            "residual_share_of_baseline": result["reconciliation"]["residual_share_of_baseline"],
         },
         "ci_status": result["ci_status"],
         "caveats": result["caveats"] or None,

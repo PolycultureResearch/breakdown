@@ -4,15 +4,25 @@ Formulas are restricted Python arithmetic expressions: only +, -, *, /, **,
 unary +/-, numeric constants, and bare names are allowed. Everything else
 (calls, attributes, subscripts, comprehensions) is rejected before eval.
 """
+
 import ast
 from typing import Dict, Set
 
 import numpy as np
 
 ALLOWED_NODES = (
-    ast.Expression, ast.BinOp, ast.Name, ast.Constant,
-    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow,
-    ast.UnaryOp, ast.USub, ast.UAdd,
+    ast.Expression,
+    ast.BinOp,
+    ast.Name,
+    ast.Constant,
+    ast.Add,
+    ast.Sub,
+    ast.Mult,
+    ast.Div,
+    ast.Pow,
+    ast.UnaryOp,
+    ast.USub,
+    ast.UAdd,
     ast.Load,  # context node on Name nodes
 )
 

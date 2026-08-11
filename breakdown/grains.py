@@ -91,9 +91,7 @@ def floor_period(
     """
     _check_grain(grain)
     if isinstance(ts, pd.Series):
-        return pd.Series(
-            floor_period(pd.DatetimeIndex(ts), grain), index=ts.index, name=ts.name
-        )
+        return pd.Series(floor_period(pd.DatetimeIndex(ts), grain), index=ts.index, name=ts.name)
     scalar = not isinstance(ts, (pd.DatetimeIndex, np.ndarray, list, tuple))
     idx = pd.DatetimeIndex([ts] if scalar else ts).normalize()
     if grain == "day":
@@ -153,8 +151,8 @@ class SnappedWindow:
     """The whole `grain` periods fully inside a requested [start, end] window."""
 
     first_start: pd.Timestamp  # start of the first whole period
-    last_start: pd.Timestamp   # start of the last whole period
-    last_end: pd.Timestamp     # inclusive end date of the last whole period
+    last_start: pd.Timestamp  # start of the last whole period
+    last_end: pd.Timestamp  # inclusive end date of the last whole period
     n_periods: int
 
 
@@ -267,9 +265,7 @@ class GrainedData:
         a week, the month's last day for a month). None if unknown."""
         if metric not in self.last_observed:
             return None
-        return next_start(self.last_observed[metric], self.grain_of[metric]) - pd.Timedelta(
-            days=1
-        )
+        return next_start(self.last_observed[metric], self.grain_of[metric]) - pd.Timedelta(days=1)
 
     def frame(self, grain: str) -> pd.DataFrame:
         _check_grain(grain)
@@ -286,9 +282,7 @@ class GrainedData:
         out = self.frames[native][["date", metric]]
         if grain is None or grain == native:
             return out.copy()
-        ser = pd.Series(
-            out[metric].to_numpy(), index=pd.DatetimeIndex(out["date"]), name=metric
-        )
+        ser = pd.Series(out[metric].to_numpy(), index=pd.DatetimeIndex(out["date"]), name=metric)
         up = resample_up(ser, native, grain, self.kind_of[metric], label=f"'{metric}'")
         return pd.DataFrame({"date": up.index, metric: up.to_numpy()})
 
@@ -334,9 +328,7 @@ class GrainedData:
         )
 
 
-def _check_contiguous(
-    frame: pd.DataFrame, grain: str, names: list, widest: int
-) -> None:
+def _check_contiguous(frame: pd.DataFrame, grain: str, names: list, widest: int) -> None:
     """A grain frame must be a gap-free run of periods.
 
     Everything downstream indexes by position: the model's `t = arange(len(y))`
@@ -356,7 +348,11 @@ def _check_contiguous(
         logger.warning(
             "Inner join at grain '%s' dropped %d period(s) present in only some "
             "of %s; the shared frame runs [%s, %s].",
-            grain, dropped, names, dates.min().date(), dates.max().date(),
+            grain,
+            dropped,
+            names,
+            dates.min().date(),
+            dates.max().date(),
         )
 
     expected = pd.date_range(dates.min(), dates.max(), freq=_FREQ[grain])
@@ -385,9 +381,7 @@ def build_grained(
     inner-joining within each grain only. Each metric's `last_observed` is
     captured from its own frame BEFORE the join, so freshness survives even
     when a less-fresh sibling trims the shared grain frame."""
-    last_observed = {
-        m: pd.to_datetime(df["date"]).max() for m, df in per_metric.items() if len(df)
-    }
+    last_observed = {m: pd.to_datetime(df["date"]).max() for m, df in per_metric.items() if len(df)}
     frames: Dict[str, pd.DataFrame] = {}
     for grain in GRAINS:
         names = [m for m, g in grain_of.items() if g == grain]
@@ -404,9 +398,7 @@ def build_grained(
                 f"No overlapping periods across metrics at grain '{grain}': "
                 f"{names}. Check each metric's date coverage."
             )
-        frame = (
-            joined.rename_axis("date").reset_index().sort_values("date").reset_index(drop=True)
-        )
+        frame = joined.rename_axis("date").reset_index().sort_values("date").reset_index(drop=True)
         _check_contiguous(frame, grain, names, max(len(per_metric[m]) for m in names))
         frames[grain] = frame
     return GrainedData(

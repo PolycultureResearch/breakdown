@@ -20,6 +20,7 @@ from breakdown.data_fetch import (
     MockDataFetcher,
     SliceNotSupported,
     WarehouseDataFetcher,
+    provider_query_name,
 )
 from breakdown.engine.model import fit_metric, summarize_trace, warm_inference_imports
 from breakdown.engine.rca import run_rca, shapley_attribution
@@ -47,6 +48,19 @@ def _build_fetcher(provider_cfg, dag, metrics=None):
             environment_id=provider_cfg.environment_id,
             host=provider_cfg.host,
             token=provider_cfg.token,
+        )
+    if provider_cfg.type == "dbt":
+        # Bindings come from the project's semantic manifest; a node's own
+        # `bind:` block overrides it, so a tree can correct what dbt declares
+        # without editing the dbt project.
+        from breakdown.dbt_provider import fetcher_from_project
+
+        overrides = {m.source.split(".")[-1]: m.bind for m in (metrics or []) if m.bind}
+        return fetcher_from_project(
+            provider_cfg.project_path,
+            target=provider_cfg.target,
+            profiles_dir=provider_cfg.profiles_dir,
+            overrides=overrides,
         )
     if provider_cfg.type == "warehouse":
         metric_sql = {m.name: m.sql for m in (metrics or []) if m.sql}
@@ -101,13 +115,7 @@ def _fetch_all_metrics(parser, fetcher, provider_type, start_date, end_date) -> 
     grain_of: Dict[str, str] = {}
     kind_of: Dict[str, str] = {}
     for metric in parser.config.metrics:
-        # local/cloud providers query the semantic layer by the last segment
-        # of `source`; mock and warehouse providers key off the tree name
-        # directly (warehouse resolves it to per-metric SQL).
-        if provider_type in ("mock", "warehouse"):
-            query_name = metric.name
-        else:
-            query_name = metric.source.split(".")[-1]
+        query_name = provider_query_name(provider_type, metric)
         df = fetcher.fetch_metric(
             query_name, start_date, end_date, grain=metric.grain, kind=metric.kind
         )
@@ -186,7 +194,9 @@ class _McpMount:
 
             security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
         self.asgi = mcp.streamable_http_app(
-            streamable_http_path="/", stateless_http=True, json_response=True,
+            streamable_http_path="/",
+            stateless_http=True,
+            json_response=True,
             transport_security=security,
         )
 
@@ -238,7 +248,8 @@ async def lifespan(app: FastAPI):
             logger.info(
                 "breakdown API started (cold start): tree=%s metrics=%d — "
                 "no data provider, serving what-if over declared beliefs",
-                tree_path, len(parser.config.metrics),
+                tree_path,
+                len(parser.config.metrics),
             )
         else:
             start_date = _validate_date(
@@ -248,9 +259,7 @@ async def lifespan(app: FastAPI):
                 os.environ.get("BREAKDOWN_END_DATE", DEFAULT_END_DATE), "end date"
             )
             if end_date < start_date:
-                raise RuntimeError(
-                    f"end date '{end_date}' is before start date '{start_date}'"
-                )
+                raise RuntimeError(f"end date '{end_date}' is before start date '{start_date}'")
 
             fetcher = _build_fetcher(provider_cfg, parser.dag, parser.config.metrics)
             fetcher = _wrap_snapshots(
@@ -264,7 +273,10 @@ async def lifespan(app: FastAPI):
 
             logger.info(
                 "breakdown API started: tree=%s provider=%s window=[%s, %s] rows=%s",
-                tree_path, provider_cfg.type, start_date, end_date,
+                tree_path,
+                provider_cfg.type,
+                start_date,
+                end_date,
                 ", ".join(f"{g}:{len(f)}" for g, f in data.frames.items()),
             )
     except Exception as e:
@@ -272,7 +284,9 @@ async def lifespan(app: FastAPI):
         logger.error(
             "Startup data load failed for tree=%s; serving degraded. "
             "Run `breakdown doctor --tree %s` to diagnose. %s",
-            tree_path, tree_path, e,
+            tree_path,
+            tree_path,
+            e,
         )
     # PyMC/ArviZ/PyTensor are deferred out of `engine.model`'s module scope so
     # the port binds without paying for them (~27s on a shared-CPU VM, which is
@@ -281,9 +295,7 @@ async def lifespan(app: FastAPI):
     # daemon thread, started after the data load, importing while the operator
     # is still looking at the page. `fit_metric` re-imports from `sys.modules`
     # either way, so a slow or failed warm-up costs correctness nothing.
-    threading.Thread(
-        target=warm_inference_imports, name="warm-inference", daemon=True
-    ).start()
+    threading.Thread(target=warm_inference_imports, name="warm-inference", daemon=True).start()
 
     # The MCP sub-app's own lifespan never runs under a Starlette mount, so
     # its session manager must be driven from here.
@@ -412,8 +424,7 @@ async def get_dag(request: Request):
     parser = request.app.state.parser
     return {
         "nodes": [
-            [name, attrs["definition"].model_dump()]
-            for name, attrs in parser.dag.nodes(data=True)
+            [name, attrs["definition"].model_dump()] for name, attrs in parser.dag.nodes(data=True)
         ],
         "edges": [list(e) for e in parser.dag.edges()],
     }
@@ -505,13 +516,21 @@ async def analyze_metric(
         try:
             datetime.date.fromisoformat(fit_end)
         except ValueError:
-            raise HTTPException(status_code=422, detail=f"fit_end must be YYYY-MM-DD, got '{fit_end}'")
+            raise HTTPException(
+                status_code=422, detail=f"fit_end must be YYYY-MM-DD, got '{fit_end}'"
+            )
 
     async with request.app.state.lock:
         fit = await asyncio.to_thread(
-            fit_metric, parser.dag, data, name,
-            draws=draws, tune=tune, inference_method=inference_method,
-            chains=chains, fit_end=fit_end,
+            fit_metric,
+            parser.dag,
+            data,
+            name,
+            draws=draws,
+            tune=tune,
+            inference_method=inference_method,
+            chains=chains,
+            fit_end=fit_end,
         )
         request.app.state.traces[(name, fit_end)] = fit
 
@@ -541,7 +560,9 @@ async def get_shapley(
 
     try:
         result = shapley_attribution(
-            parser.dag, data, name,
+            parser.dag,
+            data,
+            name,
             reference_start=reference_start,
             reference_end=reference_end,
             analysis_start=analysis_start,
@@ -573,9 +594,15 @@ async def root_cause_analysis(
         # run_rca adds any traces it fits on demand to app.state.traces itself.
         try:
             result = await asyncio.to_thread(
-                run_rca, parser.dag, data, request.app.state.traces, name,
-                reference_start, reference_end,
-                analysis_start, analysis_end,
+                run_rca,
+                parser.dag,
+                data,
+                request.app.state.traces,
+                name,
+                reference_start,
+                reference_end,
+                analysis_start,
+                analysis_end,
             )
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
@@ -591,22 +618,29 @@ def _fetch_sliced_cached(state, parser, metric, dimension_source, start, end) ->
     if cached is not None:
         return cached
     provider_type = parser.config.provider.type
-    query_name = (
-        metric.name
-        if provider_type in ("mock", "warehouse")
-        else metric.source.split(".")[-1]
-    )
+    query_name = provider_query_name(provider_type, metric)
     df = state.fetcher.fetch_metric_sliced(
-        query_name, dimension_source, start, end,
-        grain=metric.grain, kind=metric.kind,
+        query_name,
+        dimension_source,
+        start,
+        end,
+        grain=metric.grain,
+        kind=metric.kind,
     )
     state.slice_cache[key] = df
     return df
 
 
 def _run_slice(
-    state, parser, data, defn, dimension,
-    reference_start, reference_end, analysis_start, analysis_end,
+    state,
+    parser,
+    data,
+    defn,
+    dimension,
+    reference_start,
+    reference_end,
+    analysis_start,
+    analysis_end,
 ):
     """Fetch the sliced frames (and the weight's, for a rate) and attribute.
     Sync — called via asyncio.to_thread under the app lock. The engine stays
@@ -628,8 +662,14 @@ def _run_slice(
             state, parser, weight_defn, spec.source, span_start, span_end
         )
     return slice_attribution(
-        defn, dimension, sliced, data.series(defn.name),
-        reference_start, reference_end, analysis_start, analysis_end,
+        defn,
+        dimension,
+        sliced,
+        data.series(defn.name),
+        reference_start,
+        reference_end,
+        analysis_start,
+        analysis_end,
         weight_sliced=weight_sliced,
     )
 
@@ -664,8 +704,10 @@ async def slice_metric_gap(
             f"(declared: {sorted(defn.dimensions) or 'none'}).",
         )
     for label, value in [
-        ("reference_start", reference_start), ("reference_end", reference_end),
-        ("analysis_start", analysis_start), ("analysis_end", analysis_end),
+        ("reference_start", reference_start),
+        ("reference_end", reference_end),
+        ("analysis_start", analysis_start),
+        ("analysis_end", analysis_end),
     ]:
         try:
             datetime.date.fromisoformat(value)
@@ -677,8 +719,16 @@ async def slice_metric_gap(
     async with request.app.state.lock:
         try:
             result = await asyncio.to_thread(
-                _run_slice, request.app.state, parser, data, defn, dimension,
-                reference_start, reference_end, analysis_start, analysis_end,
+                _run_slice,
+                request.app.state,
+                parser,
+                data,
+                defn,
+                dimension,
+                reference_start,
+                reference_end,
+                analysis_start,
+                analysis_end,
             )
         except SliceNotSupported as e:
             raise HTTPException(status_code=422, detail=str(e))
@@ -700,7 +750,11 @@ async def simulate(scenario: ScenarioRequest, request: Request):
         # run_scenario adds any traces it fits on demand to app.state.traces.
         try:
             result = await asyncio.to_thread(
-                run_scenario, parser.dag, data, request.app.state.traces, scenario,
+                run_scenario,
+                parser.dag,
+                data,
+                request.app.state.traces,
+                scenario,
             )
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))

@@ -285,8 +285,16 @@ async def slice_metric(
 
     async with state.lock:
         result = await asyncio.to_thread(
-            _run_slice, state, state.parser, state.data, defn, dimension,
-            reference_start, reference_end, analysis_start, analysis_end,
+            _run_slice,
+            state,
+            state.parser,
+            state.data,
+            defn,
+            dimension,
+            reference_start,
+            reference_end,
+            analysis_start,
+            analysis_end,
         )
     out = round_floats(compact_slice(result))
     out["how_to_read"] = SLICE_HOW_TO_READ

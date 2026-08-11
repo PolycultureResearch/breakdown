@@ -93,8 +93,12 @@ def _expand_env(value: Optional[str]) -> Optional[str]:
 
 
 class DataProviderConfig(BaseModel):
-    type: str = "mock"  # "mock", "local", "cloud", "warehouse", "none" (alias "assumed")
+    type: str = "mock"  # mock | local | cloud | dbt | warehouse | none (alias "assumed")
     project_path: Optional[str] = None
+    # `dbt` provider: which profiles.yml target to use, and where to find it.
+    # Both default to what dbt itself would pick for the project.
+    target: Optional[str] = None
+    profiles_dir: Optional[str] = None
     environment_id: Optional[str] = None
     host: Optional[str] = None
     token: Optional[str] = None
@@ -118,12 +122,14 @@ class DataProviderConfig(BaseModel):
         # `assumed` is the same thing said from the tree author's seat.
         if v == "assumed":
             return "none"
-        if v not in ["mock", "local", "cloud", "warehouse", "none"]:
-            raise ValueError("type must be one of: mock, local, cloud, warehouse, none")
+        if v not in ["mock", "local", "cloud", "dbt", "warehouse", "none"]:
+            raise ValueError("type must be one of: mock, local, cloud, dbt, warehouse, none")
         return v
 
     @field_validator(
         "project_path",
+        "target",
+        "profiles_dir",
         "environment_id",
         "host",
         "token",

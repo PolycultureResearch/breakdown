@@ -72,7 +72,8 @@ def main(argv: list[str] | None = None) -> None:
     # well as the command, because `pip install metric-breakdown` and
     # `breakdown` read differently and issue reports need both.
     parser.add_argument(
-        "--version", action="version",
+        "--version",
+        action="version",
         version=f"breakdown {__version__} (metric-breakdown {__version__})",
     )
     subparsers = parser.add_subparsers(dest="command")
@@ -80,36 +81,49 @@ def main(argv: list[str] | None = None) -> None:
     serve_parser = subparsers.add_parser("serve", help="Start the API and UI server")
     serve_parser.add_argument("--port", type=int, default=9090, help="Port to run on")
     serve_parser.add_argument(
-        "--host", type=str, default="127.0.0.1",
+        "--host",
+        type=str,
+        default="127.0.0.1",
         help="Interface to bind (0.0.0.0 to accept outside connections, e.g. in a container)",
     )
     serve_parser.add_argument(
-        "--tree", type=str, default=None,
+        "--tree",
+        type=str,
+        default=None,
         help="Path to a metric tree YAML (default: the bundled jaffle_shop example)",
     )
     serve_parser.add_argument(
-        "--start-date", type=str, default=None,
+        "--start-date",
+        type=str,
+        default=None,
         help="Start of the data window, YYYY-MM-DD (default: 2024-01-01)",
     )
     serve_parser.add_argument(
-        "--end-date", type=str, default=None,
+        "--end-date",
+        type=str,
+        default=None,
         help="End of the data window, YYYY-MM-DD (default: 2024-04-09)",
     )
     serve_parser.add_argument(
-        "--reload", action="store_true",
+        "--reload",
+        action="store_true",
         help="Restart on code changes (development only)",
     )
     serve_parser.add_argument(
-        "--snapshot-dir", type=str, default=None,
+        "--snapshot-dir",
+        type=str,
+        default=None,
         help="Where to cache fetched series as parquet snapshots "
         "(default: .breakdown/snapshots next to the tree)",
     )
     serve_parser.add_argument(
-        "--no-snapshots", action="store_true",
+        "--no-snapshots",
+        action="store_true",
         help="Always fetch from the provider; never read or write snapshots",
     )
     serve_parser.add_argument(
-        "--refresh", action="store_true",
+        "--refresh",
+        action="store_true",
         help="Refetch every metric from the provider and overwrite its snapshot",
     )
 
@@ -118,11 +132,15 @@ def main(argv: list[str] | None = None) -> None:
     )
     doctor_parser.add_argument("--tree", type=str, required=True, help="Path to a metric tree YAML")
     doctor_parser.add_argument(
-        "--start-date", type=str, default=None,
+        "--start-date",
+        type=str,
+        default=None,
         help="Start of the probe window, YYYY-MM-DD (default: 7 days ago)",
     )
     doctor_parser.add_argument(
-        "--end-date", type=str, default=None,
+        "--end-date",
+        type=str,
+        default=None,
         help="End of the probe window, YYYY-MM-DD (default: today)",
     )
 
@@ -130,9 +148,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "serve":
         serve(
-            args.port, host=args.host, tree=args.tree,
-            start_date=args.start_date, end_date=args.end_date, reload=args.reload,
-            snapshot_dir=args.snapshot_dir, no_snapshots=args.no_snapshots,
+            args.port,
+            host=args.host,
+            tree=args.tree,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            reload=args.reload,
+            snapshot_dir=args.snapshot_dir,
+            no_snapshots=args.no_snapshots,
             refresh=args.refresh,
         )
     elif args.command == "doctor":
