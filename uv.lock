@@ -715,20 +715,19 @@ wheels = [
 
 [[package]]
 name = "dbt-metricflow"
-version = "0.10.1"
+version = "0.13.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
     { name = "dbt-core" },
-    { name = "dbt-semantic-interfaces" },
     { name = "halo" },
     { name = "jinja2" },
     { name = "metricflow" },
     { name = "update-checker" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c8/49/633cafd4df763f9acb34a1ab659763436aca8457f30e63b9b9fd85af74f2/dbt_metricflow-0.10.1.tar.gz", hash = "sha256:7c1843d1daf389915b0f1feef0a735d2f81617a0b4cca0a4419e187948557765", size = 29632, upload-time = "2025-09-18T22:48:20.679Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/c6/2946f29c6704645729b97dad82ba4d3f284b9891036dba4b4a3a780562e0/dbt_metricflow-0.13.0.tar.gz", hash = "sha256:c1b0bdc0ca2fc4fbb468d1c9f59c92fe41cadc9f40cb72f3d5a38789c6b2d5ed", size = 52530, upload-time = "2026-05-12T20:34:13.973Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a4/41/38c194f6c8faf601285ce9d7155f7268fef213de88b4bb8f0400d0bb02be/dbt_metricflow-0.10.1-py3-none-any.whl", hash = "sha256:9cdd364fe29cc6b7419a0a967952950cdf177f4f1ff2248db898e25e869955c5", size = 39309, upload-time = "2025-09-18T22:48:19.423Z" },
+    { url = "https://files.pythonhosted.org/packages/54/ae/fb6c0f362f73740318f0a2385eb4e3a4b62179f6c686f81ef82ee2970363/dbt_metricflow-0.13.0-py3-none-any.whl", hash = "sha256:26ffad20fd6a10f972b535143dae851136f84cb1d35a2f381aff502a6e88322f", size = 43754, upload-time = "2026-05-12T20:34:12.494Z" },
 ]
 
 [[package]]
@@ -933,15 +932,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/c4/16/7574029da84834349b60ed71614d66ca3afe46e9bf9c7b9562102acb7d4f/graphql_core-3.2.6.tar.gz", hash = "sha256:c08eec22f9e40f0bd61d805907e3b3b1b9a320bc606e23dc145eebca07c8fbab", size = 505353, upload-time = "2025-01-26T16:36:27.374Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ae/4f/7297663840621022bc73c22d7d9d80dbc78b4db6297f764b545cd5dd462d/graphql_core-3.2.6-py3-none-any.whl", hash = "sha256:78b016718c161a6fb20a7d97bbf107f331cd1afe53e45566c59f776ed7f0b45f", size = 203416, upload-time = "2025-01-26T16:36:24.868Z" },
-]
-
-[[package]]
-name = "graphviz"
-version = "0.20.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/fa/83/5a40d19b8347f017e417710907f824915fba411a9befd092e52746b63e9f/graphviz-0.20.3.zip", hash = "sha256:09d6bc81e6a9fa392e7ba52135a9d49f1ed62526f96499325930e87ca1b5925d", size = 256455, upload-time = "2024-03-21T07:50:45.772Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/00/be/d59db2d1d52697c6adc9eacaf50e8965b6345cc143f671e1ed068818d5cf/graphviz-0.20.3-py3-none-any.whl", hash = "sha256:81f848f2904515d8cd359cc611faba817598d2feaac4027b266aa3eda7b3dde5", size = 47126, upload-time = "2024-03-21T07:50:43.091Z" },
 ]
 
 [[package]]
@@ -1624,6 +1614,8 @@ all = [
     { name = "databricks-sql-connector" },
     { name = "dbt-metricflow" },
     { name = "dbt-sl-sdk", extra = ["sync"] },
+    { name = "metricflow" },
+    { name = "sqlglot" },
 ]
 databricks = [
     { name = "databricks-sdk" },
@@ -1632,6 +1624,10 @@ databricks = [
 dbt = [
     { name = "dbt-metricflow" },
     { name = "dbt-sl-sdk", extra = ["sync"] },
+]
+dbt-bridge = [
+    { name = "metricflow" },
+    { name = "sqlglot" },
 ]
 
 [package.dev-dependencies]
@@ -1647,11 +1643,12 @@ requires-dist = [
     { name = "arviz", specifier = ">=0.22.0,<1.0.0" },
     { name = "databricks-sdk", marker = "extra == 'databricks'", specifier = ">=0.20.0" },
     { name = "databricks-sql-connector", marker = "extra == 'databricks'", specifier = ">=4.4.0" },
-    { name = "dbt-metricflow", marker = "extra == 'dbt'", specifier = ">=0.10.1" },
+    { name = "dbt-metricflow", marker = "extra == 'dbt'", specifier = ">=0.13.0" },
     { name = "dbt-sl-sdk", extras = ["sync"], marker = "extra == 'dbt'", specifier = ">=0.13.2" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "mcp", specifier = ">=2.0.0" },
-    { name = "metric-breakdown", extras = ["databricks", "dbt"], marker = "extra == 'all'" },
+    { name = "metric-breakdown", extras = ["databricks", "dbt", "dbt-bridge"], marker = "extra == 'all'" },
+    { name = "metricflow", marker = "extra == 'dbt-bridge'", specifier = ">=0.211.0" },
     { name = "networkx", specifier = ">=3.1" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "pandas", specifier = ">=2.1.0" },
@@ -1659,9 +1656,10 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.7.0" },
     { name = "pymc", specifier = ">=5.16.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "sqlglot", marker = "extra == 'dbt-bridge'", specifier = ">=20.0.0" },
     { name = "uvicorn", specifier = ">=0.27.0" },
 ]
-provides-extras = ["dbt", "databricks", "all"]
+provides-extras = ["dbt", "dbt-bridge", "databricks", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1673,22 +1671,25 @@ dev = [
 
 [[package]]
 name = "metricflow"
-version = "0.208.1"
+version = "0.211.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "dbt-semantic-interfaces" },
-    { name = "graphviz" },
+    { name = "importlib-metadata" },
     { name = "jinja2" },
+    { name = "jsonschema" },
     { name = "more-itertools" },
     { name = "pydantic" },
     { name = "python-dateutil" },
+    { name = "pyyaml" },
     { name = "rapidfuzz" },
+    { name = "referencing" },
+    { name = "sqlglot" },
     { name = "tabulate" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2e/11/dcc51bad76e66cd88e42b049266c8350f41836ad4c44d26d90ff60427f6e/metricflow-0.208.1.tar.gz", hash = "sha256:78bb8fd698c6b71e1cbb7a5639c7191ccf30747564ef70bcac9613701b5079ad", size = 723043, upload-time = "2025-09-18T22:21:46.852Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4d/1c/2303b109a1e02216615d5c01cccf61a12d133f326388b9c881d32d00d182/metricflow-0.211.0.tar.gz", hash = "sha256:e15d0c24647f4498fa0926e87c61dd23b15205c9577566bcf848460d58f48bec", size = 1549648, upload-time = "2026-05-11T21:53:51.895Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4e/90/591271dc732296348f1c633dce46d735872c6f2970d8e60f75831051339f/metricflow-0.208.1-py3-none-any.whl", hash = "sha256:234f78ba25fd9266665a824b1f55be959839fe0eeb0ab35de87ae9d2b8fd94ed", size = 999215, upload-time = "2025-09-18T22:21:45.127Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/b7/de51d5d04ac43aeecbfea7741bf29da84fd5a04995e25a2b85abaa6ee807/metricflow-0.211.0-py3-none-any.whl", hash = "sha256:9cb83ccaa0c47363482fcc5cb57944a3f1af17ca948d90805524161f4e03d600", size = 1914356, upload-time = "2026-05-11T21:53:49.225Z" },
 ]
 
 [[package]]
@@ -3169,6 +3170,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d3/91/bb331f0a43e04d950a710f402a0986a54147a35818df0e1658551c8d12e1/spinners-0.0.24.tar.gz", hash = "sha256:1eb6aeb4781d72ab42ed8a01dcf20f3002bf50740d7154d12fb8c9769bf9e27f", size = 5308, upload-time = "2020-02-19T21:42:32.326Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9f/8e/3310207a68118000ca27ac878b8386123628b335ecb3d4bec4743357f0d1/spinners-0.0.24-py3-none-any.whl", hash = "sha256:2fa30d0b72c9650ad12bbe031c9943b8d441e41b4f5602b0ec977a19f3290e98", size = 5499, upload-time = "2020-02-19T21:42:30.876Z" },
+]
+
+[[package]]
+name = "sqlglot"
+version = "30.16.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b5/42/97ae59ab9479f345f97db948792b41bdaf51c38589f994ab97014ffae2b9/sqlglot-30.16.0.tar.gz", hash = "sha256:26abd1ef583fbecde24931eb56a5df4a086ba50ba0b36738233da9da16ffea13", size = 5984853, upload-time = "2026-08-10T15:43:47.176Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c8/bc/c92985806306174ae08ca84576a62659e8a406d7f670d2b2bc1a96340f87/sqlglot-30.16.0-py3-none-any.whl", hash = "sha256:f14f119e87bb1397316ab2b3c1f12dddd3b098921185dc69935952111be91788", size = 737757, upload-time = "2026-08-10T15:43:45.331Z" },
 ]
 
 [[package]]
