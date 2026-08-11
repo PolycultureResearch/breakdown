@@ -112,7 +112,7 @@ revenue:
     agg: sum
     measure: amount
     dimensions:
-      region: {join: dim_customers, on: customer_id, column: region}
+      region: {join: dim_customers, key: customer_id, column: region}
 
 conversion_rate:
   bind:
@@ -132,7 +132,7 @@ conversion_rate:
 | `agg` | `sum` \| `count` \| `count_distinct` \| `ratio` \| `average` \| `last` |
 | `numerator` / `denominator` | **required** when `agg: ratio`, as separate measures |
 | `entity_key` | **required** when `agg: count_distinct` or semi-additive |
-| `dimensions` | declared slices, each with a many-to-one join path |
+| `dimensions` | declared slices, each with a many-to-one join path — `{join:, key:, column:}`. **`key`, not `on`:** PyYAML is YAML 1.1, where a bare `on:` parses as the boolean `True`, so an `on` field would silently drop the join key from every unquoted declaration |
 
 `kind` and `grain` stay where they already live, on the node — they are modeling
 facts, not fetch facts.
