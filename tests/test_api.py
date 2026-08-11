@@ -14,6 +14,7 @@ from breakdown.api.main import app
 def anyio_backend():
     return "asyncio"
 
+
 CUSTOM_TREE = """
 provider:
   type: mock
@@ -145,7 +146,9 @@ def test_rca_endpoint():
         resp = client.post("/rca/revenue", params=windows)
         assert resp.status_code == 200
         body = resp.json()
-        assert {"target", "reference_window", "analysis_window", "nodes", "ranked_causes"} <= set(body)
+        assert {"target", "reference_window", "analysis_window", "nodes", "ranked_causes"} <= set(
+            body
+        )
         assert body["target"] == "revenue"
         assert body["nodes"]["revenue"]["attribution_method"] == "shapley"
         assert body["nodes"]["order_count"]["attribution_method"] == "posterior"
@@ -167,12 +170,14 @@ def test_simulate_endpoint():
         "baseline_start": "2024-03-01",
         "baseline_end": "2024-04-09",
         "interventions": [{"metric": "daily_sessions", "mode": "pct", "value": 0.15}],
-        "assumptions": [{
-            "source": "discount_pct",
-            "target": "average_order_value",
-            "effect": {"kind": "relative", "low": -0.12, "high": -0.08},
-            "note": "10% blanket discount",
-        }],
+        "assumptions": [
+            {
+                "source": "discount_pct",
+                "target": "average_order_value",
+                "effect": {"kind": "relative", "low": -0.12, "high": -0.08},
+                "note": "10% blanket discount",
+            }
+        ],
         "levers": [{"name": "discount_pct", "value": 10, "unit": "%"}],
     }
     with TestClient(app) as client:
@@ -196,20 +201,37 @@ def test_simulate_validation_errors():
     with TestClient(app) as client:
         base = {"baseline_start": "2024-03-01", "baseline_end": "2024-04-09"}
         # unknown metric -> 422
-        resp = client.post("/simulate", json={**base, "interventions": [
-            {"metric": "nope", "mode": "set", "value": 1.0}]})
+        resp = client.post(
+            "/simulate",
+            json={**base, "interventions": [{"metric": "nope", "mode": "set", "value": 1.0}]},
+        )
         assert resp.status_code == 422
         # empty scenario -> 422
         assert client.post("/simulate", json=base).status_code == 422
         # inverted effect range -> 422 (pydantic)
-        resp = client.post("/simulate", json={**base, "assumptions": [{
-            "source": "x", "target": "revenue",
-            "effect": {"kind": "absolute", "low": 2.0, "high": 1.0}}]})
+        resp = client.post(
+            "/simulate",
+            json={
+                **base,
+                "assumptions": [
+                    {
+                        "source": "x",
+                        "target": "revenue",
+                        "effect": {"kind": "absolute", "low": 2.0, "high": 1.0},
+                    }
+                ],
+            },
+        )
         assert resp.status_code == 422
         # inverted baseline window -> 422
-        resp = client.post("/simulate", json={
-            "baseline_start": "2024-04-09", "baseline_end": "2024-03-01",
-            "interventions": [{"metric": "revenue", "mode": "set", "value": 1.0}]})
+        resp = client.post(
+            "/simulate",
+            json={
+                "baseline_start": "2024-04-09",
+                "baseline_end": "2024-03-01",
+                "interventions": [{"metric": "revenue", "mode": "set", "value": 1.0}],
+            },
+        )
         assert resp.status_code == 422
 
 
@@ -280,7 +302,12 @@ def test_degraded_startup_serves_instead_of_crashing(tmp_path, monkeypatch):
         assert "doctor" in resp.json()["detail"]
         for path in ("/meta", "/series", "/metrics/revenue"):
             assert client.get(path).status_code == 503
-        assert client.post("/rca/revenue?reference_start=2024-01-01&reference_end=2024-01-07&analysis_start=2024-01-08&analysis_end=2024-01-14").status_code == 503
+        assert (
+            client.post(
+                "/rca/revenue?reference_start=2024-01-01&reference_end=2024-01-07&analysis_start=2024-01-08&analysis_end=2024-01-14"
+            ).status_code
+            == 503
+        )
 
         assert client.get("/ui/").status_code == 200
         assert client.get("/").status_code == 200
@@ -333,7 +360,9 @@ def test_cold_start_boots_ok_not_degraded(cold_start_env):
         assert app.state.startup_error is None
         assert app.state.data is None
         assert client.get("/health").json() == {
-            "status": "ok", "provider": "none", "metrics": 4,
+            "status": "ok",
+            "provider": "none",
+            "metrics": 4,
         }
 
         meta = client.get("/meta").json()
@@ -352,8 +381,10 @@ def test_cold_start_guards_data_routes(cold_start_env):
     """Time-series endpoints are a stated impossibility on a dataless tree:
     422 pointing at /simulate, not a 500 or a degraded 503."""
     windows = {
-        "reference_start": "2024-01-01", "reference_end": "2024-01-31",
-        "analysis_start": "2024-02-01", "analysis_end": "2024-02-29",
+        "reference_start": "2024-01-01",
+        "reference_end": "2024-01-31",
+        "analysis_start": "2024-02-01",
+        "analysis_end": "2024-02-29",
     }
     with TestClient(app) as client:
         for resp in (
@@ -371,9 +402,12 @@ def test_cold_start_simulate(cold_start_env):
     """POST /simulate runs the cold-start engine: no baseline window, mode
     label, belief intervals; passing a window is rejected."""
     with TestClient(app) as client:
-        resp = client.post("/simulate", json={
-            "interventions": [{"metric": "sessions", "mode": "pct", "value": 0.10}],
-        })
+        resp = client.post(
+            "/simulate",
+            json={
+                "interventions": [{"metric": "sessions", "mode": "pct", "value": 0.10}],
+            },
+        )
         assert resp.status_code == 200
         body = resp.json()
         assert body["mode"] == "cold_start"
@@ -383,10 +417,14 @@ def test_cold_start_simulate(cold_start_env):
         assert body["nodes"]["revenue"]["status"] == "affected"
         assert body["nodes"]["revenue"]["delta"]["estimate"] > 0
 
-        resp = client.post("/simulate", json={
-            "baseline_start": "2024-01-01", "baseline_end": "2024-02-01",
-            "interventions": [{"metric": "sessions", "mode": "pct", "value": 0.10}],
-        })
+        resp = client.post(
+            "/simulate",
+            json={
+                "baseline_start": "2024-01-01",
+                "baseline_end": "2024-02-01",
+                "interventions": [{"metric": "sessions", "mode": "pct", "value": 0.10}],
+            },
+        )
         assert resp.status_code == 422
         assert "baseline" in resp.json()["detail"]
 
@@ -472,9 +510,7 @@ def test_slice_endpoint_rate_blend(sliced_env):
 
 def test_slice_endpoint_unknown_dimension_422(sliced_env):
     with TestClient(app) as client:
-        resp = client.post(
-            "/rca/signups/slices", params={**_SLICE_WINDOWS, "dimension": "geo"}
-        )
+        resp = client.post("/rca/signups/slices", params={**_SLICE_WINDOWS, "dimension": "geo"})
         assert resp.status_code == 422
         assert "declares no dimension 'geo'" in resp.json()["detail"]
 
@@ -499,9 +535,7 @@ def test_slice_endpoint_provider_without_slicing_422(sliced_env):
     from breakdown.data_fetch import WarehouseDataFetcher
 
     with TestClient(app) as client:
-        app.state.fetcher = WarehouseDataFetcher(
-            host="h", http_path="p", token="t", metric_sql={}
-        )
+        app.state.fetcher = WarehouseDataFetcher(host="h", http_path="p", token="t", metric_sql={})
         app.state.slice_cache.clear()
         resp = client.post("/rca/signups/slices", params=_SLICE_WINDOWS)
         assert resp.status_code == 422
@@ -595,6 +629,7 @@ def test_lifespan_warms_the_inference_stack_in_the_background():
 
 # --- C8: one process, several viewers -------------------------------------
 
+
 def test_meta_survives_concurrent_trace_mutation():
     """`/meta` used to iterate `app.state.traces` lazily while `run_rca`
     inserted into it from a worker thread — an intermittent 500 for one viewer
@@ -647,9 +682,7 @@ def test_a_cheap_refit_cannot_displace_a_better_cached_fit():
     class Fit:
         def __init__(self, method, draws):
             self.inference_method = method
-            self.trace = type(
-                "T", (), {"posterior": type("P", (), {"sizes": {"draw": draws}})()}
-            )()
+            self.trace = type("T", (), {"posterior": type("P", (), {"sizes": {"draw": draws}})()})()
 
     traces = {}
     good = Fit("nuts", 1000)

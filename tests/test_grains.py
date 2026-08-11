@@ -23,6 +23,7 @@ from breakdown.grains import (
 
 # --- ordering & nesting ---
 
+
 def test_grain_order():
     assert is_finer("day", "week") and is_finer("day", "month") and is_finer("week", "month")
     assert not is_finer("month", "day") and not is_finer("day", "day")
@@ -42,6 +43,7 @@ def test_unknown_grain_raises():
 
 # --- period math ---
 
+
 def test_floor_period():
     wed = pd.Timestamp("2024-01-31")  # a Wednesday
     assert floor_period(wed, "day") == wed
@@ -49,7 +51,8 @@ def test_floor_period():
     assert floor_period(wed, "month") == pd.Timestamp("2024-01-01")
     idx = pd.DatetimeIndex(["2024-01-31", "2024-02-01"])
     assert list(floor_period(idx, "month")) == [
-        pd.Timestamp("2024-01-01"), pd.Timestamp("2024-02-01"),
+        pd.Timestamp("2024-01-01"),
+        pd.Timestamp("2024-02-01"),
     ]
 
 
@@ -65,12 +68,14 @@ def test_steps_between():
     assert steps_between(pd.Timestamp("2024-01-11"), pd.Timestamp("2024-01-01"), "day") == 10
     assert steps_between(pd.Timestamp("2024-01-29"), pd.Timestamp("2024-01-01"), "week") == 4
     assert steps_between(pd.Timestamp("2025-02-01"), pd.Timestamp("2024-11-01"), "month") == 3
-    out = steps_between(pd.DatetimeIndex(["2024-01-08", "2024-01-15"]),
-                        pd.Timestamp("2024-01-01"), "week")
+    out = steps_between(
+        pd.DatetimeIndex(["2024-01-08", "2024-01-15"]), pd.Timestamp("2024-01-01"), "week"
+    )
     np.testing.assert_array_equal(out, [1, 2])
 
 
 # --- window snapping ---
+
 
 def test_snap_window_day_is_identity():
     s = snap_window("2024-01-03", "2024-01-10", "day")
@@ -108,6 +113,7 @@ def test_period_spine():
 
 
 # --- resample_up ---
+
 
 def _daily_series(start, n, values=None):
     idx = pd.date_range(start, periods=n, freq="D")
@@ -158,12 +164,15 @@ def test_resample_up_rejects_downward_and_non_nesting():
 
 # --- GrainedData ---
 
+
 def test_from_frame_is_all_day_flow():
-    df = pd.DataFrame({
-        "date": pd.date_range("2024-01-01", periods=10),
-        "a": np.arange(10.0),
-        "b": np.ones(10),
-    })
+    df = pd.DataFrame(
+        {
+            "date": pd.date_range("2024-01-01", periods=10),
+            "a": np.arange(10.0),
+            "b": np.ones(10),
+        }
+    )
     gd = ensure_grained(df)
     assert gd.grain_of == {"a": "day", "b": "day"}
     assert gd.kind_of == {"a": "flow", "b": "flow"}
@@ -173,8 +182,9 @@ def test_from_frame_is_all_day_flow():
 
 def test_build_grained_joins_within_grain_only():
     daily = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=31), "flow_a": np.ones(31)})
-    weekly = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=4, freq="W-MON"),
-                           "rate_w": np.full(4, 0.5)})
+    weekly = pd.DataFrame(
+        {"date": pd.date_range("2024-01-01", periods=4, freq="W-MON"), "rate_w": np.full(4, 0.5)}
+    )
     gd = build_grained(
         {"flow_a": daily, "rate_w": weekly},
         {"flow_a": "day", "rate_w": "week"},
@@ -208,20 +218,23 @@ def test_missing_dates_are_named_and_capped_at_ten():
     with pytest.raises(RuntimeError) as excinfo:
         build_grained({"a": daily}, {"a": "day"}, {"a": "flow"})
     message = str(excinfo.value)
-    assert "2024-01-06" in message          # the first missing date, named
-    assert "and 2 more" in message          # 12 missing, 10 shown
-    assert "2024-01-18" not in message      # the 11th+ are not spelled out
+    assert "2024-01-06" in message  # the first missing date, named
+    assert "and 2 more" in message  # 12 missing, 10 shown
+    assert "2024-01-18" not in message  # the 11th+ are not spelled out
 
 
 def test_contiguous_weekly_and_monthly_spines_are_accepted():
     """The check is grain-aware: consecutive Mondays are contiguous at week
     grain even though they are 7 days apart."""
-    weekly = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=8, freq="W-MON"),
-                           "w": np.ones(8)})
-    monthly = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=6, freq="MS"),
-                            "m": np.ones(6)})
+    weekly = pd.DataFrame(
+        {"date": pd.date_range("2024-01-01", periods=8, freq="W-MON"), "w": np.ones(8)}
+    )
+    monthly = pd.DataFrame(
+        {"date": pd.date_range("2024-01-01", periods=6, freq="MS"), "m": np.ones(6)}
+    )
     gd = build_grained(
-        {"w": weekly, "m": monthly}, {"w": "week", "m": "month"},
+        {"w": weekly, "m": monthly},
+        {"w": "week", "m": "month"},
         {"w": "flow", "m": "flow"},
     )
     assert len(gd.frame("week")) == 8
@@ -236,7 +249,8 @@ def test_inner_join_drop_is_logged(caplog):
 
     with caplog.at_level(logging.WARNING, logger="breakdown.grains"):
         gd = build_grained(
-            {"a": full, "b": short}, {"a": "day", "b": "day"},
+            {"a": full, "b": short},
+            {"a": "day", "b": "day"},
             {"a": "flow", "b": "flow"},
         )
 
@@ -254,8 +268,9 @@ def test_series_resamples_up_by_kind():
 def test_fit_frame_aligns_mixed_grains():
     # Weekly target over a daily flow parent: parent sums to whole weeks.
     daily = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=28), "starts": np.ones(28)})
-    weekly = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=4, freq="W-MON"),
-                           "conv": [3.0, 4.0, 5.0, 6.0]})
+    weekly = pd.DataFrame(
+        {"date": pd.date_range("2024-01-01", periods=4, freq="W-MON"), "conv": [3.0, 4.0, 5.0, 6.0]}
+    )
     gd = build_grained(
         {"starts": daily, "conv": weekly},
         {"starts": "day", "conv": "week"},
@@ -276,6 +291,7 @@ def test_grained_missing_grain_raises():
 
 # --- freshness (last_observed / data_through) ---
 
+
 def test_build_grained_captures_last_observed_before_join():
     """Freshness is per-metric from each provider frame, surviving the
     within-grain inner join that trims to the common tail."""
@@ -295,8 +311,9 @@ def test_build_grained_captures_last_observed_before_join():
 
 
 def test_data_through_is_period_end_for_coarse_grains():
-    weekly = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=3, freq="W-MON"),
-                           "w": np.ones(3)})
+    weekly = pd.DataFrame(
+        {"date": pd.date_range("2024-01-01", periods=3, freq="W-MON"), "w": np.ones(3)}
+    )
     gd = build_grained({"w": weekly}, {"w": "week"}, {"w": "flow"})
     # Last observed week starts Mon Jan 15 -> covered through Sun Jan 21.
     assert gd.last_observed["w"] == pd.Timestamp("2024-01-15")

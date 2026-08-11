@@ -41,9 +41,7 @@ def mixed_grain_data(n_weeks=20, seed=42):
     return build_grained(
         {
             "trial_starts": pd.DataFrame({"date": days, "trial_starts": starts}),
-            "trial_conversion_rate": pd.DataFrame(
-                {"date": weeks, "trial_conversion_rate": rate}
-            ),
+            "trial_conversion_rate": pd.DataFrame({"date": weeks, "trial_conversion_rate": rate}),
             "conversions": pd.DataFrame({"date": weeks, "conversions": conversions}),
         },
         {"trial_starts": "day", "trial_conversion_rate": "week", "conversions": "week"},
@@ -51,8 +49,8 @@ def mixed_grain_data(n_weeks=20, seed=42):
     )
 
 
-REF = ("2024-01-01", "2024-02-25")   # 8 whole weeks
-AN = ("2024-02-26", "2024-04-21")    # 8 whole weeks
+REF = ("2024-01-01", "2024-02-25")  # 8 whole weeks
+AN = ("2024-02-26", "2024-04-21")  # 8 whole weeks
 
 
 def test_mixed_grain_rca_end_to_end():
@@ -95,8 +93,14 @@ def test_window_shorter_than_grain_degrades_not_errors():
     data = mixed_grain_data()
 
     result = run_rca(
-        dag, data, {}, "conversions",
-        "2024-01-02", "2024-01-05", "2024-01-06", "2024-01-09",
+        dag,
+        data,
+        {},
+        "conversions",
+        "2024-01-02",
+        "2024-01-05",
+        "2024-01-06",
+        "2024-01-09",
     )
 
     node = result["nodes"]["conversions"]
@@ -115,8 +119,13 @@ def test_shapley_endpoint_errors_loudly_on_short_window():
 
     with pytest.raises(ValueError, match="contains no whole 'week' period"):
         shapley_attribution(
-            dag, data, "conversions",
-            "2024-01-02", "2024-01-05", "2024-01-06", "2024-01-09",
+            dag,
+            data,
+            "conversions",
+            "2024-01-02",
+            "2024-01-05",
+            "2024-01-06",
+            "2024-01-09",
         )
 
 
@@ -127,8 +136,14 @@ def test_single_period_window_suppresses_bootstrap_ci():
     data = mixed_grain_data()
 
     result = run_rca(
-        dag, data, {}, "conversions",
-        "2024-01-01", "2024-01-28", "2024-02-26", "2024-03-03",
+        dag,
+        data,
+        {},
+        "conversions",
+        "2024-01-01",
+        "2024-01-28",
+        "2024-02-26",
+        "2024-03-03",
     )
 
     node = result["nodes"]["conversions"]
@@ -176,8 +191,14 @@ def test_monthly_lag_shifts_whole_months_across_year_boundary():
     dag = Parser(MONTHLY_LAG_YAML).dag
 
     result = run_rca(
-        dag, data, {}, "signups",
-        "2024-01-01", "2024-06-30", "2024-11-01", "2025-01-31",
+        dag,
+        data,
+        {},
+        "signups",
+        "2024-01-01",
+        "2024-06-30",
+        "2024-11-01",
+        "2025-01-31",
         advi_draws=300,
     )
 
@@ -232,7 +253,8 @@ def test_simulate_scales_flow_delta_across_grains():
     dag = Parser(SIM_YAML).dag
 
     scenario = ScenarioRequest(
-        baseline_start="2024-06-03", baseline_end="2024-07-28",
+        baseline_start="2024-06-03",
+        baseline_end="2024-07-28",
         interventions=[{"metric": "daily_starts", "mode": "delta", "value": 10.0}],
     )
     result = run_scenario(dag, data, {}, scenario, advi_draws=300)
@@ -268,12 +290,14 @@ def cohort_frame(n=100, seed=11, step_day=60, step=40.0, rate=0.25, noise=0.0):
     starts[step_day:] += step
     lagged = np.concatenate([np.full(3, starts[0]), starts[:-3]])
     conversions = lagged * rate + (rng.normal(0, noise, n) if noise else 0.0)
-    return pd.DataFrame({
-        "date": dates,
-        "starts": starts,
-        "cohort_rate": np.full(n, rate),
-        "conversions": conversions,
-    })
+    return pd.DataFrame(
+        {
+            "date": dates,
+            "starts": starts,
+            "cohort_rate": np.full(n, rate),
+            "conversions": conversions,
+        }
+    )
 
 
 def test_lagged_identity_rca_recovers_lagged_change():

@@ -21,8 +21,11 @@ def handoff_env():
     import os
 
     names = (
-        "BREAKDOWN_TREE", "BREAKDOWN_START_DATE", "BREAKDOWN_END_DATE",
-        "BREAKDOWN_PORT", "BREAKDOWN_HOST",
+        "BREAKDOWN_TREE",
+        "BREAKDOWN_START_DATE",
+        "BREAKDOWN_END_DATE",
+        "BREAKDOWN_PORT",
+        "BREAKDOWN_HOST",
     )
     saved = {name: os.environ.get(name) for name in names}
     yield
@@ -43,10 +46,21 @@ def test_serve_passes_flags_and_env(tmp_path, monkeypatch, handoff_env):
     captured = {}
     monkeypatch.setattr(uvicorn, "run", lambda app, **kw: captured.update(kw, app=app))
 
-    cli.main([
-        "serve", "--host", "0.0.0.0", "--port", "1234", "--tree", str(tree),
-        "--start-date", "2024-01-01", "--end-date", "2024-02-01",
-    ])
+    cli.main(
+        [
+            "serve",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "1234",
+            "--tree",
+            str(tree),
+            "--start-date",
+            "2024-01-01",
+            "--end-date",
+            "2024-02-01",
+        ]
+    )
 
     assert captured["app"] == "breakdown.api.main:app"
     assert captured["host"] == "0.0.0.0"

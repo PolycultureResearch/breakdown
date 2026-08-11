@@ -479,9 +479,23 @@ class BindingSpec(BaseModel):
 
     @property
     def resolves_to_entity_grain(self) -> bool:
-        """Slices are expected to sum exactly, because each entity contributes
-        to exactly one of them per period."""
-        return self.entity_grain is not None
+        """A resolution actually runs, collapsing each entity to one slice per
+        period — so the slices are made to sum.
+
+        `resolve: error` is deliberately excluded. It *asserts* the data is
+        already single-valued rather than correcting it, and an assertion is
+        not a resolution: nothing in the query makes it true. Treating the two
+        alike claimed `additivity: exact` while serving the naive, possibly
+        overlapping query — a false label on exactly the number this feature
+        exists to make trustworthy.
+        """
+        return self.entity_grain is not None and self.entity_grain.resolve != "error"
+
+    @property
+    def asserts_entity_grain(self) -> bool:
+        """The author declared `resolve: error` — single-valuedness is claimed
+        but unverified at query time. `doctor` is what checks it."""
+        return self.entity_grain is not None and self.entity_grain.resolve == "error"
 
     @model_validator(mode="after")
     def check_dimension_names(self) -> "BindingSpec":

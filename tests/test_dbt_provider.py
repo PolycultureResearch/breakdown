@@ -557,3 +557,23 @@ def test_the_flow_query_is_recorded_for_provenance():
     f = _flow_fetcher()
     f.fetch_entity_flows("dau", "platform", *FLOW_WINDOWS)
     assert "FULL OUTER JOIN" in f.last_sql["dau::platform::flows"]
+
+
+def test_resolve_error_does_not_claim_exactness_it_has_not_earned(events):
+    # `resolve: error` asserts single-valuedness without making it true — the
+    # generated query is the naive one. Reporting `exact` put a false label on
+    # the number and stopped the overlap from being withheld; `unknown` is the
+    # honest answer at query time, and reconciliation still flags a real
+    # residual while `doctor` settles the assertion.
+    assert _dau_fetcher(events, "error").slice_additivity("dau", "status") == "unknown"
+    assert _dau_fetcher(events, "last").slice_additivity("dau", "status") == "exact"
+    assert _dau_fetcher(events).slice_additivity("dau", "status") == "overlapping"
+
+
+def test_resolve_error_serves_the_naive_query_consistently_with_its_label(events):
+    # The label and the query must agree: `error` does not resolve, so the
+    # slices are whatever the data says — here, overstating by the overlap.
+    f = _dau_fetcher(events, "error")
+    total = f.fetch_metric("dau", "2024-01-01", "2024-01-01")["dau"].sum()
+    sliced = f.fetch_metric_sliced("dau", "status", "2024-01-01", "2024-01-01")["value"].sum()
+    assert total == 2 and sliced == 3

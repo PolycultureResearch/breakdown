@@ -1,4 +1,5 @@
 """Synthetic datasets shared across test modules."""
+
 import numpy as np
 import pandas as pd
 
@@ -24,10 +25,12 @@ def generate_mock_data(n_days: int = 100, seed: int = 42) -> pd.DataFrame:
     # revenue = order_count * average_order_value + noise
     revenue = order_count * average_order_value + rng.normal(0, 100, n_days)
 
-    return pd.DataFrame({
-        "date": dates,
-        "daily_sessions": daily_sessions,
-        "order_count": order_count,
-        "average_order_value": average_order_value,
-        "revenue": revenue,
-    })
+    return pd.DataFrame(
+        {
+            "date": dates,
+            "daily_sessions": daily_sessions,
+            "order_count": order_count,
+            "average_order_value": average_order_value,
+            "revenue": revenue,
+        }
+    )

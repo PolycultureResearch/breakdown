@@ -138,6 +138,7 @@ def test_nan_column_raises():
 
 # --- Formula model tests ---
 
+
 def test_formula_node_samples_without_beta():
     """A formula node should fit a residual BSTS — no beta regressor needed."""
     parser = Parser(YAML_WITH_FORMULA)
@@ -150,6 +151,7 @@ def test_formula_node_samples_without_beta():
 
 
 # --- Shapley computation tests (pure function) ---
+
 
 def test_compute_shapley_multiplicative_sums_to_gap():
     """Shapley values for a product formula must sum to the total gap."""
@@ -206,13 +208,15 @@ def test_compute_shapley_vectorized_per_day():
 def test_compute_shapley_mismatched_lengths_raise():
     with pytest.raises(ValueError, match="length"):
         compute_shapley(
-            "a * b", ["a", "b"],
+            "a * b",
+            ["a", "b"],
             {"a": np.zeros(3), "b": np.zeros(2)},
             {"a": np.zeros(3), "b": np.zeros(3)},
         )
 
 
 # --- Seasonal window delta (pure helper, T5) ---
+
 
 def test_seasonal_window_delta_matches_numpy():
     """With known Fourier coefficients per sample, the helper must reproduce a
@@ -222,20 +226,20 @@ def test_seasonal_window_delta_matches_numpy():
     n_samples = 8
     a1 = np.linspace(0.5, 2.0, n_samples)  # sin h1 coefficient, varies per sample
     zeros = np.zeros(n_samples)
-    trace = az.from_dict(posterior={
-        "sin_weekly_h1": a1[None, :],   # (chain, draw)
-        "cos_weekly_h1": zeros[None, :],
-        "sin_weekly_h2": zeros[None, :],
-        "cos_weekly_h2": zeros[None, :],
-    })
+    trace = az.from_dict(
+        posterior={
+            "sin_weekly_h1": a1[None, :],  # (chain, draw)
+            "cos_weekly_h1": zeros[None, :],
+            "sin_weekly_h2": zeros[None, :],
+            "cos_weekly_h2": zeros[None, :],
+        }
+    )
     t_ref = np.arange(0, 14)
     t_an = np.arange(14, 24)
 
     delta = seasonal_window_delta(trace, [Seasonality(period=7, name="weekly")], t_ref, t_an)
 
-    expected = a1 * (
-        np.sin(2 * np.pi * t_an / 7).mean() - np.sin(2 * np.pi * t_ref / 7).mean()
-    )
+    expected = a1 * (np.sin(2 * np.pi * t_an / 7).mean() - np.sin(2 * np.pi * t_ref / 7).mean())
     assert delta.shape == (n_samples,)
     np.testing.assert_allclose(delta, expected, atol=1e-10)
 
@@ -251,6 +255,7 @@ def test_seasonal_window_delta_no_seasonality_is_zero():
 
 
 # --- Prior scaling tests ---
+
 
 def test_scale_prior_params_normal():
     scaled = scale_prior_params("Normal", {"mu": 0.1, "sigma": 0.02}, 2.0)
@@ -360,6 +365,7 @@ def test_unsupported_prior_distribution_in_engine_raises():
 
 # --- Lagged regressor tests ---
 
+
 def test_lagged_model_trims_rows():
     """A lag of 5 on a 50-row dataset should leave 45 aligned rows in the fit."""
     yaml_content = """
@@ -390,11 +396,13 @@ def test_lag_recovery_beta_raw():
     y[:lag] = 0.5 * x[0]
     y[lag:] = 0.5 * x[:-lag]
     y = y + rng.normal(0, 0.5, n)
-    data = pd.DataFrame({
-        "date": pd.date_range("2024-01-01", periods=n),
-        "x": x,
-        "y": y,
-    })
+    data = pd.DataFrame(
+        {
+            "date": pd.date_range("2024-01-01", periods=n),
+            "x": x,
+            "y": y,
+        }
+    )
 
     yaml_content = """
 metrics:
@@ -433,6 +441,7 @@ metrics:
 
 # --- Inference method tests ---
 
+
 def test_invalid_inference_method_raises():
     parser = Parser(SIMPLE_YAML)
     data = generate_mock_data(n_days=50)
@@ -446,13 +455,16 @@ def test_advi_inference_samples_posterior():
     parser = Parser(SIMPLE_YAML)
     data = generate_mock_data(n_days=50)
 
-    trace = fit_metric(parser.dag, data, "order_count", draws=200, tune=100, inference_method="advi").trace
+    trace = fit_metric(
+        parser.dag, data, "order_count", draws=200, tune=100, inference_method="advi"
+    ).trace
 
     assert trace is not None
     assert "trend" in trace.posterior
 
 
 # --- FitResult contract (T1) ---
+
 
 def test_fit_metric_returns_fit_result():
     """fit_metric returns a FitResult carrying the normalization constants and
@@ -493,6 +505,7 @@ metrics:
 
 # --- Pre-anomaly fit window (T2) ---
 
+
 def test_fit_end_excludes_anomaly_window():
     """Fitting only on rows before fit_end recovers the normal-regime coefficient,
     even when a driver outside the tree shifts y in the excluded window."""
@@ -526,11 +539,18 @@ def test_fit_end_too_few_rows_raises():
     parser = Parser(SIMPLE_YAML)
     data = generate_mock_data(n_days=50)
     with pytest.raises(ValueError, match="before fit_end"):
-        fit_metric(parser.dag, data, "order_count", draws=50, tune=50,
-                   fit_end=str(data["date"].iloc[8].date()))
+        fit_metric(
+            parser.dag,
+            data,
+            "order_count",
+            draws=50,
+            tune=50,
+            fit_end=str(data["date"].iloc[8].date()),
+        )
 
 
 # --- Trend specification (T3) ---
+
 
 def test_trend_sigma_config_widens_posterior():
     """A larger `trend.sigma` prior admits a larger sigma_trend posterior on the
@@ -564,7 +584,9 @@ metrics:
         Parser(wide_yaml).dag, data, "order_count", draws=200, tune=200, random_seed=42
     ).trace
 
-    assert float(wide.posterior["sigma_trend"].mean()) > float(default.posterior["sigma_trend"].mean())
+    assert float(wide.posterior["sigma_trend"].mean()) > float(
+        default.posterior["sigma_trend"].mean()
+    )
 
 
 def test_tight_trend_keeps_beta_identified():
@@ -574,11 +596,13 @@ def test_tight_trend_keeps_beta_identified():
     n = 120
     x = 100.0 + np.cumsum(rng.normal(0, 3.0, n))
     y = 0.5 * x + rng.normal(0, 1.0, n)
-    data = pd.DataFrame({
-        "date": pd.date_range("2024-01-01", periods=n),
-        "x": x,
-        "y": y,
-    })
+    data = pd.DataFrame(
+        {
+            "date": pd.date_range("2024-01-01", periods=n),
+            "x": x,
+            "y": y,
+        }
+    )
     yaml_content = """
 metrics:
   - name: x
@@ -599,6 +623,7 @@ metrics:
 
 
 # --- Convergence diagnostics (T8) ---
+
 
 def test_nuts_diagnostics_ok_on_well_behaved_data():
     """A NUTS fit of the (post-T3, non-centered) model on clean synthetic data
@@ -669,8 +694,7 @@ def test_fit_metric_weekly_node_with_daily_parent():
     parser = Parser(MIXED_GRAIN_YAML)
     data = _mixed_grain_data()
 
-    result = fit_metric(parser.dag, data, "weekly_total",
-                        draws=300, inference_method="advi")
+    result = fit_metric(parser.dag, data, "weekly_total", draws=300, inference_method="advi")
 
     assert result.grain == "week"
     assert len(result.dates) == 30
@@ -685,8 +709,9 @@ def test_fit_end_cuts_whole_periods():
     data = _mixed_grain_data()
 
     # 2024-07-25 is a Thursday: the week starting Mon 2024-07-22 must be cut.
-    result = fit_metric(parser.dag, data, "weekly_total",
-                        draws=200, inference_method="advi", fit_end="2024-07-25")
+    result = fit_metric(
+        parser.dag, data, "weekly_total", draws=200, inference_method="advi", fit_end="2024-07-25"
+    )
 
     assert result.dates.max() == pd.Timestamp("2024-07-15")
 
@@ -696,8 +721,14 @@ def test_fit_end_too_few_periods_message_is_grain_aware():
     data = _mixed_grain_data()
 
     with pytest.raises(ValueError, match="whole week periods before fit_end"):
-        fit_metric(parser.dag, data, "weekly_total",
-                   draws=100, inference_method="advi", fit_end="2024-02-15")
+        fit_metric(
+            parser.dag,
+            data,
+            "weekly_total",
+            draws=100,
+            inference_method="advi",
+            fit_end="2024-02-15",
+        )
 
 
 def test_unidentifiable_seasonality_warns_in_diagnostics():

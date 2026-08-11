@@ -481,3 +481,43 @@ def test_resolved_query_still_aliases_the_output_columns(dialect):
     )
     for col in ("date", "slice", "value"):
         assert f"`{col}`" in sql
+
+
+# --- window bounds are the one path that takes untrusted input --------------
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "2024-01-01' OR 1=1 --",
+        "2024-01-01; DROP TABLE orders",
+        "2024-01-01') UNION SELECT 1,2 --",
+        "nonsense",
+        "",
+    ],
+)
+def test_window_bounds_reject_anything_that_is_not_a_date(hostile):
+    # Window dates arrive from API requests — `POST /rca/{name}/slices` takes
+    # them from the client — and are interpolated into generated SQL. Every
+    # other interpolated value comes from the tree or the manifest, which the
+    # author controls; these do not.
+    #
+    # They are safe today because `pd.Timestamp(...).strftime()` cannot round
+    # trip anything that is not a date, but that safety is a *side effect* of
+    # normalising to period starts. This test states it as a requirement, so
+    # that "optimising" the bounds to pass strings straight through fails here
+    # instead of shipping an injection on the one untrusted path.
+    from breakdown.dbt_sql import _window_bounds
+
+    with pytest.raises(Exception):
+        _window_bounds(hostile, "2024-01-31")
+    with pytest.raises(Exception):
+        _window_bounds("2024-01-01", hostile)
+
+
+def test_window_bounds_normalise_to_bare_dates():
+    from breakdown.dbt_sql import _window_bounds
+
+    # Whatever a caller passes, what reaches the SQL is a plain YYYY-MM-DD.
+    start, end = _window_bounds("2024-01-01T13:45:00", "2024-01-31")
+    assert (start, end) == ("2024-01-01", "2024-02-01")

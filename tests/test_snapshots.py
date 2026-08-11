@@ -185,7 +185,9 @@ def test_sliced_span_serves_unseen_sub_windows(tmp_path):
     offline = SnapshotFetcher(ExplodingFetcher(), SnapshotStore(str(tmp_path)))
     df = offline.fetch_metric_sliced("m", "customer__region", "2024-01-20", "2024-01-22")
     assert list(df["date"].dt.strftime("%Y-%m-%d").unique()) == [
-        "2024-01-20", "2024-01-21", "2024-01-22"
+        "2024-01-20",
+        "2024-01-21",
+        "2024-01-22",
     ]
     assert set(df["slice"]) == {"a", "b"}
 

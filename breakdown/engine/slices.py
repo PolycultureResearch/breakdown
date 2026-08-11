@@ -170,6 +170,11 @@ _ABSENT = "__absent__"
 # verdict — see `entity_flows`.
 _LOW_RETENTION = 0.05
 
+# How many distinct slice-to-slice movements are returned. The tail of a
+# transition matrix is quadratic in slice count and mostly ones; the count that
+# was dropped is reported alongside so the cap is visible rather than implied.
+_MAX_MIGRATIONS = 10
+
 
 def entity_flows(transitions: pd.DataFrame) -> Dict[str, Any]:
     """Classify a two-window entity transition matrix into flows (3.8 §6).
@@ -255,6 +260,12 @@ def entity_flows(transitions: pd.DataFrame) -> Dict[str, Any]:
         (totals["retained"] + totals["migrated"]) / in_reference if in_reference else None
     )
     caveats: List[str] = []
+    if len(migrations) > _MAX_MIGRATIONS:
+        caveats.append(
+            f"Showing the {_MAX_MIGRATIONS} largest of {len(migrations)} distinct "
+            "slice-to-slice movements; the rest are omitted, and together they may "
+            "outweigh any single one shown."
+        )
     if retention_share is not None and retention_share < _LOW_RETENTION:
         caveats.append(
             f"Only {retention_share:.1%} of reference-window entities appear in the "
@@ -274,7 +285,13 @@ def entity_flows(transitions: pd.DataFrame) -> Dict[str, Any]:
         # consumer can see the reallocation is balanced, the same way
         # `mix_total` is published for rates.
         "migration_net": sum(r["migrated_in"] - r["migrated_out"] for r in rows),
-        "migrations": migrations[:10],
+        "migrations": migrations[:_MAX_MIGRATIONS],
+        # Named rather than implied. A truncated list that looks complete
+        # reads as "these are the movements", and the project's own rule is
+        # that a bounded view says what it dropped — otherwise a tail of small
+        # movements that together outweigh the top one is invisible.
+        "migrations_total": len(migrations),
+        "migrations_truncated": max(0, len(migrations) - _MAX_MIGRATIONS),
         "reconciles_to_gap": False,
     }
 

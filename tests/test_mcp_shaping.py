@@ -344,7 +344,8 @@ def test_compact_slice():
     emea = next(s for s in out["slices"] if s["value"] == "emea")
     assert emea["noise_level"] is False
     assert out["reconciliation"] == {
-        "status": "ok", "residual_share_of_baseline": 0.0001,
+        "status": "ok",
+        "residual_share_of_baseline": 0.0001,
     }
 
 
