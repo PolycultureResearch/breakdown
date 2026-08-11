@@ -5,6 +5,7 @@ The engine tests build long-format frames directly with seeded generators;
 the closed forms make additivity and zero-sum-excess *exact* claims (up to
 float tolerance), not statistical ones.
 """
+
 import json
 
 import numpy as np
@@ -15,8 +16,8 @@ from breakdown.data_fetch import MockDataFetcher, SliceNotSupported, WarehouseDa
 from breakdown.engine.slices import slice_attribution
 from breakdown.parser import MetricDefinition, Parser
 
-REF = ("2026-01-05", "2026-02-01")   # 4 whole weeks of days
-AN = ("2026-02-02", "2026-02-08")    # 1 whole week
+REF = ("2026-01-05", "2026-02-01")  # 4 whole weeks of days
+AN = ("2026-02-02", "2026-02-08")  # 1 whole week
 
 
 def _dates(start, end):
@@ -122,8 +123,12 @@ def test_two_slice_ranking_is_not_a_coin_flip(delta):
     rose beyond its share; for a fall, the one that fell beyond it."""
     frames, dates = _two_slices(boost=("professional", delta))
     result = slice_attribution(
-        _two_slice_defn(), "plan", _long(frames),
-        _unsliced(frames, dates, name="churned_mrr"), *REF, *AN,
+        _two_slice_defn(),
+        "plan",
+        _long(frames),
+        _unsliced(frames, dates, name="churned_mrr"),
+        *REF,
+        *AN,
     )
     excesses = [r["excess"] for r in result["slices"]]
     assert abs(excesses[0]) == pytest.approx(abs(excesses[1]), rel=1e-9)  # the tie is real
@@ -137,9 +142,7 @@ def test_null_restraint_uniform_change():
     excess is small relative to the gap."""
     frames, dates = _flow_slices()
     an_mask = (dates >= pd.Timestamp(AN[0])) & (dates <= pd.Timestamp(AN[1]))
-    scaled = {
-        name: s * (1.0 - 0.2 * an_mask.astype(float)) for name, s in frames.items()
-    }
+    scaled = {name: s * (1.0 - 0.2 * an_mask.astype(float)) for name, s in frames.items()}
     result = slice_attribution(
         _flow_defn(), "region", _long(scaled), _unsliced(scaled, dates), *REF, *AN
     )
@@ -170,9 +173,7 @@ def test_reconciliation_flags_nonadditive_dimension():
     frames, dates = _flow_slices()
     inflated = _unsliced(frames, dates)
     inflated["signups"] *= 1.05  # slices now sum to ~95% of the metric
-    result = slice_attribution(
-        _flow_defn(), "region", _long(frames), inflated, *REF, *AN
-    )
+    result = slice_attribution(_flow_defn(), "region", _long(frames), inflated, *REF, *AN)
     assert result["reconciliation"]["status"] == "discrepant"
     assert any("partition" in c for c in result["caveats"])
 
@@ -180,8 +181,12 @@ def test_reconciliation_flags_nonadditive_dimension():
 def test_pinned_values_and_absent_pin_caveat():
     frames, dates = _flow_slices()
     result = slice_attribution(
-        _flow_defn(values=["emea", "nowhere"]), "region",
-        _long(frames), _unsliced(frames, dates), *REF, *AN,
+        _flow_defn(values=["emea", "nowhere"]),
+        "region",
+        _long(frames),
+        _unsliced(frames, dates),
+        *REF,
+        *AN,
     )
     kept = {r["value"] for r in result["slices"]}
     assert kept == {"emea", "__other__"}
@@ -204,9 +209,7 @@ def _rate_defn():
         name="conversion_rate",
         source="mock.conversion_rate",
         kind="rate",
-        dimensions={
-            "region": {"source": "customer__region", "weight": "trial_starts"}
-        },
+        dimensions={"region": {"source": "customer__region", "weight": "trial_starts"}},
     )
 
 
@@ -247,7 +250,12 @@ def _rate_inputs(shift_shares=False, new_slice=False, rate_drop=None):
 def test_rate_bennet_exactness_on_mix_shift():
     sliced, weight_sliced, unsliced = _rate_inputs(shift_shares=True)
     result = slice_attribution(
-        _rate_defn(), "region", sliced, unsliced, *REF, *AN,
+        _rate_defn(),
+        "region",
+        sliced,
+        unsliced,
+        *REF,
+        *AN,
         weight_sliced=weight_sliced,
     )
     assert result["attribution_method"] == "slice_blend"
@@ -263,7 +271,12 @@ def test_rate_bennet_exactness_on_mix_shift():
 def test_rate_within_localizes_a_rate_drop():
     sliced, weight_sliced, unsliced = _rate_inputs(rate_drop=("emea", 0.04))
     result = slice_attribution(
-        _rate_defn(), "region", sliced, unsliced, *REF, *AN,
+        _rate_defn(),
+        "region",
+        sliced,
+        unsliced,
+        *REF,
+        *AN,
         weight_sliced=weight_sliced,
     )
     top = result["slices"][0]
@@ -275,7 +288,12 @@ def test_rate_within_localizes_a_rate_drop():
 def test_rate_new_slice_contributes_through_mix():
     sliced, weight_sliced, unsliced = _rate_inputs(new_slice=True)
     result = slice_attribution(
-        _rate_defn(), "region", sliced, unsliced, *REF, *AN,
+        _rate_defn(),
+        "region",
+        sliced,
+        unsliced,
+        *REF,
+        *AN,
         weight_sliced=weight_sliced,
     )
     latam = next(r for r in result["slices"] if r["value"] == "latam")
@@ -295,9 +313,7 @@ def test_rate_requires_weight_frame():
 def test_unknown_dimension_raises():
     frames, dates = _flow_slices()
     with pytest.raises(ValueError, match="declares no dimension 'geo'"):
-        slice_attribution(
-            _flow_defn(), "geo", _long(frames), _unsliced(frames, dates), *REF, *AN
-        )
+        slice_attribution(_flow_defn(), "geo", _long(frames), _unsliced(frames, dates), *REF, *AN)
 
 
 # --- mock provider sliced fetch ---
@@ -325,9 +341,7 @@ def test_mock_slices_sum_to_series():
     parser = Parser(_TREE_YAML)
     fetcher = MockDataFetcher(dag=parser.dag)
     df = fetcher.fetch_metric("signups", "2026-01-01", "2026-03-01")
-    sliced = fetcher.fetch_metric_sliced(
-        "signups", "customer__region", "2026-01-01", "2026-03-01"
-    )
+    sliced = fetcher.fetch_metric_sliced("signups", "customer__region", "2026-01-01", "2026-03-01")
     summed = sliced.groupby("date")["value"].sum()
     base = df.set_index("date")["signups"]
     assert np.allclose(summed.reindex(base.index).to_numpy(), base.to_numpy())
@@ -339,9 +353,7 @@ def test_mock_sliced_subwindow_consistent_with_startup_fetch():
     parser = Parser(_TREE_YAML)
     fetcher = MockDataFetcher(dag=parser.dag)
     wide = fetcher.fetch_metric("signups", "2026-01-01", "2026-03-01")
-    sliced = fetcher.fetch_metric_sliced(
-        "signups", "customer__region", "2026-02-02", "2026-02-08"
-    )
+    sliced = fetcher.fetch_metric_sliced("signups", "customer__region", "2026-02-02", "2026-02-08")
     summed = sliced.groupby("date")["value"].sum()
     base = wide.set_index("date")["signups"].loc[summed.index]
     assert np.allclose(summed.to_numpy(), base.to_numpy())
@@ -352,7 +364,10 @@ def test_mock_rate_blend_reconciles_with_weight_slices():
     fetcher = MockDataFetcher(dag=parser.dag)
     fetcher.fetch_metric("conversion_rate", "2026-01-01", "2026-03-01")
     rate_sliced = fetcher.fetch_metric_sliced(
-        "conversion_rate", "customer__region", "2026-01-01", "2026-03-01",
+        "conversion_rate",
+        "customer__region",
+        "2026-01-01",
+        "2026-03-01",
         kind="rate",
     )
     weight_sliced = fetcher.fetch_metric_sliced(
@@ -378,9 +393,7 @@ def test_mock_slice_determinism():
 
 
 def test_warehouse_slicing_not_supported():
-    fetcher = WarehouseDataFetcher(
-        host="h", http_path="p", token="t", metric_sql={}
-    )
+    fetcher = WarehouseDataFetcher(host="h", http_path="p", token="t", metric_sql={})
     with pytest.raises(SliceNotSupported, match="does not support dimensional"):
         fetcher.fetch_metric_sliced("signups", "customer__region", "2026-01-01", "2026-02-01")
 
@@ -410,3 +423,126 @@ def test_excess_fields_drops_non_finite_replicates():
     mostly_nan = clean.copy()
     mostly_nan[:-20] = np.nan
     assert _excess_fields(mostly_nan, single_period=False)["ci_95"] is None
+
+
+# --- non-additive labelling (roadmap 3.8 §5) --------------------------------
+#
+# Overlap and "discrepant" wore one banner. Overlap is arithmetic, known from
+# the binding before any query runs; discrepant means an unexplained divergence
+# a user should investigate. Conflating them told people their pipeline was
+# broken when nothing was, and made the flag worthless for the real cases.
+
+
+def _overlapping_frames():
+    """A distinct count sliced by a multi-valued dimension: `u1` is on both
+    platforms every day, so the slices overstate the total by exactly 1."""
+    dates = pd.date_range("2024-01-01", periods=8, freq="D")
+    # ios halves in the second window, so there is a real gap to attribute
+    # rather than a degenerate zero (which would make every share None anyway
+    # and prove nothing about withholding them).
+    ios = [4.0] * 4 + [2.0] * 4
+    rows = []
+    for d, v in zip(dates, ios):
+        rows.append({"date": d, "slice": "ios", "value": v})
+        rows.append({"date": d, "slice": "web", "value": 1.0})
+    # One entity is on both platforms every day, so the metric counts it once
+    # while the slices count it twice: the slices exceed the total by exactly 1.
+    unsliced = pd.DataFrame({"date": dates, "dau": ios})
+    return pd.DataFrame(rows), unsliced
+
+
+def _defn(**over):
+    from breakdown.parser import MetricDefinition
+
+    base = dict(
+        name="dau",
+        source="w.dau",
+        grain="day",
+        kind="flow",
+        dimensions={"platform": "platform"},
+    )
+    base.update(over)
+    return MetricDefinition(**base)
+
+
+def _attribute(additivity):
+    sliced, unsliced = _overlapping_frames()
+    return slice_attribution(
+        _defn(),
+        "platform",
+        sliced,
+        unsliced,
+        "2024-01-01",
+        "2024-01-04",
+        "2024-01-05",
+        "2024-01-08",
+        additivity=additivity,
+    )
+
+
+def test_overlap_is_named_rather_than_flagged_discrepant():
+    r = _attribute("overlapping")
+    assert r["additivity"] == "overlapping"
+    assert r["overlap"]["mean"] == pytest.approx(1.0)  # u1, counted twice
+    assert r["overlap"]["share_of_baseline"] == pytest.approx(0.25)  # 1 of a 4.0 baseline
+    # The reconciliation flag must stop firing on arithmetic, or it stops
+    # being worth reading for the cases that are genuinely wrong.
+    assert r["reconciliation"]["status"] == "not_applicable"
+
+
+def test_the_overlap_caveat_says_what_it_is():
+    text = " ".join(_attribute("overlapping")["caveats"])
+    assert "share entities" in text
+    assert "rather than an unexplained cause" in text
+    assert "shares are withheld" in text
+
+
+def test_shares_of_the_gap_are_withheld_when_slices_do_not_sum():
+    # A share whose denominator does not reconcile is not a share.
+    r = _attribute("overlapping")
+    assert all(row["share_of_gap"] is None for row in r["slices"])
+    # Contributions themselves survive: they still rank the slices.
+    assert all(row["contribution"] is not None for row in r["slices"])
+
+
+def test_the_same_residual_is_still_discrepant_when_additivity_is_unknown():
+    # Identical numbers, no binding to ask -> behaves exactly as before, so
+    # this change cannot quietly suppress a real divergence.
+    r = _attribute("unknown")
+    assert r["reconciliation"]["status"] == "discrepant"
+    assert r["overlap"] is None
+    assert any("do not sum" in c for c in r.get("caveats", []))
+    assert all(row["share_of_gap"] is not None for row in r["slices"])
+
+
+def test_an_exact_metric_reconciles_and_keeps_its_shares():
+    dates = pd.date_range("2024-01-01", periods=8, freq="D")
+    sliced = pd.DataFrame(
+        [
+            {"date": d, "slice": g, "value": v}
+            for d in dates
+            for g, v in (("ios", 2.0), ("web", 1.0))
+        ]
+    )
+    unsliced = pd.DataFrame({"date": dates, "dau": [3.0] * 8})
+    r = slice_attribution(
+        _defn(),
+        "platform",
+        sliced,
+        unsliced,
+        "2024-01-01",
+        "2024-01-04",
+        "2024-01-05",
+        "2024-01-08",
+        additivity="exact",
+    )
+    assert r["additivity"] == "exact"
+    assert r["overlap"] is None
+    assert r["reconciliation"]["status"] == "ok"
+
+
+def test_the_response_shape_is_stable_across_paths():
+    # Both branches carry the fields, so a consumer never has to check which
+    # attribution method ran before reading them.
+    r = _attribute("unknown")
+    assert {"additivity", "overlap"} <= set(r)

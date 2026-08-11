@@ -149,6 +149,11 @@ class SnapshotFetcher(BaseDataFetcher):
     writes), forcing one clean refetch pass — the knob for "the warehouse
     backfilled, my snapshots are stale"."""
 
+    def slice_additivity(self, metric_name, dimension_source):
+        """Delegates: additivity is a property of the binding, not of whether
+        the series came from cache."""
+        return self.inner.slice_additivity(metric_name, dimension_source)
+
     def query_provenance(self, metric_name, dimension_source=None, **kw):
         """Delegates to the wrapped provider.
 

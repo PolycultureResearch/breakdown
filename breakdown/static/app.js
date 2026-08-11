@@ -1897,8 +1897,21 @@ function sliceResultHtml(metric) {
       ? `<p class="inline-status">mix shift total ${fmt(r.mix_total.estimate)} — how much of the move is
          traffic shifting between slices rather than any slice's own rate changing.</p>`
       : "";
+  // Two different facts wore one red banner. Overlap is arithmetic — an entity
+  // holding several values of this dimension inside a period is counted once in
+  // the metric and once per value — and is known from the binding before any
+  // query runs. `discrepant` means an *unexplained* divergence the user should
+  // go and investigate. Painting the first one red told people their pipeline
+  // was broken when nothing was, and made the flag worthless for the second.
+  const overlap =
+    r.additivity === "overlapping" && r.overlap
+      ? `<p class="inline-status">These slices share entities, so they overstate the
+         metric by ${fmt(r.overlap.mean)} on average
+         (${pct(r.overlap.share_of_baseline)} of baseline) — deduplication overlap,
+         not an unexplained cause. Contribution shares are withheld.</p>`
+      : "";
   const recon =
-    r.reconciliation && r.reconciliation.status !== "ok"
+    r.reconciliation && !["ok", "not_applicable"].includes(r.reconciliation.status)
       ? `<p class="inline-status error">Slices do not sum back to the metric
          (mean residual ${fmt(r.reconciliation.mean_residual)},
          ${pct(r.reconciliation.residual_share_of_baseline)} of baseline) — reported, not rescaled.</p>`
@@ -1915,7 +1928,7 @@ function sliceResultHtml(metric) {
     <table class="data-table slice-table">${head}${rows}</table>
     <p class="slice-windows">${esc(r.effective_windows.reference.start)} → ${esc(r.effective_windows.reference.end)}
       vs ${esc(r.effective_windows.analysis.start)} → ${esc(r.effective_windows.analysis.end)}${lagNote}</p>
-    ${mixNote}${degenerate}${caveats}${recon}`;
+    ${mixNote}${degenerate}${caveats}${overlap}${recon}`;
 }
 
 async function toggleSlice(metric, dimension) {

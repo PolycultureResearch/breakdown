@@ -822,6 +822,11 @@ def _run_slice(
         weight_sliced = _fetch_sliced_cached(
             state, parser, weight_defn, spec.source, span_start, span_end
         )
+    # Whether these slices are expected to sum comes from the binding, not from
+    # the residual they produce — see `BaseDataFetcher.slice_additivity`.
+    additivity = state.fetcher.slice_additivity(
+        provider_query_name(parser.config.provider.type, defn), spec.source
+    )
     return slice_attribution(
         defn,
         dimension,
@@ -832,6 +837,7 @@ def _run_slice(
         analysis_start,
         analysis_end,
         weight_sliced=weight_sliced,
+        additivity=additivity,
     )
 
 

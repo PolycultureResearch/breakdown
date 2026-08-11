@@ -287,6 +287,19 @@ class BaseDataFetcher(ABC):
             f"slicing (requested '{metric_name}' by '{dimension_source}')."
         )
 
+    def slice_additivity(self, metric_name: str, dimension_source: str) -> str:
+        """Whether this metric's slices along `dimension_source` are expected
+        to sum back to it: `exact`, `overlapping`, or `unknown`.
+
+        Answered from the binding, never from the observed residual — a
+        residual cannot distinguish deduplication overlap from a sliced query
+        that diverged from the governed definition or a stale snapshot, and
+        treating the two alike is what made the reconciliation flag unreadable.
+
+        `unknown` is the honest default for a provider with no binding to ask.
+        """
+        return "unknown"
+
     def query_provenance(
         self,
         metric_name: str,
