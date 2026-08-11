@@ -115,7 +115,12 @@ those are **extras** you opt into:
 | `mock`, or cold-start `none` | `pip install metric-breakdown` | — |
 | `local` (MetricFlow CLI) or `cloud` (dbt Cloud Semantic Layer) | `pip install 'metric-breakdown[dbt]'` | `dbt-metricflow`, `dbt-sl-sdk` |
 | `warehouse` (direct SQL) | `pip install 'metric-breakdown[databricks]'` | `databricks-sdk`, `databricks-sql-connector` |
-| all of them | `pip install 'metric-breakdown[all]'` | both of the above |
+| reading a dbt project's own metric definitions | `pip install 'metric-breakdown[dbt-bridge]'` | `metricflow`, `sqlglot` |
+| all of them | `pip install 'metric-breakdown[all]'` | all of the above |
+
+`dbt-bridge` is deliberately not part of `dbt`: reading the semantic manifest
+`dbt parse` already wrote needs neither dbt-core, a warehouse adapter, nor the
+`mf` binary — so it is much lighter, and unlike `dbt` it works on Python 3.14.
 
 This is not cosmetic: the extras are ~66 packages and ~120 MB that most installs
 never touch, and dbt-core in particular drags in a large tree of its own.

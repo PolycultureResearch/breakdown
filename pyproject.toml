@@ -77,14 +77,25 @@ dependencies = [
 # would make `pip install 'metric-breakdown[dbt]'` a silent no-op.
 [project.optional-dependencies]
 dbt = [
-    "dbt-metricflow>=0.10.1",
+    # >=0.13.0 pins metricflow==0.211.0. The floor is load-bearing rather than
+    # housekeeping: 0.10.1 pinned metricflow==0.208.1, which predates
+    # `metricflow_semantic_interfaces` and so cannot coexist with the
+    # `dbt-bridge` extra below.
+    "dbt-metricflow>=0.13.0",
     "dbt-sl-sdk[sync]>=0.13.2",
+]
+# Reading a dbt project's own semantic definitions. Deliberately NOT the `dbt`
+# extra: this path needs neither dbt-core, an adapter, nor the `mf` binary —
+# only the manifest `dbt parse` already wrote and a SQL generator.
+dbt-bridge = [
+    "metricflow>=0.211.0",
+    "sqlglot>=20.0.0",
 ]
 databricks = [
     "databricks-sdk>=0.20.0",
     "databricks-sql-connector>=4.4.0",
 ]
-all = ["metric-breakdown[databricks,dbt]"]
+all = ["metric-breakdown[databricks,dbt,dbt-bridge]"]
 
 [project.urls]
 Homepage = "https://github.com/PolycultureResearch/breakdown"

@@ -99,6 +99,11 @@ jobs:
                       host="h", http_path="p", token="t", metric_sql={}
                   )._connect(),
               ],
+              "dbt-bridge": [
+                  lambda: __import__(
+                      "breakdown.dbt_bridge", fromlist=["_require_msi"]
+                  )._require_msi(),
+              ],
           }
           for extra, builders in cases.items():
               for build in builders:
