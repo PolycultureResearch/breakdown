@@ -257,6 +257,17 @@ failure (the same too-late class as C12), and **grain claims** is the check no
 other semantic layer makes, since MetricFlow and Cube accept declared
 relationships on trust.
 
+`BaseDataFetcher.query_provenance(metric, dimension=None, *, grain, start_date,
+end_date)` is the 2.11 surface, served by `GET /metrics/{name}/query`. It takes
+the window because provenance must not depend on whether a fetch happened to run
+in *this* process: a snapshot hit serves the number without executing anything,
+and reporting "no query" there understates how defensible the number is, since
+the binding still determines it exactly. `warehouse` returns the author's own
+`sql`; `dbt` returns what ran, else generates for the loaded window and flags
+`executed: false`; `SnapshotFetcher` delegates. `None` is a legitimate answer —
+`mock` synthesizes and the semantic-layer providers never see SQL — so the
+endpoint returns the provider's reason rather than an error.
+
 **`provider_query_name`** (in `data_fetch.py`) replaced a ternary duplicated at
 three call sites — startup fetch, sliced fetch, and doctor's fit-readiness check
 — which had to be edited in all three to add a provider. Missing one shipped a

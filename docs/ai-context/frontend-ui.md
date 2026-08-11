@@ -139,3 +139,24 @@ The URL hash makes analyses shareable and the UI scriptable:
 - `#whatif=<URI-encoded scenario JSON>` — replays a what-if scenario on load in reader mode (results first, builder collapsed).
 
 The hash is kept in sync via `history.replaceState` as the user selects metrics or completes RCA / what-if runs.
+
+## Query provenance (roadmap 2.11)
+
+The Metric tab's **Source** row carries a `show query` toggle that fills a
+`.query-provenance` panel from `GET /metrics/{name}/query`. Wired by
+`wireQueryProvenance()` after each write to `#tab-metric`, since the tab is
+re-rendered rather than mutated.
+
+The panel is deliberately quiet — evidence a reader goes looking for, not
+chrome. Two states matter and both are shown:
+
+- **A query exists.** Header is `provider · dialect`, plus `· not executed`
+  when the series came from a snapshot. The note below the SQL says so in
+  words. Dropping it would let a reader assume the statement they are looking
+  at is the one that ran.
+- **No query exists.** The provider's own reason is shown instead of an error.
+  `mock` synthesizes; `local` and `cloud` hand a metric name to someone else's
+  planner and never see SQL. "We never see the query" and "no query is run" are
+  different facts about how much a reader can verify, so the API distinguishes
+  them and the UI repeats the distinction rather than flattening it to
+  "unavailable".

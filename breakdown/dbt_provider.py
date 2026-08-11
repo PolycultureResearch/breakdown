@@ -399,6 +399,51 @@ class DbtDataFetcher(BaseDataFetcher):
         df["value"] = df["value"].astype(float)
         return df.sort_values(["date", "slice"]).reset_index(drop=True)
 
+    def query_provenance(
+        self,
+        metric_name: str,
+        dimension_source: Optional[str] = None,
+        *,
+        grain: str = "day",
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> Optional[str]:
+        """The statement behind this series: what ran if anything did, else
+        what would run for the given window.
+
+        The executed statement is preferred — it is the one that produced the
+        number. But a snapshot hit serves the series without executing
+        anything, and answering "no query" there would understate how
+        defensible the number is: the binding still determines it exactly.
+        Generating for the loaded window closes that gap, and the caller
+        labels which of the two it got.
+        """
+        key = metric_name if dimension_source is None else f"{metric_name}::{dimension_source}"
+        ran = self.last_sql.get(key)
+        if ran is not None:
+            return ran
+        if start_date is None or end_date is None:
+            return None
+        bind = self.bindings.get(metric_name)
+        if bind is None or (dimension_source and dimension_source not in bind.dimensions):
+            return None
+        try:
+            return build_query(
+                bind,
+                grain=grain,
+                start_date=start_date,
+                end_date=end_date,
+                dialect=self.dialect,
+                dimension=dimension_source,
+            )
+        except Exception:
+            return None
+
+    def executed(self, metric_name: str, dimension_source: Optional[str] = None) -> bool:
+        """Whether the statement provenance reports actually ran this process."""
+        key = metric_name if dimension_source is None else f"{metric_name}::{dimension_source}"
+        return key in self.last_sql
+
     # -- the grain claim --
 
     def check_grain(self, metric_name: str) -> tuple[int, int]:

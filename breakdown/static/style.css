@@ -643,3 +643,36 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   border: 1px solid #fcd34d; border-radius: 4px;
 }
 #retry-banner button:hover { background: #fef3c7; }
+
+/* Query provenance (roadmap 2.11): the statement behind a number, on demand.
+   Deliberately quiet — it is evidence a reader goes looking for, not chrome. */
+.linkish {
+  background: none;
+  border: 0;
+  padding: 0 0 0 0.4rem;
+  font: inherit;
+  font-size: 0.85em;
+  color: var(--accent, #4f46e5);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.linkish:hover { opacity: 0.75; }
+.query-provenance { margin: 0.5rem 0 0.75rem; }
+.query-head {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted, #6b7280);
+  margin-bottom: 0.25rem;
+}
+.query-sql {
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  background: var(--surface-2, #f6f7f9);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  white-space: pre;
+}

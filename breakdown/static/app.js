@@ -42,6 +42,45 @@ function esc(s) {
   }[c]));
 }
 
+// Query provenance (roadmap 2.11). Principle 3 says never ship a number the
+// engine can't defend; for most providers a user could not see what was asked,
+// which made the number unfalsifiable by the person being asked to trust it.
+// `sql: null` is a real answer and gets shown as the provider's reason, not as
+// an error — "we never see the SQL" is different from "no query is run", and a
+// reader deciding how much to trust a figure needs to know which.
+function wireQueryProvenance(root) {
+  root.querySelectorAll("button[data-query]").forEach((btn) =>
+    btn.addEventListener("click", () => toggleQueryProvenance(btn))
+  );
+}
+
+async function toggleQueryProvenance(btn) {
+  const panel = btn.closest("table")?.parentElement?.querySelector(".query-provenance");
+  if (!panel) return;
+  if (!panel.hidden) { panel.hidden = true; btn.textContent = "show query"; return; }
+  btn.textContent = "hide query";
+  panel.hidden = false;
+  panel.innerHTML = '<p class="muted">Loading…</p>';
+  try {
+    const p = await api(`/metrics/${encodeURIComponent(btn.dataset.query)}/query`);
+    if (!p.sql) {
+      panel.innerHTML = `<p class="muted">${esc(p.note || "No query available.")}</p>`;
+      return;
+    }
+    // The note still matters when there IS SQL: it says whether this statement
+    // ran or is what the binding would produce for the loaded window (a
+    // snapshot hit serves the number without executing anything). Dropping it
+    // would let a reader assume the query they are looking at was the one.
+    panel.innerHTML =
+      `<div class="query-head">${esc(p.provider)}${p.dialect ? ` · ${esc(p.dialect)}` : ""}` +
+      `${p.executed === false ? " · not executed" : ""}</div>` +
+      `<pre class="query-sql"><code>${esc(p.sql)}</code></pre>` +
+      (p.note ? `<p class="muted">${esc(p.note)}</p>` : "");
+  } catch (e) {
+    panel.innerHTML = `<p class="muted">Could not load the query: ${esc(e.message)}</p>`;
+  }
+}
+
 async function api(path, opts) {
   const resp = await fetch(path, opts);
   if (!resp.ok) {
@@ -1303,7 +1342,7 @@ function renderMetricTab(name, data) {
     </div>
     ${def.description ? `<p class="desc">${esc(def.description)}</p>` : ""}
     <table class="kv">
-      <tr><td>Source</td><td><code>${esc(def.source)}</code></td></tr>
+      <tr><td>Source</td><td><code>${esc(def.source)}</code> <button class="linkish" data-query="${esc(name)}">show query</button></td></tr>
       <tr><td>Grain</td><td><code>${esc(grain)}</code> · ${esc(def.kind || "flow")}</td></tr>
       ${state.meta.data_through && state.meta.data_through[name]
         ? `<tr><td>Data through</td><td>${esc(state.meta.data_through[name])}${
@@ -1326,7 +1365,8 @@ function renderMetricTab(name, data) {
             def.plausible.max != null ? `max ${fmt(def.plausible.max)}` : null,
           ].filter(Boolean).join(" · ")}</td></tr>`
         : ""}
-    </table>`;
+    </table>
+    <div class="query-provenance" hidden></div>`;
 
   if (coldStart()) {
     // No series, no posterior, no fitting — the declarations above ARE the
@@ -1342,6 +1382,7 @@ function renderMetricTab(name, data) {
         } Use the What-if tab to simulate over these beliefs.</p>
       </section>`;
     $("tab-metric").innerHTML = html;
+    wireQueryProvenance($("tab-metric"));
     return;
   }
 
@@ -1385,6 +1426,7 @@ function renderMetricTab(name, data) {
     </section>
   `;
   $("tab-metric").innerHTML = html;
+  wireQueryProvenance($("tab-metric"));
 
   renderTimeSeries(name, data.time_series);
   renderPosterior(name, data);
