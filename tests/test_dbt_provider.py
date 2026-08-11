@@ -412,3 +412,71 @@ def test_provider_query_name_is_one_function_not_three_ternaries():
     assert provider_query_name("warehouse", m) == "revenue"
     for sl in ("local", "cloud", "dbt"):
         assert provider_query_name(sl, m) == "rev_source"
+
+
+# --- entity-grain resolution end to end (roadmap 3.8 §4) --------------------
+
+
+EVENTS = """
+CREATE TABLE ev AS SELECT * FROM (VALUES
+    (1, 'u1', TIMESTAMP '2024-01-01 09:00', 'active'),
+    (2, 'u1', TIMESTAMP '2024-01-01 18:00', 'cancelled'),
+    (3, 'u2', TIMESTAMP '2024-01-01 10:00', 'active')
+) AS t(row_id, user_id, seen_at, status);
+"""
+
+
+def _dau_fetcher(con, resolve=None):
+    kw = dict(
+        relation="ev",
+        grain_key="row_id",
+        time_column="seen_at",
+        agg="count_distinct",
+        measure="user_id",
+        entity_key="user_id",
+        dimensions={"status": BindingDimension(column="status")},
+    )
+    if resolve is not None:
+        kw["entity_grain"] = {"resolve": resolve}
+    return DbtDataFetcher({"dau": BindingSpec(**kw)}, connect=lambda: con, dialect="duckdb")
+
+
+@pytest.fixture
+def events():
+    c = duckdb.connect()
+    c.execute(EVENTS)
+    return c
+
+
+def test_resolution_turns_overlapping_slices_into_exact_ones(events):
+    assert _dau_fetcher(events).slice_additivity("dau", "status") == "overlapping"
+    assert _dau_fetcher(events, "last").slice_additivity("dau", "status") == "exact"
+
+
+def test_resolved_slices_reconcile_with_the_unsliced_metric(events):
+    f = _dau_fetcher(events, "last")
+    total = f.fetch_metric("dau", "2024-01-01", "2024-01-01")["dau"].sum()
+    sliced = f.fetch_metric_sliced("dau", "status", "2024-01-01", "2024-01-01")["value"].sum()
+    assert total == sliced == 2  # u1 and u2, each counted once
+
+    naive = (
+        _dau_fetcher(events)
+        .fetch_metric_sliced("dau", "status", "2024-01-01", "2024-01-01")["value"]
+        .sum()
+    )
+    assert naive == 3  # the overstatement resolution removes
+
+
+def test_the_overlap_warning_stops_once_slices_are_exact(events, caplog):
+    with caplog.at_level("WARNING"):
+        _dau_fetcher(events, "last").fetch_metric_sliced(
+            "dau", "status", "2024-01-01", "2024-01-01"
+        )
+    assert "do not sum" not in caplog.text
+
+
+def test_provenance_shows_the_resolved_statement(events):
+    f = _dau_fetcher(events, "first")
+    f.fetch_metric_sliced("dau", "status", "2024-01-01", "2024-01-01")
+    sql = f.query_provenance("dau", "status")
+    assert "ROW_NUMBER" in sql and "ASC" in sql

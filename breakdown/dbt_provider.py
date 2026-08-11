@@ -31,7 +31,12 @@ from breakdown.data_fetch import (
     _to_naive_dates,
 )
 from breakdown.dbt_bridge import bridge_project
-from breakdown.dbt_sql import build_grain_assertion, build_query, dialect_for_adapter
+from breakdown.dbt_sql import (
+    build_grain_assertion,
+    build_query,
+    build_resolved_slice_query,
+    dialect_for_adapter,
+)
 from breakdown.parser import BindingSpec
 
 logger = logging.getLogger(__name__)
@@ -354,7 +359,7 @@ class DbtDataFetcher(BaseDataFetcher):
                 f"The binding for '{metric_name}' declares no dimension "
                 f"'{dimension_source}' (has {sorted(bind.dimensions) or 'none'})."
             )
-        if bind.is_non_additive:
+        if bind.is_non_additive and not bind.resolves_to_entity_grain:
             # Confirmed against a real warehouse: slicing `active_subscription_count`
             # by status over two weeks gave 2,106 against an unsliced 2,069. That
             # is not a defect — one subscription changing status inside a day is
@@ -372,14 +377,24 @@ class DbtDataFetcher(BaseDataFetcher):
                 metric_name,
                 bind.agg,
             )
-        sql = build_query(
-            bind,
-            grain=grain,
-            start_date=start_date,
-            end_date=end_date,
-            dialect=self.dialect,
-            dimension=dimension_source,
-        )
+        if bind.resolves_to_entity_grain:
+            sql = build_resolved_slice_query(
+                bind,
+                dimension=dimension_source,
+                grain=grain,
+                start_date=start_date,
+                end_date=end_date,
+                dialect=self.dialect,
+            )
+        else:
+            sql = build_query(
+                bind,
+                grain=grain,
+                start_date=start_date,
+                end_date=end_date,
+                dialect=self.dialect,
+                dimension=dimension_source,
+            )
         self.last_sql[f"{metric_name}::{dimension_source}"] = sql
         df = self._query(sql)
         missing = {"date", "slice", "value"} - set(df.columns)
@@ -412,7 +427,13 @@ class DbtDataFetcher(BaseDataFetcher):
         bind = self.bindings.get(metric_name)
         if bind is None or dimension_source not in bind.dimensions:
             return "unknown"
-        return "overlapping" if bind.is_non_additive else "exact"
+        if not bind.is_non_additive:
+            return "exact"
+        # Resolution collapses the relation to one row per (entity, period), so
+        # every entity lands in exactly one slice and the sum is the distinct
+        # entity count — which is the metric. Verified against DuckDB: the naive
+        # slices overstate by the overlap, the resolved ones match exactly.
+        return "exact" if bind.resolves_to_entity_grain else "overlapping"
 
     def query_provenance(
         self,

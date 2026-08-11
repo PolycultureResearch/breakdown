@@ -898,3 +898,89 @@ metrics:
 """
     )
     assert parser.get_metric("dau").bind is None
+
+
+# --- entity-grain resolution (roadmap 3.8 §4) -------------------------------
+
+
+def _dau_bind(extra=""):
+    return f"""
+metrics:
+  - name: dau
+    source: w.dau
+    bind:
+      relation: analytics.ev
+      grain_key: row_id
+      time_column: seen_at
+      agg: count_distinct
+      measure: user_id
+      entity_key: user_id
+{extra}"""
+
+
+def test_entity_grain_parses_and_defaults_its_relation():
+    tree = _dau_bind("      entity_grain: {resolve: last}\n")
+    bind = Parser(tree).get_metric("dau").bind
+    assert bind.entity_grain.resolve == "last"
+    assert bind.entity_grain.relation is None  # falls back to the binding's own
+    assert bind.resolves_to_entity_grain is True
+
+
+def test_a_binding_without_entity_grain_does_not_claim_resolution():
+    assert Parser(_dau_bind()).get_metric("dau").bind.resolves_to_entity_grain is False
+
+
+@pytest.mark.parametrize("resolve", ["first", "last", "error"])
+def test_the_three_resolutions_are_accepted(resolve):
+    tree = _dau_bind(f"      entity_grain: {{resolve: {resolve}}}\n")
+    assert Parser(tree).get_metric("dau").bind.entity_grain.resolve == resolve
+
+
+def test_resolve_has_no_default_because_the_choice_is_a_business_question():
+    # `first` and `last` answer different questions — what state did they
+    # arrive in vs end in — and guessing is the error class 3.8 removes.
+    with pytest.raises(ValueError, match="resolve"):
+        Parser(_dau_bind("      entity_grain: {}\n"))
+
+
+def test_an_unknown_resolution_is_rejected():
+    with pytest.raises(ValueError, match="must be one of"):
+        Parser(_dau_bind("      entity_grain: {resolve: whatever}\n"))
+
+
+def test_entity_grain_requires_an_entity_key():
+    tree = """
+metrics:
+  - name: revenue
+    source: w.revenue
+    bind:
+      relation: analytics.orders
+      grain_key: order_id
+      time_column: ordered_at
+      agg: sum
+      measure: amount
+      entity_grain: {resolve: last}
+"""
+    with pytest.raises(ValueError, match="needs an `entity_key`"):
+        Parser(tree)
+
+
+def test_resolving_a_different_entity_than_the_one_counted_is_rejected():
+    # Resolving to entity grain makes Σ slices the distinct *entity* count. If
+    # the metric counts something else, that sum is not the metric and the
+    # reconciliation the resolution promises would be false.
+    tree = """
+metrics:
+  - name: sessions
+    source: w.sessions
+    bind:
+      relation: analytics.ev
+      grain_key: row_id
+      time_column: seen_at
+      agg: count_distinct
+      measure: session_id
+      entity_key: user_id
+      entity_grain: {resolve: last}
+"""
+    with pytest.raises(ValueError, match="counted column"):
+        Parser(tree)

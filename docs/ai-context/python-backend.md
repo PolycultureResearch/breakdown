@@ -248,6 +248,19 @@ honest until roadmap 3.8 decomposes at the grain where the metric becomes a sum.
 `check_grain(name)` runs the fan-out assertion; `last_sql` records the statement
 behind each number, which is the hook 2.11 reads.
 
+**Entity-grain resolution (3.8 §4).** A binding with `entity_grain` slices
+through `build_resolved_slice_query`, which collapses the relation to one row
+per (entity, period) with a `ROW_NUMBER` window before grouping — so every
+entity lands in exactly one slice and `Σ_g slices` is the distinct-entity count,
+which *is* the metric. Proven numerically against DuckDB rather than asserted on
+SQL strings: the naive slices come to 5 where the metric is 4, the resolved ones
+to 4. `resolve: error` generates the plain query unchanged — it asserts
+single-valuedness rather than correcting it, and `doctor`'s `entity grain
+resolves` check is what holds the assertion to account via
+`build_multivalue_assertion`. `slice_additivity` then answers `exact` rather
+than `overlapping`, which is what stops the overlap warning and restores
+contribution shares.
+
 `doctor`'s `check_dbt` walks the chain in the order failures actually cascade —
 semantic manifest → dbt profile → warehouse connection → tree metrics bind →
 declared dimensions exist → grain claims hold — skipping the rest rather than

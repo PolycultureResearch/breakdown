@@ -112,6 +112,7 @@ _DBT_CHECKS = [
     "tree metrics bind",
     "declared dimensions exist",
     "grain claims hold",
+    "entity grain resolves",
 ]
 
 
@@ -443,7 +444,18 @@ def check_dbt(config: MetricTreeConfig) -> List[CheckResult]:
             "no semantic manifest",
         )
     try:
-        bridged = fetcher_from_project(project, target=cfg.target, profiles_dir=cfg.profiles_dir)
+        # Overrides matter here as much as at runtime: a node's own `bind:`
+        # block replaces what the manifest declares, so checking without them
+        # validates a binding the server will never use. Mirrors _build_fetcher.
+        from breakdown.data_fetch import provider_query_name
+
+        overrides = {provider_query_name("dbt", m): m.bind for m in config.metrics if m.bind}
+        bridged = fetcher_from_project(
+            project,
+            target=cfg.target,
+            profiles_dir=cfg.profiles_dir,
+            overrides=overrides,
+        )
     except DbtProfileError as e:
         results.append(CheckResult.ok("semantic manifest", path))
         return stop(
@@ -538,7 +550,6 @@ def check_dbt(config: MetricTreeConfig) -> List[CheckResult]:
             continue
         if rows != distinct:
             fanned.append(f"{query_name} ({rows:,} rows / {distinct:,} distinct)")
-    bridged.close()
     if fanned:
         results.append(
             CheckResult.fail(
@@ -556,7 +567,74 @@ def check_dbt(config: MetricTreeConfig) -> List[CheckResult]:
         results.append(
             CheckResult.ok("grain claims hold", f"{len(wanted)} relation(s) one row per grain")
         )
+
+    results.append(_check_entity_grain(config, bridged, wanted))
+    bridged.close()
     return results
+
+
+def _check_entity_grain(config, fetcher, wanted) -> CheckResult:
+    """Whether declared slices actually need resolution, and whether the ones
+    that assert they do not are telling the truth.
+
+    A dimension that is multi-valued for some entity inside a period makes the
+    slices overstate the metric. `resolve: first|last` fixes it; `resolve:
+    error` asserts it never happens, and this is what holds that assertion to
+    account. Without the check the answer arrives as a wrong number on the
+    first *slice by* click — the too-late failure class of C12.
+    """
+    from breakdown.dbt_sql import build_multivalue_assertion
+
+    offenders, unresolved, checked = [], [], 0
+    for query_name, tree_name in wanted.items():
+        bind = fetcher.bindings.get(query_name)
+        if bind is None or not bind.is_non_additive:
+            continue
+        defn = next((m for m in config.metrics if m.name == tree_name), None)
+        for dim_name, spec in (defn.dimensions if defn else {}).items():
+            if spec.source not in bind.dimensions:
+                continue  # already reported by the dimension check
+            checked += 1
+            try:
+                sql = build_multivalue_assertion(
+                    bind, dimension=spec.source, grain=defn.grain, dialect=fetcher.dialect
+                )
+                pairs = int(fetcher._query(sql).iloc[0]["multivalued_pairs"])
+            except Exception as e:
+                offenders.append(f"{tree_name}.{dim_name} (check failed: {type(e).__name__})")
+                continue
+            if not pairs:
+                continue
+            where = f"{tree_name}.{dim_name} ({pairs:,} multivalued entity-periods)"
+            if bind.entity_grain is None:
+                unresolved.append(where)
+            elif bind.entity_grain.resolve == "error":
+                offenders.append(where)
+
+    if not checked:
+        return CheckResult.skip("entity grain resolves", "no non-additive metrics declared")
+    if offenders:
+        return CheckResult.fail(
+            "entity grain resolves",
+            f"`resolve: error` is asserted but violated: {offenders[:4]}"
+            + (" …" if len(offenders) > 4 else ""),
+            "Either the data is not single-valued after all — switch to "
+            "`resolve: first` or `last`, which answer different business "
+            "questions — or fix the source so one entity holds one value per "
+            "period.",
+        )
+    if unresolved:
+        return CheckResult.fail(
+            "entity grain resolves",
+            f"slices overstate the metric and no `entity_grain` is declared: "
+            f"{unresolved[:4]}" + (" …" if len(unresolved) > 4 else ""),
+            "Add `entity_grain: {resolve: first|last}` to the binding to make "
+            "the slices sum exactly. Without it they are reported as "
+            "overlapping and contribution shares are withheld.",
+        )
+    return CheckResult.ok(
+        "entity grain resolves", f"{checked} non-additive slice(s) resolve to one value per period"
+    )
 
 
 def check_fit_readiness(parser, start_date: str, end_date: str) -> CheckResult:
