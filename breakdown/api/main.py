@@ -40,6 +40,23 @@ DEFAULT_START_DATE = "2024-01-01"
 DEFAULT_END_DATE = "2024-04-09"
 
 
+# Why a provider has no query to show. Stated per provider rather than as one
+# vague message, because "there is no SQL" and "we never see the SQL" are
+# different facts about how much the user can verify.
+_NO_PROVENANCE = {
+    "mock": "The mock provider synthesizes data from the tree; no query is run.",
+    "none": "Cold-start trees declare beliefs and fetch nothing.",
+    "local": (
+        "The local provider asks MetricFlow for a metric by name; MetricFlow "
+        "plans and runs the SQL, and never returns it."
+    ),
+    "cloud": (
+        "The dbt Cloud Semantic Layer plans and runs the query server-side; the "
+        "API returns results, not SQL."
+    ),
+}
+
+
 def _build_fetcher(provider_cfg, dag, metrics=None):
     if provider_cfg.type == "local":
         return LocalDataFetcher(project_path=provider_cfg.project_path)
@@ -501,6 +518,101 @@ async def get_series(request: Request):
             ],
         }
     return {"metrics": metrics}
+
+
+@app.get("/metrics/{name}/query")
+async def get_metric_query(name: str, request: Request, dimension: Optional[str] = None):
+    """The query behind a metric's numbers, when the provider knows it.
+
+    Principle 3 — never ship a number the engine can't defend — has had a hole
+    in it: for most providers a user cannot see what was asked, so the number is
+    unfalsifiable by exactly the person being asked to trust it. `warehouse` was
+    the only exception, and only because the author wrote the SQL themselves.
+
+    `sql: null` is a real answer rather than an error. `mock` synthesizes, and
+    the semantic-layer providers hand a metric name to someone else's planner
+    and never see SQL — so the response says which case it is instead of
+    implying the query is missing.
+    """
+    # Degraded startup leaves no parser, so this needs the same 503 the data
+    # endpoints give rather than an AttributeError. Provenance is *more* useful
+    # when things are broken, but it still needs a tree that loaded.
+    _require_ready(request)
+    parser = request.app.state.parser
+    metric = parser.get_metric(name)
+    if not metric:
+        raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
+
+    provider = parser.config.provider.type
+    fetcher = getattr(request.app.state, "fetcher", None)
+    payload = {
+        "metric": name,
+        "dimension": dimension,
+        "provider": provider,
+        "sql": None,
+        "dialect": None,
+        "executed": None,
+        "note": None,
+    }
+    if dimension is not None:
+        spec = metric.dimensions.get(dimension)
+        if spec is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Metric '{name}' declares no dimension '{dimension}'",
+            )
+        dimension_source = spec.source
+    else:
+        dimension_source = None
+
+    if fetcher is None:
+        payload["note"] = "No provider is attached (the tree has no data)."
+        return payload
+
+    query_name = provider_query_name(provider, metric)
+    # The loaded window, so a provider that can generate its query does so even
+    # when a snapshot served the series and nothing executed this process.
+    data = request.app.state.data
+    start, end = (
+        (str(data.date_start.date()), str(data.date_end.date()))
+        if data is not None
+        else (None, None)
+    )
+    sql = fetcher.query_provenance(
+        query_name,
+        dimension_source,
+        grain=getattr(metric, "grain", "day"),
+        start_date=start,
+        end_date=end,
+    )
+    if sql is None:
+        payload["note"] = _NO_PROVENANCE.get(
+            provider, f"The '{provider}' provider does not expose a query."
+        )
+        if dimension is not None and provider == "warehouse":
+            payload["note"] = (
+                "The warehouse provider does not support slicing yet "
+                "(roadmap 2.8), so there is no sliced query to show."
+            )
+        return payload
+
+    # Read through the snapshot wrapper: it delegates the query but carries
+    # none of the provider's own attributes.
+    inner = getattr(fetcher, "inner", fetcher)
+    payload["sql"] = sql
+    payload["dialect"] = getattr(inner, "dialect", None) or None
+    # Whether this statement ran, or is what *would* run for the loaded window.
+    # A snapshot hit serves the number without executing anything; the binding
+    # still determines it exactly, so the query is real provenance either way —
+    # but the reader is told which, rather than left to assume.
+    if hasattr(inner, "executed"):
+        payload["executed"] = bool(inner.executed(query_name, dimension_source))
+        if not payload["executed"]:
+            payload["note"] = (
+                "This series was served from a snapshot, so no query ran. "
+                "Shown is the statement the binding produces for this window."
+            )
+    return payload
 
 
 @app.get("/metrics/{name}")

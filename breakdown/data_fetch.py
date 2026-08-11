@@ -5,7 +5,7 @@ import re
 import shutil
 from abc import ABC, abstractmethod
 from types import ModuleType
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import networkx as nx
 import numpy as np
@@ -286,6 +286,35 @@ class BaseDataFetcher(ABC):
             f"The {type(self).__name__} provider does not support dimensional "
             f"slicing (requested '{metric_name}' by '{dimension_source}')."
         )
+
+    def query_provenance(
+        self,
+        metric_name: str,
+        dimension_source: Optional[str] = None,
+        *,
+        grain: str = "day",
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> Optional[str]:
+        """The query behind this metric's series, or None.
+
+        Principle 3 says never ship a number the engine can't defend, and for
+        most of this project's life `warehouse` was the only provider where a
+        user could see what was asked — because they wrote it themselves. A
+        provider that knows its query should say so.
+
+        The window is passed because provenance must not depend on whether a
+        fetch happened to run in *this* process. A snapshot hit serves the
+        number without executing anything, and "no query ran just now" is not
+        the same fact as "this provider has no query" — reporting the second
+        when the first is true tells the reader the number is less defensible
+        than it is.
+
+        None is a legitimate answer, not a failure: `mock` synthesizes, and the
+        semantic-layer providers hand a metric name to someone else's planner
+        and never see SQL. Callers report the absence rather than hiding it.
+        """
+        return None
 
 
 def _sliced_long(df: pd.DataFrame, metric_name: str, grain: str) -> pd.DataFrame:
@@ -570,6 +599,16 @@ class WarehouseDataFetcher(BaseDataFetcher):
                 c.execute(f"USE {self.catalog}.{self.schema}")
                 c.close()
         return self._con.cursor()
+
+    def query_provenance(
+        self, metric_name: str, dimension_source: Optional[str] = None, **_: Any
+    ) -> Optional[str]:
+        """The metric's own `sql` — this provider has always been transparent,
+        because the author wrote the query. Slicing is not supported here yet
+        (roadmap 2.8), so a dimension has no query to show."""
+        if dimension_source is not None:
+            return None
+        return self.metric_sql.get(metric_name)
 
     def fetch_metric(
         self,

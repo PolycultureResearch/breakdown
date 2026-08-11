@@ -149,6 +149,16 @@ class SnapshotFetcher(BaseDataFetcher):
     writes), forcing one clean refetch pass — the knob for "the warehouse
     backfilled, my snapshots are stale"."""
 
+    def query_provenance(self, metric_name, dimension_source=None, **kw):
+        """Delegates to the wrapped provider.
+
+        A snapshot hit means no query ran for *this* call, but the statement
+        that would produce the series is still what defends the number: the
+        binding determines it exactly whether or not it executed just now. The
+        caller labels which of the two it got.
+        """
+        return self.inner.query_provenance(metric_name, dimension_source, **kw)
+
     def __init__(
         self,
         inner: BaseDataFetcher,
