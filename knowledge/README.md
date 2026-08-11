@@ -36,6 +36,16 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
 [`../docs/ai-context/`](../docs/ai-context/)):
 
 - [`ui_design_spec.md`](ui_design_spec.md) — UI design spec
+- [`semantic_layer_connectivity_design.md`](semantic_layer_connectivity_design.md)
+  — node bindings and semantic-layer connectivity (roadmap 2.9–2.13): the
+  per-node `bind:` fetch descriptor and the scope boundary that keeps it from
+  becoming a semantic layer (§4.1 — this amends a standing non-goal); why
+  breakdown reads dbt's own `target/semantic_manifest.json` and generates the SQL
+  itself, then *proves* agreement with MetricFlow rather than pushing execution
+  down; the grain-claim assertion that turns silent fan-out into a startup error;
+  non-additive decomposition at entity grain; and the evaluations of Boring
+  Semantic Layer (MIT, but zero dbt interop) and Sidemantic (technically
+  strongest, AGPL-3.0 — incompatible with our Apache-2.0)
 - [`what_if_design.md`](what_if_design.md) — what-if simulation design spec
 - [`grain_design.md`](grain_design.md) — per-node aggregation grain (roadmap
   1.7): decisions and contracts for `grain`/`kind`, resample-up, window
