@@ -138,6 +138,10 @@ exclude = [
 # on the code. This is a development setting; it has no effect on `pip install`.
 [dependency-groups]
 dev = [
+    # Executes the SQL `dbt_sql.py` generates, so the generator is proven
+    # against a real engine rather than string-matched. Test-only: no provider
+    # depends on it, and it never ships in a wheel.
+    "duckdb>=1.0.0",
     "httpx>=0.28.1",
     "metric-breakdown[all]",
     "pytest>=9.0.2",

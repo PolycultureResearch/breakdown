@@ -18,6 +18,7 @@ breakdown/
   data_fetch.py    # BaseDataFetcher + Mock / Local / Cloud / Warehouse implementations
                    # (provider SDKs are optional extras — imported lazily, never at module scope)
   dbt_bridge.py    # dbt's target/semantic_manifest.json → BindingSpec per node (MSI, no dbt Cloud)
+  dbt_sql.py       # BindingSpec + grain + window (+ dimension) → dialect SQL via sqlglot
   engine/
     model.py       # fit_metric() — BSTS via PyMC; compute_shapley(); summarize_trace()
     rca.py         # run_rca() + shapley_attribution() — all window-over-window attribution
@@ -163,6 +164,46 @@ Ships in the `dbt-bridge` extra (`metricflow`, `sqlglot`) — deliberately *not*
 the `dbt` extra, since it needs neither dbt-core, an adapter, nor the `mf`
 binary. The `dbt` extra's `dbt-metricflow` floor is `>=0.13.0` precisely so the
 two can coexist: 0.10.1 pinned `metricflow==0.208.1`, which predates MSI.
+
+## `dbt_sql.py`
+
+Compiles a `BindingSpec` into the one query the engine ever asks for:
+`build_query(bind, grain=…, start_date=…, end_date=…, dialect=…, dimension=…)`
+returns dialect SQL selecting `[date, value]`, or `[date, slice, value]` when a
+dimension is named. `build_grain_assertion(bind)` returns the fan-out check.
+sqlglot does the dialect transpilation; `dialect_for_adapter` maps a dbt adapter
+type onto a sqlglot dialect and warns (rather than guessing) on an unknown one.
+
+Three details are load-bearing, and all three are pinned by tests that **execute
+the generated SQL against DuckDB** rather than matching strings — a builder that
+emits plausible SQL with the wrong bound is exactly the failure class the engine
+exists to avoid:
+
+- **Weeks are forced to ISO Monday per dialect.** `DATE_TRUNC('week', …)` is
+  Monday on DuckDB/Postgres and Spark's `TRUNC(…, 'WEEK')` is too, but BigQuery
+  defaults `WEEK` to *Sunday* and Snowflake honours the session's `WEEK_START`.
+  Either would shift every bucket's composition by up to six days while still
+  producing exactly one label per week, so nothing downstream could detect it —
+  and `grains.floor_period` would relabel the bucket to the previous Monday,
+  landing it on the spine and hiding the shift completely. So BigQuery gets
+  `ISOWEEK` and Snowflake a `DAYOFWEEKISO` offset, both session-independent.
+- **The window bound is half-open on `end + 1 day`.** breakdown windows are
+  inclusive, but `<= end_date` against a *timestamp* column drops everything
+  after midnight on the last day — roughly 1/31 of a monthly figure, silently.
+- **`agg: count` emits `COUNT(measure)`, never `COUNT(*)`.** MetricFlow's
+  `count` is null-guarded (it desugars to `SUM(CASE WHEN x IS NOT NULL …)`), and
+  `COUNT(x)` is exactly that. `COUNT(*)` would include rows the source excludes.
+
+`agg: ratio` divides two separately-aggregated measures with a `NULLIF` guard,
+so a zero denominator stays NULL and reaches `_align_to_spine`, which refuses to
+gap-fill a rate rather than inventing a zero. `agg: last` raises
+`UnsupportedBinding`: a stock's per-period last snapshot needs a window function
+and, with an entity, the stock-and-flow treatment of the design doc §8 — so it
+is refused rather than approximated, with `bind.sql` as the escape hatch.
+
+Joins are many-to-one only and emitted as `LEFT JOIN`, so fan-out is
+definitionally impossible; `build_grain_assertion` proves the claim by comparing
+`COUNT(*)` against `COUNT(DISTINCT grain_key)`.
 
 ## `engine/model.py`
 
