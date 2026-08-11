@@ -77,10 +77,13 @@ dependencies = [
 # would make `pip install 'metric-breakdown[dbt]'` a silent no-op.
 [project.optional-dependencies]
 dbt = [
-    # >=0.13.0 pins metricflow==0.211.0. The floor is load-bearing rather than
-    # housekeeping: 0.10.1 pinned metricflow==0.208.1, which predates
-    # `metricflow_semantic_interfaces` and so cannot coexist with the
-    # `dbt-bridge` extra below.
+    # >=0.13.0 pins metricflow==0.211.0, and the floor is still load-bearing —
+    # though no longer for the reason it was set. `dbt-bridge` used to depend on
+    # metricflow too, and 0.10.1's `metricflow==0.208.1` pin could not coexist
+    # with it. That conflict is gone (dbt-bridge is sqlglot alone), but the dev
+    # group installs both this extra and `metricflow>=0.211.0` for the manifest
+    # oracle, so the old pin would still deadlock a contributor's environment.
+    # It also widens support: 0.10.1 capped at Python <3.13, 0.13.0 at <3.14.
     "dbt-metricflow>=0.13.0",
     "dbt-sl-sdk[sync]>=0.13.2",
 ]
