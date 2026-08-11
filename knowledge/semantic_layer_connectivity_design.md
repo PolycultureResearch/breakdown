@@ -419,10 +419,20 @@ wrong number* rather than an error — the Horizon 0 failure class.
    wrote it.
 2. **`percentile` is a fraction strictly in (0,1).** dbt's own docs show
    `percentile: 95.0`, which the validator rejects. Trust the code.
-3. **Snowflake's week start is session-dependent.** Ibis forces Monday on
-   BigQuery but sets no `WEEK_START` on Snowflake, so it inherits the account
-   default. `_floor_labels`' warn-on-mismatch is **load-bearing here** and must
-   not be optimized away.
+3. **Week bucketing disagrees between dialects — closed for the `dbt` binding
+   (2026-08-10).** `DATE_TRUNC('week', …)` is ISO Monday on DuckDB/Postgres and
+   Spark's `TRUNC` is too, but **BigQuery defaults `WEEK` to Sunday** and
+   **Snowflake honours the session's `WEEK_START`**, so the same query returns
+   different buckets for different users. Either shifts every bucket's
+   composition by up to six days while still emitting exactly one label per
+   week — and `_floor_labels` then relabels it to the previous Monday, landing
+   it on the spine and hiding the shift entirely, so the warning this document
+   originally relied on would never fire. Because we generate the SQL we close
+   it at the source instead: BigQuery gets `ISOWEEK`, Snowflake a
+   `DAYOFWEEKISO` offset, both session-independent (`dbt_sql.py`). The hazard
+   remains open for `cloud`, `local` and `bsl`, which do not own their SQL —
+   there `_floor_labels`' warning is still the only defence and must not be
+   optimized away.
 4. **Timezone dtype is warehouse- and column-dependent.** `_to_naive_dates` (the
    C1 fix) already armors us; every binding must route through it.
 5. **Two systems will want to gap-fill.** MetricFlow's `join_to_timespine` and
