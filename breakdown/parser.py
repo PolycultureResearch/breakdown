@@ -25,6 +25,7 @@ class Prior(BaseModel):
             raise ValueError(f"Invalid distribution: {v}. Must be one of {valid_dists}")
         return v
 
+
 class AssertedBaseline(BaseModel):
     """Declared operating point for cold-start mode (a tree with no data).
 
@@ -92,7 +93,7 @@ def _expand_env(value: Optional[str]) -> Optional[str]:
 
 
 class DataProviderConfig(BaseModel):
-    type: str = "mock" # "mock", "local", "cloud", "warehouse", "none" (alias "assumed")
+    type: str = "mock"  # "mock", "local", "cloud", "warehouse", "none" (alias "assumed")
     project_path: Optional[str] = None
     environment_id: Optional[str] = None
     host: Optional[str] = None
@@ -122,12 +123,20 @@ class DataProviderConfig(BaseModel):
         return v
 
     @field_validator(
-        "project_path", "environment_id", "host", "token",
-        "http_path", "profile", "catalog", "db_schema", mode="after",
+        "project_path",
+        "environment_id",
+        "host",
+        "token",
+        "http_path",
+        "profile",
+        "catalog",
+        "db_schema",
+        mode="after",
     )
     @classmethod
     def expand_env_vars(cls, v: Optional[str]) -> Optional[str]:
         return _expand_env(v)
+
 
 class Seasonality(BaseModel):
     period: int
@@ -149,10 +158,12 @@ class Seasonality(BaseModel):
             )
         return v
 
+
 class TrendConfig(BaseModel):
     """Local-level (random-walk) trend configuration. `sigma` is the prior scale
     on the per-step drift in z-scored space — the knob that controls how much
     movement the trend is allowed to absorb before parents/seasonality must."""
+
     type: str = "linear"
     sigma: float = 0.05
 
@@ -169,6 +180,7 @@ class TrendConfig(BaseModel):
         if v <= 0:
             raise ValueError("trend sigma must be > 0")
         return v
+
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SIMPLE_RATIO = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*/\s*([A-Za-z_][A-Za-z0-9_]*)\s*$")
@@ -224,19 +236,18 @@ class MetricFormat(BaseModel):
     """How a metric's big number is displayed on its node card. Presentation
     only — never affects modeling. Written in YAML either as the shorthand
     `format: currency` or as a mapping with any of these keys."""
-    style: str = "number"           # "currency" | "percent" | "number"
-    unit: Optional[str] = None      # small caption under the value, e.g. "sessions", "ms"
+
+    style: str = "number"  # "currency" | "percent" | "number"
+    unit: Optional[str] = None  # small caption under the value, e.g. "sessions", "ms"
     decimals: Optional[int] = None  # fixed fraction digits; None = automatic
     compact: Optional[bool] = None  # k/M/B notation; None = auto (currency compacts large values)
-    symbol: str = "$"               # currency symbol, when style == "currency"
+    symbol: str = "$"  # currency symbol, when style == "currency"
 
     @field_validator("style")
     @classmethod
     def check_style(cls, v: str) -> str:
         if v not in ("currency", "percent", "number"):
-            raise ValueError(
-                f"format.style must be 'currency', 'percent', or 'number', got '{v}'"
-            )
+            raise ValueError(f"format.style must be 'currency', 'percent', or 'number', got '{v}'")
         return v
 
     @field_validator("decimals")
@@ -346,7 +357,11 @@ class MetricDefinition(BaseModel):
                     logger.warning(
                         "Metric '%s': seasonality period %d at grain '%s' spans "
                         "%d %ss — periods are in grain steps; check this is intended.",
-                        self.name, s.period, self.grain, s.period, self.grain,
+                        self.name,
+                        s.period,
+                        self.grain,
+                        s.period,
+                        self.grain,
                     )
         return self
 
@@ -441,8 +456,7 @@ class MetricDefinition(BaseModel):
         # shorthand: `region: customer__region` is `region: {source: ...}`
         if isinstance(v, dict):
             return {
-                key: ({"source": val} if isinstance(val, str) else val)
-                for key, val in v.items()
+                key: ({"source": val} if isinstance(val, str) else val) for key, val in v.items()
             }
         return v
 
@@ -498,9 +512,11 @@ class MetricDefinition(BaseModel):
                 )
         return self
 
+
 class MetricTreeConfig(BaseModel):
     provider: DataProviderConfig = Field(default_factory=DataProviderConfig)
     metrics: List[MetricDefinition]
+
 
 class Parser:
     def __init__(self, yaml_content: str):
@@ -522,7 +538,9 @@ class Parser:
         for metric in self.config.metrics:
             for parent in metric.parents:
                 if parent not in G:
-                    raise ValueError(f"Parent metric '{parent}' not found for metric '{metric.name}'")
+                    raise ValueError(
+                        f"Parent metric '{parent}' not found for metric '{metric.name}'"
+                    )
                 G.add_edge(parent, metric.name)
 
         if not nx.is_directed_acyclic_graph(G):

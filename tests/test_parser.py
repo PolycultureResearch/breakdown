@@ -22,6 +22,7 @@ metrics:
     assert "conversions" in parser.dag.nodes
     assert parser.dag.has_edge("dau", "conversions")
 
+
 def test_invalid_distribution():
     yaml_content = """
 metrics:
@@ -33,6 +34,7 @@ metrics:
 """
     with pytest.raises(ValueError, match="Invalid distribution: InvalidDist"):
         Parser(yaml_content)
+
 
 def test_cycle_detection():
     yaml_content = """
@@ -47,6 +49,7 @@ metrics:
     with pytest.raises(ValueError, match="Metric tree contains cycles"):
         Parser(yaml_content)
 
+
 def test_missing_parent():
     yaml_content = """
 metrics:
@@ -59,6 +62,7 @@ metrics:
 
 
 # --- Formula validation tests ---
+
 
 def test_formula_parsed_and_stored():
     yaml_content = """
@@ -121,6 +125,7 @@ metrics:
 
 # --- Per-parent prior validation tests ---
 
+
 def test_per_parent_prior_key_accepted():
     yaml_content = """
 metrics:
@@ -162,6 +167,7 @@ metrics:
 
 
 # --- Lag validation tests ---
+
 
 def test_lag_key_not_parent_raises():
     yaml_content = """
@@ -227,6 +233,7 @@ metrics:
 
 # --- Trend config tests ---
 
+
 def test_trend_linear_string_default_sigma():
     yaml_content = """
 metrics:
@@ -274,6 +281,7 @@ metrics:
 
 
 # --- Grain & kind validation tests ---
+
 
 def test_grain_and_kind_default_for_legacy_yaml():
     yaml_content = """
@@ -408,12 +416,14 @@ metrics:
         name: suspicious
 """
     import logging
+
     with caplog.at_level(logging.WARNING, logger="breakdown.parser"):
         Parser(yaml_content)
     assert any("grain steps" in r.message for r in caplog.records)
 
 
 # --- expected_signs validation tests ---
+
 
 def test_expected_signs_parsed():
     yaml_content = """
@@ -476,6 +486,7 @@ metrics:
 
 # --- direction (display goodness) validation tests ---
 
+
 def test_direction_default_and_parsed():
     yaml_content = """
 metrics:
@@ -502,6 +513,7 @@ metrics:
 
 
 # --- Dimension (slicing) validation tests ---
+
 
 def test_dimension_shorthand_and_full_form():
     yaml_content = """
@@ -608,6 +620,7 @@ metrics:
 def test_provider_type_none_and_assumed_alias():
     """`provider: none` declares a cold-start tree; `assumed` is an alias
     normalized to `none` so downstream code has one spelling to check."""
+
     def yaml_for(ptype):
         return f"""
 provider:
