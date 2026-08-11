@@ -433,6 +433,15 @@ wrong number* rather than an error — the Horizon 0 failure class.
    remains open for `cloud`, `local` and `bsl`, which do not own their SQL —
    there `_floor_labels`' warning is still the only defence and must not be
    optimized away.
+4. **Dialect translation can silently produce NULL, not just the wrong value.**
+   Found the same day, on the same warehouse: a portable `DATE_TRUNC('DAY', …)`
+   translated into Databricks becomes `TRUNC(col, 'DAY')`, and Spark's `trunc`
+   accepts only YEAR/MONTH/WEEK/QUARTER — returning **NULL** for DAY rather
+   than erroring, so a whole window collapsed into one unlabelled bucket. The
+   general lesson outlives the specific bug: **generate in the target dialect,
+   never translate into it**, and treat "the transpiler accepted it" as no
+   evidence at all. Local tests could not see this; running the SQL against the
+   warehouse it was generated for is what found it.
 4. **Timezone dtype is warehouse- and column-dependent.** `_to_naive_dates` (the
    C1 fix) already armors us; every binding must route through it.
 5. **Two systems will want to gap-fill.** MetricFlow's `join_to_timespine` and
@@ -453,8 +462,14 @@ scheduled, recorded here so nobody mistakes them for established:
    pydantic-v1 warning on import. So the `dbt-bridge` extra works on 3.14 where
    the `dbt` extra does not — a genuine advantage rather than a caveat. What
    remains capped at <3.14 is `dbt-metricflow`, which the bridge does not need.
-2. **Returned timestamp dtype and timezone per warehouse**, from a real query
-   rather than from source reading.
+2. ~~**Returned timestamp dtype and timezone per warehouse.**~~ **Resolved
+   2026-08-10** against a live Databricks warehouse: it returns **tz-aware
+   `Etc/UTC`** timestamps, and `_to_naive_dates` (the C1 fix) handles them
+   exactly as designed — it warns, drops the zone keeping the labelled
+   wall-clock date, and a real 14-day window aligns to 14 clean daily rows with
+   both partial edge weeks correctly dropped at week grain. The guard is
+   confirmed both necessary and sufficient on this warehouse; other backends
+   remain unmeasured, which is fine because the guard is provider-agnostic.
 
 ## 11. What this unlocks
 
