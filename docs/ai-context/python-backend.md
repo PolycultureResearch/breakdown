@@ -261,6 +261,21 @@ resolves` check is what holds the assertion to account via
 than `overlapping`, which is what stops the overlap warning and restores
 contribution shares.
 
+**Entity flows (3.8 §6).** `build_entity_flow_query` resolves each entity to one
+slice per *window* and FULL OUTER JOINs the two sides, returning a transition
+matrix `[reference_slice, analysis_slice, entities]`. `engine.slices.entity_flows`
+classifies it: absent→g is new, g→absent is churned, g→g is retained, g₁→g₂ is
+migration — and migration nets to exactly zero across slices, the same
+reallocation property a rate's `mix_total` has. Absence is detected from the
+joined key rather than a NULL slice, so an entity present with a NULL dimension
+value stays distinguishable from one that was never there.
+
+This is a **diagnostic, not a decomposition**, and the code says so:
+`reconciles_to_gap` is `False`, and the API attaches it best-effort so a failing
+flow query can never cost the attribution. Flows compare window-level *sets*,
+and `mean_t |E_t|` is not `|∪_t E_t|`, so they do not reconcile to the
+window-mean gap and must never be rendered as though they do.
+
 `doctor`'s `check_dbt` walks the chain in the order failures actually cascade —
 semantic manifest → dbt profile → warehouse connection → tree metrics bind →
 declared dimensions exist → grain claims hold — skipping the rest rather than

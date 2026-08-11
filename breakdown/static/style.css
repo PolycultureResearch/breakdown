@@ -676,3 +676,22 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   line-height: 1.45;
   white-space: pre;
 }
+
+/* Entity flows (roadmap 3.8 §6): movement between windows, reported beside the
+   attribution rather than inside it — these counts deliberately do not sum to
+   the gap, and the styling keeps them visually separate so they aren't read as
+   a second decomposition. */
+.entity-flows {
+  margin: 0.6rem 0 0.4rem;
+  padding: 0.5rem 0.7rem;
+  border-left: 3px solid var(--border, #e5e7eb);
+  background: var(--surface-2, #f6f7f9);
+  border-radius: 0 6px 6px 0;
+}
+.flows-head {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted, #6b7280);
+  margin-bottom: 0.3rem;
+}

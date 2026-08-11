@@ -166,7 +166,9 @@ decompose the same number, and this design does **not** claim they do.
 
 Flows are therefore specified as a **diagnostic reported alongside** the exact
 attribution — answering "what kind of movement produced this" — never as a
-competing decomposition of the same gap. Presenting them as a second
+competing decomposition of the same gap. **Shipped that way:** the response
+carries `entity_flows.reconciles_to_gap: false`, and the UI renders the panel
+outside the attribution with the sentence "they do not sum to the gap above". Presenting them as a second
 decomposition would put two numbers on screen that do not add up to each other,
 which is the failure this whole document is about. Whether an exact
 window-mean-level flow decomposition exists (a stock-and-flow formulation over

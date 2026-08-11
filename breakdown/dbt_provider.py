@@ -32,6 +32,7 @@ from breakdown.data_fetch import (
 )
 from breakdown.dbt_bridge import bridge_project
 from breakdown.dbt_sql import (
+    build_entity_flow_query,
     build_grain_assertion,
     build_query,
     build_resolved_slice_query,
@@ -479,6 +480,36 @@ class DbtDataFetcher(BaseDataFetcher):
         """Whether the statement provenance reports actually ran this process."""
         key = metric_name if dimension_source is None else f"{metric_name}::{dimension_source}"
         return key in self.last_sql
+
+    def fetch_entity_flows(
+        self,
+        metric_name: str,
+        dimension_source: str,
+        reference_start: str,
+        reference_end: str,
+        analysis_start: str,
+        analysis_end: str,
+    ) -> pd.DataFrame:
+        """`[reference_slice, analysis_slice, entities]` between two windows.
+
+        Only available for a binding that declares `entity_grain`: classifying
+        an entity as new, churned or migrated needs one slice per entity per
+        window, and which one is the author's `resolve` choice, not ours.
+        """
+        bind = self.binding(metric_name)
+        sql = build_entity_flow_query(
+            bind,
+            dimension=dimension_source,
+            reference_start=reference_start,
+            reference_end=reference_end,
+            analysis_start=analysis_start,
+            analysis_end=analysis_end,
+            dialect=self.dialect,
+        )
+        self.last_sql[f"{metric_name}::{dimension_source}::flows"] = sql
+        df = self._query(sql)
+        df["entities"] = df["entities"].astype(int)
+        return df
 
     # -- the grain claim --
 

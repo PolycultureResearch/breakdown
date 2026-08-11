@@ -480,3 +480,80 @@ def test_provenance_shows_the_resolved_statement(events):
     f.fetch_metric_sliced("dau", "status", "2024-01-01", "2024-01-01")
     sql = f.query_provenance("dau", "status")
     assert "ROW_NUMBER" in sql and "ASC" in sql
+
+
+# --- entity flows end to end (roadmap 3.8 §6) -------------------------------
+
+
+FLOW_EVENTS = """
+CREATE TABLE flows AS SELECT * FROM (VALUES
+    -- reference window 2024-01-01..02
+    (1, 'stay',   'ios', TIMESTAMP '2024-01-01 10:00'),
+    (2, 'leaver', 'ios', TIMESTAMP '2024-01-01 10:00'),
+    (3, 'mover',  'ios', TIMESTAMP '2024-01-01 10:00'),
+    -- analysis window 2024-01-03..04
+    (4, 'stay',   'ios', TIMESTAMP '2024-01-03 10:00'),
+    (5, 'mover',  'web', TIMESTAMP '2024-01-03 10:00'),
+    (6, 'joiner', 'web', TIMESTAMP '2024-01-03 10:00')
+) AS t(row_id, user_id, platform, seen_at);
+"""
+
+FLOW_WINDOWS = ("2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04")
+
+
+def _flow_fetcher(resolve="last"):
+    con = duckdb.connect()
+    con.execute(FLOW_EVENTS)
+    bind = BindingSpec(
+        relation="flows",
+        grain_key="row_id",
+        time_column="seen_at",
+        agg="count_distinct",
+        measure="user_id",
+        entity_key="user_id",
+        entity_grain={"resolve": resolve},
+        dimensions={"platform": BindingDimension(column="platform")},
+    )
+    return DbtDataFetcher({"dau": bind}, connect=lambda: con, dialect="duckdb")
+
+
+def test_entity_flows_classify_a_real_transition_matrix():
+    from breakdown.engine.slices import entity_flows
+
+    f = _flow_fetcher()
+    flows = entity_flows(f.fetch_entity_flows("dau", "platform", *FLOW_WINDOWS))
+    assert flows["totals"] == {"new": 1, "churned": 1, "retained": 1, "migrated": 1}
+    assert flows["migrations"] == [{"from": "ios", "to": "web", "entities": 1}]
+    assert flows["migration_net"] == 0
+
+
+def test_a_binding_without_entity_grain_cannot_classify_flows():
+    from breakdown.dbt_sql import UnsupportedBinding
+
+    con = duckdb.connect()
+    con.execute(FLOW_EVENTS)
+    bind = BindingSpec(
+        relation="flows",
+        grain_key="row_id",
+        time_column="seen_at",
+        agg="count_distinct",
+        measure="user_id",
+        entity_key="user_id",
+        dimensions={"platform": BindingDimension(column="platform")},
+    )
+    f = DbtDataFetcher({"dau": bind}, connect=lambda: con, dialect="duckdb")
+    with pytest.raises(UnsupportedBinding, match="need an `entity_grain`"):
+        f.fetch_entity_flows("dau", "platform", *FLOW_WINDOWS)
+
+
+def test_providers_that_cannot_classify_entities_raise_the_typed_error():
+    from breakdown.data_fetch import MockDataFetcher
+
+    with pytest.raises(SliceNotSupported, match="entity flows"):
+        MockDataFetcher().fetch_entity_flows("m", "d", *FLOW_WINDOWS)
+
+
+def test_the_flow_query_is_recorded_for_provenance():
+    f = _flow_fetcher()
+    f.fetch_entity_flows("dau", "platform", *FLOW_WINDOWS)
+    assert "FULL OUTER JOIN" in f.last_sql["dau::platform::flows"]

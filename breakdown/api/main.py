@@ -25,7 +25,7 @@ from breakdown.data_fetch import (
 from breakdown.engine.model import fit_metric, summarize_trace, warm_inference_imports
 from breakdown.engine.rca import run_rca, shapley_attribution
 from breakdown.engine.simulate import ScenarioRequest, run_scenario, validate_cold_start
-from breakdown.engine.slices import slice_attribution
+from breakdown.engine.slices import entity_flows, slice_attribution
 from breakdown.grains import GrainedData, build_grained
 from breakdown.mcp.server import mcp
 from breakdown.parser import Parser
@@ -827,7 +827,7 @@ def _run_slice(
     additivity = state.fetcher.slice_additivity(
         provider_query_name(parser.config.provider.type, defn), spec.source
     )
-    return slice_attribution(
+    result = slice_attribution(
         defn,
         dimension,
         sliced,
@@ -839,6 +839,27 @@ def _run_slice(
         weight_sliced=weight_sliced,
         additivity=additivity,
     )
+
+    # Entity flows are a *diagnostic alongside* the attribution, never a second
+    # decomposition of the same gap: they compare window-level sets, which do
+    # not reconcile to a window-mean gap. Best-effort — a provider that cannot
+    # classify entities simply has none to add, and that is not an error.
+    try:
+        transitions = state.fetcher.fetch_entity_flows(
+            provider_query_name(parser.config.provider.type, defn),
+            spec.source,
+            reference_start,
+            reference_end,
+            analysis_start,
+            analysis_end,
+        )
+        result["entity_flows"] = entity_flows(transitions)
+    except SliceNotSupported:
+        result["entity_flows"] = None
+    except Exception as e:  # a flow query failing must not lose the attribution
+        logger.warning("Entity flows unavailable for '%s' by '%s': %s", defn.name, dimension, e)
+        result["entity_flows"] = None
+    return result
 
 
 @app.post("/rca/{name}/slices")

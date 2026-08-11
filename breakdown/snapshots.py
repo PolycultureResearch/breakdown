@@ -149,6 +149,13 @@ class SnapshotFetcher(BaseDataFetcher):
     writes), forcing one clean refetch pass — the knob for "the warehouse
     backfilled, my snapshots are stale"."""
 
+    def fetch_entity_flows(self, *args, **kw):
+        """Delegated, never cached. Flows are keyed by a *pair* of windows
+        rather than one, so the snapshot store's (metric, grain, kind, window)
+        key cannot address them — and they are analysis-time only, like slices
+        were before sliced snapshots existed."""
+        return self.inner.fetch_entity_flows(*args, **kw)
+
     def slice_additivity(self, metric_name, dimension_source):
         """Delegates: additivity is a property of the binding, not of whether
         the series came from cache."""

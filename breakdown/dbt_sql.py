@@ -17,7 +17,7 @@ label, so the frame drops straight into `_to_naive_dates` → `_floor_labels` �
 
 import logging
 from types import ModuleType
-from typing import Optional
+from typing import Any, Optional
 
 import pandas as pd
 
@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 # that reserves `date` (several do) still round-trips.
 DATE_COL = "date"
 SLICE_COL = "slice"
+# Matches `engine.slices._NULL`, so a NULL dimension value reads the same way
+# through the flow path as through the sliced path.
+_NULL_SLICE = "__null__"
 VALUE_COL = "value"
 
 # Truncation is where dialects disagree, so every expression here is parsed *in
@@ -313,6 +316,108 @@ def build_resolved_slice_query(
         )
         .from_(ranked.subquery("bd_resolved"), dialect=read)
         .where("bd_rn = 1", dialect=read)
+        .group_by("1", "2", dialect=read)
+        .order_by("1", "2", dialect=read)
+        .sql(dialect=dialect, pretty=True)
+    )
+
+
+# An entity absent from a window, as distinct from one present with a NULL
+# dimension value. Conflating those would report a user who never appeared as
+# having no region, which is a different fact.
+ABSENT = "__absent__"
+
+
+def build_entity_flow_query(
+    bind: BindingSpec,
+    *,
+    dimension: str,
+    reference_start: str,
+    reference_end: str,
+    analysis_start: str,
+    analysis_end: str,
+    dialect: str = "",
+) -> str:
+    """The transition matrix between two windows: `[ref_slice, analysis_slice,
+    entities]` (roadmap 3.8 §6).
+
+    Each entity is resolved to one slice per *window* using the binding's own
+    `resolve` rule, then the two sides are FULL OUTER JOINed. Reading the
+    matrix gives the four classes — absent→g is new, g→absent is churned, g→g
+    is retained, g₁→g₂ is migration — and keeps *where* the migration went,
+    which is the part that turns "two offsetting causes" into a finding.
+
+    The join is on the entity, and absence is detected from the joined key
+    rather than from a NULL slice, so an entity present with a NULL dimension
+    value stays distinguishable from one that was not there at all.
+    """
+    spec = bind.entity_grain
+    if spec is None:
+        raise UnsupportedBinding(
+            "entity flows need an `entity_grain` block: classifying an entity "
+            "as new, churned or migrated requires one slice per entity per "
+            "window, and which one is the author's `resolve` choice."
+        )
+    if dimension not in bind.dimensions:
+        raise UnsupportedBinding(f"binding declares no dimension '{dimension}'")
+    dim = bind.dimensions[dimension]
+    if dim.join is not None:
+        raise UnsupportedBinding(
+            f"dimension '{dimension}' is reached through a join; entity flows "
+            "support dimensions on the binding's own relation."
+        )
+
+    sqlglot = _require_sqlglot()
+    read = _parse_dialect(dialect)
+    fact = "bd_fact"
+    relation = spec.relation or bind.relation
+    source = f"({bind.sql}) AS {fact}" if (relation is None) else f"{relation} AS {fact}"
+    entity = _qualified(bind.entity_key, fact)
+    time_col = _qualified(bind.time_column, fact)
+    slice_expr = _qualified(dim.column, fact)
+    order = "ASC" if spec.resolve == "first" else "DESC"
+
+    def window_cte(start_date: str, end_date: str) -> Any:
+        start, end_exclusive = _window_bounds(start_date, end_date)
+        ranked = (
+            sqlglot.select(
+                f"{entity} AS bd_entity",
+                f"{slice_expr} AS bd_slice",
+                f"ROW_NUMBER() OVER (PARTITION BY {entity} ORDER BY {time_col} {order}) AS bd_rn",
+                dialect=read,
+            )
+            .from_(source, dialect=read)
+            .where(f"{time_col} >= '{start}'", dialect=read)
+            .where(f"{time_col} < '{end_exclusive}'", dialect=read)
+        )
+        return (
+            sqlglot.select("bd_entity", "bd_slice", dialect=read)
+            .from_(ranked.subquery("bd_ranked"), dialect=read)
+            .where("bd_rn = 1", dialect=read)
+        )
+
+    ref_slice = (
+        f"CASE WHEN bd_ref.bd_entity IS NULL THEN '{ABSENT}' "
+        f"ELSE COALESCE(bd_ref.bd_slice, '{_NULL_SLICE}') END"
+    )
+    an_slice = (
+        f"CASE WHEN bd_an.bd_entity IS NULL THEN '{ABSENT}' "
+        f"ELSE COALESCE(bd_an.bd_slice, '{_NULL_SLICE}') END"
+    )
+    return (
+        sqlglot.select(
+            f'{ref_slice} AS "reference_slice"',
+            f'{an_slice} AS "analysis_slice"',
+            'COUNT(*) AS "entities"',
+            dialect=read,
+        )
+        .from_(window_cte(reference_start, reference_end).subquery("bd_ref"), dialect=read)
+        .join(
+            window_cte(analysis_start, analysis_end).subquery("bd_an"),
+            on="bd_ref.bd_entity = bd_an.bd_entity",
+            join_type="FULL OUTER",
+            dialect=read,
+        )
         .group_by("1", "2", dialect=read)
         .order_by("1", "2", dialect=read)
         .sql(dialect=dialect, pretty=True)
