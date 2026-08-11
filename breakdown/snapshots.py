@@ -93,8 +93,14 @@ class SnapshotStore:
         return sorted(found, key=lambda f: (f[1], f[2]))
 
     def write(
-        self, metric: str, start: str, end: str, grain: str, kind: str,
-        df: pd.DataFrame, provider: str,
+        self,
+        metric: str,
+        start: str,
+        end: str,
+        grain: str,
+        kind: str,
+        df: pd.DataFrame,
+        provider: str,
     ) -> None:
         os.makedirs(self.directory, exist_ok=True)
         filename = self._filename(metric, start, end, grain, kind)
@@ -102,8 +108,15 @@ class SnapshotStore:
         self._record(filename, provider, len(df))
 
     def write_sliced(
-        self, metric: str, dimension: str, start: str, end: str, grain: str, kind: str,
-        df: pd.DataFrame, provider: str,
+        self,
+        metric: str,
+        dimension: str,
+        start: str,
+        end: str,
+        grain: str,
+        kind: str,
+        df: pd.DataFrame,
+        provider: str,
     ) -> None:
         os.makedirs(self.directory, exist_ok=True)
         filename = self._sliced_filename(metric, dimension, start, end, grain, kind)
@@ -137,7 +150,10 @@ class SnapshotFetcher(BaseDataFetcher):
     backfilled, my snapshots are stale"."""
 
     def __init__(
-        self, inner: BaseDataFetcher, store: SnapshotStore, refresh: bool = False,
+        self,
+        inner: BaseDataFetcher,
+        store: SnapshotStore,
+        refresh: bool = False,
         slice_span: Optional[tuple[str, str]] = None,
     ):
         self.inner = inner
@@ -152,34 +168,52 @@ class SnapshotFetcher(BaseDataFetcher):
         self.slice_span = slice_span
 
     def fetch_metric(
-        self, metric_name: str, start_date: str, end_date: str,
-        grain: str = "day", kind: str = "flow",
+        self,
+        metric_name: str,
+        start_date: str,
+        end_date: str,
+        grain: str = "day",
+        kind: str = "flow",
     ) -> pd.DataFrame:
         if not self.refresh:
             df = self.store.read(metric_name, start_date, end_date, grain, kind)
             if df is not None:
-                logger.info("snapshot hit: %s [%s, %s] %s", metric_name, start_date, end_date, grain)
+                logger.info(
+                    "snapshot hit: %s [%s, %s] %s", metric_name, start_date, end_date, grain
+                )
                 return df
 
         df = self.inner.fetch_metric(metric_name, start_date, end_date, grain=grain, kind=kind)
         try:
             self.store.write(
-                metric_name, start_date, end_date, grain, kind,
-                df, provider=type(self.inner).__name__,
+                metric_name,
+                start_date,
+                end_date,
+                grain,
+                kind,
+                df,
+                provider=type(self.inner).__name__,
             )
-            logger.info("snapshot written: %s [%s, %s] %s", metric_name, start_date, end_date, grain)
+            logger.info(
+                "snapshot written: %s [%s, %s] %s", metric_name, start_date, end_date, grain
+            )
         except OSError as e:
             logger.warning(
                 "snapshot write failed for %s (%s); serving uncached. "
                 "Set --snapshot-dir to a writable path or --no-snapshots to silence.",
-                metric_name, e,
+                metric_name,
+                e,
             )
         return df
 
     def fetch_metric_sliced(
-        self, metric_name: str, dimension_source: str,
-        start_date: str, end_date: str,
-        grain: str = "day", kind: str = "flow",
+        self,
+        metric_name: str,
+        dimension_source: str,
+        start_date: str,
+        end_date: str,
+        grain: str = "day",
+        kind: str = "flow",
     ) -> pd.DataFrame:
         if not self.refresh:
             df = self.store.read_sliced(
@@ -188,27 +222,48 @@ class SnapshotFetcher(BaseDataFetcher):
             if df is not None:
                 logger.info(
                     "sliced snapshot hit: %s by %s [%s, %s] %s",
-                    metric_name, dimension_source, start_date, end_date, grain,
+                    metric_name,
+                    dimension_source,
+                    start_date,
+                    end_date,
+                    grain,
                 )
                 return df
 
         span_start, span_end = self._span(start_date, end_date)
         df = self.inner.fetch_metric_sliced(
-            metric_name, dimension_source, span_start, span_end, grain=grain, kind=kind,
+            metric_name,
+            dimension_source,
+            span_start,
+            span_end,
+            grain=grain,
+            kind=kind,
         )
         try:
             self.store.write_sliced(
-                metric_name, dimension_source, span_start, span_end, grain, kind,
-                df, provider=type(self.inner).__name__,
+                metric_name,
+                dimension_source,
+                span_start,
+                span_end,
+                grain,
+                kind,
+                df,
+                provider=type(self.inner).__name__,
             )
             logger.info(
                 "sliced snapshot written: %s by %s [%s, %s] %s",
-                metric_name, dimension_source, span_start, span_end, grain,
+                metric_name,
+                dimension_source,
+                span_start,
+                span_end,
+                grain,
             )
         except OSError as e:
             logger.warning(
                 "sliced snapshot write failed for %s by %s (%s); serving uncached.",
-                metric_name, dimension_source, e,
+                metric_name,
+                dimension_source,
+                e,
             )
         if (span_start, span_end) == (start_date, end_date):
             return df

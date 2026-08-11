@@ -8,6 +8,7 @@ rest of the system needs). It holds no state — callers own the trace cache.
 Window-over-window attribution (Shapley and posterior-based) lives in
 `breakdown.engine.rca`; only the pure Shapley computation is defined here.
 """
+
 import logging
 import math
 from dataclasses import dataclass, field
@@ -52,16 +53,18 @@ class FitResult:
     business-unit rendering) all need those pieces, so they are carried here.
     """
 
-    trace: Any                       # arviz.InferenceData
+    trace: Any  # arviz.InferenceData
     target: str
-    parents: List[str]               # regressor parents ([] for roots/formula nodes)
-    y_mean: float                    # of the fitted y series (residual for formula nodes)
+    parents: List[str]  # regressor parents ([] for roots/formula nodes)
+    y_mean: float  # of the fitted y series (residual for formula nodes)
     y_std: float
-    x_stds: Optional[np.ndarray]     # per-parent stds of the (lag-shifted) regressors, None if no X
-    dates: pd.DatetimeIndex          # period starts actually used in the fit (after lag trim and fit_end cut)
-    inference_method: str            # "nuts" | "advi"
-    fit_end: Optional[str] = None    # exclusive upper date bound of the fit; None = full window
-    grain: str = "day"               # the grain the fit ran at (the node's own)
+    x_stds: Optional[np.ndarray]  # per-parent stds of the (lag-shifted) regressors, None if no X
+    dates: (
+        pd.DatetimeIndex
+    )  # period starts actually used in the fit (after lag trim and fit_end cut)
+    inference_method: str  # "nuts" | "advi"
+    fit_end: Optional[str] = None  # exclusive upper date bound of the fit; None = full window
+    grain: str = "day"  # the grain the fit ran at (the node's own)
     diagnostics: Dict[str, Any] = field(default_factory=dict)  # populated by T8
 
 
@@ -121,8 +124,7 @@ def compute_shapley(
         return {}
 
     array_input = any(
-        isinstance(v, np.ndarray) and v.ndim > 0
-        for v in [*baselines.values(), *actuals.values()]
+        isinstance(v, np.ndarray) and v.ndim > 0 for v in [*baselines.values(), *actuals.values()]
     )
     b_arr = {p: np.atleast_1d(np.asarray(baselines[p], dtype=float)) for p in parent_names}
     a_arr = {p: np.atleast_1d(np.asarray(actuals[p], dtype=float)) for p in parent_names}
@@ -150,8 +152,7 @@ def compute_shapley(
                     for p in parent_names
                 }
                 vals_without = {
-                    p: a_arr[p] if p in coalition_set else b_arr[p]
-                    for p in parent_names
+                    p: a_arr[p] if p in coalition_set else b_arr[p] for p in parent_names
                 }
                 phi = phi + weight * (
                     eval_formula(formula, vals_with) - eval_formula(formula, vals_without)
@@ -234,7 +235,7 @@ def _advi_diagnostics(approx: Any) -> Dict[str, Any]:
     w = len(hist) // 10
     if w < 1:
         return {"fit_quality": "suspect", "method": "advi", "elbo_drop": None}
-    last, prev = hist[-w:], hist[-2 * w:-w]
+    last, prev = hist[-w:], hist[-2 * w : -w]
     elbo_drop = float(prev.mean() - last.mean())
     suspect = abs(last.mean() - prev.mean()) > 0.5 * last.std()
     return {
@@ -311,8 +312,7 @@ def _prepare_series(
         # each parent shifted back by its lag). Shift, trim the leading
         # max-lag rows, and fit the residual of the lagged identity.
         parent_arrays = {
-            p: data[p].shift(lags.get(p, 0)).values.astype(float)[max_lag:]
-            for p in parents
+            p: data[p].shift(lags.get(p, 0)).values.astype(float)[max_lag:] for p in parents
         }
         target_vals = data[target].values.astype(float)[max_lag:]
         residual = target_vals - eval_formula(defn.formula, parent_arrays)
@@ -580,17 +580,22 @@ def fit_metric(
 
         logger.info(
             "Sampling metric '%s' method=%s draws=%d tune=%d fit_end=%s",
-            target, inference_method, draws, tune, fit_end,
+            target,
+            inference_method,
+            draws,
+            tune,
+            fit_end,
         )
         if inference_method == "advi":
-            approx = pm.fit(
-                n=20_000, method="advi", progressbar=False, random_seed=random_seed
-            )
+            approx = pm.fit(n=20_000, method="advi", progressbar=False, random_seed=random_seed)
             trace = approx.sample(draws=draws, random_seed=random_seed)
             diagnostics = _advi_diagnostics(approx)
         else:
             trace = pm.sample(
-                draws=draws, tune=tune, target_accept=0.9, chains=chains,
+                draws=draws,
+                tune=tune,
+                target_accept=0.9,
+                chains=chains,
                 random_seed=random_seed,
             )
             diagnostics = _nuts_diagnostics(trace, draws, chains)
@@ -613,7 +618,9 @@ def fit_metric(
             if expected is None:
                 continue
             samples = arr[:, i]
-            p_expected = float((samples > 0).mean() if expected == "positive" else (samples < 0).mean())
+            p_expected = float(
+                (samples > 0).mean() if expected == "positive" else (samples < 0).mean()
+            )
             if p_expected < 0.10:
                 msg = (
                     f"Parent '{p}' on '{target}': declared {expected} effect, but "

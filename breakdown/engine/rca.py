@@ -93,8 +93,7 @@ def _validate_windows(
     ):
         if parsed[first] > parsed[second]:
             raise ValueError(
-                f"{first} ({dates[first]}) must be on or before {second} "
-                f"({dates[second]})."
+                f"{first} ({dates[first]}) must be on or before {second} ({dates[second]})."
             )
 
     if parsed["reference_end"] >= parsed["analysis_start"]:
@@ -179,9 +178,7 @@ def _window_values(
     (inclusive). Raises if the window is empty."""
     mask = (data["date"] >= start) & (data["date"] <= end)
     if not mask.any():
-        raise ValueError(
-            f"No data for '{col}' in window [{start.date()}, {end.date()}]"
-        )
+        raise ValueError(f"No data for '{col}' in window [{start.date()}, {end.date()}]")
     return data.loc[mask, col].values.astype(float)
 
 
@@ -301,8 +298,7 @@ def shapley_attribution(
             else ("analysis", analysis_start, analysis_end)
         )
         raise ValueError(
-            f"The {which} window [{s}, {e}] contains no whole '{grain}' period "
-            f"for '{target}'."
+            f"The {which} window [{s}, {e}] contains no whole '{grain}' period for '{target}'."
         )
     _validate_coverage(frame, target, grain, snapped_ref, snapped_an, defn.lags)
     ref_start, ref_end = snapped_ref.first_start, snapped_ref.last_start
@@ -420,8 +416,12 @@ def run_rca(
             ):
                 continue
             traces[(node, analysis_start)] = fit_metric(
-                dag, data, node, draws=advi_draws,
-                inference_method="advi", fit_end=analysis_start,
+                dag,
+                data,
+                node,
+                draws=advi_draws,
+                inference_method="advi",
+                fit_end=analysis_start,
                 random_seed=0,
             )
 
@@ -495,7 +495,8 @@ def run_rca(
             # [b*n, (b+1)*n) of the flattened per-day games).
             ref_vals = {
                 p: _window_values(
-                    frame, p,
+                    frame,
+                    p,
                     shift_periods(ref_start, -defn.lags.get(p, 0), grain),
                     shift_periods(ref_end, -defn.lags.get(p, 0), grain),
                 )
@@ -503,7 +504,8 @@ def run_rca(
             }
             an_vals = {
                 p: _window_values(
-                    frame, p,
+                    frame,
+                    p,
                     shift_periods(an_start, -defn.lags.get(p, 0), grain),
                     shift_periods(an_end, -defn.lags.get(p, 0), grain),
                 )
@@ -516,9 +518,7 @@ def run_rca(
             boot_ref_means = {p: ref_vals[p][ref_idx].mean(axis=1) for p in parents}
             boot_an_means = {p: an_vals[p][an_idx].mean(axis=1) for p in parents}
 
-            phi_means = compute_shapley(
-                defn.formula, parents, boot_ref_means, boot_an_means
-            )
+            phi_means = compute_shapley(defn.formula, parents, boot_ref_means, boot_an_means)
             phi_cov_an = compute_shapley(
                 defn.formula,
                 parents,
@@ -551,7 +551,9 @@ def run_rca(
             def _summary(point: float, samples: np.ndarray) -> Dict[str, Any]:
                 return {
                     "estimate": float(point),
-                    "ci_95": None if single_period else [
+                    "ci_95": None
+                    if single_period
+                    else [
                         float(np.percentile(samples, 2.5)),
                         float(np.percentile(samples, 97.5)),
                     ],
@@ -561,10 +563,9 @@ def run_rca(
             interaction_exact = 0.0
             for p in parents:
                 means_b = phi_means[p]
-                comovement_b = (
-                    phi_cov_an[p].reshape(_N_BOOT, n_an).mean(axis=1)
-                    - phi_cov_ref[p].reshape(_N_BOOT, n_ref).mean(axis=1)
-                )
+                comovement_b = phi_cov_an[p].reshape(_N_BOOT, n_an).mean(axis=1) - phi_cov_ref[
+                    p
+                ].reshape(_N_BOOT, n_ref).mean(axis=1)
                 interaction_b = interaction_b + comovement_b
                 phi_b = means_b + comovement_b
 
@@ -573,9 +574,7 @@ def run_rca(
                 # covariance_analysis - covariance_reference.
                 parts = sh["decomposition"][p]
                 means_exact = parts["means"]
-                comovement_exact = (
-                    parts["covariance_analysis"] - parts["covariance_reference"]
-                )
+                comovement_exact = parts["covariance_analysis"] - parts["covariance_reference"]
                 estimate = float(sh["attribution"][p])
                 interaction_exact += comovement_exact
 
@@ -583,13 +582,15 @@ def run_rca(
                     "parent": p,
                     "estimate": estimate,
                     "share_of_gap": (estimate / gap) if abs(gap) >= 1e-12 else None,
-                    "ci_95": None if single_period else [
+                    "ci_95": None
+                    if single_period
+                    else [
                         float(np.percentile(phi_b, 2.5)),
                         float(np.percentile(phi_b, 97.5)),
                     ],
-                    "prob_same_direction": None if single_period else float(
-                        max((phi_b > 0).mean(), (phi_b < 0).mean())
-                    ),
+                    "prob_same_direction": None
+                    if single_period
+                    else float(max((phi_b > 0).mean(), (phi_b < 0).mean())),
                     # Two-level view: the window-means bridge part and the
                     # co-movement (covariance/Jensen) shift part. They sum to
                     # `estimate` exactly — as exact values, not just in
@@ -633,9 +634,7 @@ def run_rca(
             t_ref = steps_between(
                 pd.DatetimeIndex(frame.loc[ref_mask, "date"]), fit.dates[0], grain
             )
-            t_an = steps_between(
-                pd.DatetimeIndex(frame.loc[an_mask, "date"]), fit.dates[0], grain
-            )
+            t_an = steps_between(pd.DatetimeIndex(frame.loc[an_mask, "date"]), fit.dates[0], grain)
 
             trend_samples = fit.trace.posterior["trend"].values.reshape(n_post, -1)
             if (t_ref < 0).any() or (t_ref >= trend_samples.shape[1]).any():
@@ -650,9 +649,7 @@ def run_rca(
             # level is flat at the last fitted state — so the analysis-window
             # trend is trend[-1], per posterior sample. Its CI reflects the
             # posterior of that last state, not forward simulation of new steps.
-            trend_delta = (
-                trend_samples[:, -1] - trend_samples[:, t_ref].mean(axis=1)
-            ) * fit.y_std
+            trend_delta = (trend_samples[:, -1] - trend_samples[:, t_ref].mean(axis=1)) * fit.y_std
             seasonal_delta = (
                 seasonal_window_delta(fit.trace, defn.seasonality, t_ref, t_an) * fit.y_std
             )
@@ -674,21 +671,25 @@ def run_rca(
                 # those `lag` grain steps earlier, so shift both windows back
                 # by whole periods (stays on the spine across month bounds).
                 p_ref_vals = _window_values(
-                    frame, p,
+                    frame,
+                    p,
                     shift_periods(ref_start, -lag, grain),
                     shift_periods(ref_end, -lag, grain),
                 )
                 p_an_vals = _window_values(
-                    frame, p,
+                    frame,
+                    p,
                     shift_periods(an_start, -lag, grain),
                     shift_periods(an_end, -lag, grain),
                 )
                 r_idx = (
-                    ref_idx if len(p_ref_vals) == ref_idx.shape[1]
+                    ref_idx
+                    if len(p_ref_vals) == ref_idx.shape[1]
                     else _block_bootstrap_indices(len(p_ref_vals), _N_BOOT, rng, block=block)
                 )
                 a_idx = (
-                    an_idx if len(p_an_vals) == an_idx.shape[1]
+                    an_idx
+                    if len(p_an_vals) == an_idx.shape[1]
                     else _block_bootstrap_indices(len(p_an_vals), _N_BOOT, rng, block=block)
                 )
                 delta_samples = p_an_vals[a_idx].mean(axis=1) - p_ref_vals[r_idx].mean(axis=1)
@@ -706,9 +707,7 @@ def run_rca(
                         float(np.percentile(samples, 2.5)),
                         float(np.percentile(samples, 97.5)),
                     ],
-                    "prob_same_direction": float(
-                        max((samples > 0).mean(), (samples < 0).mean())
-                    ),
+                    "prob_same_direction": float(max((samples > 0).mean(), (samples < 0).mean())),
                 }
                 # Lagged parents were measured over their own earlier windows;
                 # surface which ones. Keys absent entirely when unlagged.
@@ -787,9 +786,7 @@ def _rank_causes(dag, target, nodes_in_scope, nodes_out):
                 via[parent] = child
 
     ranked = [
-        {"metric": n, "score": score[n], "via": via.get(n)}
-        for n in nodes_in_scope
-        if n != target
+        {"metric": n, "score": score[n], "via": via.get(n)} for n in nodes_in_scope if n != target
     ]
     ranked.sort(key=lambda r: r["score"], reverse=True)
     return ranked

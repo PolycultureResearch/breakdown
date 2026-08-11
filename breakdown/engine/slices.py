@@ -188,8 +188,7 @@ def slice_attribution(
             else ("analysis", analysis_start, analysis_end)
         )
         raise ValueError(
-            f"The {which} window [{s}, {e}] contains no whole '{grain}' period "
-            f"for '{defn.name}'."
+            f"The {which} window [{s}, {e}] contains no whole '{grain}' period for '{defn.name}'."
         )
     ref_dates = period_spine(snapped_ref.first_start, snapped_ref.last_end, grain)
     an_dates = period_spine(snapped_an.first_start, snapped_an.last_end, grain)
@@ -221,9 +220,7 @@ def slice_attribution(
     if spec.values is not None:
         absent = [v for v in spec.values if str(v) not in wide.columns]
         if absent:
-            caveats.append(
-                f"Pinned values not present in fetched data: {absent}."
-            )
+            caveats.append(f"Pinned values not present in fetched data: {absent}.")
 
     if kind == "rate":
         if weight_sliced is None:
@@ -233,35 +230,53 @@ def slice_attribution(
                 "blended rate."
             )
         result = _rate_attribution(
-            defn, spec, wide, _pivot(weight_sliced, f"weight '{spec.weight}'"),
-            u_series, ref_dates, an_dates, all_dates, rng, block, single_period,
+            defn,
+            spec,
+            wide,
+            _pivot(weight_sliced, f"weight '{spec.weight}'"),
+            u_series,
+            ref_dates,
+            an_dates,
+            all_dates,
+            rng,
+            block,
+            single_period,
             caveats,
         )
     else:
         result = _sum_attribution(
-            defn, spec, wide, u_series, ref_dates, an_dates, all_dates,
-            rng, block, single_period, caveats,
+            defn,
+            spec,
+            wide,
+            u_series,
+            ref_dates,
+            an_dates,
+            all_dates,
+            rng,
+            block,
+            single_period,
+            caveats,
         )
 
-    result.update({
-        "metric": defn.name,
-        "dimension": dimension,
-        "dimension_source": spec.source,
-        "grain": grain,
-        "kind": kind,
-        "effective_windows": {
-            "reference": _window_info(snapped_ref),
-            "analysis": _window_info(snapped_an),
-        },
-        "ci_status": "degenerate_single_period" if single_period else "ok",
-        "caveats": caveats,
-    })
+    result.update(
+        {
+            "metric": defn.name,
+            "dimension": dimension,
+            "dimension_source": spec.source,
+            "grain": grain,
+            "kind": kind,
+            "effective_windows": {
+                "reference": _window_info(snapped_ref),
+                "analysis": _window_info(snapped_an),
+            },
+            "ci_status": "degenerate_single_period" if single_period else "ok",
+            "caveats": caveats,
+        }
+    )
     return result
 
 
-def _excess_fields(
-    excess_b: Optional[np.ndarray], single_period: bool
-) -> Dict[str, Any]:
+def _excess_fields(excess_b: Optional[np.ndarray], single_period: bool) -> Dict[str, Any]:
     """CI / direction-probability fields for one slice's excess replicates."""
     if single_period or excess_b is None:
         return {"ci_95": None, "prob_concentrated": None, "noise_level": None}
@@ -287,8 +302,17 @@ def _excess_fields(
 
 
 def _sum_attribution(
-    defn, spec, wide, u_series, ref_dates, an_dates, all_dates,
-    rng, block, single_period, caveats,
+    defn,
+    spec,
+    wide,
+    u_series,
+    ref_dates,
+    an_dates,
+    all_dates,
+    rng,
+    block,
+    single_period,
+    caveats,
 ) -> Dict[str, Any]:
     """Flows and stocks: the sum identity's closed-form attribution.
 
@@ -330,7 +354,7 @@ def _sum_attribution(
         # One index set per window shared across slices (joint resampling), so
         # cross-slice correlation within a window is preserved — same rationale
         # as tree RCA's cross-parent joint bootstrap.
-        ref_means_b = X_ref[ref_idx].mean(axis=1)   # (n_boot, m)
+        ref_means_b = X_ref[ref_idx].mean(axis=1)  # (n_boot, m)
         an_means_b = X_an[an_idx].mean(axis=1)
         total_ref_b = ref_means_b.sum(axis=1)
         total_an_b = an_means_b.sum(axis=1)
@@ -355,9 +379,7 @@ def _sum_attribution(
             "baseline_share": float(baseline_share[j]) if have_share else None,
             "excess": float(excess[j]) if have_share else None,
         }
-        row.update(_excess_fields(
-            excess_b[:, j] if excess_b is not None else None, single_period
-        ))
+        row.update(_excess_fields(excess_b[:, j] if excess_b is not None else None, single_period))
         if g == _OTHER:
             row["n_values"] = len(wide.columns) - len(kept)
         rows.append(row)
@@ -392,9 +414,7 @@ def _sum_attribution(
     }
 
 
-def _window_aggregates(
-    W: np.ndarray, R: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray]:
+def _window_aggregates(W: np.ndarray, R: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """(shares, weighted rates) per slice for one window (or, with a leading
     replicate axis, per bootstrap replicate). `W`/`R` are (..., n_dates, m)."""
     weight = W.sum(axis=-2)
@@ -426,8 +446,18 @@ def _bennet(
 
 
 def _rate_attribution(
-    defn, spec, wide, weights, u_series, ref_dates, an_dates, all_dates,
-    rng, block, single_period, caveats,
+    defn,
+    spec,
+    wide,
+    weights,
+    u_series,
+    ref_dates,
+    an_dates,
+    all_dates,
+    rng,
+    block,
+    single_period,
+    caveats,
 ) -> Dict[str, Any]:
     """Rates: the weight-blended mix/within decomposition."""
     weights = weights.reindex(all_dates).fillna(0.0)
@@ -435,14 +465,12 @@ def _rate_attribution(
     orphan_rates = [c for c in wide.columns if c not in set(weights.columns)]
     if orphan_rates:
         caveats.append(
-            f"Slices with a rate but no weight in '{spec.weight}' were dropped: "
-            f"{orphan_rates[:5]}."
+            f"Slices with a rate but no weight in '{spec.weight}' were dropped: {orphan_rates[:5]}."
         )
     orphan_weights = [c for c in weights.columns if c not in set(wide.columns)]
     if orphan_weights:
         caveats.append(
-            f"Slices with weight in '{spec.weight}' but no rate were dropped: "
-            f"{orphan_weights[:5]}."
+            f"Slices with weight in '{spec.weight}' but no rate were dropped: {orphan_weights[:5]}."
         )
     wide = wide[common]
     weights = weights[common]
@@ -535,9 +563,7 @@ def _rate_attribution(
             "share_of_gap": float(contribution[j] / gap) if abs(gap) >= 1e-12 else None,
             "excess": float(excess[j]),
         }
-        row.update(_excess_fields(
-            excess_b[:, j] if excess_b is not None else None, single_period
-        ))
+        row.update(_excess_fields(excess_b[:, j] if excess_b is not None else None, single_period))
         if g == _OTHER:
             row["n_values"] = len(folded)
         rows.append(row)

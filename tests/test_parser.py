@@ -633,7 +633,7 @@ metrics:
 
     assert Parser(yaml_for("none")).config.provider.type == "none"
     assert Parser(yaml_for("assumed")).config.provider.type == "none"
-    with pytest.raises(Exception, match="mock, local, cloud, warehouse, none"):
+    with pytest.raises(Exception, match="mock, local, cloud, dbt, warehouse, none"):
         Parser(yaml_for("nonsense"))
 
 

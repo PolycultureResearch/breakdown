@@ -17,6 +17,9 @@ breakdown/
                    # resample_up, GrainedData (per-grain frames), BOOT_BLOCK
   data_fetch.py    # BaseDataFetcher + Mock / Local / Cloud / Warehouse implementations
                    # (provider SDKs are optional extras — imported lazily, never at module scope)
+  dbt_bridge.py    # dbt's target/semantic_manifest.json → BindingSpec per node (MSI, no dbt Cloud)
+  dbt_sql.py       # BindingSpec + grain + window (+ dimension) → dialect SQL via sqlglot
+  dbt_provider.py  # the `dbt` provider: profiles.yml → connection → generated SQL → spine
   engine/
     model.py       # fit_metric() — BSTS via PyMC; compute_shapley(); summarize_trace()
     rca.py         # run_rca() + shapley_attribution() — all window-over-window attribution
@@ -117,6 +120,147 @@ The correlated jaffle-shop dataset used by tests lives in `tests/synthetic.py` (
 A read-through cache **at the `BaseDataFetcher` boundary**: `SnapshotFetcher` wraps the real fetcher; a hit returns the stored frame without touching the provider, a miss fetches, writes, and returns. One parquet file per `(metric, grain, kind, window)` plus a human-facing `manifest.json` (provider class, fetched_at, rows). Wiring lives in `api/main.py:_wrap_snapshots`, called in `lifespan` after `_build_fetcher`: mock is never wrapped; directory = `BREAKDOWN_SNAPSHOT_DIR` (`"off"` disables) or tree-adjacent `.breakdown/snapshots`; `BREAKDOWN_REFRESH=1` skips reads but still writes (one forced refetch pass). Failure-soft by design: an unwritable directory logs one warning and serves uncached (`/config` is read-only in the container, so `compose.yaml` mounts `./snapshots` and points `BREAKDOWN_SNAPSHOT_DIR` at it). Snapshots capture the **normalized** post-gap-fill frame, so what refits is byte-identical to what was originally served — and a tree whose metrics all have snapshots boots with the warehouse down. The doctor deliberately bypasses snapshots (it constructs raw fetchers) — its job is proving the provider path.
 
 ---
+
+## `dbt_bridge.py`
+
+Translates a dbt project's own `target/semantic_manifest.json` — written by
+plain `dbt parse` on **dbt Core**, with no dbt Cloud, SL credential or plan tier
+— into `BindingSpec` objects (roadmap 2.10). `translate(manifest)` returns a
+`BridgeResult` of `bindings`, `formulas`, `skipped`, plus inferred `grains` and
+`kinds`.
+
+**Parse with `metricflow_semantic_interfaces` (MSI), never
+`dbt_semantic_interfaces` (DSI).** This is the module's load-bearing decision.
+DSI is deprecated, and against a manifest in dbt's new metrics spec it does not
+fail — it ignores the fields it does not recognise, returns every simple metric
+with **no aggregation at all**, and then validates with zero errors. `_require_msi`
+is the only import path, and there is deliberately no DSI fallback.
+
+Both manifest shapes are supported and must stay so: the **classic** spec puts
+the aggregation on a `measure` the metric points at, while the **new spec** (and
+Fusion) drops the measure layer and puts it inline on
+`type_params.metric_aggregation_params`, with the aggregated column mirrored on
+`type_params.expr`. A metric resolving to neither is reported, not defaulted.
+Note `is_private` — dbt's marker for metrics auto-created during the new-spec
+migration — lives on `type_params`, not on the metric.
+
+`ratio` and `derived` metrics become **formula candidates, not bindings**: a
+MetricFlow ratio references two other *metrics*, so it maps onto a formula edge
+whose parents carry their own bindings, which is both more faithful and exactly
+the "fetch numerator and denominator separately" that ratio decomposition needs.
+Candidate formulas are checked against breakdown's own `validate_formula` before
+being accepted, because MetricFlow `expr` is raw SQL and breakdown formulas are
+arithmetic over metric names — `mrr / nullif(subs, 0)` is a real example that
+does not translate, and dropping the null guard would change behaviour at zero.
+
+Everything untranslatable lands in `skipped` with a reason naming the construct
+rather than raising, so one run reports every problem: aggregations with no
+additive decomposition (`min`/`max`/`median`/`percentile`), `cumulative` and
+`conversion` metrics, `non_additive_dimension` (its MIN/MAX filter is applied
+per grain window, so it is query-grain-dependent), offset inputs, models with no
+primary entity (nothing to assert the grain against), and granularities coarser
+than `month`.
+
+Ships in the `dbt-bridge` extra (`metricflow`, `sqlglot`) — deliberately *not*
+the `dbt` extra, since it needs neither dbt-core, an adapter, nor the `mf`
+binary. The `dbt` extra's `dbt-metricflow` floor is `>=0.13.0` precisely so the
+two can coexist: 0.10.1 pinned `metricflow==0.208.1`, which predates MSI.
+
+## `dbt_sql.py`
+
+Compiles a `BindingSpec` into the one query the engine ever asks for:
+`build_query(bind, grain=…, start_date=…, end_date=…, dialect=…, dimension=…)`
+returns dialect SQL selecting `[date, value]`, or `[date, slice, value]` when a
+dimension is named. `build_grain_assertion(bind)` returns the fan-out check.
+sqlglot does the dialect transpilation; `dialect_for_adapter` maps a dbt adapter
+type onto a sqlglot dialect and warns (rather than guessing) on an unknown one.
+
+Three details are load-bearing, and all three are pinned by tests that **execute
+the generated SQL against DuckDB** rather than matching strings — a builder that
+emits plausible SQL with the wrong bound is exactly the failure class the engine
+exists to avoid:
+
+- **Weeks are forced to ISO Monday per dialect.** `DATE_TRUNC('week', …)` is
+  Monday on DuckDB/Postgres and Spark's `TRUNC(…, 'WEEK')` is too, but BigQuery
+  defaults `WEEK` to *Sunday* and Snowflake honours the session's `WEEK_START`.
+  Either would shift every bucket's composition by up to six days while still
+  producing exactly one label per week, so nothing downstream could detect it —
+  and `grains.floor_period` would relabel the bucket to the previous Monday,
+  landing it on the spine and hiding the shift completely. So BigQuery gets
+  `ISOWEEK` and Snowflake a `DAYOFWEEKISO` offset, both session-independent.
+- **The window bound is half-open on `end + 1 day`.** breakdown windows are
+  inclusive, but `<= end_date` against a *timestamp* column drops everything
+  after midnight on the last day — roughly 1/31 of a monthly figure, silently.
+- **`agg: count` emits `COUNT(measure)`, never `COUNT(*)`.** MetricFlow's
+  `count` is null-guarded (it desugars to `SUM(CASE WHEN x IS NOT NULL …)`), and
+  `COUNT(x)` is exactly that. `COUNT(*)` would include rows the source excludes.
+
+`agg: ratio` divides two separately-aggregated measures with a `NULLIF` guard,
+so a zero denominator stays NULL and reaches `_align_to_spine`, which refuses to
+gap-fill a rate rather than inventing a zero. `agg: last` raises
+`UnsupportedBinding`: a stock's per-period last snapshot needs a window function
+and, with an entity, the stock-and-flow treatment of the design doc §8 — so it
+is refused rather than approximated, with `bind.sql` as the escape hatch.
+
+Joins are many-to-one only and emitted as `LEFT JOIN`, so fan-out is
+definitionally impossible; `build_grain_assertion` proves the claim by comparing
+`COUNT(*)` against `COUNT(DISTINCT grain_key)`.
+
+## `dbt_provider.py`
+
+The `dbt` provider. Joins the three preceding pieces — manifest → binding → SQL
+— to a connection resolved from the project's **own `profiles.yml`**, so the
+practitioner supplies no new credentials. `fetcher_from_project(path, target=…,
+profiles_dir=…, overrides=…)` is the entry point; `_build_fetcher` calls it for
+`provider.type == "dbt"`.
+
+It lives outside `data_fetch.py` on purpose: `dbt_sql` and `dbt_bridge` both
+import from there, so a fetcher in `data_fetch` would close an import cycle.
+`SnapshotFetcher` in `snapshots.py` is the same shape.
+
+`connect` is a **zero-argument callable**, not a live connection, so the fetcher
+constructs without touching the warehouse — a tree whose metrics all have
+snapshots has to boot with the warehouse down, the same rule `LocalDataFetcher`
+follows for `mf`.
+
+`resolve_profile` reads `dbt_project.yml` for the `profile:` name, then that
+profile's target from `profiles.yml` (searching `profiles_dir` →
+`$DBT_PROFILES_DIR` → the project dir → `~/.dbt`). It renders `env_var()` and
+**refuses any other Jinja** rather than passing a template through to a driver,
+because `{{ var('x') }}` arriving as a literal password fails unreadably.
+Connectors are one function per adapter (`databricks`, `duckdb`, `postgres`,
+`snowflake`), each importing its driver lazily and naming the package to
+install — breakdown ships no warehouse drivers of its own beyond the existing
+`databricks` extra, since the driver a user needs is the one their dbt adapter
+already depends on.
+
+`fetch_metric_sliced` builds `[date, slice, value]` **directly** rather than via
+`_sliced_long`, which finds its date column by looking for `metric_time` — a
+MetricFlow name this provider never emits, because it names the column itself.
+
+Slicing a **non-additive** binding logs why its slices will not sum: measured on
+a real warehouse, `active_subscription_count` sliced by status gave 2,106
+against an unsliced 2,069, because one subscription changing status inside a day
+is counted once in the total and once per status. That is deduplication overlap
+rather than an unexplained cause, and saying so is what keeps the slice panel
+honest until roadmap 3.8 decomposes at the grain where the metric becomes a sum.
+
+`check_grain(name)` runs the fan-out assertion; `last_sql` records the statement
+behind each number, which is the hook 2.11 reads.
+
+`doctor`'s `check_dbt` walks the chain in the order failures actually cascade —
+semantic manifest → dbt profile → warehouse connection → tree metrics bind →
+declared dimensions exist → grain claims hold — skipping the rest rather than
+reporting the same root cause six times. Two of those are worth their place:
+**declared dimensions** turns a 500 on the first *slice by* click into a startup
+failure (the same too-late class as C12), and **grain claims** is the check no
+other semantic layer makes, since MetricFlow and Cube accept declared
+relationships on trust.
+
+**`provider_query_name`** (in `data_fetch.py`) replaced a ternary duplicated at
+three call sites — startup fetch, sliced fetch, and doctor's fit-readiness check
+— which had to be edited in all three to add a provider. Missing one shipped a
+provider that worked at startup and failed on slice.
 
 ## `engine/model.py`
 

@@ -19,7 +19,32 @@ logger = logging.getLogger(__name__)
 # Which extra ships each provider's SDK. The base install deliberately carries
 # none of them, so every provider dependency is imported at the point of use
 # and a missing one is reported as a fixable install, not a traceback.
-PROVIDER_EXTRAS = {"cloud": "dbt", "local": "dbt", "warehouse": "databricks"}
+PROVIDER_EXTRAS = {
+    "cloud": "dbt",
+    "local": "dbt",
+    "dbt": "dbt-bridge",
+    "warehouse": "databricks",
+}
+
+
+# Providers keyed by the tree's own metric name rather than by `source`. The
+# semantic-layer providers (`local`, `cloud`, `dbt`) address their source system
+# by the last segment of `source`; `mock` and `warehouse` resolve the tree name
+# directly, because the tree *is* their addressing scheme.
+_NAME_KEYED_PROVIDERS = ("mock", "warehouse")
+
+
+def provider_query_name(provider_type: str, metric) -> str:
+    """The name to ask `provider_type` for `metric` by.
+
+    One function rather than the ternary this replaces, which lived at three
+    call sites (startup fetch, sliced fetch, doctor's fit-readiness check) and
+    had to be found and edited in all three to add a provider — the kind of
+    duplication that ships a provider working at startup and broken on slice.
+    """
+    if provider_type in _NAME_KEYED_PROVIDERS:
+        return metric.name
+    return metric.source.split(".")[-1]
 
 
 class MissingProviderExtra(RuntimeError):
@@ -60,7 +85,13 @@ def provider_extra_missing(provider: str) -> Optional[str]:
         if shutil.which("mf") is None:
             return _extra_hint(provider, extra, "`mf` not found on PATH")
         return None
-    modules = {"cloud": ("dbtsl",), "warehouse": ("databricks.sql", "databricks.sdk")}[provider]
+    modules = {
+        "cloud": ("dbtsl",),
+        # MSI ships inside the metricflow wheel, so the distribution name says
+        # nothing about whether the module is importable — probe the module.
+        "dbt": ("metricflow_semantic_interfaces", "sqlglot"),
+        "warehouse": ("databricks.sql", "databricks.sdk"),
+    }[provider]
     for module in modules:
         # `databricks` is a namespace package split across two distributions,
         # so only the dotted submodule proves the right one is installed.
@@ -95,7 +126,8 @@ def _to_naive_dates(df: pd.DataFrame, metric_name: str) -> pd.DataFrame:
             "Metric '%s': date column is timezone-aware (%s); dropping the zone "
             "and keeping the labelled date. Return DATE rather than TIMESTAMP to "
             "make this explicit.",
-            metric_name, idx.tz,
+            metric_name,
+            idx.tz,
         )
         idx = idx.tz_localize(None)
     df["date"] = idx
@@ -112,7 +144,8 @@ def _floor_labels(df: pd.DataFrame, metric_name: str, grain: str) -> pd.DataFram
         logger.warning(
             "Metric '%s': %s-grain labels were not on period starts; flooring "
             "(weeks assume ISO Monday weeks).",
-            metric_name, grain,
+            metric_name,
+            grain,
         )
         df = df.copy()
         df["date"] = floored
@@ -181,7 +214,10 @@ def _align_to_spine(
         logger.warning(
             "Metric '%s': %d interior %s period(s) had no row and were filled "
             "(%s → %s); %s. A gap in the source is not the same as a zero.",
-            metric_name, len(interior), grain, ", ".join(shown),
+            metric_name,
+            len(interior),
+            grain,
+            ", ".join(shown),
             "0.0" if kind == "flow" else "the previous value",
             "…" if len(interior) > 5 else "that is all of them",
         )
@@ -219,17 +255,26 @@ class BaseDataFetcher(ABC):
     `kind` (flow/stock/rate) determines gap-filling semantics where the
     provider reindexes onto a period spine.
     """
+
     @abstractmethod
     def fetch_metric(
-        self, metric_name: str, start_date: str, end_date: str,
-        grain: str = "day", kind: str = "flow",
+        self,
+        metric_name: str,
+        start_date: str,
+        end_date: str,
+        grain: str = "day",
+        kind: str = "flow",
     ) -> pd.DataFrame:
         pass
 
     def fetch_metric_sliced(
-        self, metric_name: str, dimension_source: str,
-        start_date: str, end_date: str,
-        grain: str = "day", kind: str = "flow",
+        self,
+        metric_name: str,
+        dimension_source: str,
+        start_date: str,
+        end_date: str,
+        grain: str = "day",
+        kind: str = "flow",
     ) -> pd.DataFrame:
         """The metric grouped by one business dimension, long format
         `[date, slice, value]` — one row per (period, dimension value).
@@ -253,13 +298,10 @@ def _sliced_long(df: pd.DataFrame, metric_name: str, grain: str) -> pd.DataFrame
             f"No metric_time column in sliced result for '{metric_name}'. "
             f"Columns: {list(df.columns)}"
         )
-    value_col = next(
-        (c for c in df.columns if c.lower() == metric_name.lower()), None
-    )
+    value_col = next((c for c in df.columns if c.lower() == metric_name.lower()), None)
     if value_col is None:
         raise RuntimeError(
-            f"No '{metric_name}' value column in sliced result. "
-            f"Columns: {list(df.columns)}"
+            f"No '{metric_name}' value column in sliced result. Columns: {list(df.columns)}"
         )
     dim_cols = [c for c in df.columns if c not in (date_col, value_col)]
     if len(dim_cols) != 1:
@@ -267,20 +309,19 @@ def _sliced_long(df: pd.DataFrame, metric_name: str, grain: str) -> pd.DataFrame
             f"Expected exactly one dimension column in sliced result for "
             f"'{metric_name}'; got {dim_cols or 'none'}."
         )
-    out = df.rename(
-        columns={date_col: "date", dim_cols[0]: "slice", value_col: "value"}
-    )[["date", "slice", "value"]].copy()
+    out = df.rename(columns={date_col: "date", dim_cols[0]: "slice", value_col: "value"})[
+        ["date", "slice", "value"]
+    ].copy()
     out["date"] = pd.to_datetime(out["date"])
     out = _floor_labels(out, metric_name, grain)
-    out["slice"] = out["slice"].map(
-        lambda v: "__null__" if pd.isna(v) else str(v)
-    )
+    out["slice"] = out["slice"].map(lambda v: "__null__" if pd.isna(v) else str(v))
     out["value"] = out["value"].astype(float)
     return out.sort_values(["date", "slice"]).reset_index(drop=True)
 
 
 class CloudDataFetcher(BaseDataFetcher):
     """Fetches data from the dbt Semantic Layer (Cloud) using the official SDK."""
+
     def __init__(self, environment_id: str, host: str, token: str):
         SemanticLayerClient = _require_module("dbtsl", "cloud", "dbt").SemanticLayerClient
         self.client = SemanticLayerClient(
@@ -290,8 +331,12 @@ class CloudDataFetcher(BaseDataFetcher):
         )
 
     def fetch_metric(
-        self, metric_name: str, start_date: str, end_date: str,
-        grain: str = "day", kind: str = "flow",
+        self,
+        metric_name: str,
+        start_date: str,
+        end_date: str,
+        grain: str = "day",
+        kind: str = "flow",
     ) -> pd.DataFrame:
         grain_dim = f"metric_time__{grain}"
         with self.client.session():
@@ -314,9 +359,13 @@ class CloudDataFetcher(BaseDataFetcher):
         )
 
     def fetch_metric_sliced(
-        self, metric_name: str, dimension_source: str,
-        start_date: str, end_date: str,
-        grain: str = "day", kind: str = "flow",
+        self,
+        metric_name: str,
+        dimension_source: str,
+        start_date: str,
+        end_date: str,
+        grain: str = "day",
+        kind: str = "flow",
     ) -> pd.DataFrame:
         grain_dim = f"metric_time__{grain}"
         with self.client.session():
@@ -333,6 +382,7 @@ class CloudDataFetcher(BaseDataFetcher):
 
 class LocalDataFetcher(BaseDataFetcher):
     """Fetches data from a local dbt project by invoking the MetricFlow CLI."""
+
     def __init__(self, project_path: str):
         self.project_path = project_path
         logger.info("Initialized LocalDataFetcher for project at %s", project_path)
@@ -361,12 +411,18 @@ class LocalDataFetcher(BaseDataFetcher):
             try:
                 result = subprocess.run(
                     [
-                        "mf", "query",
-                        "--metrics", metric_name,
-                        "--group-by", group_by,
-                        "--start-time", start_date,
-                        "--end-time", end_date,
-                        "--csv", tmp_path,
+                        "mf",
+                        "query",
+                        "--metrics",
+                        metric_name,
+                        "--group-by",
+                        group_by,
+                        "--start-time",
+                        start_date,
+                        "--end-time",
+                        end_date,
+                        "--csv",
+                        tmp_path,
                     ],
                     cwd=self.project_path,
                     capture_output=True,
@@ -385,15 +441,19 @@ class LocalDataFetcher(BaseDataFetcher):
                 os.unlink(tmp_path)
 
     def fetch_metric(
-        self, metric_name: str, start_date: str, end_date: str,
-        grain: str = "day", kind: str = "flow",
+        self,
+        metric_name: str,
+        start_date: str,
+        end_date: str,
+        grain: str = "day",
+        kind: str = "flow",
     ) -> pd.DataFrame:
-        df = self._run_mf_query(
-            metric_name, f"metric_time__{grain}", start_date, end_date
-        )
+        df = self._run_mf_query(metric_name, f"metric_time__{grain}", start_date, end_date)
         date_col = next((c for c in df.columns if "metric_time" in c.lower()), None)
         if date_col is None:
-            raise RuntimeError(f"No metric_time column found in mf output. Columns: {list(df.columns)}")
+            raise RuntimeError(
+                f"No metric_time column found in mf output. Columns: {list(df.columns)}"
+            )
         df = df.rename(columns={date_col: "date"})
         df = _to_naive_dates(df, metric_name)
         df = _floor_labels(df, metric_name, grain)
@@ -403,14 +463,19 @@ class LocalDataFetcher(BaseDataFetcher):
         )
 
     def fetch_metric_sliced(
-        self, metric_name: str, dimension_source: str,
-        start_date: str, end_date: str,
-        grain: str = "day", kind: str = "flow",
+        self,
+        metric_name: str,
+        dimension_source: str,
+        start_date: str,
+        end_date: str,
+        grain: str = "day",
+        kind: str = "flow",
     ) -> pd.DataFrame:
         df = self._run_mf_query(
             metric_name,
             f"metric_time__{grain},{dimension_source}",
-            start_date, end_date,
+            start_date,
+            end_date,
         )
         return _sliced_long(df, metric_name, grain)
 
@@ -442,6 +507,7 @@ class WarehouseDataFetcher(BaseDataFetcher):
     With a profile, credentials come from the Databricks SDK's unified auth and
     `host` defaults to the profile's host — no long-lived secret in the config.
     """
+
     def __init__(
         self,
         host: Optional[str],
@@ -506,8 +572,12 @@ class WarehouseDataFetcher(BaseDataFetcher):
         return self._con.cursor()
 
     def fetch_metric(
-        self, metric_name: str, start_date: str, end_date: str,
-        grain: str = "day", kind: str = "flow",
+        self,
+        metric_name: str,
+        start_date: str,
+        end_date: str,
+        grain: str = "day",
+        kind: str = "flow",
     ) -> pd.DataFrame:
         sql = self.metric_sql.get(metric_name)
         if sql is None:
@@ -630,6 +700,7 @@ class MockDataFetcher(BaseDataFetcher):
     negative effect really is generated negative. Flows and stocks are
     unchanged, which keeps all-flow trees byte-identical.
     """
+
     def __init__(self, dag: Optional[nx.DiGraph] = None):
         self.dag = dag
         self._cache: Dict[Tuple[str, str], Dict[str, pd.Series]] = {}
@@ -683,9 +754,7 @@ class MockDataFetcher(BaseDataFetcher):
                         vals_p = arrs[p]
                         lag = defn.lags.get(p, 0)
                         if lag > 0:
-                            vals_p = np.concatenate(
-                                [np.full(lag, vals_p[0]), vals_p[:-lag]]
-                            )
+                            vals_p = np.concatenate([np.full(lag, vals_p[0]), vals_p[:-lag]])
                         shifted[p] = vals_p
                     base = eval_formula(defn.formula, shifted)
                     noise_scale = 0.02 * float(np.abs(base).mean()) or 1.0
@@ -702,9 +771,7 @@ class MockDataFetcher(BaseDataFetcher):
                             parent_vals = np.concatenate(
                                 [np.full(lag, parent_vals[0]), parent_vals[:-lag]]
                             )
-                        coef = _mock_coef(
-                            defn.priors.get(p) or defn.priors.get("coefficient"), rng
-                        )
+                        coef = _mock_coef(defn.priors.get(p) or defn.priors.get("coefficient"), rng)
                         # On a rate child the coefficient is a per-unit effect
                         # *on the rate*, not a share of the parent's level, so
                         # `sum(coef * parent)` would put a conversion rate on
@@ -724,9 +791,7 @@ class MockDataFetcher(BaseDataFetcher):
                         sd = float(signal.std())
                         if sd > 0:
                             signal = signal * (0.12 * base / sd)
-                        vals = np.clip(
-                            base + signal + rng.normal(0, 0.03 * base, n), lo, hi
-                        )
+                        vals = np.clip(base + signal + rng.normal(0, 0.03 * base, n), lo, hi)
                     else:
                         noise_scale = 0.05 * float(np.abs(signal).mean()) or 1.0
                         vals = signal + rng.normal(0, noise_scale, n)
@@ -759,8 +824,12 @@ class MockDataFetcher(BaseDataFetcher):
         return series
 
     def fetch_metric(
-        self, metric_name: str, start_date: str, end_date: str,
-        grain: str = "day", kind: str = "flow",
+        self,
+        metric_name: str,
+        start_date: str,
+        end_date: str,
+        grain: str = "day",
+        kind: str = "flow",
     ) -> pd.DataFrame:
         start = pd.to_datetime(start_date)
         end = pd.to_datetime(end_date)
@@ -787,11 +856,7 @@ class MockDataFetcher(BaseDataFetcher):
         reconcile exactly against the served data."""
         s_ts, e_ts = pd.to_datetime(start_date), pd.to_datetime(end_date)
         for (cs, ce), series in self._cache.items():
-            if (
-                pd.to_datetime(cs) <= s_ts
-                and pd.to_datetime(ce) >= e_ts
-                and metric_name in series
-            ):
+            if pd.to_datetime(cs) <= s_ts and pd.to_datetime(ce) >= e_ts and metric_name in series:
                 s = series[metric_name]
                 return s[(s.index >= s_ts) & (s.index <= e_ts)]
         return None
@@ -822,18 +887,20 @@ class MockDataFetcher(BaseDataFetcher):
         return names, shares
 
     def fetch_metric_sliced(
-        self, metric_name: str, dimension_source: str,
-        start_date: str, end_date: str,
-        grain: str = "day", kind: str = "flow",
+        self,
+        metric_name: str,
+        dimension_source: str,
+        start_date: str,
+        end_date: str,
+        grain: str = "day",
+        kind: str = "flow",
     ) -> pd.DataFrame:
         s = None
         if self.dag is not None and metric_name in self.dag:
             s = self._covering_series(metric_name, start_date, end_date)
         if s is None:
             df = self.fetch_metric(metric_name, start_date, end_date, grain, kind)
-            s = pd.Series(
-                df[metric_name].to_numpy(), index=pd.DatetimeIndex(df["date"])
-            )
+            s = pd.Series(df[metric_name].to_numpy(), index=pd.DatetimeIndex(df["date"]))
         dates = pd.DatetimeIndex(s.index)
         names, shares = self._share_curves(dimension_source, dates)
         total = s.to_numpy(dtype=float)
