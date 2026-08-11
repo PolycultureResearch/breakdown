@@ -553,3 +553,67 @@ def test_a_declared_resolution_clears_the_check(tmp_path, resolve):
     r = _results(tree)["entity grain resolves"]
     assert r.status == "pass"
     assert "resolve to one value per period" in r.detail
+
+
+# --- `local` supersession (roadmap 2.13) ------------------------------------
+#
+# `local` is superseded for most trees but not all: it hands a metric name to
+# MetricFlow, which plans the SQL, so it serves constructs the `dbt` provider
+# refuses. The check reports on the tree in front of it rather than asserting
+# the general claim, because the general claim is false.
+
+
+def _local_tree(project, metrics="  - name: revenue\n    source: dbt.metrics.revenue\n"):
+    return f"provider:\n  type: local\n  project_path: {project}\nmetrics:\n{metrics}"
+
+
+def _migration(tree_yaml):
+    from breakdown.doctor import _check_local_migration
+    from breakdown.parser import Parser
+
+    return _check_local_migration(Parser(tree_yaml).config)
+
+
+def test_a_fully_translatable_tree_is_told_it_can_move(tmp_path):
+    r = _migration(_local_tree(_dbt_project(tmp_path)))
+    assert r.status == "pass"
+    assert "all 1 metric(s) translate" in r.detail
+    assert "drop the `mf` binary" in r.detail
+
+
+def test_a_tree_needing_metricflow_is_told_to_stay(tmp_path):
+    # A cumulative metric is exactly the case the dbt provider refuses and
+    # MetricFlow serves.
+    project = _dbt_project(
+        tmp_path,
+        metrics=[
+            {"name": "revenue", "type": "simple", "type_params": {"measure": {"name": "revenue"}}},
+            {"name": "wau", "type": "cumulative", "type_params": {"measure": {"name": "revenue"}}},
+        ],
+    )
+    tree = _local_tree(
+        project,
+        metrics=(
+            "  - name: revenue\n    source: dbt.metrics.revenue\n"
+            "  - name: wau\n    source: dbt.metrics.wau\n"
+        ),
+    )
+    r = _migration(tree)
+    # Skip, not fail: needing MetricFlow is a supported state, not a defect.
+    assert r.status == "skip"
+    assert "1 of 2 metric(s) need MetricFlow" in r.detail
+    assert "wau" in r.detail and "trailing window" in r.detail
+    assert "Stay on `local`" in r.detail
+
+
+def test_no_manifest_yet_asks_for_dbt_parse_rather_than_guessing(tmp_path):
+    (tmp_path / "dbt_project.yml").write_text("name: demo\nprofile: demo\n")
+    r = _migration(_local_tree(tmp_path))
+    assert r.status == "skip"
+    assert "dbt parse" in r.detail
+
+
+def test_the_migration_check_is_part_of_the_local_chain():
+    from breakdown.doctor import _DOWNSTREAM_CHECKS
+
+    assert "dbt provider migration" in _DOWNSTREAM_CHECKS["local"]
