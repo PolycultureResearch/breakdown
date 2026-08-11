@@ -372,8 +372,21 @@ parsing, no `dbt` extra. The only artifact is
 [issue #30](https://github.com/boringdata/boring-semantic-layer/issues/30), open
 since 2025-08 with zero comments, whose aspiration is one-way scaffolding from
 dbt **models** — tables and columns — not metric semantics. It is therefore not a
-route to §2 at all. It survives as an optional binding (roadmap 2.12) because it
-is the only way to serve a local parquet file with no warehouse.
+route to §2 at all.
+
+It was briefly kept as an optional binding on the argument that it was the only
+way to serve a local parquet file with no warehouse. **That argument expired
+when 2.10 shipped** and the row was removed (2026-08-11). The binding contract
+plus the DuckDB connector already do it — `relation: read_parquet('orders.parquet')`
+or a `bind.sql` over the file, both verified end to end through the alignment
+chain. What is still missing is only a *provider type* that reaches those
+bindings without a dbt project on disk, which is a fraction of a BSL adapter and
+belongs to the zero-integration on-ramp in roadmap 2.2.
+
+With that gone, the remaining case for BSL was "someone might already author BSL
+YAML" — the speculative kind of item roadmap principle 1 rules out, and exactly
+the bar this section applies to Cube, Rill, Lightdash and Superset below. It was
+inconsistent to exempt BSL from it.
 
 **Sidemantic** reads 23 semantic-layer formats into one graph and has the best
 fan-out story of anything surveyed (symmetric aggregates, multi-hop joins,
