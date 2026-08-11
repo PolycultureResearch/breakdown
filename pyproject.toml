@@ -95,7 +95,27 @@ databricks = [
     "databricks-sdk>=0.20.0",
     "databricks-sql-connector>=4.4.0",
 ]
-all = ["metric-breakdown[databricks,dbt,dbt-bridge]"]
+# `dbt` is marked, and the marker is load-bearing. Every `dbt-metricflow`
+# release caps at `<3.14` (and everything before 0.12 at `<3.13`), as does
+# `dbt-sl-sdk`, so an unmarked `all` is unresolvable on 3.14 — pip refuses the
+# whole install rather than the one extra it cannot satisfy, which also denied a
+# 3.14 user `databricks` and `dbt-bridge`, both of which work there.
+#
+# The `dbt` deps are spelled out rather than referenced as `metric-breakdown[dbt]`
+# because hatchling **flattens self-referencing extras at build time and drops
+# the marker** — the metadata came out as a bare `dbt-metricflow>=0.13.0;
+# extra == 'all'` and 3.14 still failed. `test_packaging.py` pins these against
+# the `dbt` extra so the duplication cannot drift.
+#
+# Deliberately NOT the same call as marking the `dbt` extra itself: asking for
+# `[dbt]` on 3.14 should still fail loudly, and pip's resolver error names the
+# offending package. `[all]` means "everything installable here", so degrading
+# is the honest reading.
+all = [
+    "metric-breakdown[databricks,dbt-bridge]",
+    "dbt-metricflow>=0.13.0; python_version < '3.14'",
+    "dbt-sl-sdk[sync]>=0.13.2; python_version < '3.14'",
+]
 
 [project.urls]
 Homepage = "https://github.com/PolycultureResearch/breakdown"
