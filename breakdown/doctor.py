@@ -116,6 +116,19 @@ _DBT_CHECKS = [
 ]
 
 
+def _over(start_date: Optional[str], end_date: Optional[str]) -> str:
+    """Name the window a sampled check actually looked at.
+
+    Bounding these to a probe window keeps `doctor` from full-scanning a large
+    fact table twice per metric — but it turns proof into a sample, and absence
+    over a few days is not absence. Saying which days were checked is what keeps
+    the pass honest.
+    """
+    if not (start_date and end_date):
+        return ""
+    return f" (checked {start_date} → {end_date})"
+
+
 def _skip_rest(names: List[str], reason: str) -> List[CheckResult]:
     return [CheckResult.skip(name, reason) for name in names]
 
@@ -449,7 +462,11 @@ def _check_local_migration(config: MetricTreeConfig) -> CheckResult:
     )
 
 
-def check_dbt(config: MetricTreeConfig) -> List[CheckResult]:
+def check_dbt(
+    config: MetricTreeConfig,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> List[CheckResult]:
     """Walk the `dbt` provider's chain: manifest -> profile -> connection ->
     bindings -> dimensions -> grain claims.
 
@@ -602,7 +619,9 @@ def check_dbt(config: MetricTreeConfig) -> List[CheckResult]:
     fanned, errors = [], []
     for query_name in sorted(wanted):
         try:
-            rows, distinct = bridged.check_grain(query_name)
+            rows, distinct = bridged.check_grain(
+                query_name, start_date=start_date, end_date=end_date
+            )
         except Exception as e:
             errors.append(f"{query_name}: {type(e).__name__}")
             continue
@@ -623,15 +642,18 @@ def check_dbt(config: MetricTreeConfig) -> List[CheckResult]:
         results.append(CheckResult.fail("grain claims hold", f"could not check: {errors[:4]}"))
     else:
         results.append(
-            CheckResult.ok("grain claims hold", f"{len(wanted)} relation(s) one row per grain")
+            CheckResult.ok(
+                "grain claims hold",
+                f"{len(wanted)} relation(s) one row per grain{_over(start_date, end_date)}",
+            )
         )
 
-    results.append(_check_entity_grain(config, bridged, wanted))
+    results.append(_check_entity_grain(config, bridged, wanted, start_date, end_date))
     bridged.close()
     return results
 
 
-def _check_entity_grain(config, fetcher, wanted) -> CheckResult:
+def _check_entity_grain(config, fetcher, wanted, start_date=None, end_date=None) -> CheckResult:
     """Whether declared slices actually need resolution, and whether the ones
     that assert they do not are telling the truth.
 
@@ -655,7 +677,12 @@ def _check_entity_grain(config, fetcher, wanted) -> CheckResult:
             checked += 1
             try:
                 sql = build_multivalue_assertion(
-                    bind, dimension=spec.source, grain=defn.grain, dialect=fetcher.dialect
+                    bind,
+                    dimension=spec.source,
+                    grain=defn.grain,
+                    dialect=fetcher.dialect,
+                    start_date=start_date,
+                    end_date=end_date,
                 )
                 pairs = int(fetcher._query(sql).iloc[0]["multivalued_pairs"])
             except Exception as e:
@@ -691,7 +718,9 @@ def _check_entity_grain(config, fetcher, wanted) -> CheckResult:
             "overlapping and contribution shares are withheld.",
         )
     return CheckResult.ok(
-        "entity grain resolves", f"{checked} non-additive slice(s) resolve to one value per period"
+        "entity grain resolves",
+        f"{checked} non-additive slice(s) resolve to one value per period"
+        f"{_over(start_date, end_date)}",
     )
 
 
@@ -778,7 +807,7 @@ def run_doctor(
     elif provider == "local":
         results += check_local(tree.config)
     elif provider == "dbt":
-        results += check_dbt(tree.config)
+        results += check_dbt(tree.config, start_date, end_date)
     elif provider == "none":
         # Cold-start tree: no connection to prove — readiness means every
         # belief the what-if engine needs is declared. Same check the server

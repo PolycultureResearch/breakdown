@@ -175,8 +175,66 @@ _LOW_RETENTION = 0.05
 # was dropped is reported alongside so the cap is visible rather than implied.
 _MAX_MIGRATIONS = 10
 
+# The destination of a movement between two slices that both folded into
+# `__other__`. Without it the row would read as retained-in-other, turning
+# movement into stability.
+_OTHER_MOVED = "__other_moved__"
 
-def entity_flows(transitions: pd.DataFrame) -> Dict[str, Any]:
+
+def _fold_transitions(
+    transitions: pd.DataFrame, top_k: int, pinned: Optional[List[str]]
+) -> Tuple[pd.DataFrame, List[str]]:
+    """Fold to the slices the attribution keeps, so the two panels agree.
+
+    A transition matrix is quadratic in slice count, so an unfolded flow panel
+    can be arbitrarily large beside an attribution folded to `top_k`. Same
+    selection rule as `_select_slices`: pinned values win, otherwise the biggest
+    by entity volume.
+
+    ⚠️ Folding both endpoints of a movement into `__other__` would turn a real
+    migration into a `__other__ → __other__` row, which reads as *retained* —
+    silently converting movement into stability, which is the opposite of what
+    this panel exists to show. Those are re-tagged as `__other_moved__` so they
+    stay classified as migration.
+    """
+    for col in ("reference_slice", "analysis_slice", "entities"):
+        if col not in transitions.columns:
+            return transitions, []
+    volume: Dict[str, float] = {}
+    for row in transitions.itertuples(index=False):
+        n = float(row.entities)
+        for name in (str(row.reference_slice), str(row.analysis_slice)):
+            if name != _ABSENT:
+                volume[name] = volume.get(name, 0.0) + n
+    if pinned is not None:
+        kept = {str(v) for v in pinned if str(v) in volume}
+    else:
+        kept = set(sorted(volume, key=lambda n: (-volume[n], n))[:top_k])
+    folded = sorted(n for n in volume if n not in kept)
+    if not folded:
+        return transitions, []
+
+    def relabel(name: str) -> str:
+        return name if (name == _ABSENT or name in kept) else _OTHER
+
+    rows = []
+    for row in transitions.itertuples(index=False):
+        ref, an = str(row.reference_slice), str(row.analysis_slice)
+        new_ref, new_an = relabel(ref), relabel(an)
+        if new_ref == new_an == _OTHER and ref != an:
+            # A genuine movement between two folded slices. Keep it a movement.
+            new_an = _OTHER_MOVED
+        rows.append(
+            {"reference_slice": new_ref, "analysis_slice": new_an, "entities": int(row.entities)}
+        )
+    return pd.DataFrame(rows), folded
+
+
+def entity_flows(
+    transitions: pd.DataFrame,
+    top_k: int = 8,
+    pinned: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """Classify a two-window entity transition matrix into flows (3.8 §6).
 
     `transitions` is `[reference_slice, analysis_slice, entities]`, where
@@ -198,6 +256,7 @@ def entity_flows(transitions: pd.DataFrame) -> Dict[str, Any]:
     answers "how much did each slice contribute". Two numbers on screen that
     do not add up is the failure this whole area exists to remove.
     """
+    transitions, folded_away = _fold_transitions(transitions, top_k, pinned)
     for col in ("reference_slice", "analysis_slice", "entities"):
         if col not in transitions.columns:
             raise ValueError(
@@ -260,6 +319,12 @@ def entity_flows(transitions: pd.DataFrame) -> Dict[str, Any]:
         (totals["retained"] + totals["migrated"]) / in_reference if in_reference else None
     )
     caveats: List[str] = []
+    if folded_away:
+        caveats.append(
+            f"{len(folded_away)} smaller slice(s) folded into {_OTHER} to match the "
+            "attribution above; movement between two folded slices is reported as "
+            f"{_OTHER} → {_OTHER_MOVED} rather than counted as retained."
+        )
     if len(migrations) > _MAX_MIGRATIONS:
         caveats.append(
             f"Showing the {_MAX_MIGRATIONS} largest of {len(migrations)} distinct "
@@ -280,6 +345,7 @@ def entity_flows(transitions: pd.DataFrame) -> Dict[str, Any]:
         "totals": totals,
         "slices": rows,
         "retention_share": retention_share,
+        "folded_slices": folded_away,
         "caveats": caveats,
         # Exactly zero by construction. Published rather than asserted so a
         # consumer can see the reallocation is balanced, the same way

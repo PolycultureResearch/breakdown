@@ -523,7 +523,13 @@ class DbtDataFetcher(BaseDataFetcher):
 
     # -- the grain claim --
 
-    def check_grain(self, metric_name: str) -> tuple[int, int]:
+    def check_grain(
+        self,
+        metric_name: str,
+        *,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> tuple[int, int]:
         """`(rows, distinct grain_keys)` for a binding's relation.
 
         Equal means the relation really is one row per grain, so a many-to-one
@@ -533,7 +539,9 @@ class DbtDataFetcher(BaseDataFetcher):
         contract.
         """
         bind = self.binding(metric_name)
-        sql = build_grain_assertion(bind, dialect=self.dialect)
+        sql = build_grain_assertion(
+            bind, dialect=self.dialect, start_date=start_date, end_date=end_date
+        )
         self.last_sql[f"{metric_name}::grain"] = sql
         row = self._query(sql).iloc[0]
         return int(row["rows"]), int(row["distinct_keys"])

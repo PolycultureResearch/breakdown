@@ -674,3 +674,44 @@ def test_a_short_migration_list_is_not_flagged():
     f = entity_flows(_transitions([("ios", "web", 3)]))
     assert f["migrations_truncated"] == 0
     assert not any("Showing the" in c for c in f["caveats"])
+
+
+# --- flows fold to the same slices the attribution shows --------------------
+
+
+def test_flows_fold_to_top_k_so_both_panels_agree():
+    # A transition matrix is quadratic in slice count; an unfolded flow panel
+    # beside a top_k attribution is both inconsistent and unbounded.
+    rows = [(f"s{i}", f"s{i}", 100 - i) for i in range(12)]
+    f = entity_flows(_transitions(rows), top_k=3)
+    values = {r["value"] for r in f["slices"]}
+    assert values == {"s0", "s1", "s2", "__other__"}
+    assert len(f["folded_slices"]) == 9
+    assert any("folded into __other__" in c for c in f["caveats"])
+
+
+def test_pinned_values_win_over_volume_like_the_attribution():
+    rows = [("big", "big", 1000), ("tiny", "tiny", 1)]
+    f = entity_flows(_transitions(rows), top_k=1, pinned=["tiny"])
+    assert {r["value"] for r in f["slices"]} == {"tiny", "__other__"}
+
+
+def test_movement_between_two_folded_slices_stays_movement():
+    # Both endpoints fold, so a naive relabel yields `__other__ -> __other__`,
+    # which reads as *retained* — turning movement into stability, the exact
+    # opposite of what this panel exists to show.
+    rows = [
+        ("keep", "keep", 500),
+        ("small_a", "small_b", 7),  # a real migration between two folded slices
+    ]
+    f = entity_flows(_transitions(rows), top_k=1)
+    assert f["totals"]["migrated"] == 7
+    assert f["totals"]["retained"] == 500
+    assert f["migrations"][0]["entities"] == 7
+
+
+def test_folding_does_not_disturb_a_small_dimension():
+    f = entity_flows(_transitions([("ios", "web", 3), ("ios", "ios", 5)]), top_k=8)
+    assert f["folded_slices"] == []
+    assert not any("folded" in c for c in f["caveats"])
+    assert f["totals"]["migrated"] == 3

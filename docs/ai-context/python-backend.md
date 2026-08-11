@@ -271,6 +271,13 @@ is counted once in the total and once per status. That is deduplication overlap
 rather than an unexplained cause, and saying so is what keeps the slice panel
 honest until roadmap 3.8 decomposes at the grain where the metric becomes a sum.
 
+Both diagnostic queries — `build_grain_assertion` and
+`build_multivalue_assertion` — take an optional window, and `doctor` passes its
+probe window rather than scanning whole relations twice per metric. That makes
+each a **sample**: fan-out and multi-valuedness are properties of the data, and
+absence over seven days is not proof of absence, so the check result names the
+dates it looked at (`_over`). Do not drop the label to tidy the output.
+
 `check_grain(name)` runs the fan-out assertion; `last_sql` records the statement
 behind each number, which is the hook 2.11 reads.
 
@@ -308,7 +315,14 @@ it, so `entity_flows` reports `retention_share` and caveats below 5%.
 
 This is a **diagnostic, not a decomposition**, and the code says so:
 `reconciles_to_gap` is `False`, and the API attaches it best-effort so a failing
-flow query can never cost the attribution. Flows compare window-level *sets*,
+flow query can never cost the attribution. Flows are cached per
+(metric, dimension, both windows) in `app.state.flow_cache` — they cannot share
+the slice cache's key, which carries one window — and folded to the same
+`top_k`/`values` as the attribution, since two panels disagreeing about which
+slices exist reads worse than either alone. ⚠️ Folding both endpoints of a
+movement would produce `__other__ → __other__`, which classifies as *retained* —
+turning movement into stability, the opposite of the panel's purpose — so those
+are re-tagged `__other_moved__` and stay migrations. Flows compare window-level *sets*,
 and `mean_t |E_t|` is not `|∪_t E_t|`, so they do not reconcile to the
 window-mean gap and must never be rendered as though they do.
 

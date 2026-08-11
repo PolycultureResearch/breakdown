@@ -284,6 +284,10 @@ async def lifespan(app: FastAPI):
     # (metric, dimension source, grain, start, end). Deliberately separate
     # from the startup GrainedData — slices never enter the fit path.
     app.state.slice_cache: Dict[Tuple[str, str, str, str, str], pd.DataFrame] = {}
+    # Flows are keyed by a *pair* of windows, so they cannot share the slice
+    # cache's key. Without one, every click on a ranked cause re-ran a FULL
+    # OUTER JOIN over two windows on the warehouse.
+    app.state.flow_cache: Dict[Tuple[str, str, str, str, str, str], Any] = {}
     app.state.lock = asyncio.Lock()
 
     try:
@@ -792,6 +796,32 @@ def _fetch_sliced_cached(state, parser, metric, dimension_source, start, end) ->
     return df
 
 
+def _fetch_flows_cached(
+    state, parser, metric, dimension_source, ref_start, ref_end, an_start, an_end
+):
+    """Read-through cache for the entity-flow transition matrix.
+
+    Mirrors `_fetch_sliced_cached`, but keyed on both windows because a flow is
+    a comparison between them rather than a series over one. Uncached, this was
+    an extra FULL OUTER JOIN on every slice request — the same query, for the
+    same windows, on every click.
+    """
+    key = (metric.name, dimension_source, ref_start, ref_end, an_start, an_end)
+    cached = state.flow_cache.get(key)
+    if cached is not None:
+        return cached
+    df = state.fetcher.fetch_entity_flows(
+        provider_query_name(parser.config.provider.type, metric),
+        dimension_source,
+        ref_start,
+        ref_end,
+        an_start,
+        an_end,
+    )
+    state.flow_cache[key] = df
+    return df
+
+
 def _run_slice(
     state,
     parser,
@@ -845,15 +875,21 @@ def _run_slice(
     # not reconcile to a window-mean gap. Best-effort — a provider that cannot
     # classify entities simply has none to add, and that is not an error.
     try:
-        transitions = state.fetcher.fetch_entity_flows(
-            provider_query_name(parser.config.provider.type, defn),
+        transitions = _fetch_flows_cached(
+            state,
+            parser,
+            defn,
             spec.source,
             reference_start,
             reference_end,
             analysis_start,
             analysis_end,
         )
-        result["entity_flows"] = entity_flows(transitions)
+        # Fold to the same slices the attribution shows. Two panels side by side
+        # that disagree on which slices exist is a worse read than either alone.
+        result["entity_flows"] = entity_flows(
+            transitions, top_k=spec.top_k, pinned=spec.values
+        )
     except SliceNotSupported:
         result["entity_flows"] = None
     except Exception as e:  # a flow query failing must not lose the attribution

@@ -332,6 +332,26 @@ def build_resolved_slice_query(
     )
 
 
+def _bounded(query, bind: BindingSpec, read, start_date, end_date):
+    """Bound a diagnostic query to a window, when one is given.
+
+    Unbounded, these scan the whole relation — fine on a few million rows, a
+    full table scan per metric on a genuinely large fact table, and `doctor`
+    runs two of them. A window turns each into a **sample**, which is a real
+    change in what the check proves: fan-out and multi-valuedness are
+    properties of the data, and absence over seven days is not proof of
+    absence. Callers therefore report which window they used, so the result
+    reads as "checked over these dates" rather than "checked".
+    """
+    if start_date is None or end_date is None:
+        return query
+    time_col = _qualified(bind.time_column, "bd_fact")
+    start, end_exclusive = _window_bounds(start_date, end_date)
+    return query.where(f"{time_col} >= '{start}'", dialect=read).where(
+        f"{time_col} < '{end_exclusive}'", dialect=read
+    )
+
+
 # An entity absent from a window, as distinct from one present with a NULL
 # dimension value. Conflating those would report a user who never appeared as
 # having no region, which is a different fact.
@@ -435,7 +455,13 @@ def build_entity_flow_query(
 
 
 def build_multivalue_assertion(
-    bind: BindingSpec, *, dimension: str, grain: str, dialect: str = ""
+    bind: BindingSpec,
+    *,
+    dimension: str,
+    grain: str,
+    dialect: str = "",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> str:
     """Count (entity, period) pairs holding more than one value of `dimension`.
 
@@ -454,13 +480,12 @@ def build_multivalue_assertion(
     date_expr = _truncate(time_col, grain, dialect)
     entity = _qualified(bind.entity_key, fact)
     slice_expr = _qualified(bind.dimensions[dimension].column, fact)
-    per_pair = (
-        sqlglot.select(
-            f"COUNT(DISTINCT {slice_expr}) AS bd_n_values",
-            dialect=read,
-        )
-        .from_(source, dialect=read)
-        .group_by(entity, date_expr, dialect=read)
+    per_pair = sqlglot.select(
+        f"COUNT(DISTINCT {slice_expr}) AS bd_n_values",
+        dialect=read,
+    ).from_(source, dialect=read)
+    per_pair = _bounded(per_pair, bind, read, start_date, end_date).group_by(
+        entity, date_expr, dialect=read
     )
     return (
         sqlglot.select('COUNT(*) AS "multivalued_pairs"', dialect=read)
@@ -470,7 +495,13 @@ def build_multivalue_assertion(
     )
 
 
-def build_grain_assertion(bind: BindingSpec, *, dialect: str = "") -> str:
+def build_grain_assertion(
+    bind: BindingSpec,
+    *,
+    dialect: str = "",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> str:
     """The grain-claim query: total rows vs. distinct `grain_key`.
 
     `doctor` fails a binding when these disagree, which turns silent fan-out —
@@ -480,14 +511,16 @@ def build_grain_assertion(bind: BindingSpec, *, dialect: str = "") -> str:
     number. Owning the contract is what makes it checkable.
     """
     sqlglot = _require_sqlglot()
+    read = _parse_dialect(dialect)
     fact = "bd_fact"
     source = f"({bind.sql}) AS {fact}" if bind.sql else f"{bind.relation} AS {fact}"
     key = _qualified(bind.grain_key, fact)
-    return (
-        sqlglot.select('COUNT(*) AS "rows"', f'COUNT(DISTINCT {key}) AS "distinct_keys"')
-        .from_(source)
-        .sql(dialect=dialect, pretty=True)
-    )
+    query = sqlglot.select(
+        'COUNT(*) AS "rows"',
+        f'COUNT(DISTINCT {key}) AS "distinct_keys"',
+        dialect=read,
+    ).from_(source, dialect=read)
+    return _bounded(query, bind, read, start_date, end_date).sql(dialect=dialect, pretty=True)
 
 
 # dbt adapter type -> sqlglot dialect. Only the mappings that differ in name or
