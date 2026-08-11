@@ -160,6 +160,94 @@ def _reconciliation(residual: np.ndarray, baseline: float) -> Dict[str, Any]:
     }
 
 
+# An entity absent from a window, as opposed to present with a NULL dimension
+# value. Mirrors `dbt_sql.ABSENT`.
+_ABSENT = "__absent__"
+
+
+def entity_flows(transitions: pd.DataFrame) -> Dict[str, Any]:
+    """Classify a two-window entity transition matrix into flows (3.8 §6).
+
+    `transitions` is `[reference_slice, analysis_slice, entities]`, where
+    `__absent__` on either side means the entity was not in that window. The
+    four classes fall straight out: absent→g is **new**, g→absent is
+    **churned**, g→g is **retained**, and g₁→g₂ is **migration**.
+
+    Migration nets to zero across slices — `Σ_g (migrated_in − migrated_out)`
+    is exactly 0 — for the same reason a rate's `mix_total` does: it is a pure
+    reallocation, and reporting it as its own line rather than folding it into
+    any slice's contribution is what stops a platform switch reading as two
+    large offsetting causes.
+
+    ⚠️ **This is a diagnostic, not a decomposition.** It compares window-level
+    *sets*, and `mean_t |E_t|` is not `|∪_t E_t|` unless presence is stable
+    within each window — so these counts do not reconcile to the metric's
+    window-mean gap and must never be presented as though they do. They answer
+    "what kind of movement produced this", alongside the attribution that
+    answers "how much did each slice contribute". Two numbers on screen that
+    do not add up is the failure this whole area exists to remove.
+    """
+    for col in ("reference_slice", "analysis_slice", "entities"):
+        if col not in transitions.columns:
+            raise ValueError(
+                "entity flow transitions need columns [reference_slice, "
+                f"analysis_slice, entities]; got {list(transitions.columns)}."
+            )
+
+    per_slice: Dict[str, Dict[str, int]] = {}
+
+    def bucket(name: str) -> Dict[str, int]:
+        return per_slice.setdefault(
+            name, {"new": 0, "churned": 0, "retained": 0, "migrated_in": 0, "migrated_out": 0}
+        )
+
+    totals = {"new": 0, "churned": 0, "retained": 0, "migrated": 0}
+    migrations: List[Dict[str, Any]] = []
+    for row in transitions.itertuples(index=False):
+        ref, an, n = str(row.reference_slice), str(row.analysis_slice), int(row.entities)
+        if ref == _ABSENT and an == _ABSENT:
+            continue  # in neither window: not an entity of this analysis
+        if ref == _ABSENT:
+            bucket(an)["new"] += n
+            totals["new"] += n
+        elif an == _ABSENT:
+            bucket(ref)["churned"] += n
+            totals["churned"] += n
+        elif ref == an:
+            bucket(ref)["retained"] += n
+            totals["retained"] += n
+        else:
+            bucket(ref)["migrated_out"] += n
+            bucket(an)["migrated_in"] += n
+            totals["migrated"] += n
+            migrations.append({"from": ref, "to": an, "entities": n})
+
+    rows = []
+    for name, b in per_slice.items():
+        rows.append(
+            {
+                "value": name,
+                **b,
+                # What the slice's own count did, in entity terms.
+                "net": b["new"] - b["churned"] + b["migrated_in"] - b["migrated_out"],
+            }
+        )
+    # Biggest movers first; the tail of a transition matrix is mostly noise.
+    rows.sort(key=lambda r: -abs(r["net"]))
+    migrations.sort(key=lambda m: -m["entities"])
+
+    return {
+        "totals": totals,
+        "slices": rows,
+        # Exactly zero by construction. Published rather than asserted so a
+        # consumer can see the reallocation is balanced, the same way
+        # `mix_total` is published for rates.
+        "migration_net": sum(r["migrated_in"] - r["migrated_out"] for r in rows),
+        "migrations": migrations[:10],
+        "reconciles_to_gap": False,
+    }
+
+
 def _overlap(residual: np.ndarray, baseline: float) -> Dict[str, Any]:
     """The amount by which known-overlapping slices exceed the metric.
 

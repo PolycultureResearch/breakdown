@@ -287,6 +287,26 @@ class BaseDataFetcher(ABC):
             f"slicing (requested '{metric_name}' by '{dimension_source}')."
         )
 
+    def fetch_entity_flows(
+        self,
+        metric_name: str,
+        dimension_source: str,
+        reference_start: str,
+        reference_end: str,
+        analysis_start: str,
+        analysis_end: str,
+    ) -> "pd.DataFrame":
+        """Two-window entity transitions, for the flow diagnostic (3.8 §6).
+
+        Raises `SliceNotSupported` by default: classifying entities needs a
+        binding that declares how to resolve one to a single slice per window,
+        which most providers have no way to express.
+        """
+        raise SliceNotSupported(
+            f"The {type(self).__name__} provider cannot classify entity flows "
+            f"for '{metric_name}' by '{dimension_source}'."
+        )
+
     def slice_additivity(self, metric_name: str, dimension_source: str) -> str:
         """Whether this metric's slices along `dimension_source` are expected
         to sum back to it: `exact`, `overlapping`, or `unknown`.

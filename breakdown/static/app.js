@@ -1903,6 +1903,29 @@ function sliceResultHtml(metric) {
   // query runs. `discrepant` means an *unexplained* divergence the user should
   // go and investigate. Painting the first one red told people their pipeline
   // was broken when nothing was, and made the flag worthless for the second.
+  // Entity flows sit *beside* the attribution, never inside it: they compare
+  // window-level sets, which do not reconcile to a window-mean gap. Labelled
+  // as movement rather than contribution so the two are not read as one
+  // decomposition — the migration line is the whole point, because a user
+  // switching platform otherwise reads as two large offsetting causes.
+  const ef = r.entity_flows;
+  const flows = ef
+    ? `<div class="entity-flows">
+         <div class="flows-head">Movement between windows · ${ef.totals.new} new ·
+           ${ef.totals.churned} churned · ${ef.totals.retained} retained ·
+           ${ef.totals.migrated} moved between slices</div>
+         ${ef.migrations.length
+           ? `<p class="inline-status">${ef.migrations
+               .slice(0, 3)
+               .map((m) => `${esc(m.from)} → ${esc(m.to)}: ${m.entities}`)
+               .join(" · ")}${ef.totals.migrated
+               ? " — movement between slices nets to zero, so it shifts where the metric sits without changing its total."
+               : ""}</p>`
+           : ""}
+         <p class="muted">Counts of entities across the two windows. They describe
+           what kind of movement happened; they do not sum to the gap above.</p>
+       </div>`
+    : "";
   const overlap =
     r.additivity === "overlapping" && r.overlap
       ? `<p class="inline-status">These slices share entities, so they overstate the
@@ -1928,7 +1951,7 @@ function sliceResultHtml(metric) {
     <table class="data-table slice-table">${head}${rows}</table>
     <p class="slice-windows">${esc(r.effective_windows.reference.start)} → ${esc(r.effective_windows.reference.end)}
       vs ${esc(r.effective_windows.analysis.start)} → ${esc(r.effective_windows.analysis.end)}${lagNote}</p>
-    ${mixNote}${degenerate}${caveats}${overlap}${recon}`;
+    ${mixNote}${degenerate}${caveats}${overlap}${flows}${recon}`;
 }
 
 async function toggleSlice(metric, dimension) {

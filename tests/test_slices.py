@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 
 from breakdown.data_fetch import MockDataFetcher, SliceNotSupported, WarehouseDataFetcher
-from breakdown.engine.slices import slice_attribution
+from breakdown.engine.slices import entity_flows, slice_attribution
 from breakdown.parser import MetricDefinition, Parser
 
 REF = ("2026-01-05", "2026-02-01")  # 4 whole weeks of days
@@ -546,3 +546,78 @@ def test_the_response_shape_is_stable_across_paths():
     # attribution method ran before reading them.
     r = _attribute("unknown")
     assert {"additivity", "overlap"} <= set(r)
+
+
+# --- entity flows (roadmap 3.8 §6) ------------------------------------------
+#
+# The finding these produce: a user switching platform shows −1 on one slice and
+# +1 on another with the total unchanged. Naive attribution reports two large
+# offsetting causes for a change that never happened; flows label it migration.
+
+
+def _transitions(rows):
+    return pd.DataFrame(
+        [{"reference_slice": r, "analysis_slice": a, "entities": n} for r, a, n in rows]
+    )
+
+
+def test_the_four_classes_fall_out_of_the_transition_matrix():
+    f = entity_flows(
+        _transitions(
+            [
+                ("__absent__", "web", 3),  # new
+                ("ios", "__absent__", 2),  # churned
+                ("ios", "ios", 10),  # retained
+                ("ios", "web", 5),  # migrated
+            ]
+        )
+    )
+    assert f["totals"] == {"new": 3, "churned": 2, "retained": 10, "migrated": 5}
+
+
+def test_migration_nets_to_zero_across_slices():
+    # The same property a rate's `mix_total` has, and for the same reason: it
+    # is a pure reallocation, not a contribution.
+    f = entity_flows(_transitions([("ios", "web", 5), ("web", "ios", 2), ("ios", "ios", 9)]))
+    assert f["migration_net"] == 0
+    assert sum(r["migrated_in"] - r["migrated_out"] for r in f["slices"]) == 0
+
+
+def test_a_pure_migration_leaves_the_total_unchanged_but_moves_the_slices():
+    # The motivating case. Nothing entered or left; the slices still moved.
+    f = entity_flows(_transitions([("ios", "web", 1), ("ios", "ios", 5), ("web", "web", 5)]))
+    assert f["totals"]["new"] == f["totals"]["churned"] == 0
+    assert f["totals"]["migrated"] == 1
+    by_slice = {r["value"]: r["net"] for r in f["slices"]}
+    assert by_slice == {"ios": -1, "web": 1}
+    assert sum(by_slice.values()) == 0  # the metric did not move
+
+
+def test_migrations_name_where_the_movement_went():
+    f = entity_flows(_transitions([("ios", "web", 7), ("ios", "android", 2)]))
+    assert f["migrations"][0] == {"from": "ios", "to": "web", "entities": 7}
+
+
+def test_entities_in_neither_window_are_not_counted():
+    f = entity_flows(_transitions([("__absent__", "__absent__", 99), ("ios", "ios", 1)]))
+    assert f["totals"]["retained"] == 1
+    assert not any(r["value"] == "__absent__" for r in f["slices"])
+
+
+def test_a_null_dimension_value_is_not_absence():
+    # Present with no region is a different fact from never present, and the
+    # flow path must keep them apart the same way the slice path does.
+    f = entity_flows(_transitions([("__null__", "web", 4)]))
+    assert f["totals"]["migrated"] == 4
+    assert {r["value"] for r in f["slices"]} == {"__null__", "web"}
+
+
+def test_flows_say_they_do_not_reconcile_to_the_gap():
+    # Window-level sets, not window means: presenting these as a second
+    # decomposition would put two numbers on screen that do not add up.
+    assert entity_flows(_transitions([("ios", "ios", 1)]))["reconciles_to_gap"] is False
+
+
+def test_malformed_transitions_are_rejected():
+    with pytest.raises(ValueError, match="reference_slice"):
+        entity_flows(pd.DataFrame({"a": [1]}))
