@@ -270,6 +270,16 @@ reallocation property a rate's `mix_total` has. Absence is detected from the
 joined key rather than a NULL slice, so an entity present with a NULL dimension
 value stays distinguishable from one that was never there.
 
+Two things the classification depends on, both learned by running it against a
+real warehouse. **Never emit a quoted identifier as a column reference:**
+`"date"` is an identifier on DuckDB and Postgres but a *string literal* on Spark
+and BigQuery, so the outer SELECT returned a constant column of the word "date"
+on Databricks — invisible locally, because DuckDB reads it the other way.
+Internal projections use plain `bd_*` names and the public aliases are applied
+once. And **presence only means membership if the relation is entity-per-period
+grained**: on an event table an entity appears only where something happened to
+it, so `entity_flows` reports `retention_share` and caveats below 5%.
+
 This is a **diagnostic, not a decomposition**, and the code says so:
 `reconciles_to_gap` is `False`, and the API attaches it best-effort so a failing
 flow query can never cost the attribution. Flows compare window-level *sets*,

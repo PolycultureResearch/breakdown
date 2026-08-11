@@ -134,6 +134,11 @@ Independent of tier 1, and worth shipping first:
 
 ## 6. Entity flows: what the change was made of
 
+*Two limitations are stated in this section and neither is incidental: what
+"present in the window" means (below), and the fact that flows do not
+reconcile to the gap (further below). Both are load-bearing for how the panel
+may be read.*
+
 Tier 1's second capability, and the one that produces findings rather than
 numbers.
 
@@ -157,6 +162,19 @@ into any slice's contribution.
 offsetting causes for a change that never happened. Entity flows label it
 *migration* — and migration is frequently the real answer, not noise to be
 explained away.
+
+⚠️ **What "present in the window" means (found 2026-08-11, verifying against a
+real warehouse).** The classification is only as meaningful as the relation's
+grain. On an **event**-grained relation — one row per status change rather than
+per entity per period — an entity appears only in windows where something
+happened to it, so `new` means *its first event here*, not a new entity.
+Narrative's `active_subscription_count` binds to exactly such a table and
+retains 2 entities out of ~2,340 between adjacent windows, which is the
+signature. The arithmetic is unaffected and migration still nets to zero; what
+the labels *mean* is not. `entity_flows` therefore reports `retention_share`
+and raises a caveat below 5%, worded as a question about the relation rather
+than a verdict about the data — a threshold is a signal, and calling it a
+diagnosis would be the guessing this document rejects.
 
 ⚠️ **The exactness question, stated rather than hidden.** §4's slice
 attribution is exact against the metric's window-mean gap. Entity flows as

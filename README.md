@@ -291,6 +291,26 @@ Without it the slices are reported as overlapping, the overlap is quantified,
 and contribution shares are withheld rather than computed against a total the
 slices do not sum to.
 
+**Bind entity flows to a state table, not an event table.** With `entity_grain`
+declared, a slice panel also reports *movement between windows* — how many
+entities are new, churned, retained, or **migrated** from one slice to another.
+That is what tells you a platform switch (`−1` on iOS, `+1` on web, total
+unchanged) is one user moving rather than two offsetting causes.
+
+Those labels assume the relation has **one row per entity per period** — a daily
+state table. On an *event* table, where a row means "something changed", an
+entity only appears in windows where it changed, so `new` means *its first event
+in this window*, not a new entity. The counts are still arithmetically correct
+and migration still nets to zero, but they answer a different question than
+their names suggest.
+
+breakdown cannot tell the two apart from the schema, so it reports
+`retention_share` — the fraction of reference-window entities that reappear —
+and raises a caveat below 5%, which is the signature of an event table. Treat
+that caveat as a prompt to check what the relation records, not as a verdict on
+your data. If you want membership semantics, bind to a relation with one row
+per entity per period.
+
 For `local`, `cloud` and `dbt`, the metric queried from the semantic layer is the last segment of `source` (e.g., `source: jaffle_shop.metrics.revenue` queries the metric `revenue`); the result is exposed in the tree under `name`. For `warehouse`, each metric carries its own `sql` (see the `metrics` table) and is keyed by `name`. The data window defaults to `2024-01-01`–`2024-04-09` and is set with `--start-date` / `--end-date` (or the `BREAKDOWN_START_DATE` / `BREAKDOWN_END_DATE` / `BREAKDOWN_TREE` environment variables).
 
 **Secrets in config.** Any provider string field may reference an environment variable with `${VAR}` syntax (e.g. `token: ${DATABRICKS_TOKEN}`), so a tree can be committed without embedding credentials. A referenced variable that isn't set raises a clear error at load time. The `warehouse` provider's `profile` avoids secrets entirely — credentials come from the Databricks CLI's OAuth token cache, so nothing sensitive lives in the tree or the environment.

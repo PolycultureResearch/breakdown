@@ -621,3 +621,38 @@ def test_flows_say_they_do_not_reconcile_to_the_gap():
 def test_malformed_transitions_are_rejected():
     with pytest.raises(ValueError, match="reference_slice"):
         entity_flows(pd.DataFrame({"a": [1]}))
+
+
+def test_an_event_grained_relation_is_flagged_not_silently_mislabelled():
+    # Measured against Narrative: `active_subscription_count` binds to a
+    # status-change table, so an entity appears only in windows where something
+    # happened to it — 2 retained out of ~2,340. The arithmetic is unaffected;
+    # what "new" and "churned" *mean* is, so it is said rather than left for the
+    # reader to infer from an odd-looking number.
+    f = entity_flows(
+        _transitions(
+            [
+                ("cancelled", "__absent__", 1991),
+                ("__absent__", "cancelled", 1720),
+                ("cancelled", "active", 36),
+                ("active", "active", 2),
+            ]
+        )
+    )
+    assert f["retention_share"] < 0.05
+    assert any("records events rather than daily state" in c for c in f["caveats"])
+    # ...and the flows themselves are still correct.
+    assert f["totals"]["migrated"] == 36
+    assert f["migration_net"] == 0
+
+
+def test_a_membership_relation_carries_no_such_caveat():
+    f = entity_flows(_transitions([("ios", "ios", 900), ("ios", "__absent__", 50)]))
+    assert f["retention_share"] > 0.9
+    assert f["caveats"] == []
+
+
+def test_retention_share_is_none_when_the_reference_window_is_empty():
+    f = entity_flows(_transitions([("__absent__", "web", 5)]))
+    assert f["retention_share"] is None
+    assert f["caveats"] == []
