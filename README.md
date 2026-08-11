@@ -116,7 +116,7 @@ those are **extras** you opt into:
 | `local` (MetricFlow CLI) or `cloud` (dbt Cloud Semantic Layer) | `pip install 'metric-breakdown[dbt]'` | `dbt-metricflow`, `dbt-sl-sdk` |
 | `warehouse` (direct SQL) | `pip install 'metric-breakdown[databricks]'` | `databricks-sdk`, `databricks-sql-connector` |
 | reading a dbt project's own metric definitions | `pip install 'metric-breakdown[dbt-bridge]'` | `metricflow`, `sqlglot` |
-| all of them | `pip install 'metric-breakdown[all]'` | all of the above |
+| all of them | `pip install 'metric-breakdown[all]'` | all of the above — **except on Python 3.14**, where it installs `databricks` and `dbt-bridge` and omits `dbt` (see below) |
 
 `dbt-bridge` is deliberately not part of `dbt`: reading the semantic manifest
 `dbt parse` already wrote needs neither dbt-core, a warehouse adapter, nor the
@@ -128,12 +128,13 @@ Selecting a provider without its extra fails with the exact command to run —
 and `breakdown doctor --tree …` reports it as its own check — rather than an
 `ImportError` traceback.
 
-> **Python 3.14 and the `dbt` extra.** The base package supports 3.11–3.14 (CI
-> runs the suite on all four). The **`dbt` extra does not work on 3.14** —
-> dbt-core's `mf` binary fails on import — so use 3.13 or earlier for the
-> `local` and `cloud` providers. The `local` provider needs only `mf` on
-> `PATH`, so `uv tool install dbt-metricflow` in its own environment is a good
-> alternative to the extra.
+> **Python 3.14 and the `dbt` extra.** `dbt-metricflow` and `dbt-sl-sdk` both
+> declare `requires-python < 3.14`, so **`pip install 'metric-breakdown[dbt]'`
+> fails to resolve on 3.14** — use 3.13 or earlier for the `local` and `cloud`
+> providers. `[all]` degrades rather than failing there: it installs
+> `databricks` and `dbt-bridge`, which work on 3.14, and omits `dbt`. The
+> **`dbt` provider is unaffected** and is the one to reach for on 3.14 — it
+> needs neither dbt-core nor the `mf` binary.
 
 A tree that names `local` but is served entirely from committed snapshots (see
 [Snapshots](#snapshots-fetch-once-refit-forever)) needs neither the extra nor a
