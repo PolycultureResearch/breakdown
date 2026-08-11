@@ -388,7 +388,65 @@ def check_local(config: MetricTreeConfig) -> List[CheckResult]:
         )
     else:
         results.append(CheckResult.ok("metrics listable", "`mf list metrics` succeeded"))
+    results.append(_check_local_migration(config))
     return results
+
+
+def _check_local_migration(config: MetricTreeConfig) -> CheckResult:
+    """Whether *this* tree could move from `local` to the `dbt` provider.
+
+    `local` is superseded for most trees (roadmap 2.13) but not all: it hands a
+    metric name to MetricFlow, which plans the SQL, so it serves constructs the
+    `dbt` provider refuses — cumulative metrics, offset windows, aggregations
+    with no additive decomposition. Measured on two real projects, 2 of 24 and
+    8 of 86 metrics fall in that gap.
+
+    So this reports on the tree in front of it rather than asserting a general
+    claim. A blanket deprecation warning would be noise for the author whose
+    tree genuinely needs MetricFlow, and misleading for everyone if the general
+    claim were taken at face value.
+    """
+    name = "dbt provider migration"
+    project = config.provider.project_path or ""
+    try:
+        from breakdown.dbt_bridge import bridge_project, manifest_path
+    except Exception:
+        return CheckResult.skip(name, "the dbt-bridge extra is not installed")
+
+    if not os.path.exists(manifest_path(project)):
+        return CheckResult.skip(
+            name,
+            "no semantic manifest yet — run `dbt parse` in the project to check "
+            "whether this tree can move to the `dbt` provider",
+        )
+    try:
+        bridged = bridge_project(project)
+    except Exception as e:
+        return CheckResult.skip(name, f"could not read the semantic manifest: {e}")
+
+    servable = set(bridged.bindings) | set(bridged.formulas)
+    reasons = {s.name: s.reason for s in bridged.skipped}
+    blocked = [
+        (m.source.split(".")[-1], m.name)
+        for m in config.metrics
+        if m.source.split(".")[-1] not in servable
+    ]
+    if not blocked:
+        return CheckResult.ok(
+            name,
+            f"all {len(config.metrics)} metric(s) translate — this tree can move to "
+            "`provider: {type: dbt}` and drop the `mf` binary",
+        )
+    detail = ", ".join(
+        f"{tree} ({reasons.get(q, 'not in the semantic manifest')[:60]})" for q, tree in blocked[:3]
+    )
+    return CheckResult.skip(
+        name,
+        f"{len(blocked)} of {len(config.metrics)} metric(s) need MetricFlow: {detail}"
+        + (" …" if len(blocked) > 3 else "")
+        + ". Stay on `local` for these, or express them with a node-level `bind:` "
+        "block and move the rest.",
+    )
 
 
 def check_dbt(config: MetricTreeConfig) -> List[CheckResult]:
@@ -688,7 +746,7 @@ def check_fit_readiness(parser, start_date: str, end_date: str) -> CheckResult:
 _DOWNSTREAM_CHECKS = {
     "warehouse": ["auth configured", "warehouse connection", "metric sql runs"],
     "cloud": ["cloud config", "semantic layer reachable", "tree metrics exist"],
-    "local": ["dbt project", "metrics listable"],
+    "local": ["dbt project", "metrics listable", "dbt provider migration"],
     "dbt": _DBT_CHECKS,
 }
 

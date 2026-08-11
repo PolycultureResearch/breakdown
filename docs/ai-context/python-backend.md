@@ -121,6 +121,15 @@ A read-through cache **at the `BaseDataFetcher` boundary**: `SnapshotFetcher` wr
 
 ---
 
+`local` is **superseded but not deprecated** (roadmap 2.13). It hands a metric
+name to MetricFlow, which plans the SQL, so it serves what `dbt_sql.py` refuses
+rather than approximates — cumulative metrics, offset windows, non-decomposable
+aggregations, conversion metrics, `non_additive_dimension`. That gap is real
+(2 of 24 and 8 of 86 metrics on two real projects), so there is no blanket
+deprecation warning: `doctor._check_local_migration` runs the bridge against
+the specific tree and either clears it to move or names the metrics that need
+MetricFlow. Do not add a general warning without closing the gap first.
+
 ## `dbt_bridge.py`
 
 Translates a dbt project's own `target/semantic_manifest.json` — written by

@@ -263,7 +263,7 @@ provider:
 | Type | Description |
 |------|-------------|
 | `mock` | Deterministic synthetic data that respects the tree structure (formula nodes satisfy their formulas, probabilistic children co-move with parents). No config needed. Use for development and testing. |
-| `local` | Queries a dbt project on disk via the MetricFlow CLI (`mf query`). Requires `project_path`. |
+| `local` | Queries a dbt project on disk via the MetricFlow CLI (`mf query`). Requires `project_path`. **Superseded by `dbt` for most trees** — see below. |
 | `cloud` | Queries the dbt Semantic Layer API via the `dbt-sl-sdk`. Requires `environment_id`, `host`, and `token`. |
 | `dbt` | Reads your dbt project's own `target/semantic_manifest.json` (written by plain `dbt parse` on **dbt Core**) and generates the SQL for each metric, running it over the connection in the project's `profiles.yml`. **No dbt Cloud, no Semantic Layer credential, no service token, and no new credentials of any kind.** Requires `project_path`. A node may override what dbt declares with its own `bind:` block. |
 | `warehouse` | Runs each metric's own `sql` directly against a warehouse (currently Databricks SQL). Use when the semantic layer isn't queryable — the analyst mirrors governed definitions in SQL. Requires `http_path` plus **one of**: a PAT `token` (with `host`), or a Databricks CLI OAuth `profile` created by `databricks auth login --profile <name>` (host is read from the profile). |
@@ -310,6 +310,38 @@ and raises a caveat below 5%, which is the signature of an event table. Treat
 that caveat as a prompt to check what the relation records, not as a verdict on
 your data. If you want membership semantics, bind to a relation with one row
 per entity per period.
+
+**Moving from `local` to `dbt`.** Both read a dbt project on disk with no dbt
+Cloud, but `local` shells out to `mf query` once per metric *and once per
+slice*, behind a 120-second timeout, and needs the `mf` binary — which is why
+the `dbt` extra does not work on Python 3.14. The `dbt` provider runs in
+process, groups multiple dimensions in one query, and can show you the SQL
+behind every number.
+
+```yaml
+provider:
+  type: dbt                     # was: local
+  project_path: /path/to/dbt    # unchanged
+```
+
+**It is not a drop-in for every tree.** `local` hands a metric name to
+MetricFlow, which plans the SQL, so it serves things the `dbt` provider refuses
+rather than approximates: cumulative metrics, derived metrics that offset an
+input in time, aggregations with no additive decomposition (`min`, `max`,
+`median`, `percentile`), conversion metrics, and `non_additive_dimension`. On
+two real dbt projects that was 2 of 24 and 8 of 86 metrics.
+
+Rather than guess, ask about *your* tree:
+
+```bash
+dbt parse                       # in the dbt project
+breakdown doctor --tree tree.yml
+```
+
+The `dbt provider migration` check either says every metric translates, or
+names the ones that need MetricFlow. A tree can also mix the two: keep `local`
+for the metrics that need it, or give a node its own `bind:` block with the SQL
+you want and move the rest.
 
 For `local`, `cloud` and `dbt`, the metric queried from the semantic layer is the last segment of `source` (e.g., `source: jaffle_shop.metrics.revenue` queries the metric `revenue`); the result is exposed in the tree under `name`. For `warehouse`, each metric carries its own `sql` (see the `metrics` table) and is keyed by `name`. The data window defaults to `2024-01-01`–`2024-04-09` and is set with `--start-date` / `--end-date` (or the `BREAKDOWN_START_DATE` / `BREAKDOWN_END_DATE` / `BREAKDOWN_TREE` environment variables).
 
