@@ -577,3 +577,48 @@ def test_resolve_error_serves_the_naive_query_consistently_with_its_label(events
     total = f.fetch_metric("dau", "2024-01-01", "2024-01-01")["dau"].sum()
     sliced = f.fetch_metric_sliced("dau", "status", "2024-01-01", "2024-01-01")["value"].sum()
     assert total == 2 and sliced == 3
+
+
+def test_flows_are_cached_so_a_second_click_costs_nothing():
+    # Uncached, every slice request re-ran a FULL OUTER JOIN over two windows —
+    # the same query, same windows, on every click.
+    from breakdown.api.main import _fetch_flows_cached
+
+    calls = []
+
+    class _State:
+        flow_cache = {}
+
+        class fetcher:
+            @staticmethod
+            def fetch_entity_flows(*a):
+                calls.append(a)
+                return "transitions"
+
+    class _Parser:
+        class config:
+            class provider:
+                type = "dbt"
+
+    metric = BindingSpec(relation="t", grain_key="r", time_column="d", agg="sum", measure="v")
+    metric = type("M", (), {"name": "dau", "source": "w.dau", "grain": "day"})()
+    args = (
+        _State(),
+        _Parser(),
+        metric,
+        "status",
+        "2024-01-01",
+        "2024-01-07",
+        "2024-01-08",
+        "2024-01-14",
+    )
+    assert _fetch_flows_cached(*args) == "transitions"
+    assert _fetch_flows_cached(*args) == "transitions"
+    assert len(calls) == 1
+
+
+def test_the_grain_assertion_can_be_bounded_to_a_window(events):
+    f = _dau_fetcher(events, "last")
+    assert f.check_grain("dau") == (3, 3)
+    assert f.check_grain("dau", start_date="2024-01-01", end_date="2024-01-01") == (3, 3)
+    assert "WHERE" in f.last_sql["dau::grain"]

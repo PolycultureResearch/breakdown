@@ -521,3 +521,41 @@ def test_window_bounds_normalise_to_bare_dates():
     # Whatever a caller passes, what reaches the SQL is a plain YYYY-MM-DD.
     start, end = _window_bounds("2024-01-01T13:45:00", "2024-01-31")
     assert (start, end) == ("2024-01-01", "2024-02-01")
+
+
+# --- diagnostic queries are bounded, so they sample rather than full-scan ----
+
+
+def test_assertions_scan_the_whole_relation_when_unbounded():
+    # Explicit, because it is the behaviour `doctor` deliberately no longer uses.
+    assert "WHERE" not in build_grain_assertion(_dau("last"), dialect="duckdb")
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda b, **kw: build_grain_assertion(b, dialect="duckdb", **kw),
+        lambda b, **kw: build_multivalue_assertion(
+            b, dimension="status", grain="day", dialect="duckdb", **kw
+        ),
+    ],
+)
+def test_a_window_bounds_the_scan(build):
+    # `doctor` runs two of these per metric; unbounded they are full table scans
+    # on a large fact table. The window makes each a sample — which is why the
+    # doctor result names the dates it checked.
+    sql = build(_dau("last"), start_date="2024-01-01", end_date="2024-01-07")
+    assert "WHERE" in sql
+    assert "2024-01-08" in sql  # half-open upper bound, as everywhere else
+
+
+def test_a_bounded_grain_assertion_still_detects_fan_out(events):
+    bind = _dau("last")
+    unbounded = events.execute(build_grain_assertion(bind, dialect="duckdb")).fetchone()
+    bounded = events.execute(
+        build_grain_assertion(
+            bind, dialect="duckdb", start_date="2024-01-01", end_date="2024-01-02"
+        )
+    ).fetchone()
+    assert unbounded[0] == 5 and unbounded[1] == 5
+    assert bounded[0] == 5 and bounded[1] == 5  # the fixture is inside the window
