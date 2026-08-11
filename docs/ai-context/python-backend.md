@@ -248,6 +248,15 @@ honest until roadmap 3.8 decomposes at the grain where the metric becomes a sum.
 `check_grain(name)` runs the fan-out assertion; `last_sql` records the statement
 behind each number, which is the hook 2.11 reads.
 
+`doctor`'s `check_dbt` walks the chain in the order failures actually cascade —
+semantic manifest → dbt profile → warehouse connection → tree metrics bind →
+declared dimensions exist → grain claims hold — skipping the rest rather than
+reporting the same root cause six times. Two of those are worth their place:
+**declared dimensions** turns a 500 on the first *slice by* click into a startup
+failure (the same too-late class as C12), and **grain claims** is the check no
+other semantic layer makes, since MetricFlow and Cube accept declared
+relationships on trust.
+
 **`provider_query_name`** (in `data_fetch.py`) replaced a ternary duplicated at
 three call sites — startup fetch, sliced fetch, and doctor's fit-readiness check
 — which had to be edited in all three to add a provider. Missing one shipped a

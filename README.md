@@ -201,6 +201,14 @@ It walks the provider's auth chain step by step (tree parses → env vars set �
 
 Two mode-specific checks ride along: a cold-start tree (`provider: none`) gets its declarations validated instead of a connection probe, and when you pass an explicit `--start-date`/`--end-date` window the doctor adds a **fit readiness** report — each metric's whole-period count against the 10-period fit minimum, the graduation check for a tree [moving from cold start to fitted mode](#cold-start-mode-what-if-with-no-data).
 
+For the **`dbt` provider**, `doctor` walks manifest → profile → connection →
+bindings → dimensions → grain claims, in the order a failure cascades. The last
+two are the ones that pay for themselves: a declared dimension that does not
+exist becomes a startup failure rather than a 500 on the first *slice by* click,
+and the **grain claim** (`count(*)` vs `count(distinct grain_key)`) catches a
+relation that is not one row per grain — silent fan-out that multiplies every
+aggregate over it, which neither MetricFlow nor Cube checks.
+
 ### Snapshots: fetch once, refit forever
 
 For non-mock providers, every fetched series is cached as a parquet snapshot keyed on `(metric, grain, kind, window)` — by default in `.breakdown/snapshots/` next to the tree. Later startups with the same window read from disk instead of the warehouse, which makes restarts fast, keeps re-runs reproducible (commit the snapshots next to the tree and an RCA re-runs from a fresh clone), and lets the server boot even when the warehouse is unreachable, as long as every metric has a snapshot.

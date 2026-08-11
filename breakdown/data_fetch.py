@@ -19,7 +19,12 @@ logger = logging.getLogger(__name__)
 # Which extra ships each provider's SDK. The base install deliberately carries
 # none of them, so every provider dependency is imported at the point of use
 # and a missing one is reported as a fixable install, not a traceback.
-PROVIDER_EXTRAS = {"cloud": "dbt", "local": "dbt", "warehouse": "databricks"}
+PROVIDER_EXTRAS = {
+    "cloud": "dbt",
+    "local": "dbt",
+    "dbt": "dbt-bridge",
+    "warehouse": "databricks",
+}
 
 
 # Providers keyed by the tree's own metric name rather than by `source`. The
@@ -80,7 +85,13 @@ def provider_extra_missing(provider: str) -> Optional[str]:
         if shutil.which("mf") is None:
             return _extra_hint(provider, extra, "`mf` not found on PATH")
         return None
-    modules = {"cloud": ("dbtsl",), "warehouse": ("databricks.sql", "databricks.sdk")}[provider]
+    modules = {
+        "cloud": ("dbtsl",),
+        # MSI ships inside the metricflow wheel, so the distribution name says
+        # nothing about whether the module is importable — probe the module.
+        "dbt": ("metricflow_semantic_interfaces", "sqlglot"),
+        "warehouse": ("databricks.sql", "databricks.sdk"),
+    }[provider]
     for module in modules:
         # `databricks` is a namespace package split across two distributions,
         # so only the dotted submodule proves the right one is installed.

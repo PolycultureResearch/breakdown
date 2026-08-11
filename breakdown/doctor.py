@@ -101,6 +101,20 @@ def _check_tree(tree_path: str) -> _TreeCheck:
     return out
 
 
+# The `dbt` chain, in the order a failure actually cascades: the manifest has to
+# exist before it can be read, the profile has to resolve before a connection can
+# be opened, and nothing can be asserted about a metric that does not resolve to
+# a binding.
+_DBT_CHECKS = [
+    "semantic manifest",
+    "dbt profile",
+    "warehouse connection",
+    "tree metrics bind",
+    "declared dimensions exist",
+    "grain claims hold",
+]
+
+
 def _skip_rest(names: List[str], reason: str) -> List[CheckResult]:
     return [CheckResult.skip(name, reason) for name in names]
 
@@ -376,6 +390,175 @@ def check_local(config: MetricTreeConfig) -> List[CheckResult]:
     return results
 
 
+def check_dbt(config: MetricTreeConfig) -> List[CheckResult]:
+    """Walk the `dbt` provider's chain: manifest -> profile -> connection ->
+    bindings -> dimensions -> grain claims.
+
+    The last one is the check no other semantic layer can make. MetricFlow and
+    Cube accept a declared relationship on trust, so a relation that is not one
+    row per grain silently multiplies every aggregate over it. Owning the
+    binding contract is what makes it assertable, and asserting it here is what
+    turns it from a wrong number into a startup error.
+    """
+    from breakdown.dbt_bridge import manifest_path
+    from breakdown.dbt_provider import (
+        DbtProfileError,
+        connect_from_profile,
+        fetcher_from_project,
+        resolve_profile,
+    )
+
+    cfg = config.provider
+    results: List[CheckResult] = []
+    project = cfg.project_path or ""
+    remaining = list(_DBT_CHECKS)
+
+    def stop(result: CheckResult, reason: str) -> List[CheckResult]:
+        results.append(result)
+        results.extend(_skip_rest(remaining[remaining.index(result.name) + 1 :], reason))
+        return results
+
+    # 1. the manifest
+    if not os.path.isdir(project) or not os.path.isfile(os.path.join(project, "dbt_project.yml")):
+        return stop(
+            CheckResult.fail(
+                "semantic manifest",
+                f"no dbt_project.yml at project_path '{project}'",
+                "Point `project_path` in the provider block at the dbt project root.",
+            ),
+            "no dbt project",
+        )
+    path = manifest_path(project)
+    if not os.path.exists(path):
+        return stop(
+            CheckResult.fail(
+                "semantic manifest",
+                f"no semantic manifest at {path}",
+                "cd " + project + " && dbt parse"
+                "\n\nIf you are on dbt Fusion / dbt Core v2, note it does not write"
+                "\nthis file at all for projects still using the legacy"
+                "\n`semantic_models:` spec — those must migrate to the new metrics"
+                "\nspec first.",
+            ),
+            "no semantic manifest",
+        )
+    try:
+        bridged = fetcher_from_project(project, target=cfg.target, profiles_dir=cfg.profiles_dir)
+    except DbtProfileError as e:
+        results.append(CheckResult.ok("semantic manifest", path))
+        return stop(
+            CheckResult.fail(
+                "dbt profile",
+                str(e),
+                "Check the project's `profile:` and your profiles.yml target. "
+                "`target:` and `profiles_dir:` in the provider block override "
+                "what dbt would pick.",
+            ),
+            "profile unresolved",
+        )
+    except Exception as e:
+        return stop(
+            CheckResult.fail("semantic manifest", f"could not read {path}: {e}"),
+            "manifest unreadable",
+        )
+    results.append(
+        CheckResult.ok("semantic manifest", f"{len(bridged.bindings)} metrics bound from {path}")
+    )
+
+    out = resolve_profile(project, target=cfg.target, profiles_dir=cfg.profiles_dir)
+    results.append(
+        CheckResult.ok(
+            "dbt profile",
+            f"target '{out.get('_target')}' -> {out.get('type')} "
+            f"(sqlglot dialect '{bridged.dialect or 'generic'}')",
+        )
+    )
+
+    # 2. the connection — the project's own credentials, never a new one
+    try:
+        connect_from_profile(out).close()
+    except Exception as e:
+        return stop(
+            CheckResult.fail(
+                "warehouse connection",
+                f"{type(e).__name__}: {e}",
+                "The connection comes from the dbt project's own profiles.yml, "
+                "so `dbt debug` in that project tests the same credentials.",
+            ),
+            "no connection",
+        )
+    results.append(CheckResult.ok("warehouse connection", f"{out.get('type')} reachable"))
+
+    # 3. every tree metric resolves to a binding
+    from breakdown.data_fetch import provider_query_name
+
+    wanted = {provider_query_name("dbt", m): m.name for m in config.metrics}
+    unbound = sorted(q for q in wanted if q not in bridged.bindings)
+    if unbound:
+        return stop(
+            CheckResult.fail(
+                "tree metrics bind",
+                f"{len(unbound)} metric(s) not in the manifest: {unbound[:6]}"
+                + (" …" if len(unbound) > 6 else ""),
+                "The queried name is the last segment of `source`. Either add the "
+                "metric to the dbt project, or give the node its own `bind:` block.",
+            ),
+            "unbound metrics",
+        )
+    results.append(CheckResult.ok("tree metrics bind", f"{len(wanted)} metric(s) resolved"))
+
+    # 4. declared dimensions exist — otherwise the first slice click 500s
+    missing = []
+    for query_name, tree_name in wanted.items():
+        declared = next((m.dimensions for m in config.metrics if m.name == tree_name), {})
+        available = bridged.bindings[query_name].dimensions
+        for dim_name, spec in declared.items():
+            if spec.source not in available:
+                missing.append(f"{tree_name}.{dim_name} -> '{spec.source}'")
+    if missing:
+        results.append(
+            CheckResult.fail(
+                "declared dimensions exist",
+                f"{len(missing)} declared dimension(s) not on their binding: {missing[:5]}"
+                + (" …" if len(missing) > 5 else ""),
+                "A dimension's `source` must name one the binding exposes. "
+                "Without this check the failure is a 500 on the first slice.",
+            )
+        )
+    else:
+        results.append(CheckResult.ok("declared dimensions exist", "all declared slices resolve"))
+
+    # 5. the grain claim
+    fanned, errors = [], []
+    for query_name in sorted(wanted):
+        try:
+            rows, distinct = bridged.check_grain(query_name)
+        except Exception as e:
+            errors.append(f"{query_name}: {type(e).__name__}")
+            continue
+        if rows != distinct:
+            fanned.append(f"{query_name} ({rows:,} rows / {distinct:,} distinct)")
+    bridged.close()
+    if fanned:
+        results.append(
+            CheckResult.fail(
+                "grain claims hold",
+                f"{len(fanned)} relation(s) are not one row per grain_key: {fanned[:4]}"
+                + (" …" if len(fanned) > 4 else ""),
+                "Every aggregate over such a relation is silently multiplied. "
+                "Fix the model so it is one row per grain, or bind the node to a "
+                "`bind.sql` relation that already is.",
+            )
+        )
+    elif errors:
+        results.append(CheckResult.fail("grain claims hold", f"could not check: {errors[:4]}"))
+    else:
+        results.append(
+            CheckResult.ok("grain claims hold", f"{len(wanted)} relation(s) one row per grain")
+        )
+    return results
+
+
 def check_fit_readiness(parser, start_date: str, end_date: str) -> CheckResult:
     """Per-metric whole periods over the window vs the fit minimum — the
     graduation check for a tree migrating from cold start to fitted mode.
@@ -428,6 +611,7 @@ _DOWNSTREAM_CHECKS = {
     "warehouse": ["auth configured", "warehouse connection", "metric sql runs"],
     "cloud": ["cloud config", "semantic layer reachable", "tree metrics exist"],
     "local": ["dbt project", "metrics listable"],
+    "dbt": _DBT_CHECKS,
 }
 
 
@@ -457,6 +641,8 @@ def run_doctor(
         results += check_cloud(tree.config)
     elif provider == "local":
         results += check_local(tree.config)
+    elif provider == "dbt":
+        results += check_dbt(tree.config)
     elif provider == "none":
         # Cold-start tree: no connection to prove — readiness means every
         # belief the what-if engine needs is declared. Same check the server

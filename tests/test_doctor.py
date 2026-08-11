@@ -123,18 +123,14 @@ def test_warehouse_missing_sql_fails(monkeypatch):
 
 
 def test_warehouse_no_auth_fails():
-    config = Parser(
-        WAREHOUSE_TREE.replace("  token: tok\n", "")
-    ).config
+    config = Parser(WAREHOUSE_TREE.replace("  token: tok\n", "")).config
     results = by_name(check_warehouse(config, "2024-01-01", "2024-01-08"))
     assert results["auth configured"].status == "fail"
     assert results["warehouse connection"].status == "skip"
 
 
 def test_cloud_missing_config_mentions_cell_host():
-    config = Parser(
-        MOCK_TREE.replace("type: mock", "type: cloud")
-    ).config
+    config = Parser(MOCK_TREE.replace("type: mock", "type: cloud")).config
     results = by_name(check_cloud(config))
     assert results["cloud config"].status == "fail"
     assert "semantic-layer" in results["cloud config"].remediation
@@ -234,7 +230,8 @@ def test_missing_extra_reported_once_and_downstream_skipped(tmp_path, monkeypatc
     import breakdown.data_fetch as data_fetch
 
     monkeypatch.setattr(
-        data_fetch, "provider_extra_missing",
+        data_fetch,
+        "provider_extra_missing",
         lambda provider: (
             "provider type 'warehouse' needs the databricks extra: "
             "pip install 'metric-breakdown[databricks]'   (missing module 'databricks.sql')"
@@ -262,3 +259,176 @@ def test_missing_dbt_extra_offers_the_standalone_cli_route(monkeypatch):
     # dbt-metricflow as a uv tool satisfies the local provider too, and keeps
     # dbt-core out of the analysis environment.
     assert "uv tool install dbt-metricflow" in result.remediation
+
+
+# --- the `dbt` provider chain (roadmap 2.10) --------------------------------
+#
+# Offline like the rest of this file: the manifest and profile are written to
+# tmp_path and the warehouse is a file-backed DuckDB, so the whole chain — the
+# real connector included — runs in CI with no monkeypatching.
+
+import json  # noqa: E402
+
+import pytest  # noqa: E402
+
+from breakdown.doctor import check_dbt  # noqa: E402
+
+pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
+duckdb = pytest.importorskip("duckdb")
+
+
+def _dbt_project(tmp_path, *, metrics=None, rows="(1, DATE '2024-01-01', 5.0, 'EMEA')"):
+    """A minimal dbt project on disk — dbt_project.yml, profiles.yml, a parsed
+    semantic manifest — plus the DuckDB file its profile points at."""
+    db = tmp_path / "warehouse.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute(
+        "CREATE SCHEMA IF NOT EXISTS main; "
+        f"CREATE TABLE main.fct_orders AS SELECT * FROM (VALUES {rows}) "
+        "AS t(order_id, ordered_at, amount, region)"
+    )
+    con.close()
+
+    (tmp_path / "dbt_project.yml").write_text("name: demo\nprofile: demo\n")
+    (tmp_path / "profiles.yml").write_text(
+        f"demo:\n  target: dev\n  outputs:\n    dev:\n      type: duckdb\n      path: {db}\n"
+    )
+    model = {
+        "name": "orders",
+        # `database: null` so the relation is `main.fct_orders`, which resolves
+        # in whichever DuckDB file the profile attaches.
+        "node_relation": {
+            "alias": "fct_orders",
+            "schema_name": "main",
+            "database": None,
+            "relation_name": "x",
+        },
+        "defaults": {"agg_time_dimension": "ordered_at"},
+        "entities": [{"name": "order", "type": "primary", "expr": "order_id"}],
+        "dimensions": [
+            {"name": "ordered_at", "type": "time", "type_params": {"time_granularity": "day"}},
+            {"name": "region", "type": "categorical"},
+        ],
+        "measures": [{"name": "revenue", "agg": "sum", "expr": "amount"}],
+    }
+    target = tmp_path / "target"
+    target.mkdir(exist_ok=True)
+    (target / "semantic_manifest.json").write_text(
+        json.dumps(
+            {
+                "semantic_models": [model],
+                "metrics": metrics
+                if metrics is not None
+                else [
+                    {
+                        "name": "revenue",
+                        "type": "simple",
+                        "type_params": {"measure": {"name": "revenue"}},
+                    }
+                ],
+                "project_configuration": {"time_spine_table_configurations": [], "metadata": None},
+            }
+        )
+    )
+    return tmp_path
+
+
+def _tree(project, extra="") -> str:
+    return f"""
+provider:
+  type: dbt
+  project_path: {project}
+metrics:
+  - name: revenue
+    source: dbt.metrics.revenue
+{extra}"""
+
+
+def _results(tree_yaml):
+    from breakdown.parser import Parser
+
+    return {r.name: r for r in check_dbt(Parser(tree_yaml).config)}
+
+
+def test_dbt_chain_passes_on_a_healthy_project(tmp_path):
+    results = _results(_tree(_dbt_project(tmp_path)))
+    assert [r.status for r in results.values()] == ["pass"] * 6
+    assert "one row per grain" in results["grain claims hold"].detail
+    assert "duckdb" in results["dbt profile"].detail
+
+
+def test_missing_manifest_says_dbt_parse_and_names_the_fusion_caveat(tmp_path):
+    (tmp_path / "dbt_project.yml").write_text("name: demo\nprofile: demo\n")
+    results = _results(_tree(tmp_path))
+    r = results["semantic manifest"]
+    assert r.status == "fail"
+    assert "dbt parse" in r.remediation and "legacy" in r.remediation
+    # Everything downstream is skipped, not failed with the same root cause.
+    assert all(results[n].status == "skip" for n in list(results)[1:])
+
+
+def test_missing_project_stops_the_chain_immediately(tmp_path):
+    results = _results(_tree(tmp_path / "nope"))
+    assert results["semantic manifest"].status == "fail"
+    assert "dbt_project.yml" in results["semantic manifest"].detail
+
+
+def test_a_tree_metric_absent_from_the_manifest_is_named(tmp_path):
+    project = _dbt_project(tmp_path)
+    tree = _tree(project) + "  - name: ghost\n    source: dbt.metrics.not_a_metric\n"
+    results = _results(tree)
+    r = results["tree metrics bind"]
+    assert r.status == "fail" and "not_a_metric" in r.detail
+    assert results["grain claims hold"].status == "skip"
+
+
+def test_a_declared_dimension_that_does_not_exist_fails_before_the_first_click(tmp_path):
+    # Without this check the failure is a 500 the first time someone clicks
+    # "slice by" — the same too-late class as C12.
+    project = _dbt_project(tmp_path)
+    tree = _tree(project, extra="    dimensions:\n      plan: subscription__tier\n")
+    r = _results(tree)["declared dimensions exist"]
+    assert r.status == "fail" and "revenue.plan" in r.detail
+
+
+def test_a_declared_dimension_that_does_exist_passes(tmp_path):
+    project = _dbt_project(tmp_path)
+    tree = _tree(project, extra="    dimensions:\n      region: region\n")
+    assert _results(tree)["declared dimensions exist"].status == "pass"
+
+
+def test_fan_out_is_reported_as_a_failed_grain_claim(tmp_path):
+    # The check MetricFlow and Cube structurally cannot make: they accept a
+    # declared relationship on trust, so a relation that is not one row per
+    # grain silently multiplies every aggregate over it.
+    project = _dbt_project(
+        tmp_path,
+        rows="(1, DATE '2024-01-01', 5.0, 'EMEA'), (1, DATE '2024-01-01', 5.0, 'AMER')",
+    )
+    r = _results(_tree(project))["grain claims hold"]
+    assert r.status == "fail"
+    assert "2 rows / 1 distinct" in r.detail
+    assert "silently multiplied" in r.remediation
+
+
+def test_an_unresolvable_profile_stops_before_connecting(tmp_path):
+    project = _dbt_project(tmp_path)
+    (project / "profiles.yml").write_text(
+        "demo:\n  target: dev\n  outputs:\n    dev:\n"
+        "      type: duckdb\n      path: \"{{ env_var('NOT_SET_ANYWHERE') }}\"\n"
+    )
+    results = _results(_tree(project))
+    assert results["dbt profile"].status == "fail"
+    assert "NOT_SET_ANYWHERE" in results["dbt profile"].detail
+    assert results["warehouse connection"].status == "skip"
+
+
+def test_the_dbt_provider_reports_its_own_extra(monkeypatch):
+    import breakdown.data_fetch as df
+
+    from breakdown.doctor import check_provider_extra
+
+    monkeypatch.setattr(df, "provider_extra_missing", lambda p: "missing module 'sqlglot'")
+    r = check_provider_extra("dbt")
+    assert r.status == "fail"
+    assert "metric-breakdown[dbt-bridge]" in r.remediation
