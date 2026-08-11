@@ -60,6 +60,9 @@ MAX_DISTINCT = 100
 # A slice is flagged noise-level when its excess direction probability is
 # below this — the bootstrap can't tell its concentration from zero.
 _NOISE_PROB = 0.8
+# Bootstrap replicates surviving the finite filter below which an interval
+# would be quoted off too little resampling to mean anything.
+_MIN_CI_REPLICATES = 100
 
 
 def _rank_by_excess(rows: List[Dict[str, Any]], gap: float) -> None:
@@ -261,6 +264,16 @@ def _excess_fields(
 ) -> Dict[str, Any]:
     """CI / direction-probability fields for one slice's excess replicates."""
     if single_period or excess_b is None:
+        return {"ci_95": None, "prob_concentrated": None, "noise_level": None}
+    # Replicates whose reference total came out ~0 carry no defined share, so
+    # `share_b` is NaN there by construction (see `_bootstrap_excess`). NaN
+    # propagates through `excess_b` into `np.percentile`, and then into
+    # Starlette's `allow_nan=False` encoder as an unhandled 500 — the endpoint
+    # failing rather than the interval widening (C8). Drop those replicates and
+    # report on what survives; withhold the interval entirely if too few do,
+    # which is the same posture as `single_period`.
+    excess_b = excess_b[np.isfinite(excess_b)]
+    if excess_b.size < _MIN_CI_REPLICATES:
         return {"ci_95": None, "prob_concentrated": None, "noise_level": None}
     prob = float(max((excess_b > 0).mean(), (excess_b < 0).mean()))
     return {
