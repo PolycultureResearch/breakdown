@@ -82,9 +82,7 @@ def test_list_tools():
     with _client() as client:
         result = _rpc(client, "tools/list", {})
         tools = {t["name"]: t for t in result["tools"]}
-        assert set(tools) == {
-            "get_tree", "explain_metric", "run_rca", "slice_metric", "run_whatif"
-        }
+        assert set(tools) == {"get_tree", "explain_metric", "run_rca", "slice_metric", "run_whatif"}
         for tool in tools.values():
             assert tool["description"].strip()
         # window-selection guidance is part of the run_rca contract: it is
@@ -231,7 +229,8 @@ def test_cold_start_get_tree_and_whatif(cold_start_env):
         assert by_name["sessions"]["baseline"] == {"low": 800.0, "high": 1600.0}
 
         res = _call_tool(
-            client, "run_whatif",
+            client,
+            "run_whatif",
             {"interventions": [{"metric": "sessions", "mode": "pct", "value": 0.10}]},
             id=3,
         )
@@ -287,7 +286,8 @@ def test_slice_metric(sliced_env):
         assert "dimensions" not in by_name["activations"]
 
         res = _call_tool(
-            client, "slice_metric",
+            client,
+            "slice_metric",
             {"name": "signups", "dimension": "region", **WINDOWS},
             id=3,
         )
@@ -303,7 +303,8 @@ def test_slice_metric(sliced_env):
 
         # deterministic: identical call, identical answer
         res2 = _call_tool(
-            client, "slice_metric",
+            client,
+            "slice_metric",
             {"name": "signups", "dimension": "region", **WINDOWS},
             id=4,
         )
@@ -311,7 +312,8 @@ def test_slice_metric(sliced_env):
 
         # undeclared dimension -> tool error naming what is declared
         res = _call_tool(
-            client, "slice_metric",
+            client,
+            "slice_metric",
             {"name": "activations", "dimension": "region", **WINDOWS},
             id=5,
         )

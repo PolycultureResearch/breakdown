@@ -64,12 +64,14 @@ def make_frame(cov_ref, cov_an, mu_b_an=None, mu_c_an=None):
     )
     orders = np.concatenate([b_ref, b_an])
     rate = np.concatenate([c_ref, c_an])
-    return pd.DataFrame({
-        "date": pd.date_range("2024-01-01", periods=60),
-        "orders": orders,
-        "rate": rate,
-        "volume": orders * rate,
-    })
+    return pd.DataFrame(
+        {
+            "date": pd.date_range("2024-01-01", periods=60),
+            "orders": orders,
+            "rate": rate,
+            "volume": orders * rate,
+        }
+    )
 
 
 def test_efficiency_vs_formula_gap():
@@ -83,11 +85,7 @@ def test_efficiency_vs_formula_gap():
 
     assert abs(sum(result["attribution"].values()) - result["gap"]) < 1e-9
     for p, parts in result["decomposition"].items():
-        recomposed = (
-            parts["means"]
-            + parts["covariance_analysis"]
-            - parts["covariance_reference"]
-        )
+        recomposed = parts["means"] + parts["covariance_analysis"] - parts["covariance_reference"]
         assert abs(result["attribution"][p] - recomposed) < 1e-12
 
 
@@ -175,9 +173,9 @@ def test_two_level_decomposition_separates_means_and_comovement():
     total_means = 0.0
     for c in node["contributions"]:
         parts = c["decomposition"]
-        assert abs(
-            parts["means"]["estimate"] + parts["comovement"]["estimate"] - c["estimate"]
-        ) < 1e-9
+        assert (
+            abs(parts["means"]["estimate"] + parts["comovement"]["estimate"] - c["estimate"]) < 1e-9
+        )
         assert abs(parts["means"]["estimate"]) < 0.5  # bootstrap noise only
         total_means += parts["means"]["estimate"]
     # Structural: interaction == sum of per-parent comovement parts.
@@ -197,7 +195,5 @@ def test_two_level_decomposition_separates_means_and_comovement():
     node = run_rca(dag, frame, {}, "volume", *REF, *AN)["nodes"]["volume"]
     assert abs(node["interaction"]["estimate"]) < 0.5
     # And the means bridge carries the gap.
-    total_means = sum(
-        c["decomposition"]["means"]["estimate"] for c in node["contributions"]
-    )
+    total_means = sum(c["decomposition"]["means"]["estimate"] for c in node["contributions"])
     assert abs(total_means - node["gap"]) < 0.15 * abs(node["gap"])

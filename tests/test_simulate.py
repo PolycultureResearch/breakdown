@@ -5,6 +5,7 @@ exact and no PyMC sampling runs; constant input data makes window means (and
 therefore deltas) exactly predictable. One slow test at the end exercises the
 real ADVI fit-on-demand path.
 """
+
 import arviz as az
 import numpy as np
 import pandas as pd
@@ -47,13 +48,15 @@ def make_dag():
 def make_data(n: int = 60) -> pd.DataFrame:
     """Constant series: window means are exact, so deltas are too."""
     dates = pd.date_range("2024-01-01", periods=n)  # ends 2024-02-29 for n=60
-    return pd.DataFrame({
-        "date": dates,
-        "daily_sessions": np.full(n, 1000.0),
-        "order_count": np.full(n, 100.0),
-        "average_order_value": np.full(n, 50.0),
-        "revenue": np.full(n, 5000.0),
-    })
+    return pd.DataFrame(
+        {
+            "date": dates,
+            "daily_sessions": np.full(n, 1000.0),
+            "order_count": np.full(n, 100.0),
+            "average_order_value": np.full(n, 50.0),
+            "revenue": np.full(n, 5000.0),
+        }
+    )
 
 
 def stub_fit(target: str, parents: list, beta_post) -> FitResult:
@@ -64,9 +67,16 @@ def stub_fit(target: str, parents: list, beta_post) -> FitResult:
         beta = beta[:, None]
     trace = az.from_dict(posterior={"beta_raw": beta[None, :, :]})
     return FitResult(
-        trace=trace, target=target, parents=parents, y_mean=0.0, y_std=1.0,
-        x_stds=None, dates=pd.DatetimeIndex([]), inference_method="advi",
-        fit_end=None, diagnostics={"fit_quality": "good"},
+        trace=trace,
+        target=target,
+        parents=parents,
+        y_mean=0.0,
+        y_std=1.0,
+        x_stds=None,
+        dates=pd.DatetimeIndex([]),
+        inference_method="advi",
+        fit_end=None,
+        diagnostics={"fit_quality": "good"},
     )
 
 
@@ -80,10 +90,15 @@ def test_deterministic_chain_exact():
     """Intervening on a formula parent propagates exactly; no fit is needed
     because no probabilistic edge is on the affected path."""
     result = run_scenario(
-        make_dag(), make_data(), {},
-        ScenarioRequest(**BASELINE, interventions=[
-            Intervention(metric="order_count", mode="set", value=120.0),
-        ]),
+        make_dag(),
+        make_data(),
+        {},
+        ScenarioRequest(
+            **BASELINE,
+            interventions=[
+                Intervention(metric="order_count", mode="set", value=120.0),
+            ],
+        ),
     )
     oc = result["nodes"]["order_count"]
     assert oc["status"] == "intervened"
@@ -104,10 +119,15 @@ def test_deterministic_chain_exact():
 def test_prob_edge_point_mass_beta():
     """A degenerate posterior propagates as beta * delta with zero CI width."""
     result = run_scenario(
-        make_dag(), make_data(), order_count_traces(np.full(400, 0.1)),
-        ScenarioRequest(**BASELINE, interventions=[
-            Intervention(metric="daily_sessions", mode="delta", value=200.0),
-        ]),
+        make_dag(),
+        make_data(),
+        order_count_traces(np.full(400, 0.1)),
+        ScenarioRequest(
+            **BASELINE,
+            interventions=[
+                Intervention(metric="daily_sessions", mode="delta", value=200.0),
+            ],
+        ),
     )
     oc = result["nodes"]["order_count"]
     assert oc["status"] == "affected"
@@ -124,15 +144,20 @@ def test_prob_edge_posterior_spread_composes_downstream():
     scales draw-aligned through the downstream formula node."""
     beta_post = np.linspace(0.05, 0.15, 500)  # mean 0.1
     result = run_scenario(
-        make_dag(), make_data(), order_count_traces(beta_post),
-        ScenarioRequest(**BASELINE, interventions=[
-            Intervention(metric="daily_sessions", mode="delta", value=200.0),
-        ]),
+        make_dag(),
+        make_data(),
+        order_count_traces(beta_post),
+        ScenarioRequest(
+            **BASELINE,
+            interventions=[
+                Intervention(metric="daily_sessions", mode="delta", value=200.0),
+            ],
+        ),
     )
     oc = result["nodes"]["order_count"]
     assert oc["delta"]["estimate"] == pytest.approx(20.0, abs=0.5)
     lo, hi = oc["delta"]["ci_95"]
-    assert 9.0 < lo < 12.0    # ~ 200 * 5.25th-percentile beta
+    assert 9.0 < lo < 12.0  # ~ 200 * 5.25th-percentile beta
     assert 28.0 < hi < 31.0
     assert oc["prob_direction"] == 1.0
 
@@ -146,11 +171,16 @@ def test_do_operator_clamps_intervened_node():
     """Intervening on a node severs it from its parents: the sessions delta
     must not flow into the pinned order_count."""
     result = run_scenario(
-        make_dag(), make_data(), order_count_traces(np.full(400, 0.1)),
-        ScenarioRequest(**BASELINE, interventions=[
-            Intervention(metric="daily_sessions", mode="delta", value=200.0),
-            Intervention(metric="order_count", mode="set", value=130.0),
-        ]),
+        make_dag(),
+        make_data(),
+        order_count_traces(np.full(400, 0.1)),
+        ScenarioRequest(
+            **BASELINE,
+            interventions=[
+                Intervention(metric="daily_sessions", mode="delta", value=200.0),
+                Intervention(metric="order_count", mode="set", value=130.0),
+            ],
+        ),
     )
     oc = result["nodes"]["order_count"]
     assert oc["status"] == "intervened"
@@ -174,11 +204,19 @@ def test_assumption_deterministic_and_stochastic():
     """low == high is a deterministic effect; a range becomes a Normal whose
     central 90% interval matches the stated bounds."""
     exact = run_scenario(
-        make_dag(), make_data(), {},
-        ScenarioRequest(**BASELINE, assumptions=[
-            Assumption(source="discount_pct", target="average_order_value",
-                       effect=EffectRange(kind="relative", low=-0.1, high=-0.1)),
-        ]),
+        make_dag(),
+        make_data(),
+        {},
+        ScenarioRequest(
+            **BASELINE,
+            assumptions=[
+                Assumption(
+                    source="discount_pct",
+                    target="average_order_value",
+                    effect=EffectRange(kind="relative", low=-0.1, high=-0.1),
+                ),
+            ],
+        ),
     )
     aov = exact["nodes"]["average_order_value"]
     assert aov["status"] == "affected"
@@ -187,11 +225,19 @@ def test_assumption_deterministic_and_stochastic():
     assert exact["sources"][0]["kind"] == "assumption"
 
     spread = run_scenario(
-        make_dag(), make_data(), {},
-        ScenarioRequest(**BASELINE, assumptions=[
-            Assumption(source="discount_pct", target="average_order_value",
-                       effect=EffectRange(kind="relative", low=-0.12, high=-0.08)),
-        ]),
+        make_dag(),
+        make_data(),
+        {},
+        ScenarioRequest(
+            **BASELINE,
+            assumptions=[
+                Assumption(
+                    source="discount_pct",
+                    target="average_order_value",
+                    effect=EffectRange(kind="relative", low=-0.12, high=-0.08),
+                ),
+            ],
+        ),
     )
     aov = spread["nodes"]["average_order_value"]
     assert aov["delta"]["estimate"] == pytest.approx(-5.0, abs=0.3)
@@ -202,11 +248,19 @@ def test_assumption_deterministic_and_stochastic():
 
     # seeded rng: identical calls are identical responses
     again = run_scenario(
-        make_dag(), make_data(), {},
-        ScenarioRequest(**BASELINE, assumptions=[
-            Assumption(source="discount_pct", target="average_order_value",
-                       effect=EffectRange(kind="relative", low=-0.12, high=-0.08)),
-        ]),
+        make_dag(),
+        make_data(),
+        {},
+        ScenarioRequest(
+            **BASELINE,
+            assumptions=[
+                Assumption(
+                    source="discount_pct",
+                    target="average_order_value",
+                    effect=EffectRange(kind="relative", low=-0.12, high=-0.08),
+                ),
+            ],
+        ),
     )
     assert again == spread
 
@@ -215,11 +269,19 @@ def test_decomposition_sums_through_nonlinear_formula():
     """Source contributions sum exactly to the node delta (Shapley efficiency),
     with the order x aov interaction term apportioned rather than dangling."""
     result = run_scenario(
-        make_dag(), make_data(), order_count_traces(np.full(400, 0.1)),
-        ScenarioRequest(**BASELINE,
+        make_dag(),
+        make_data(),
+        order_count_traces(np.full(400, 0.1)),
+        ScenarioRequest(
+            **BASELINE,
             interventions=[Intervention(metric="daily_sessions", mode="pct", value=0.15)],
-            assumptions=[Assumption(source="promo", target="average_order_value",
-                                    effect=EffectRange(kind="relative", low=0.1, high=0.1))],
+            assumptions=[
+                Assumption(
+                    source="promo",
+                    target="average_order_value",
+                    effect=EffectRange(kind="relative", low=0.1, high=0.1),
+                )
+            ],
         ),
     )
     # sessions +150 -> orders +15; aov +5; revenue = 115*55 - 100*50 = 1325
@@ -234,11 +296,19 @@ def test_decomposition_sums_through_nonlinear_formula():
 
 def test_scope_flags_and_override():
     result = run_scenario(
-        make_dag(), make_data(), {},
-        ScenarioRequest(**BASELINE,
+        make_dag(),
+        make_data(),
+        {},
+        ScenarioRequest(
+            **BASELINE,
             interventions=[Intervention(metric="average_order_value", mode="set", value=55.0)],
-            assumptions=[Assumption(source="promo", target="average_order_value",
-                                    effect=EffectRange(kind="relative", low=0.2, high=0.3))],
+            assumptions=[
+                Assumption(
+                    source="promo",
+                    target="average_order_value",
+                    effect=EffectRange(kind="relative", low=0.2, high=0.3),
+                )
+            ],
         ),
     )
     # upstream/disjoint nodes untouched
@@ -258,19 +328,44 @@ def test_scope_flags_and_override():
 def test_validation_errors():
     dag, data = make_dag(), make_data()
     with pytest.raises(ValueError, match="not found"):
-        run_scenario(dag, data, {}, ScenarioRequest(**BASELINE, interventions=[
-            Intervention(metric="nope", mode="set", value=1.0)]))
+        run_scenario(
+            dag,
+            data,
+            {},
+            ScenarioRequest(
+                **BASELINE, interventions=[Intervention(metric="nope", mode="set", value=1.0)]
+            ),
+        )
     with pytest.raises(ValueError, match="at least one"):
         run_scenario(dag, data, {}, ScenarioRequest(**BASELINE))
     with pytest.raises(ValueError, match="too many sources"):
-        run_scenario(dag, data, {}, ScenarioRequest(**BASELINE, assumptions=[
-            Assumption(source=f"l{i}", target="revenue",
-                       effect=EffectRange(kind="absolute", low=1.0, high=2.0))
-            for i in range(11)]))
+        run_scenario(
+            dag,
+            data,
+            {},
+            ScenarioRequest(
+                **BASELINE,
+                assumptions=[
+                    Assumption(
+                        source=f"l{i}",
+                        target="revenue",
+                        effect=EffectRange(kind="absolute", low=1.0, high=2.0),
+                    )
+                    for i in range(11)
+                ],
+            ),
+        )
     with pytest.raises(ValueError, match="before"):
-        run_scenario(dag, data, {}, ScenarioRequest(
-            baseline_start="2024-02-01", baseline_end="2024-01-01",
-            interventions=[Intervention(metric="revenue", mode="set", value=1.0)]))
+        run_scenario(
+            dag,
+            data,
+            {},
+            ScenarioRequest(
+                baseline_start="2024-02-01",
+                baseline_end="2024-01-01",
+                interventions=[Intervention(metric="revenue", mode="set", value=1.0)],
+            ),
+        )
     with pytest.raises(ValidationError):
         EffectRange(kind="absolute", low=2.0, high=1.0)
 
@@ -283,9 +378,12 @@ def test_fit_on_demand_with_real_advi():
     data = generate_mock_data(n_days=100)  # ends 2024-04-09
     traces = {}
     result = run_scenario(
-        parser.dag, data, traces,
+        parser.dag,
+        data,
+        traces,
         ScenarioRequest(
-            baseline_start="2024-03-01", baseline_end="2024-03-31",
+            baseline_start="2024-03-01",
+            baseline_end="2024-03-31",
             interventions=[Intervention(metric="daily_sessions", mode="pct", value=0.1)],
         ),
         advi_draws=200,

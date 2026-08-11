@@ -66,8 +66,8 @@ metrics:
 """
 
 N = 130
-REF = ("2024-01-15", "2024-03-10")   # inside the fitted (pre-analysis) period
-AN = ("2024-04-01", "2024-05-09")    # rows 91..129
+REF = ("2024-01-15", "2024-03-10")  # inside the fitted (pre-analysis) period
+AN = ("2024-04-01", "2024-05-09")  # rows 91..129
 
 
 def _frame(cols):
@@ -98,6 +98,7 @@ def _planted_step_world(seed, beta=0.5, step=30.0, lag=0, noise=1.0):
 
 
 # ---------- recovery ----------
+
 
 def test_recovers_planted_contemporaneous_cause():
     """The parent moved +30 with beta=0.5: RCA must hand it ~15/day and
@@ -150,6 +151,7 @@ def test_recovers_moved_factor_in_identity():
 
 # ---------- restraint ----------
 
+
 def test_null_case_attributes_nothing_confidently():
     """Nothing happened: both windows come from the same stationary regime.
     The contribution interval must cover zero and the gap must be noise-sized."""
@@ -188,6 +190,7 @@ def test_unrelated_parent_gets_no_credit():
 
 
 # ---------- coverage ----------
+
 
 @pytest.mark.parametrize("worlds", [20])
 def test_contribution_ci_coverage(worlds):

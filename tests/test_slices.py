@@ -656,3 +656,21 @@ def test_retention_share_is_none_when_the_reference_window_is_empty():
     f = entity_flows(_transitions([("__absent__", "web", 5)]))
     assert f["retention_share"] is None
     assert f["caveats"] == []
+
+
+def test_a_truncated_migration_list_says_it_is_truncated():
+    # A bounded view that looks complete reads as "these are the movements".
+    # The tail of a transition matrix is quadratic in slice count, and together
+    # it can outweigh any single movement shown.
+    rows = [(f"s{i}", f"s{i + 1}", 50 - i) for i in range(14)]
+    f = entity_flows(_transitions(rows))
+    assert len(f["migrations"]) == 10
+    assert f["migrations_total"] == 14
+    assert f["migrations_truncated"] == 4
+    assert any("Showing the 10 largest of 14" in c for c in f["caveats"])
+
+
+def test_a_short_migration_list_is_not_flagged():
+    f = entity_flows(_transitions([("ios", "web", 3)]))
+    assert f["migrations_truncated"] == 0
+    assert not any("Showing the" in c for c in f["caveats"])

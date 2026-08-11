@@ -45,9 +45,17 @@ def client():
     project_path points nowhere on purpose: if any of this reaches a provider
     instead of a snapshot, it fails loudly rather than quietly working on a
     machine that happens to have the dbt project."""
-    prior = {k: os.environ.get(k) for k in
-             ("BREAKDOWN_TREE", "BREAKDOWN_START_DATE", "BREAKDOWN_END_DATE",
-              "BREAKDOWN_SNAPSHOT_DIR", "BREAKDOWN_REFRESH", "WHITE_CUBE_DBT_PROJECT")}
+    prior = {
+        k: os.environ.get(k)
+        for k in (
+            "BREAKDOWN_TREE",
+            "BREAKDOWN_START_DATE",
+            "BREAKDOWN_END_DATE",
+            "BREAKDOWN_SNAPSHOT_DIR",
+            "BREAKDOWN_REFRESH",
+            "WHITE_CUBE_DBT_PROJECT",
+        )
+    }
     os.environ.update(
         BREAKDOWN_TREE=TREE,
         BREAKDOWN_START_DATE=START,
@@ -71,8 +79,10 @@ def rca(client, target, ref, ana):
     r = client.post(
         f"/rca/{target}",
         params={
-            "reference_start": ref[0], "reference_end": ref[1],
-            "analysis_start": ana[0], "analysis_end": ana[1],
+            "reference_start": ref[0],
+            "reference_end": ref[1],
+            "analysis_start": ana[0],
+            "analysis_end": ana[1],
         },
     )
     assert r.status_code == 200, r.text
@@ -84,8 +94,10 @@ def slices(client, metric, dimension, ref, ana):
         f"/rca/{metric}/slices",
         params={
             "dimension": dimension,
-            "reference_start": ref[0], "reference_end": ref[1],
-            "analysis_start": ana[0], "analysis_end": ana[1],
+            "reference_start": ref[0],
+            "reference_end": ref[1],
+            "analysis_start": ana[0],
+            "analysis_end": ana[1],
         },
     )
     assert r.status_code == 200, r.text
@@ -110,13 +122,15 @@ def test_mrr_identity_is_exact(client):
 
     If this drifts, the semantic layer and the tree have disagreed about what
     the identity is, and every attribution below it is suspect."""
-    d = rca(client, "net_new_mrr",
-            ("2026-03-16", "2026-04-12"), ("2026-05-11", "2026-06-07"))
+    d = rca(client, "net_new_mrr", ("2026-03-16", "2026-04-12"), ("2026-05-11", "2026-06-07"))
     node = d["nodes"]["net_new_mrr"]
     assert node["attribution_method"] == "shapley"
     assert abs(node["unexplained"]) < 1e-6 * max(1.0, abs(node["gap"]))
     assert {c["parent"] for c in node["contributions"]} == {
-        "new_mrr", "expansion_mrr", "contraction_mrr", "churned_mrr"
+        "new_mrr",
+        "expansion_mrr",
+        "contraction_mrr",
+        "churned_mrr",
     }
 
 
@@ -146,12 +160,14 @@ def test_story_a_signup_regression_traverses_and_localizes(client):
     assert contribution["parent_windows"]["analysis"]["start"] == "2026-02-02"
 
     # The CTA broke volume, not conversion quality.
-    conv = {c["parent"]: c["share_of_gap"]
-            for c in d["nodes"]["trial_conversions"]["contributions"]}
+    conv = {
+        c["parent"]: c["share_of_gap"] for c in d["nodes"]["trial_conversions"]["contributions"]
+    }
     assert conv["trials_started"] > conv["trial_conversion_rate"]
 
-    s = slices(client, "signups", "device",
-               ("2025-12-29", "2026-01-25"), ("2026-02-02", "2026-03-01"))
+    s = slices(
+        client, "signups", "device", ("2025-12-29", "2026-01-25"), ("2026-02-02", "2026-03-01")
+    )
     assert s["slices"][0]["value"] == "mobile"
     assert s["slices"][0]["baseline_share"] < abs(s["slices"][0]["share_of_gap"])
     assert s["reconciliation"]["status"] == "ok"
@@ -200,8 +216,9 @@ def test_story_d_onboarding_lift_beats_the_trend(client):
     d = rca(client, "new_mrr", ref, ana)
 
     assert d["nodes"]["new_mrr"]["gap"] > 0
-    conv = {c["parent"]: c["share_of_gap"]
-            for c in d["nodes"]["trial_conversions"]["contributions"]}
+    conv = {
+        c["parent"]: c["share_of_gap"] for c in d["nodes"]["trial_conversions"]["contributions"]
+    }
     assert conv["trial_conversion_rate"] > conv["trials_started"]
 
 
@@ -210,8 +227,9 @@ def test_arbitrary_slice_window_is_served_without_a_provider(client):
 
     Sliced snapshots are stored at the full loaded window and trimmed on read,
     so a window nobody warmed at build time still answers."""
-    s = slices(client, "churned_mrr", "plan",
-               ("2026-02-16", "2026-03-15"), ("2026-05-18", "2026-06-14"))
+    s = slices(
+        client, "churned_mrr", "plan", ("2026-02-16", "2026-03-15"), ("2026-05-18", "2026-06-14")
+    )
     assert s["slices"][0]["value"] == "professional"
     assert s["reconciliation"]["status"] == "ok"
 
@@ -220,8 +238,11 @@ def whatif(client, interventions):
     r = client.post(
         "/simulate",
         json={
-            "baseline_start": "2026-06-29", "baseline_end": "2026-07-26",
-            "interventions": interventions, "assumptions": [], "levers": [],
+            "baseline_start": "2026-06-29",
+            "baseline_end": "2026-07-26",
+            "interventions": interventions,
+            "assumptions": [],
+            "levers": [],
         },
     )
     assert r.status_code == 200, r.text
@@ -240,9 +261,7 @@ def test_what_if_cutting_churn_lifts_net_new_mrr(client):
     # intervened rate, so the lift is ~20% of the churn the business was losing.
     assert churn["simulated"] < churn["baseline"]
     assert net["simulated"] > net["baseline"]
-    assert net["delta"]["estimate"] == pytest.approx(
-        0.2 * churn["baseline"], rel=0.02
-    )
+    assert net["delta"]["estimate"] == pytest.approx(0.2 * churn["baseline"], rel=0.02)
     assert net["prob_direction"] > 0.9
 
 

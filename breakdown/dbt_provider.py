@@ -430,11 +430,21 @@ class DbtDataFetcher(BaseDataFetcher):
             return "unknown"
         if not bind.is_non_additive:
             return "exact"
-        # Resolution collapses the relation to one row per (entity, period), so
-        # every entity lands in exactly one slice and the sum is the distinct
-        # entity count — which is the metric. Verified against DuckDB: the naive
-        # slices overstate by the overlap, the resolved ones match exactly.
-        return "exact" if bind.resolves_to_entity_grain else "overlapping"
+        if bind.resolves_to_entity_grain:
+            # Resolution collapses the relation to one row per (entity, period),
+            # so every entity lands in exactly one slice and the sum is the
+            # distinct entity count — which is the metric. Verified against both
+            # DuckDB and a real Databricks warehouse.
+            return "exact"
+        if bind.asserts_entity_grain:
+            # `resolve: error` claims single-valuedness without making it true.
+            # Reporting `exact` here would put a false label on the number, and
+            # withhold nothing when the claim is wrong; reporting `overlapping`
+            # would contradict an author who is right. `unknown` is the honest
+            # answer at query time — reconciliation still flags a real residual
+            # as discrepant, and `doctor` is what settles the assertion.
+            return "unknown"
+        return "overlapping"
 
     def query_provenance(
         self,

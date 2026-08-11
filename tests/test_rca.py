@@ -62,9 +62,7 @@ def test_rca_formula_attribution():
         assert c["ci_95"] is not None and c["ci_95"][0] <= c["ci_95"][1]
         # The two-level split is exact too, not just exact in expectation.
         d = c["decomposition"]
-        assert abs(
-            d["means"]["estimate"] + d["comovement"]["estimate"] - c["estimate"]
-        ) < 1e-9
+        assert abs(d["means"]["estimate"] + d["comovement"]["estimate"] - c["estimate"]) < 1e-9
         # unlagged contributions carry no lag surfacing keys at all
         assert "lag" not in c and "parent_windows" not in c
         assert 0.5 <= c["prob_same_direction"] <= 1.0
@@ -171,6 +169,7 @@ def test_rca_unknown_target_raises():
 
 # --- Standalone Shapley attribution (the GET /shapley contract) ---
 
+
 def test_shapley_attribution_sums_to_gap():
     dag, data = make_tree()
 
@@ -191,6 +190,7 @@ def test_shapley_attribution_no_formula_raises():
 
 
 # --- Trend & seasonal components (T5) ---
+
 
 def test_rca_seasonal_component_captures_weekly_pattern():
     """y = 0.3x + 5·sin(2πt/7) + noise, x ~flat. A whole-week reference window
@@ -216,15 +216,16 @@ metrics:
         name: weekly
 """
     parser = Parser(yaml_content)
-    ref = (str(dates[56].date()), str(dates[83].date()))    # 4 whole weeks
-    an = (str(dates[84].date()), str(dates[93].date()))     # 10 days, weekday-skewed
+    ref = (str(dates[56].date()), str(dates[83].date()))  # 4 whole weeks
+    an = (str(dates[84].date()), str(dates[93].date()))  # 10 days, weekday-skewed
 
     result = run_rca(parser.dag, data, {}, "y", ref[0], ref[1], an[0], an[1], advi_draws=300)
 
     node = result["nodes"]["y"]
     comps = node["components"]
-    true_delta = 5.0 * (np.sin(2 * np.pi * t[84:94] / 7).mean()
-                        - np.sin(2 * np.pi * t[56:84] / 7).mean())
+    true_delta = 5.0 * (
+        np.sin(2 * np.pi * t[84:94] / 7).mean() - np.sin(2 * np.pi * t[56:84] / 7).mean()
+    )
     assert np.sign(comps["seasonal"]["estimate"]) == np.sign(true_delta)
     # Without the seasonal term, its share of the gap would sit in unexplained.
     assert abs(node["unexplained"]) < abs(node["unexplained"] + comps["seasonal"]["estimate"])
@@ -248,9 +249,17 @@ metrics:
     data = generate_mock_data(n_days=100)  # starts 2024-01-01
 
     with pytest.raises(ValueError) as excinfo:
-        run_rca(parser.dag, data, {}, "order_count",
-                "2024-01-01", "2024-02-15", "2024-02-16", "2024-03-14",
-                advi_draws=100)
+        run_rca(
+            parser.dag,
+            data,
+            {},
+            "order_count",
+            "2024-01-01",
+            "2024-02-15",
+            "2024-02-16",
+            "2024-03-14",
+            advi_draws=100,
+        )
     message = str(excinfo.value)
     assert "daily_sessions" in message
     assert "lag 5" in message
@@ -278,8 +287,10 @@ def test_overlapping_windows_raise(entry_point):
     the normal regime and the departure from it."""
     parser = Parser(_WINDOW_TREE)
     data = generate_mock_data(n_days=100)
-    args = (parser.dag, data, {}, "revenue") if entry_point is run_rca else (
-        parser.dag, data, "revenue"
+    args = (
+        (parser.dag, data, {}, "revenue")
+        if entry_point is run_rca
+        else (parser.dag, data, "revenue")
     )
 
     with pytest.raises(ValueError, match="overlap"):
@@ -290,8 +301,10 @@ def test_overlapping_windows_raise(entry_point):
 def test_inverted_window_raises(entry_point):
     parser = Parser(_WINDOW_TREE)
     data = generate_mock_data(n_days=100)
-    args = (parser.dag, data, {}, "revenue") if entry_point is run_rca else (
-        parser.dag, data, "revenue"
+    args = (
+        (parser.dag, data, {}, "revenue")
+        if entry_point is run_rca
+        else (parser.dag, data, "revenue")
     )
 
     with pytest.raises(ValueError, match="analysis_start.*on or before.*analysis_end"):
@@ -305,8 +318,9 @@ def test_reference_window_starting_before_data_raises():
     data = generate_mock_data(n_days=100)  # starts 2024-01-01
 
     with pytest.raises(ValueError, match="not fully covered by its data"):
-        run_rca(parser.dag, data, {}, "revenue",
-                "2023-12-01", "2024-01-31", "2024-02-01", "2024-02-28")
+        run_rca(
+            parser.dag, data, {}, "revenue", "2023-12-01", "2024-01-31", "2024-02-01", "2024-02-28"
+        )
 
 
 def test_analysis_window_running_past_data_raises():
@@ -314,8 +328,9 @@ def test_analysis_window_running_past_data_raises():
     data = generate_mock_data(n_days=100)  # ends 2024-04-09
 
     with pytest.raises(ValueError, match="not fully covered by its data"):
-        run_rca(parser.dag, data, {}, "revenue",
-                "2024-01-01", "2024-01-31", "2024-02-01", "2024-05-31")
+        run_rca(
+            parser.dag, data, {}, "revenue", "2024-01-01", "2024-01-31", "2024-02-01", "2024-05-31"
+        )
 
 
 def test_windows_fully_inside_the_data_are_accepted():
@@ -323,12 +338,14 @@ def test_windows_fully_inside_the_data_are_accepted():
     parser = Parser(_WINDOW_TREE)
     data = generate_mock_data(n_days=100)
 
-    result = run_rca(parser.dag, data, {}, "revenue",
-                     "2024-01-01", "2024-01-31", "2024-02-01", "2024-02-28")
+    result = run_rca(
+        parser.dag, data, {}, "revenue", "2024-01-01", "2024-01-31", "2024-02-01", "2024-02-28"
+    )
     assert result["nodes"]["revenue"]["gap"] is not None
 
 
 # --- Per-day Shapley (T6) ---
+
 
 def test_per_day_shapley_attributes_covariance_shift():
     """Marginal window means of orders and aov are identical in both windows,
@@ -337,16 +354,18 @@ def test_per_day_shapley_attributes_covariance_shift():
     between the windows to the parents."""
     n = 60
     dates = pd.date_range("2024-01-01", periods=n)
-    f = np.tile([5.0, -5.0], n // 2)             # zero-mean shared factor
+    f = np.tile([5.0, -5.0], n // 2)  # zero-mean shared factor
     orders = 100.0 + f
     aov = np.where(np.arange(n) < 30, 50.0 + 0.5 * f, 50.0 - 0.5 * f)
-    revenue = orders * aov                        # exact identity
-    data = pd.DataFrame({
-        "date": dates,
-        "order_count": orders,
-        "average_order_value": aov,
-        "revenue": revenue,
-    })
+    revenue = orders * aov  # exact identity
+    data = pd.DataFrame(
+        {
+            "date": dates,
+            "order_count": orders,
+            "average_order_value": aov,
+            "revenue": revenue,
+        }
+    )
     yaml_content = """
 metrics:
   - name: order_count
@@ -361,8 +380,13 @@ metrics:
     parser = Parser(yaml_content)
 
     result = shapley_attribution(
-        parser.dag, data, "revenue",
-        "2024-01-01", "2024-01-30", "2024-01-31", "2024-02-29",
+        parser.dag,
+        data,
+        "revenue",
+        "2024-01-01",
+        "2024-01-30",
+        "2024-01-31",
+        "2024-02-29",
     )
 
     gap = result["actual"] - result["baseline"]
@@ -375,6 +399,7 @@ metrics:
 
 
 # --- Window bootstrap (T7) ---
+
 
 def test_block_bootstrap_indices_contract():
     rng = np.random.default_rng(0)
@@ -421,10 +446,12 @@ metrics:
     ref = ("2024-01-01", "2024-02-29")
     # Both analyses start 2024-03-01 -> same fit_end -> the same cached fit,
     # so the only difference is window-sampling uncertainty.
-    r3 = run_rca(parser.dag, data, traces, "y", ref[0], ref[1],
-                 "2024-03-01", "2024-03-03", advi_draws=300)
-    r28 = run_rca(parser.dag, data, traces, "y", ref[0], ref[1],
-                  "2024-03-01", "2024-03-28", advi_draws=300)
+    r3 = run_rca(
+        parser.dag, data, traces, "y", ref[0], ref[1], "2024-03-01", "2024-03-03", advi_draws=300
+    )
+    r28 = run_rca(
+        parser.dag, data, traces, "y", ref[0], ref[1], "2024-03-01", "2024-03-28", advi_draws=300
+    )
 
     def ci_width(result):
         ci = result["nodes"]["y"]["contributions"][0]["ci_95"]
@@ -470,7 +497,9 @@ def test_rca_day_grain_golden_pinned():
     assert rev["status"] == "ok"
     assert rev["grain"] == "day"
     assert rev["effective_windows"]["reference"] == {
-        "start": "2024-01-01", "end": "2024-02-15", "n_periods": 46,
+        "start": "2024-01-01",
+        "end": "2024-02-15",
+        "n_periods": 46,
     }
     assert abs(rev["gap"] - 943.1485825183736) < 1e-9
     assert abs(rev["unexplained"] - (-8.603117931383167)) < 1e-9
