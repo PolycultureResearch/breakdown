@@ -436,10 +436,13 @@ wrong number* rather than an error — the Horizon 0 failure class.
 Two things are **unverified** and must be settled by a smoke test before 2.10 is
 scheduled, recorded here so nobody mistakes them for established:
 
-1. **Python version.** MSI's pydantic path is ≤3.13 in practice. breakdown's
-   existing `dbt` extra is *already* 3.14-broken, so this is at worst not a
-   regression — but it must not be sold as a 3.14 fix until `dbt parse` → MSI has
-   been run end to end on the version we ship.
+1. ~~**Python version.**~~ **Resolved 2026-08-10 — better than assumed.** This
+   entry read "MSI's pydantic path is ≤ 3.13 in practice"; that was wrong. MSI
+   parses both a real dbt Core manifest and a real Fusion manifest **correctly
+   on Python 3.14.2**, including `metric_aggregation_params`, despite emitting a
+   pydantic-v1 warning on import. So the `dbt-bridge` extra works on 3.14 where
+   the `dbt` extra does not — a genuine advantage rather than a caveat. What
+   remains capped at <3.14 is `dbt-metricflow`, which the bridge does not need.
 2. **Returned timestamp dtype and timezone per warehouse**, from a real query
    rather than from source reading.
 
