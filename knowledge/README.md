@@ -57,6 +57,12 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
   slicing inside the tree (roadmap 3.2): declared `dimensions`, exact
   sum/Bennet slice attribution, excess-concentration ranking, on-demand
   fetch that never touches the fit path
+- [`non_additive_slicing_design.md`](non_additive_slicing_design.md) —
+  non-additive metrics at entity grain (roadmap 3.8): why a `count_distinct`
+  metric's slices overstate the total, why that is a property of the
+  (metric, dimension) pair rather than of the metric, the three tiers of
+  capability by what the author declared, and the entity-flow diagnostic that
+  labels a platform switch as *migration* instead of two offsetting causes
 - [`white_cube_demo_plan.md`](white_cube_demo_plan.md) — the deployable
   synthetic-data demo: the White Cube scenario and its four planted stories, the
   demo metric tree, build-live/serve-hermetic runtime shape, and the Fly.io
