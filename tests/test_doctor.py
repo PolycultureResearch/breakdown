@@ -269,8 +269,6 @@ def test_missing_dbt_extra_offers_the_standalone_cli_route(monkeypatch):
 
 import json  # noqa: E402
 
-import pytest  # noqa: E402
-
 from breakdown.doctor import check_dbt  # noqa: E402
 
 pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
@@ -425,7 +423,6 @@ def test_an_unresolvable_profile_stops_before_connecting(tmp_path):
 
 def test_the_dbt_provider_reports_its_own_extra(monkeypatch):
     import breakdown.data_fetch as df
-
     from breakdown.doctor import check_provider_extra
 
     monkeypatch.setattr(df, "provider_extra_missing", lambda p: "missing module 'sqlglot'")
