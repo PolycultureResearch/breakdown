@@ -1922,6 +1922,9 @@ function sliceResultHtml(metric) {
                ? " — movement between slices nets to zero, so it shifts where the metric sits without changing its total."
                : ""}</p>`
            : ""}
+         ${(ef.caveats || []).length
+           ? `<p class="inline-status">${ef.caveats.map(esc).join(" ")}</p>`
+           : ""}
          <p class="muted">Counts of entities across the two windows. They describe
            what kind of movement happened; they do not sum to the gap above.</p>
        </div>`

@@ -298,10 +298,17 @@ def build_resolved_slice_query(
     # answer different business questions, which is why neither is a default.
     order = "ASC" if spec.resolve == "first" else "DESC"
 
+    # Internal aliases are plain identifiers, never quoted ones. A quoted
+    # `"date"` is an identifier on DuckDB and Postgres but a **string literal**
+    # on Spark and BigQuery, so referencing it in the outer SELECT silently
+    # produced a constant column of the word "date" — every row unparseable as
+    # a date, found only by running this against Databricks. The public
+    # `date`/`slice`/`value` names are applied once, as aliases, which is the
+    # path `build_query` already proves on that warehouse.
     ranked = (
         sqlglot.select(
-            f'{date_expr} AS "{DATE_COL}"',
-            f'{slice_expr} AS "{SLICE_COL}"',
+            f"{date_expr} AS bd_date",
+            f"{slice_expr} AS bd_slice",
             f"ROW_NUMBER() OVER (PARTITION BY {entity}, {date_expr} "
             f"ORDER BY {time_col} {order}) AS bd_rn",
             dialect=read,
@@ -312,7 +319,10 @@ def build_resolved_slice_query(
     )
     return (
         sqlglot.select(
-            f'"{DATE_COL}"', f'"{SLICE_COL}"', f'COUNT(*) AS "{VALUE_COL}"', dialect=read
+            f'bd_date AS "{DATE_COL}"',
+            f'bd_slice AS "{SLICE_COL}"',
+            f'COUNT(*) AS "{VALUE_COL}"',
+            dialect=read,
         )
         .from_(ranked.subquery("bd_resolved"), dialect=read)
         .where("bd_rn = 1", dialect=read)
