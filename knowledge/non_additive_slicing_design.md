@@ -134,6 +134,11 @@ Independent of tier 1, and worth shipping first:
 
 ## 6. Entity flows: what the change was made of
 
+*Two limitations are stated in this section and neither is incidental: what
+"present in the window" means (below), and the fact that flows do not
+reconcile to the gap (further below). Both are load-bearing for how the panel
+may be read.*
+
 Tier 1's second capability, and the one that produces findings rather than
 numbers.
 
