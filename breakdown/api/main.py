@@ -7,13 +7,22 @@ import os
 import threading
 from contextlib import asynccontextmanager
 from importlib.resources import files
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, MutableMapping, Optional, Tuple
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import State
 
+from breakdown.api.trees import (
+    MAX_CACHED_TRACES,
+    TraceStore,
+    TreeState,
+    discover_trees,
+    parse_tree,
+    resolve_default,
+)
 from breakdown.data_fetch import (
     CloudDataFetcher,
     LocalDataFetcher,
@@ -28,10 +37,14 @@ from breakdown.engine.simulate import ScenarioRequest, run_scenario, validate_co
 from breakdown.engine.slices import entity_flows, slice_attribution
 from breakdown.grains import GrainedData, build_grained
 from breakdown.mcp.server import mcp
-from breakdown.parser import Parser
 from breakdown.snapshots import SnapshotFetcher, SnapshotStore
 
 logger = logging.getLogger(__name__)
+
+# The data routes. Mounted twice at the bottom of this module — bare and under
+# `/trees/{tree_id}` — so a tree is addressed by path and the old paths keep
+# working as aliases for the default tree.
+router = APIRouter()
 
 # Package-relative so the wheel install works the same as a repo checkout;
 # static/ and examples/ ship inside the `breakdown` package.
@@ -183,43 +196,90 @@ def _progress_reporter(state, run_id: Optional[str], stage: str):
     return report
 
 
-def _require_ready(request: Request) -> None:
-    """503 on data endpoints while the app is serving degraded (startup
-    data load failed); the detail carries the original error."""
-    error = request.app.state.startup_error
-    if error is not None:
+def _tree(request: Request) -> TreeState:
+    """The `TreeState` a request addresses: the named tree, else the default.
+
+    The id is read from the request's own path params rather than a handler
+    argument, so one router serves both mount points: every data route is
+    registered twice, once under `/trees/{tree_id}` and once bare. The bare
+    path is what keeps existing deep links, the README's curl examples, the MCP
+    tools and the test suite working unchanged."""
+    state = request.app.state
+    trees = state.trees
+    tree_id = request.path_params.get("tree_id")
+    if not trees:
+        # Nothing was discovered at all — a 503 with the reason, not a 404
+        # that reads as "you asked for the wrong tree".
         raise HTTPException(
             status_code=503,
-            detail=f"breakdown started without data: {error}. "
-            "Run `breakdown doctor --tree <tree.yml>` to diagnose.",
+            detail=f"breakdown started without a metric tree: {state.startup_error}. "
+            "Check the --tree path and restart.",
+        )
+    tid = tree_id or state.default_tree
+    tree = trees.get(tid)
+    if tree is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No tree '{tid}'. Known trees: {', '.join(sorted(trees))}.",
+        )
+    return tree
+
+
+async def _loaded_tree(request: Request) -> TreeState:
+    """The addressed tree, with its data fetched if this is the first request
+    that needs it."""
+    tree = _tree(request)
+    await _ensure_loaded(tree)
+    return tree
+
+
+async def _ensure_loaded(tree: TreeState) -> None:
+    """Fetch a tree's data on first use, at most once.
+
+    Under the tree's own lock and off the event loop, with the double check
+    inside it: two viewers opening the same cold tree at the same moment must
+    not both fetch. `loading` is what the index shows meanwhile — and a tree
+    that failed to load has a `load_error` rather than being retried on every
+    request, which would hammer a down warehouse once per click."""
+    if tree.loaded or tree.load_error is not None:
+        return
+    async with tree.lock:
+        if tree.loaded or tree.load_error is not None:
+            return
+        tree.loading = True
+        try:
+            await asyncio.to_thread(load_tree, tree)
+        finally:
+            tree.loading = False
+    _start_earliest_discovery(tree)
+
+
+def _require_ready(tree: TreeState) -> None:
+    """503 on data endpoints while a tree is serving degraded (its parse or
+    its data load failed); the detail carries the original error."""
+    if tree.load_error is not None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Tree '{tree.id}' started without data: {tree.load_error}. "
+            f"Run `breakdown doctor --tree {tree.path}` to diagnose.",
         )
 
 
-def _require_data(request: Request) -> None:
+def _require_data(tree: TreeState) -> None:
     """422 on time-series endpoints for a cold-start tree (`provider: none`).
     A stated mode, not an error: the tree deliberately has no data, so
     analyses that consume history cannot exist — only /simulate can."""
-    _require_ready(request)
-    if request.app.state.data is None:
+    _require_ready(tree)
+    if tree.data is None:
         raise HTTPException(
             status_code=422,
-            detail="This tree declares no data provider (cold start mode); "
+            detail=f"Tree '{tree.id}' declares no data provider (cold start mode); "
             "this endpoint needs time-series data. What-if simulation over "
             "the declared beliefs is available at POST /simulate.",
         )
 
 
-# Cap on `app.state.traces`. Each entry is an InferenceData object holding
-# every posterior draw, so an unbounded cache grows with distinct
-# (metric, analysis_start) pairs until the process is OOM-killed — reachable
-# without malice on the public demo, where each visitor picks their own windows
-# (C8). Insertion-ordered eviction: dicts preserve order, so the oldest key is
-# the first, and a refit re-inserts at the end. Generous enough that a normal
-# session never evicts; a fit that is dropped is simply recomputed.
-MAX_CACHED_TRACES = 256
-
-
-def _remember_fit(traces: Dict[Tuple[str, Optional[str]], Any], key, fit) -> None:
+def _remember_fit(traces: MutableMapping, key, fit) -> None:
     """Publish a fit into the shared cache, bounded and never downgrading.
 
     Two viewers share one process and one cache, so a fit that one of them
@@ -229,6 +289,10 @@ def _remember_fit(traces: Dict[Tuple[str, Optional[str]], Any], key, fit) -> Non
     previous RCA had already paid for. Ordering fits by quality — NUTS over
     ADVI, then by draw count — keeps the deliberate "confirm this with NUTS"
     upgrade working while blocking the accidental downgrade (C8).
+
+    The trailing eviction is a backstop for a plain dict: a tree's `traces` is
+    a `TraceView` onto the process-wide `TraceStore`, which caps *across* trees
+    on every write (256 per tree would be 256 x N InferenceData objects).
     """
     existing = traces.get(key)
     if existing is not None and _fit_rank(existing) > _fit_rank(fit):
@@ -260,6 +324,70 @@ def _pick_fit(traces: Dict[Tuple[str, Optional[str]], Any], name: str):
     if not dated:
         return None
     return max(dated, key=lambda item: item[0])[1]
+
+
+# Attributes that live on a `TreeState` and are aliased onto `app.state` for
+# the default tree. `progress`, `trees`, `default_tree` and `trace_store` are
+# genuinely app-wide and are not in here.
+_TREE_ATTRS = frozenset(
+    {
+        "parser",
+        "fetcher",
+        "data",
+        "traces",
+        "slice_cache",
+        "flow_cache",
+        "lock",
+        "earliest",
+        "earliest_task",
+        "loaded",
+    }
+)
+
+
+class BreakdownState(State):
+    """`app.state`, with the default tree's own state aliased onto it.
+
+    The unprefixed routes are aliases for the default tree (§6.3), and so is
+    `app.state`: `app.state.data` *is* `app.state.trees[default].data`, for
+    reads and writes alike. That is not politeness — it is what keeps the MCP
+    server, the README's examples and the whole test suite addressing the same
+    attributes they always have while the routes underneath them work against
+    one `TreeState` among many.
+
+    `startup_error` is the one composite. It reads "can the default tree
+    serve?", which is two different failures: `discovery_error` when `--tree`
+    named nothing loadable (no tree exists to hang it on) and the default
+    tree's own `load_error` otherwise.
+    """
+
+    def _default_tree(self):
+        state = self._state
+        trees = state.get("trees")
+        if not trees:
+            return None
+        return trees.get(state.get("default_tree"))
+
+    def __getattr__(self, key):
+        if key in _TREE_ATTRS:
+            tree = self._default_tree()
+            if tree is not None:
+                return getattr(tree, key)
+        if key == "startup_error":
+            tree = self._default_tree()
+            return self._state.get("discovery_error") or (
+                tree.load_error if tree is not None else None
+            )
+        return super().__getattr__(key)
+
+    def __setattr__(self, key, value):
+        tree = self._default_tree() if key in _TREE_ATTRS or key == "startup_error" else None
+        if tree is not None:
+            setattr(tree, "load_error" if key == "startup_error" else key, value)
+            return
+        if key == "startup_error":
+            key = "discovery_error"
+        super().__setattr__(key, value)
 
 
 class _McpMount:
@@ -297,107 +425,130 @@ class _McpMount:
 _mcp_mount = _McpMount()
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    tree_path = os.environ.get("BREAKDOWN_TREE", DEFAULT_TREE_PATH)
-    app.state.parser = None
-    app.state.fetcher = None
-    app.state.data = None
-    # A startup failure (bad tree, unset ${VAR}, unreachable warehouse) must
-    # not kill the process — a container would crash-loop with no way to see
-    # why. Serve degraded instead: /health carries the error, data endpoints
-    # return 503, and the UI shows a banner pointing at `breakdown doctor`.
-    app.state.startup_error = None
-    # Keyed by (metric name, fit_end): a full-window fit (fit_end=None) and a
-    # pre-anomaly RCA fit are different objects and must not shadow each other.
-    app.state.traces: Dict[Tuple[str, Optional[str]], Any] = {}
-    # Sliced frames fetched on demand for slice attribution, keyed by
-    # (metric, dimension source, grain, start, end). Deliberately separate
-    # from the startup GrainedData — slices never enter the fit path.
-    app.state.slice_cache: Dict[Tuple[str, str, str, str, str], pd.DataFrame] = {}
-    # Flows are keyed by a *pair* of windows, so they cannot share the slice
-    # cache's key. Without one, every click on a ranked cause re-ran a FULL
-    # OUTER JOIN over two windows on the warehouse.
-    app.state.flow_cache: Dict[Tuple[str, str, str, str, str, str], Any] = {}
-    app.state.lock = asyncio.Lock()
-    # Filled by the background discovery task: metric -> earliest ISO date the
-    # provider has (None = provider can't say). Read by /meta so the UI can
-    # nudge "history exists before --start-date".
-    app.state.earliest: Dict[str, Optional[str]] = {}
-    app.state.earliest_task: Optional[asyncio.Task] = None
-    # run_id -> the latest progress update from an in-flight RCA or simulation.
-    # Written from the worker thread, read by GET /progress. See
-    # `_progress_reporter`.
-    app.state.progress: Dict[str, Dict[str, Any]] = {}
+def _window() -> Tuple[str, str]:
+    """The loaded data window, validated. One `--start-date`/`--end-date` pair
+    for the process, N trees over it."""
+    start_date = _validate_date(
+        os.environ.get("BREAKDOWN_START_DATE", DEFAULT_START_DATE), "start date"
+    )
+    end_date = _validate_date(os.environ.get("BREAKDOWN_END_DATE", DEFAULT_END_DATE), "end date")
+    if end_date < start_date:
+        raise RuntimeError(f"end date '{end_date}' is before start date '{start_date}'")
+    return start_date, end_date
 
+
+def load_tree(tree: TreeState) -> None:
+    """Build one tree's fetcher and fetch every metric. Blocking — callers run
+    it off the event loop, holding that tree's lock.
+
+    Failure-soft, per tree: a bad token or an unreachable warehouse sets
+    `load_error` and that tree serves 503s while the process — and every other
+    tree — keeps running. A container never crash-loops on a bad credential,
+    and per-metric diagnosis stays `doctor.py`'s job.
+    """
+    if tree.parser is None:  # parse failed at boot; there is nothing to load
+        return
+    provider_cfg = tree.parser.config.provider
     try:
-        with open(tree_path, "r") as f:
-            yaml_config = f.read()
-
-        parser = Parser(yaml_config)
-        provider_cfg = parser.config.provider
         if provider_cfg.type == "none":
-            # Cold-start tree: nothing is fetched, app.state.data stays None
-            # — a stated mode, not a degraded startup. Missing declarations
-            # would otherwise surface one 422 at a time on /simulate, so
-            # check readiness here and fail loudly with the full list.
-            problems = validate_cold_start(parser.dag)
+            # Cold-start tree: nothing is fetched and `data` stays None — a
+            # stated mode, not a degraded load. Missing declarations would
+            # otherwise surface one 422 at a time on /simulate, so check
+            # readiness here and fail loudly with the full list.
+            problems = validate_cold_start(tree.parser.dag)
             if problems:
                 raise RuntimeError(
                     "tree declares no data provider but is not cold-start "
                     "ready: " + "; ".join(problems)
                 )
-            app.state.parser = parser
             logger.info(
-                "breakdown API started (cold start): tree=%s metrics=%d — "
-                "no data provider, serving what-if over declared beliefs",
-                tree_path,
-                len(parser.config.metrics),
+                "tree '%s' ready (cold start): %s metrics=%d — no data provider, "
+                "serving what-if over declared beliefs",
+                tree.id,
+                tree.path,
+                len(tree.parser.config.metrics),
             )
         else:
-            start_date = _validate_date(
-                os.environ.get("BREAKDOWN_START_DATE", DEFAULT_START_DATE), "start date"
-            )
-            end_date = _validate_date(
-                os.environ.get("BREAKDOWN_END_DATE", DEFAULT_END_DATE), "end date"
-            )
-            if end_date < start_date:
-                raise RuntimeError(f"end date '{end_date}' is before start date '{start_date}'")
-
-            fetcher = _build_fetcher(provider_cfg, parser.dag, parser.config.metrics)
+            start_date, end_date = _window()
+            fetcher = _build_fetcher(provider_cfg, tree.parser.dag, tree.parser.config.metrics)
             fetcher = _wrap_snapshots(
-                fetcher, provider_cfg.type, tree_path, slice_span=(start_date, end_date)
+                fetcher, provider_cfg.type, tree.path, slice_span=(start_date, end_date)
             )
-            data = _fetch_all_metrics(parser, fetcher, provider_cfg.type, start_date, end_date)
-
-            app.state.parser = parser
-            app.state.fetcher = fetcher
-            app.state.data = data
-
-            # History discovery runs in the background: one provider
-            # round-trip per metric would roughly double a cold startup, and
-            # /meta must stay instant — it reports whatever has arrived.
-            app.state.earliest_task = asyncio.create_task(
-                _discover_earliest(app, parser, fetcher, provider_cfg.type)
-            )
-
+            data = _fetch_all_metrics(tree.parser, fetcher, provider_cfg.type, start_date, end_date)
+            tree.fetcher = fetcher
+            tree.data = data
             logger.info(
-                "breakdown API started: tree=%s provider=%s window=[%s, %s] rows=%s",
-                tree_path,
+                "tree '%s' loaded: %s provider=%s window=[%s, %s] rows=%s",
+                tree.id,
+                tree.path,
                 provider_cfg.type,
                 start_date,
                 end_date,
                 ", ".join(f"{g}:{len(f)}" for g, f in data.frames.items()),
             )
+        tree.loaded = True
     except Exception as e:
-        app.state.startup_error = f"{type(e).__name__}: {e}"
+        tree.load_error = f"{type(e).__name__}: {e}"
         logger.error(
-            "Startup data load failed for tree=%s; serving degraded. "
+            "Data load failed for tree '%s' (%s); serving degraded. "
             "Run `breakdown doctor --tree %s` to diagnose. %s",
-            tree_path,
+            tree.id,
+            tree.path,
+            tree.path,
+            e,
+        )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    tree_path = os.environ.get("BREAKDOWN_TREE", DEFAULT_TREE_PATH)
+    # Per-tree state (parser, fetcher, data, caches, lock) lives on TreeState;
+    # `app.state.<attr>` still reads and writes the **default** tree's, which
+    # is what keeps every existing caller working (see `BreakdownState`).
+    app.state.trees: Dict[str, TreeState] = {}
+    app.state.default_tree = ""
+    # Fitted models for every tree, capped process-wide: 256 per tree would be
+    # 256 x N InferenceData objects, each holding every posterior draw.
+    app.state.trace_store = TraceStore()
+    # A *discovery* failure (`--tree` pointing at nothing) has no tree to hang
+    # itself on, so it stays global; a per-tree parse or load failure lands on
+    # that tree's `load_error`, and `app.state.startup_error` reads the default
+    # tree's. Either way the app still serves — /health carries the error, data
+    # endpoints return 503, and the UI shows a banner pointing at `breakdown
+    # doctor` — rather than a container crash-looping with no way to see why.
+    app.state.discovery_error = None
+    # run_id -> the latest progress update from an in-flight RCA or simulation.
+    # Written from the worker thread, read by GET /progress. **Not** tree
+    # state: run ids are already unique, and a poller shouldn't need to know
+    # which tree it is watching. See `_progress_reporter`.
+    app.state.progress: Dict[str, Dict[str, Any]] = {}
+
+    try:
+        trees = discover_trees(tree_path)
+        for tree in trees.values():
+            tree.traces = app.state.trace_store.view(tree.id)
+            parse_tree(tree)
+        app.state.trees = trees
+        app.state.default_tree = resolve_default(
+            trees, os.environ.get("BREAKDOWN_DEFAULT_TREE") or None
+        )
+    except Exception as e:
+        app.state.discovery_error = f"{type(e).__name__}: {e}"
+        logger.error(
+            "No metric tree could be discovered at %s; serving degraded. %s",
             tree_path,
             e,
         )
+
+    # Boot parses every tree's YAML (cheap, no I/O beyond the file) and fetches
+    # none, so `GET /trees` is a complete, instant index without touching a
+    # warehouse. Eight goal trees in a dbt repo is eight sets of warehouse
+    # round-trips, and paying for the seven nobody opened is the difference
+    # between a tool that starts in three seconds and one that starts in three
+    # minutes. `_eager_trees` names the exceptions.
+    for tree in _eager_trees(app):
+        await asyncio.to_thread(load_tree, tree)
+        _start_earliest_discovery(tree)
     # PyMC/ArviZ/PyTensor are deferred out of `engine.model`'s module scope so
     # the port binds without paying for them (~27s on a shared-CPU VM, which is
     # what made Fly's proxy 503 the first visitor after an idle period). That
@@ -414,32 +565,63 @@ async def lifespan(app: FastAPI):
         async with mcp.session_manager.run():
             yield
     finally:
-        task = app.state.earliest_task
-        if task is not None and not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        for tree in app.state.trees.values():
+            task = tree.earliest_task
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
 
-async def _discover_earliest(app: FastAPI, parser, fetcher, provider_type: str) -> None:
-    """Fill app.state.earliest metric by metric. Failure-soft per metric:
+def _eager_trees(app: FastAPI):
+    """Which trees to load at startup rather than on first use.
+
+    A **file** argument is one tree and nothing is saved by deferring it, so it
+    loads eagerly and the single-tree case boots exactly as it always did. A
+    **directory** defers everything, including the default — that is the whole
+    point of §5.1 — unless `--eager` (`BREAKDOWN_EAGER=1`) asks for the default
+    tree back, for a deployment that knows which tree its visitors open.
+    """
+    trees = app.state.trees
+    if not trees:
+        return []
+    default = trees.get(app.state.default_tree)
+    if default is None:
+        return []
+    if len(trees) == 1 or os.environ.get("BREAKDOWN_EAGER") == "1":
+        return [default]
+    return []
+
+
+def _start_earliest_discovery(tree: TreeState) -> None:
+    """History discovery runs in the background: one provider round-trip per
+    metric would roughly double a cold load, and /meta must stay instant — it
+    reports whatever has arrived."""
+    if tree.fetcher is None or tree.parser is None:
+        return
+    tree.earliest_task = asyncio.create_task(_discover_earliest(tree))
+
+
+async def _discover_earliest(tree: TreeState) -> None:
+    """Fill `tree.earliest` metric by metric. Failure-soft per metric:
     earliest_date never raises by contract, and a surprise here must not
     take the app down with it."""
-    for metric in parser.config.metrics:
+    provider_type = tree.parser.config.provider.type
+    for metric in tree.parser.config.metrics:
         query_name = provider_query_name(provider_type, metric)
         try:
-            earliest = await asyncio.to_thread(
-                fetcher.earliest_date, query_name, metric.grain
-            )
+            earliest = await asyncio.to_thread(tree.fetcher.earliest_date, query_name, metric.grain)
         except Exception as e:  # pragma: no cover - belt over the contract
             logger.info("earliest_date failed for '%s': %s", metric.name, e)
             earliest = None
-        app.state.earliest[metric.name] = earliest
+        tree.earliest[metric.name] = earliest
 
 
 app = FastAPI(title="breakdown API", lifespan=lifespan)
+# `app.state` aliases the default tree's own state — see `BreakdownState`.
+app.state = BreakdownState(app.state._state)
 
 
 @app.middleware("http")
@@ -501,28 +683,36 @@ async def root():
 async def health(request: Request):
     """Liveness + readiness in one: always 200 (the process is up), with
     `status` distinguishing ok from degraded so orchestrators and the UI can
-    react without treating a bad data source as a dead container."""
+    react without treating a bad data source as a dead container.
+
+    Reports on the **default** tree, like every other unprefixed route; the
+    per-tree view is `GET /trees`, which carries each tree's own state."""
     state = request.app.state
     if state.startup_error is not None:
         return {"status": "degraded", "error": state.startup_error}
+    parser = state.parser
+    if parser is None:  # discovered and parsed, not yet loaded
+        return {"status": "ok", "provider": None, "metrics": 0}
     return {
         "status": "ok",
-        "provider": state.parser.config.provider.type,
-        "metrics": len(state.parser.config.metrics),
+        "provider": parser.config.provider.type,
+        "metrics": len(parser.config.metrics),
     }
 
 
-@app.get("/meta")
+@router.get("/meta")
 async def get_meta(request: Request):
     """Bootstrap info for the UI: metrics, data window, provider, fit status.
     `mode` tells the UI which surface to boot: "fitted" (data-backed) or
     "cold_start" (no data provider — what-if over declared beliefs only)."""
-    _require_ready(request)
-    parser = request.app.state.parser
-    data = request.app.state.data
+    tree = await _loaded_tree(request)
+    _require_ready(tree)
+    parser = tree.parser
+    data = tree.data
     if data is None:
         return {
             "mode": "cold_start",
+            "tree": tree.id,
             "provider": parser.config.provider.type,
             "metrics": [m.name for m in parser.config.metrics],
             "date_start": None,
@@ -540,6 +730,7 @@ async def get_meta(request: Request):
             data_through[name] = str(through.date())
     return {
         "mode": "fitted",
+        "tree": tree.id,
         "provider": parser.config.provider.type,
         "metrics": [m.name for m in parser.config.metrics],
         "date_start": str(data.date_start.date()),
@@ -554,7 +745,7 @@ async def get_meta(request: Request):
         # the background discovery task — dict(...) snapshots it for the same
         # worker-thread reason as `fitted` below. Lets the UI say "history
         # exists before --start-date; widen it to train on more".
-        "earliest_available": dict(request.app.state.earliest),
+        "earliest_available": dict(tree.earliest),
         # `list(...)` snapshots the keys in one bytecode op rather than
         # iterating lazily: `run_rca` mutates this dict from a worker thread
         # (it is handed the cache directly and fits on demand), so a lazy
@@ -562,14 +753,15 @@ async def get_meta(request: Request):
         # iteration" — an intermittent 500 for one viewer precisely while
         # another's analysis ran, which is the single most likely way a
         # multi-viewer demo breaks (C8).
-        "fitted": sorted({name for (name, _) in list(request.app.state.traces)}),
+        "fitted": sorted({name for (name, _) in list(tree.traces)}),
     }
 
 
-@app.get("/dag")
+@router.get("/dag")
 async def get_dag(request: Request):
-    _require_ready(request)
-    parser = request.app.state.parser
+    tree = _tree(request)
+    _require_ready(tree)
+    parser = tree.parser
     return {
         "nodes": [
             [name, attrs["definition"].model_dump()] for name, attrs in parser.dag.nodes(data=True)
@@ -578,14 +770,15 @@ async def get_dag(request: Request):
     }
 
 
-@app.get("/series")
+@router.get("/series")
 async def get_series(request: Request):
     """Every metric's series at its native grain, for the node cards. Mixed
     grains mean there is no single shared date axis: each metric carries its
     own period-start dates. NaN -> null for valid JSON."""
-    _require_data(request)
-    parser = request.app.state.parser
-    data = request.app.state.data
+    tree = await _loaded_tree(request)
+    _require_data(tree)
+    parser = tree.parser
+    data = tree.data
     metrics = {}
     for m in parser.config.metrics:
         if m.name not in data.grain_of:
@@ -602,7 +795,7 @@ async def get_series(request: Request):
     return {"metrics": metrics}
 
 
-@app.get("/metrics/{name}/query")
+@router.get("/metrics/{name}/query")
 async def get_metric_query(name: str, request: Request, dimension: Optional[str] = None):
     """The query behind a metric's numbers, when the provider knows it.
 
@@ -619,14 +812,15 @@ async def get_metric_query(name: str, request: Request, dimension: Optional[str]
     # Degraded startup leaves no parser, so this needs the same 503 the data
     # endpoints give rather than an AttributeError. Provenance is *more* useful
     # when things are broken, but it still needs a tree that loaded.
-    _require_ready(request)
-    parser = request.app.state.parser
+    tree = await _loaded_tree(request)
+    _require_ready(tree)
+    parser = tree.parser
     metric = parser.get_metric(name)
     if not metric:
         raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
 
     provider = parser.config.provider.type
-    fetcher = getattr(request.app.state, "fetcher", None)
+    fetcher = tree.fetcher
     payload = {
         "metric": name,
         "dimension": dimension,
@@ -654,7 +848,7 @@ async def get_metric_query(name: str, request: Request, dimension: Optional[str]
     query_name = provider_query_name(provider, metric)
     # The loaded window, so a provider that can generate its query does so even
     # when a snapshot served the series and nothing executed this process.
-    data = request.app.state.data
+    data = tree.data
     start, end = (
         (str(data.date_start.date()), str(data.date_end.date()))
         if data is not None
@@ -697,12 +891,13 @@ async def get_metric_query(name: str, request: Request, dimension: Optional[str]
     return payload
 
 
-@app.get("/metrics/{name}")
+@router.get("/metrics/{name}")
 async def get_metric(name: str, request: Request):
-    _require_ready(request)
-    parser = request.app.state.parser
-    data = request.app.state.data
-    traces = request.app.state.traces
+    tree = await _loaded_tree(request)
+    _require_ready(tree)
+    parser = tree.parser
+    data = tree.data
+    traces = tree.traces
 
     metric = parser.get_metric(name)
     if not metric:
@@ -737,7 +932,7 @@ async def get_metric(name: str, request: Request):
     }
 
 
-@app.post("/analyze/{name}")
+@router.post("/analyze/{name}")
 async def analyze_metric(
     name: str,
     request: Request,
@@ -747,9 +942,10 @@ async def analyze_metric(
     chains: int = Query(default=4, ge=1, le=8),
     fit_end: Optional[str] = Query(default=None),
 ):
-    _require_data(request)
-    parser = request.app.state.parser
-    data = request.app.state.data
+    tree = await _loaded_tree(request)
+    _require_data(tree)
+    parser = tree.parser
+    data = tree.data
 
     if name not in parser.dag:
         raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
@@ -763,7 +959,7 @@ async def analyze_metric(
                 status_code=422, detail=f"fit_end must be YYYY-MM-DD, got '{fit_end}'"
             )
 
-    async with request.app.state.lock:
+    async with tree.lock:
         fit = await asyncio.to_thread(
             fit_metric,
             parser.dag,
@@ -775,7 +971,7 @@ async def analyze_metric(
             chains=chains,
             fit_end=fit_end,
         )
-        _remember_fit(request.app.state.traces, (name, fit_end), fit)
+        _remember_fit(tree.traces, (name, fit_end), fit)
 
     return {
         "status": "success",
@@ -785,7 +981,7 @@ async def analyze_metric(
     }
 
 
-@app.get("/shapley/{name}")
+@router.get("/shapley/{name}")
 async def get_shapley(
     name: str,
     request: Request,
@@ -800,9 +996,10 @@ async def get_shapley(
         default=None, description="End of baseline window (YYYY-MM-DD)"
     ),
 ):
-    _require_data(request)
-    parser = request.app.state.parser
-    data = request.app.state.data
+    tree = await _loaded_tree(request)
+    _require_data(tree)
+    parser = tree.parser
+    data = tree.data
 
     if name not in parser.dag:
         raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
@@ -823,7 +1020,7 @@ async def get_shapley(
     return result
 
 
-@app.post("/rca/{name}")
+@router.post("/rca/{name}")
 async def root_cause_analysis(
     name: str,
     request: Request,
@@ -844,27 +1041,35 @@ async def root_cause_analysis(
         "tracked at all.",
     ),
 ):
-    _require_data(request)
-    parser = request.app.state.parser
-    data = request.app.state.data
+    tree = await _loaded_tree(request)
+    _require_data(tree)
+    parser = tree.parser
+    data = tree.data
 
     if name not in parser.dag:
         raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
 
     state = request.app.state
-    # Registered before the lock, so a run queued behind another one can say
-    # that rather than looking wedged.
+    # Registered before the lock, so a run queued behind another one on **this
+    # tree** can say that rather than looking wedged. The lock is per-tree:
+    # another tree's simulation is not something this run waits for.
     report = _progress_reporter(state, run_id, "waiting")
     try:
-        async with state.lock:
+        async with tree.lock:
             if report:
                 report({"stage": "resolving"})
-            # run_rca adds any traces it fits on demand to app.state.traces itself.
+            # run_rca adds any traces it fits on demand to this tree's cache.
             try:
                 result = await asyncio.to_thread(
-                    run_rca, parser.dag, data, state.traces, name,
-                    analysis_start=analysis_start, analysis_end=analysis_end,
-                    reference_start=reference_start, reference_end=reference_end,
+                    run_rca,
+                    parser.dag,
+                    data,
+                    tree.traces,
+                    name,
+                    analysis_start=analysis_start,
+                    analysis_end=analysis_end,
+                    reference_start=reference_start,
+                    reference_end=reference_end,
                     progress=report,
                 )
             except ValueError as e:
@@ -876,16 +1081,18 @@ async def root_cause_analysis(
     return result
 
 
-def _fetch_sliced_cached(state, parser, metric, dimension_source, start, end) -> pd.DataFrame:
+def _fetch_sliced_cached(tree, parser, metric, dimension_source, start, end) -> pd.DataFrame:
     """Read-through slice cache: one provider query per
-    (metric, dimension, grain, window), reused across requests."""
+    (metric, dimension, grain, window), reused across requests. The cache is
+    the tree's own — two trees naming the same metric are two independent
+    nodes, with independent fetches."""
     key = (metric.name, dimension_source, metric.grain, start, end)
-    cached = state.slice_cache.get(key)
+    cached = tree.slice_cache.get(key)
     if cached is not None:
         return cached
     provider_type = parser.config.provider.type
     query_name = provider_query_name(provider_type, metric)
-    df = state.fetcher.fetch_metric_sliced(
+    df = tree.fetcher.fetch_metric_sliced(
         query_name,
         dimension_source,
         start,
@@ -893,12 +1100,12 @@ def _fetch_sliced_cached(state, parser, metric, dimension_source, start, end) ->
         grain=metric.grain,
         kind=metric.kind,
     )
-    state.slice_cache[key] = df
+    tree.slice_cache[key] = df
     return df
 
 
 def _fetch_flows_cached(
-    state, parser, metric, dimension_source, ref_start, ref_end, an_start, an_end
+    tree, parser, metric, dimension_source, ref_start, ref_end, an_start, an_end
 ):
     """Read-through cache for the entity-flow transition matrix.
 
@@ -908,10 +1115,10 @@ def _fetch_flows_cached(
     same windows, on every click.
     """
     key = (metric.name, dimension_source, ref_start, ref_end, an_start, an_end)
-    cached = state.flow_cache.get(key)
+    cached = tree.flow_cache.get(key)
     if cached is not None:
         return cached
-    df = state.fetcher.fetch_entity_flows(
+    df = tree.fetcher.fetch_entity_flows(
         provider_query_name(parser.config.provider.type, metric),
         dimension_source,
         ref_start,
@@ -919,12 +1126,12 @@ def _fetch_flows_cached(
         an_start,
         an_end,
     )
-    state.flow_cache[key] = df
+    tree.flow_cache[key] = df
     return df
 
 
 def _run_slice(
-    state,
+    tree,
     parser,
     data,
     defn,
@@ -935,17 +1142,22 @@ def _run_slice(
     analysis_end,
 ):
     """Fetch the sliced frames (and the weight's, for a rate) and attribute.
-    Sync — called via asyncio.to_thread under the app lock. The engine stays
+    Sync — called via asyncio.to_thread under the tree's lock. The engine stays
     pure: all I/O happens here (slice_attribution keeps concrete dates, so
     omitted references resolve here too)."""
     reference_start, reference_end, reference_defaulted = resolve_reference_window(
-        parser.dag, data, defn.name,
-        analysis_start, analysis_end, reference_start, reference_end,
+        parser.dag,
+        data,
+        defn.name,
+        analysis_start,
+        analysis_end,
+        reference_start,
+        reference_end,
     )
     spec = defn.dimensions[dimension]
     span_start = min(reference_start, analysis_start)
     span_end = max(reference_end, analysis_end)
-    sliced = _fetch_sliced_cached(state, parser, defn, spec.source, span_start, span_end)
+    sliced = _fetch_sliced_cached(tree, parser, defn, spec.source, span_start, span_end)
     weight_sliced = None
     if defn.kind == "rate":
         weight_defn = parser.get_metric(spec.weight)
@@ -956,11 +1168,11 @@ def _run_slice(
                 "must share the rate's grain."
             )
         weight_sliced = _fetch_sliced_cached(
-            state, parser, weight_defn, spec.source, span_start, span_end
+            tree, parser, weight_defn, spec.source, span_start, span_end
         )
     # Whether these slices are expected to sum comes from the binding, not from
     # the residual they produce — see `BaseDataFetcher.slice_additivity`.
-    additivity = state.fetcher.slice_additivity(
+    additivity = tree.fetcher.slice_additivity(
         provider_query_name(parser.config.provider.type, defn), spec.source
     )
     result = slice_attribution(
@@ -983,7 +1195,7 @@ def _run_slice(
     # classify entities simply has none to add, and that is not an error.
     try:
         transitions = _fetch_flows_cached(
-            state,
+            tree,
             parser,
             defn,
             spec.source,
@@ -994,9 +1206,7 @@ def _run_slice(
         )
         # Fold to the same slices the attribution shows. Two panels side by side
         # that disagree on which slices exist is a worse read than either alone.
-        result["entity_flows"] = entity_flows(
-            transitions, top_k=spec.top_k, pinned=spec.values
-        )
+        result["entity_flows"] = entity_flows(transitions, top_k=spec.top_k, pinned=spec.values)
     except SliceNotSupported:
         result["entity_flows"] = None
     except Exception as e:  # a flow query failing must not lose the attribution
@@ -1005,7 +1215,7 @@ def _run_slice(
     return result
 
 
-@app.post("/rca/{name}/slices")
+@router.post("/rca/{name}/slices")
 async def slice_metric_gap(
     name: str,
     request: Request,
@@ -1028,9 +1238,10 @@ async def slice_metric_gap(
     parent, pass the parent's own lag-shifted windows (a defaulted reference
     matches the metric's own timeline, not a lag-shifted one).
     """
-    _require_data(request)
-    parser = request.app.state.parser
-    data = request.app.state.data
+    tree = await _loaded_tree(request)
+    _require_data(tree)
+    parser = tree.parser
+    data = tree.data
 
     if name not in parser.dag:
         raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
@@ -1056,11 +1267,11 @@ async def slice_metric_gap(
                 status_code=422, detail=f"{label} must be YYYY-MM-DD, got '{value}'"
             )
 
-    async with request.app.state.lock:
+    async with tree.lock:
         try:
             result = await asyncio.to_thread(
                 _run_slice,
-                request.app.state,
+                tree,
                 parser,
                 data,
                 defn,
@@ -1078,7 +1289,7 @@ async def slice_metric_gap(
     return result
 
 
-@app.post("/simulate")
+@router.post("/simulate")
 async def simulate(
     scenario: ScenarioRequest,
     request: Request,
@@ -1088,25 +1299,24 @@ async def simulate(
         "live stages while this request is in flight.",
     ),
 ):
-    """Steady-state what-if simulation. Stateless: the client owns the
-    scenario; on-demand fits land in the shared trace cache."""
-    _require_ready(request)
-    parser = request.app.state.parser
-    data = request.app.state.data
+    tree = await _loaded_tree(request)
+    _require_ready(tree)
+    parser = tree.parser
+    data = tree.data
 
     state = request.app.state
     report = _progress_reporter(state, run_id, "waiting")
     try:
-        async with state.lock:
+        async with tree.lock:
             if report:
                 report({"stage": "resolving"})
-            # run_scenario adds any traces it fits on demand to app.state.traces.
+            # run_scenario adds any traces it fits on demand to this tree's cache.
             try:
                 result = await asyncio.to_thread(
                     run_scenario,
                     parser.dag,
                     data,
-                    state.traces,
+                    tree.traces,
                     scenario,
                     progress=report,
                 )
@@ -1130,3 +1340,17 @@ async def get_progress(run_id: str, request: Request):
     poller, and neither is an error worth handling on the client.
     """
     return request.app.state.progress.get(run_id) or {"stage": None}
+
+
+# Every data route is registered twice from this one router: bare (the default
+# tree) and under `/trees/{tree_id}`. Handlers never see the id — `_tree()`
+# reads it off `request.path_params` — so there is exactly one implementation
+# of each endpoint and the aliases cannot drift from the routes they alias.
+# Registered here, at the bottom, because `include_router` copies whatever the
+# router holds at call time.
+app.include_router(router)
+app.include_router(
+    router,
+    prefix="/trees/{tree_id}",
+    generate_unique_id_function=lambda route: f"tree_{route.name}",
+)
