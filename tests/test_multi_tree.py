@@ -140,9 +140,7 @@ def test_index_says_not_loaded_rather_than_zero(tree_dir):
     """§2.3: `progress: null` with `state: not_loaded` is *we haven't looked*.
     A blank that reads as zero would be a wrong number, not a missing one."""
     with TestClient(app) as client:
-        card = next(
-            t for t in client.get("/trees").json()["trees"] if t["id"] == "q3_pro_growth"
-        )
+        card = next(t for t in client.get("/trees").json()["trees"] if t["id"] == "q3_pro_growth")
         assert card["state"] == "not_loaded"
         assert card["progress"] is None
         assert card["goal"]["target"] == 200  # the declared goal still shows
