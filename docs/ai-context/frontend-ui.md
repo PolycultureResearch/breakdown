@@ -29,7 +29,7 @@ The breakdown UI is a single-page app served by FastAPI at `/ui`, in the spirit 
 └────────────────────────────────────────────┴─────────────────────────┘
 ```
 
-- **Header** holds only the globals: the target select (the tree-wide focus metric), the **As of** anchor date, a **Share** menu (Copy link — the deep-link URL restoring the exact view: selected metric, RCA run, or what-if scenario — and Download RCA result as JSON, enabled after a run; the future home of the exportable RCA report, roadmap 1.5), and — on the right — **two separate slots** (`#header-right`). `#status` is *transient*: run progress ("Fitting upstream models…", with the busy spinner), errors, and the RCA window advisories. `#context` is *ambient*: a chip row saying which tree is loaded (`18 metrics` · provider · loaded window, plus an amber `data → <date>` chip when the tree-wide data edge lags). They are two elements on purpose — they shared one until 2026-08-11, so every completed run permanently overwrote the tree context, and the single element carried a `max-width: 340px` that truncated the context on windows with room to spare. `setStatus(msg, kind, ttlMs)` takes an optional TTL used for success notices ("RCA complete for revenue.", 6s) so a finished run doesn't leave a stale line; errors and advisories never take one and stand until something replaces them.
+- **Header** holds only the globals: the target select (the tree-wide focus metric), the **As of** anchor date, a **Share** menu (Copy link — the deep-link URL restoring the exact view: selected metric, RCA run, or what-if scenario — and Download RCA result as JSON, enabled after a run; the future home of the exportable RCA report, roadmap 1.5), and — on the right — **two separate slots** (`#header-right`). `#status` is *transient*: live run progress (see **Run progress** below), errors, and the RCA window advisories. `#context` is *ambient*: a chip row saying which tree is loaded (`18 metrics` · provider · loaded window, plus an amber `data → <date>` chip when the tree-wide data edge lags). They are two elements on purpose — they shared one until 2026-08-11, so every completed run permanently overwrote the tree context, and the single element carried a `max-width: 340px` that truncated the context on windows with room to spare. `setStatus(msg, kind, ttlMs)` takes an optional TTL used for success notices ("RCA complete for revenue.", 6s) so a finished run doesn't leave a stale line; errors and advisories never take one and stand until something replaces them.
 - **RCA setup lives in the Root cause tab** (`#rca-setup`, persistent markup above the `#rca-results` render target), and is **analysis-first**: an analysis-window preset select (`last7` / `last14` / `last-full-week` / `custom`; too-short presets omitted) + the analysis date pair, then the reference pair with an **auto** chip. `state.refMode` is the two-state machine: `"auto"` (default) means the reference inputs preview the server's matched adjacent block (`defaultReferenceJS` mirrors `grains.default_reference_window`, with week alignment and coarsest grain derived from the selected target's ancestor scope via `referenceAlignment`) and the request **omits** the reference params — the server's computation is the number of record and the response overwrites the inputs; `"custom"` (any manual reference edit) sends all four dates. Analysis edits flip the preset to Custom but keep the refMode; the auto chip restores auto; target changes recompute the auto reference (scope changes alignment). `validateWindows` keeps the hard rules and adds muted advisories: whole-week (scope-keyed), short reference (< ~4 coarsest-grain periods), and non-adjacent gap (trend contamination). A `#history-nudge` line appears when `/meta.earliest_available` shows provider history before `date_start`. Setup sits with its results, so the windows are unambiguously RCA parameters rather than global filters.
 - **Canvas** is the primary surface; the graph is the product. Dagre layered layout with `rankDir: 'BT'` so the tree reads like a KPI tree: outcome metrics on top, drivers below. The card display options (variant / sparkline length / delta length) collapse behind a quiet **Display** toggle in the top-left toolbar.
 
@@ -43,6 +43,49 @@ The breakdown UI is a single-page app served by FastAPI at `/ui`, in the spirit 
   **Navigation** is Cytoscape's own: drag the background to pan, wheel to zoom (`wheelSensitivity: 0.2`). Both are kept as-is — the deliberate decision (2026-08-11) was *not* to adopt the Figma convention of scroll-to-pan / ⌘-scroll-to-zoom, because plain-wheel zoom is worth more here than trackpad-native panning. What was missing was the way back, so `#zoom-controls` (bottom-right, `initZoomControls()`) adds `−` / a live zoom-percent button that resets to 100% / `+` / **Fit**, with `F` bound to fit. Zoom steps hold the viewport centre fixed. The `F` handler is guarded on `e.target` so it never eats a keystroke typed into a date input or a scenario note.
 - **Sidebar** (410px) has three tabs: **Metric** (UC3/UC4), **Root cause** (UC1), and **What-if** (UC5). Clicking a node opens Metric — unless the What-if tab is active, in which case it opens that node's adjust panel. Finishing an RCA run switches to Root cause.
 - **Overlay exclusivity**: the RCA and what-if overlays never coexist; the active tab owns the canvas (switching to Root cause or What-if re-applies that tab's overlay via a shared `clearOverlays()`), and the Metric tab keeps whichever overlay was last showing.
+
+## Run progress
+
+RCA and what-if can spend a minute or more fitting ancestor models. Until
+2026-08-12 that was a spinner reading `Simulating — fitting 3 models…`, where
+the count was the **frontend's own guess** from walking `state.revAdj` against
+`/meta.fitted` — an estimate of work the server was about to do, with nothing
+after it. Nothing said which model, how far in, or whether it was wedged.
+
+The server reports real stages now. The client generates an opaque `run_id`,
+passes it to `POST /rca/{name}` or `POST /simulate`, and polls
+`GET /progress/{run_id}` every 400ms while the request is in flight. This works
+without any job queue because the analysis already runs in `asyncio.to_thread`,
+so the event loop stays free to answer the poll — and the poll deliberately
+takes **no lock**, since the analysis holds `app.state.lock` for its whole
+duration and taking it would deadlock the report against the thing it reports on.
+
+Stages: `waiting` (registered before the lock is acquired, so a run queued
+behind another says so instead of looking hung) → `resolving` → `fitting`
+(carrying `metric`, `current`, `total`) → `attributing` / `simulating`.
+
+- **`countUpstreamFits` / `countWhatifFits` are gone.** They existed only to
+  guess the denominator the server now states.
+- **The copy rotates every 2.4s, and every phrase is literally true of its
+  stage.** `descending the ELBO` is what ADVI does; `permuting coalitions` is
+  what exact Shapley attribution does. The vocabulary is *variational*, not
+  MCMC, because every on-demand fit is ADVI — `warming up the chains` would be
+  a lie here. If a phrase is moved to a stage where it stops being true it is
+  no longer a joke, just wrong. Entering a stage resets to the first phrase, so
+  the line a reader lands on names the phase just entered.
+- **An elapsed timer is always shown**, and the completion notice reports the
+  total (`RCA complete for revenue in 0:38.`). A long wait with a number
+  attached is far more tolerable than one without.
+- **The node being fitted is marked on the canvas** (`.fitting-now`, a heavy
+  accent border, ordered after `:selected` so it wins during a run). This is
+  the honest version of a progress bar: the position on the tree is real, and
+  it shows the reader that RCA fits *ancestors* — something the sidebar never
+  says out loud.
+
+Progress is advisory throughout: `engine/progress.py`'s `report()` swallows
+callback exceptions, a failed poll is silently ignored, and omitting `run_id`
+skips the machinery entirely — which is what every non-UI caller (curl, MCP,
+the tests) does, so those exercise the engine's original no-callback path.
 
 ## Visual language
 
@@ -127,7 +170,7 @@ A `provider: none` tree has no data, so the UI boots **what-if-first** over decl
 - **Node cards** (`buildColdCardSVG`): name + operating point + a sub-line — `low – high · 90% belief` for range-asserted baselines, `derived from parents` for formula nodes (via `computeColdBase()`, which mirrors the engine's derivation using `evalFormula`, a tiny arithmetic parser — never `eval()`). Variants don't apply; what-if overlay values fold in exactly like fitted cards.
 - **Edges**: probabilistic edges label at build time with the stated prior via `beliefEdgeLabel` — `β ~ 0.03 [0.01, 0.05] · belief` for Normal priors, `β ~ HalfNormal(0.2) · belief` otherwise. `clearRcaStyles` restores these labels (not blank) when overlays clear.
 - **Metric tab**: definition + `Baseline` / `Plausible` rows and a "Cold start" note; the Card display / Time series / Posterior / Analyze sections are omitted entirely.
-- **What-if tab**: no baseline window row (a hint explains operating points come from the tree); `buildScenarioPayload` omits `baseline_start/end` (the engine rejects them); the adjust panel's **range strip renders from declared `plausible` bounds** with the 90% baseline-belief band shaded (`updateAdjustPreview`'s `cold` branch) and the amber marker means "outside plausible". Results label outcome cards "cold start — declared beliefs" and append the `baseline belief [lo, hi]` interval (`baseline_ci_95`). `countWhatifFits` is 0 — nothing is ever fitted.
+- **What-if tab**: no baseline window row (a hint explains operating points come from the tree); `buildScenarioPayload` omits `baseline_start/end` (the engine rejects them); the adjust panel's **range strip renders from declared `plausible` bounds** with the 90% baseline-belief band shaded (`updateAdjustPreview`'s `cold` branch) and the amber marker means "outside plausible". Results label outcome cards "cold start — declared beliefs" and append the `baseline belief [lo, hi]` interval (`baseline_ci_95`). Nothing is ever fitted, so run progress skips `fitting` and goes straight to `simulating`.
 - **Unchanged by design**: reader mode, deep links (`#whatif=` carries no dates), the source waterfall, and the per-node table.
 
 ## What-if tab
@@ -184,8 +227,9 @@ Current hints: `method` (ADVI vs NUTS, and that ADVI's mean-field assumption und
 | `GET /series` | every metric's native-grain series, per-metric `{grain, dates, values}` (one call) — hydrates the node cards |
 | `GET /metrics/{name}` | definition, time series, posterior summary |
 | `POST /analyze/{name}` | fit from the Metric tab |
-| `POST /rca/{name}` | the RCA run |
-| `POST /simulate` | the what-if scenario run (JSON body: baseline window, interventions, assumptions, levers) |
+| `POST /rca/{name}` | the RCA run (`run_id` opts into progress reporting) |
+| `POST /simulate` | the what-if scenario run (JSON body: baseline window, interventions, assumptions, levers; `run_id` opts into progress) |
+| `GET /progress/{run_id}` | polled ~2.5×/s while a run is in flight — the live stage of that run |
 
 States to handle everywhere: loading, empty (no fit yet), error (surface the API `detail` string in the status area, never a silent failure).
 

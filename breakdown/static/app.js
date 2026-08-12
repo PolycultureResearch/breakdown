@@ -195,6 +195,123 @@ function setContext(chips) {
     .join("");
 }
 
+/* ---------- run progress ----------
+
+   A spinner reading "Simulating…" for ninety seconds tells the operator
+   nothing about whether the thing is working or wedged. The server now reports
+   real stages (GET /progress/{run_id}), so this shows what is actually
+   happening: which ancestor model is being fitted, how many are left, and how
+   long it has been going.
+
+   The copy rotates, in the spirit of Claude Code's "percolating" — but every
+   phrase here is *literally true of the stage it belongs to*. `descending the
+   ELBO` is what ADVI does; `permuting coalitions` is what exact Shapley
+   attribution does. The joke and the status are the same string, so a curious
+   reader picks up how the engine works instead of watching a lie. Keep it that
+   way: if a phrase moves to a stage where it stops being true, it is no longer
+   funny, just wrong. */
+const PROGRESS_PHRASES = {
+  waiting: ["queued behind another run"],
+  resolving: ["snapping windows to grain", "resolving the reference window", "reading the tree"],
+  // Every on-demand fit is ADVI, so the vocabulary is variational, not MCMC.
+  fitting: [
+    "descending the ELBO",
+    "fitting the mean field",
+    "tuning the approximation",
+    "letting the posterior settle",
+  ],
+  attributing: [
+    "permuting coalitions",
+    "computing Shapley values",
+    "bridging window means",
+    "bootstrapping the intervals",
+    "walking the DAG",
+  ],
+  simulating: [
+    "applying the do-operator",
+    "propagating through the DAG",
+    "drawing from the posterior",
+  ],
+};
+
+const PHRASE_MS = 2400;
+const POLL_MS = 400;
+
+const runProg = {
+  id: null, poll: null, tick: null, started: 0,
+  stage: null, phraseIx: 0, last: {}, pulsing: null,
+};
+
+const mmss = (ms) => {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+
+function paintProgress() {
+  const p = runProg.last || {};
+  const stage = p.stage || runProg.stage || "resolving";
+  const list = PROGRESS_PHRASES[stage] || PROGRESS_PHRASES.resolving;
+  const phrase = list[runProg.phraseIx % list.length];
+  const bits = [phrase];
+  if (p.metric) {
+    bits.push(p.total > 1 ? `${p.metric} (${p.current}/${p.total})` : String(p.metric));
+  }
+  bits.push(mmss(Date.now() - runProg.started));
+  setStatus(bits.join(" · "), "busy");
+}
+
+/* Mark the node currently being fitted so the tree shows the engine walking up
+   it. This is the honest version of a progress bar: the position is real. */
+function pulseFitting(name) {
+  if (runProg.pulsing === name || !state.cy) return;
+  if (runProg.pulsing) state.cy.getElementById(runProg.pulsing).removeClass("fitting-now");
+  runProg.pulsing = name;
+  if (name) {
+    const n = state.cy.getElementById(name);
+    if (n && n.length) n.addClass("fitting-now");
+  }
+}
+
+/* Returns the run id to pass to the server. Polling and the phrase timer are
+   independent: the phrase rotates on its own clock so the line stays alive
+   even while a single slow fit holds one stage for a minute. */
+function startRunProgress(initialStage) {
+  stopRunProgress();
+  runProg.id = `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  runProg.started = Date.now();
+  runProg.stage = initialStage;
+  runProg.phraseIx = 0;
+  runProg.last = { stage: initialStage };
+  paintProgress();
+  runProg.tick = setInterval(() => {
+    runProg.phraseIx++;
+    paintProgress();
+  }, PHRASE_MS);
+  runProg.poll = setInterval(async () => {
+    const id = runProg.id;
+    try {
+      const p = await api(`/progress/${encodeURIComponent(id)}`);
+      if (runProg.id !== id || !p || !p.stage) return; // superseded or finished
+      // A stage change restarts the vocabulary rather than continuing mid-list,
+      // so the first phrase a reader sees names the phase they just entered.
+      if (p.stage !== runProg.last.stage) runProg.phraseIx = 0;
+      runProg.last = p;
+      pulseFitting(p.stage === "fitting" ? p.metric : null);
+      paintProgress();
+    } catch { /* progress is advisory — a failed poll must not surface */ }
+  }, POLL_MS);
+  return runProg.id;
+}
+
+function stopRunProgress() {
+  clearInterval(runProg.poll);
+  clearInterval(runProg.tick);
+  pulseFitting(null);
+  runProg.id = null;
+  runProg.poll = runProg.tick = null;
+  runProg.last = {};
+}
+
 /* ---------- inline help ----------
 
    breakdown asks a business user to read posteriors, so the UI has to teach a
@@ -1343,6 +1460,17 @@ const CY_STYLE = [
     style: { "border-width": 3.5, "border-color": COL.accent },
   },
   {
+    // The ancestor being fitted right now. Placed after :selected so it wins
+    // while a run is in flight — during a fit, where the engine *is* matters
+    // more than what the user last clicked.
+    selector: "node.fitting-now",
+    style: {
+      "border-width": 5,
+      "border-color": COL.accent,
+      "background-color": COL.accentSoft,
+    },
+  },
+  {
     selector: "node.rca-up",
     style: { "background-color": COL.upSoft, "border-color": COL.up },
   },
@@ -1594,25 +1722,6 @@ function markFitted() {
     const n = state.cy.getElementById(name);
     if (n) n.addClass("fitted");
   });
-}
-
-/* How many probabilistic ancestors of `target` still need fitting — drives the
-   run-progress status. Walks the reverse adjacency built in buildGraph. */
-function countUpstreamFits(target) {
-  const defs = state.defs || {};
-  const fitted = new Set(state.meta.fitted);
-  const seen = new Set();
-  const stack = [...(state.revAdj[target] || [])];
-  let k = 0;
-  while (stack.length) {
-    const name = stack.pop();
-    if (seen.has(name)) continue;
-    seen.add(name);
-    const def = defs[name];
-    if (def && def.parents && def.parents.length && !def.formula && !fitted.has(name)) k++;
-    (state.revAdj[name] || []).forEach((p) => stack.push(p));
-  }
-  return k;
 }
 
 /* Label a fitted probabilistic node's incoming edges with beta_raw. */
@@ -2010,13 +2119,9 @@ async function runRCA() {
   }
   const btn = $("run-rca");
   btn.disabled = true;
-  const k = countUpstreamFits(target);
-  setStatus(
-    k > 0 ? `Running RCA — fitting ${k} upstream model${k === 1 ? "" : "s"}…` : "Running RCA…",
-    "busy",
-  );
+  const runId = startRunProgress("resolving");
   try {
-    const qs = new URLSearchParams(win).toString();
+    const qs = new URLSearchParams({ ...win, run_id: runId }).toString();
     state.slices = {}; // a new analysis invalidates any slice of the old one
     state.rca = await api(`/rca/${encodeURIComponent(target)}?${qs}`, { method: "POST" });
     // The resolved reference comes back either way; reflect it in the inputs
@@ -2039,10 +2144,11 @@ async function runRCA() {
     renderRcaTab();
     switchTab("rca");
     $("clear-rca").style.display = "";
-    setStatus(`RCA complete for ${target}.`, "", 6000);
+    setStatus(`RCA complete for ${target} in ${mmss(Date.now() - runProg.started)}.`, "", 6000);
   } catch (err) {
     setStatus(`RCA failed: ${err.message}`, "error");
   } finally {
+    stopRunProgress();
     btn.disabled = false;
   }
 }
@@ -3050,40 +3156,14 @@ function buildScenarioPayload() {
   return payload;
 }
 
-/* How many probabilistic nodes on affected paths still need fitting — drives
-   the run-progress status. Mirrors the engine's fit-on-demand rule. */
-function countWhatifFits() {
-  if (coldStart()) return 0; // nothing is ever fit — slopes are the stated priors
-  const w = state.whatif;
-  const fitted = new Set(state.meta.fitted);
-  const seeds = [...w.interventions.map((iv) => iv.metric), ...w.assumptions.map((a) => a.target)]
-    .filter((m) => m in state.fwdAdj);
-  const affected = new Set(seeds);
-  const stack = [...seeds];
-  while (stack.length) {
-    const n = stack.pop();
-    (state.fwdAdj[n] || []).forEach((c) => {
-      if (!affected.has(c)) { affected.add(c); stack.push(c); }
-    });
-  }
-  let k = 0;
-  affected.forEach((n) => {
-    const def = state.defs[n];
-    if (def && def.parents && def.parents.length && !def.formula && !fitted.has(n)
-        && def.parents.some((p) => affected.has(p))) k++;
-  });
-  return k;
-}
-
 async function runWhatif() {
   const scenario = buildScenarioPayload();
   if (!scenario) return;
   const btn = $("wf-run");
   if (btn) btn.disabled = true;
-  const k = countWhatifFits();
-  setStatus(k > 0 ? `Simulating — fitting ${k} model${k === 1 ? "" : "s"}…` : "Simulating…", "busy");
+  const runId = startRunProgress("resolving");
   try {
-    state.whatif.result = await api("/simulate", {
+    state.whatif.result = await api(`/simulate?run_id=${encodeURIComponent(runId)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(scenario),
@@ -3095,11 +3175,13 @@ async function runWhatif() {
     renderWhatifTab();
     switchTab("whatif");
     applyWhatifOverlay();
-    setStatus("Simulation complete.", "", 6000);
+    setStatus(`Simulation complete in ${mmss(Date.now() - runProg.started)}.`, "", 6000);
   } catch (err) {
     setStatus(`Simulation failed: ${err.message}`, "error");
     const b = $("wf-run");
     if (b) b.disabled = false;
+  } finally {
+    stopRunProgress();
   }
 }
 

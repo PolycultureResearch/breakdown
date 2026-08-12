@@ -152,6 +152,37 @@ def _validate_date(value: str, label: str) -> str:
     return value
 
 
+# Live progress for the two long calls, keyed by a client-supplied run id.
+# Bounded like `traces` for the same reason: a client that navigates away
+# mid-run never sends the request that would clean its entry up, and on the
+# public demo that is every visitor. Entries are tiny, so the cap is generous.
+MAX_PROGRESS_ENTRIES = 64
+
+
+def _progress_reporter(state, run_id: Optional[str], stage: str):
+    """Register `run_id` and return a callback the engine can report through.
+
+    Returns None when the client didn't ask for progress, which is also what
+    every non-UI caller (curl, MCP, the tests) does — so the engine runs on its
+    no-callback path and behaves exactly as it did before.
+
+    The callback runs on the worker thread while `GET /progress` reads the same
+    dict from the event loop. It **replaces** the entry rather than mutating it,
+    so a reader sees either the old update or the new one, never a half-written
+    dict — which is all the consistency a progress display needs.
+    """
+    if not run_id:
+        return None
+    while len(state.progress) >= MAX_PROGRESS_ENTRIES:
+        state.progress.pop(next(iter(state.progress)))
+    state.progress[run_id] = {"stage": stage}
+
+    def report(update: Dict[str, Any]) -> None:
+        state.progress[run_id] = update
+
+    return report
+
+
 def _require_ready(request: Request) -> None:
     """503 on data endpoints while the app is serving degraded (startup
     data load failed); the detail carries the original error."""
@@ -294,6 +325,10 @@ async def lifespan(app: FastAPI):
     # nudge "history exists before --start-date".
     app.state.earliest: Dict[str, Optional[str]] = {}
     app.state.earliest_task: Optional[asyncio.Task] = None
+    # run_id -> the latest progress update from an in-flight RCA or simulation.
+    # Written from the worker thread, read by GET /progress. See
+    # `_progress_reporter`.
+    app.state.progress: Dict[str, Dict[str, Any]] = {}
 
     try:
         with open(tree_path, "r") as f:
@@ -802,6 +837,12 @@ async def root_cause_analysis(
     reference_end: Optional[str] = Query(
         default=None, description="End of baseline window (YYYY-MM-DD)"
     ),
+    run_id: Optional[str] = Query(
+        default=None,
+        description="Opaque client-generated id. Poll GET /progress/{run_id} for "
+        "live stages while this request is in flight. Omit it and no progress is "
+        "tracked at all.",
+    ),
 ):
     _require_data(request)
     parser = request.app.state.parser
@@ -810,16 +851,27 @@ async def root_cause_analysis(
     if name not in parser.dag:
         raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
 
-    async with request.app.state.lock:
-        # run_rca adds any traces it fits on demand to app.state.traces itself.
-        try:
-            result = await asyncio.to_thread(
-                run_rca, parser.dag, data, request.app.state.traces, name,
-                analysis_start=analysis_start, analysis_end=analysis_end,
-                reference_start=reference_start, reference_end=reference_end,
-            )
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e))
+    state = request.app.state
+    # Registered before the lock, so a run queued behind another one can say
+    # that rather than looking wedged.
+    report = _progress_reporter(state, run_id, "waiting")
+    try:
+        async with state.lock:
+            if report:
+                report({"stage": "resolving"})
+            # run_rca adds any traces it fits on demand to app.state.traces itself.
+            try:
+                result = await asyncio.to_thread(
+                    run_rca, parser.dag, data, state.traces, name,
+                    analysis_start=analysis_start, analysis_end=analysis_end,
+                    reference_start=reference_start, reference_end=reference_end,
+                    progress=report,
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        if run_id:
+            state.progress.pop(run_id, None)
 
     return result
 
@@ -1027,24 +1079,54 @@ async def slice_metric_gap(
 
 
 @app.post("/simulate")
-async def simulate(scenario: ScenarioRequest, request: Request):
+async def simulate(
+    scenario: ScenarioRequest,
+    request: Request,
+    run_id: Optional[str] = Query(
+        default=None,
+        description="Opaque client-generated id. Poll GET /progress/{run_id} for "
+        "live stages while this request is in flight.",
+    ),
+):
     """Steady-state what-if simulation. Stateless: the client owns the
     scenario; on-demand fits land in the shared trace cache."""
     _require_ready(request)
     parser = request.app.state.parser
     data = request.app.state.data
 
-    async with request.app.state.lock:
-        # run_scenario adds any traces it fits on demand to app.state.traces.
-        try:
-            result = await asyncio.to_thread(
-                run_scenario,
-                parser.dag,
-                data,
-                request.app.state.traces,
-                scenario,
-            )
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e))
+    state = request.app.state
+    report = _progress_reporter(state, run_id, "waiting")
+    try:
+        async with state.lock:
+            if report:
+                report({"stage": "resolving"})
+            # run_scenario adds any traces it fits on demand to app.state.traces.
+            try:
+                result = await asyncio.to_thread(
+                    run_scenario,
+                    parser.dag,
+                    data,
+                    state.traces,
+                    scenario,
+                    progress=report,
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        if run_id:
+            state.progress.pop(run_id, None)
 
     return result
+
+
+@app.get("/progress/{run_id}")
+async def get_progress(run_id: str, request: Request):
+    """Live stage of an in-flight RCA or simulation started with this `run_id`.
+
+    Deliberately cheap and ungated: no lock (the analysis holds it for its whole
+    duration, so taking it here would deadlock the very thing being reported on)
+    and no readiness check. An unknown id is `{"stage": null}` with a 200 rather
+    than a 404 — a finished run and a never-started one are the same answer to a
+    poller, and neither is an error worth handling on the client.
+    """
+    return request.app.state.progress.get(run_id) or {"stage": None}

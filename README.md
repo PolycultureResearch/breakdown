@@ -855,6 +855,26 @@ Unfitted probabilistic nodes in scope are fit with ADVI on demand — on data st
 
 See [docs/model.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md) for how to read `components`, `unexplained`, and the bootstrap's assumptions.
 
+### `GET /progress/{run_id}` — live progress
+
+RCA and simulation can spend a minute or more fitting ancestor models. Pass any
+opaque `run_id` you like to `POST /rca/{name}` or `POST /simulate` and poll this
+endpoint while the request is in flight to see what the engine is actually doing:
+
+```bash
+curl -X POST "http://localhost:9090/rca/revenue?analysis_start=2024-04-03&analysis_end=2024-04-09&run_id=abc123" &
+curl -s "http://localhost:9090/progress/abc123"
+# {"stage":"fitting","metric":"order_count","current":1,"total":3}
+```
+
+Stages are `waiting` (queued behind another analysis), `resolving`, `fitting`
+(with `metric`, `current`, `total`), then `attributing` or `simulating`. An
+unknown or finished id returns `{"stage": null}` with a 200 — to a poller a
+finished run and a never-started one are the same answer.
+
+Progress is entirely optional: **omit `run_id` and nothing is tracked**, which is
+the default for every non-UI caller. It never affects the analysis or its result.
+
 ### `POST /rca/{name}/slices`
 
 The traverse-then-slice follow-up: attribute one metric's window-over-window gap across a declared dimension's values. The reference dates are optional here too (same defaulting rule; the response carries `reference_defaulted`) — but when slicing a **lagged parent** surfaced by an RCA, pass its `parent_windows` explicitly: the default matches the metric's own timeline, not a lag-shifted one.

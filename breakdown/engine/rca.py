@@ -40,6 +40,8 @@ import numpy as np
 import pandas as pd
 
 from breakdown.engine.model import compute_shapley, fit_metric, seasonal_window_delta
+from breakdown.engine.progress import ProgressFn
+from breakdown.engine.progress import report as _report
 from breakdown.formula import eval_formula
 from breakdown.grains import (
     BOOT_BLOCK,
@@ -439,6 +441,7 @@ def run_rca(
     reference_start: Optional[str] = None,
     reference_end: Optional[str] = None,
     advi_draws: int = 500,
+    progress: Optional[ProgressFn] = None,
 ) -> Dict[str, Any]:
     """Attribute `target`'s window-over-window change to its ancestors.
 
@@ -473,7 +476,14 @@ def run_rca(
     # cached trace for this analysis window. Formula nodes and roots need no
     # fit; nodes whose windows hold no whole period at their grain are skipped
     # (they are reported below without attribution).
-    for node in nodes_in_scope:
+    #
+    # The work list is built before fitting rather than fitted inline, so the
+    # caller's `progress` callback can report a real denominator ("2 of 5")
+    # instead of counting up to an unknown total. `sorted` also makes the fit
+    # order deterministic — `nodes_in_scope` is a set, so the previous order
+    # varied between processes, which a progress display makes visible.
+    to_fit = []
+    for node in sorted(nodes_in_scope):
         defn = dag.nodes[node]["definition"]
         parents = list(dag.predecessors(node))
         if parents and not defn.formula and (node, analysis_start) not in traces:
@@ -483,15 +493,21 @@ def run_rca(
                 or snap_window(analysis_start, analysis_end, g) is None
             ):
                 continue
-            traces[(node, analysis_start)] = fit_metric(
-                dag,
-                data,
-                node,
-                draws=advi_draws,
-                inference_method="advi",
-                fit_end=analysis_start,
-                random_seed=0,
-            )
+            to_fit.append(node)
+
+    for i, node in enumerate(to_fit, 1):
+        _report(progress, stage="fitting", metric=node, current=i, total=len(to_fit))
+        traces[(node, analysis_start)] = fit_metric(
+            dag,
+            data,
+            node,
+            draws=advi_draws,
+            inference_method="advi",
+            fit_end=analysis_start,
+            random_seed=0,
+        )
+
+    _report(progress, stage="attributing", total=len(to_fit))
 
     nodes_out: Dict[str, Any] = {}
     # Sorted order fixes the rng consumption sequence (set iteration order is
