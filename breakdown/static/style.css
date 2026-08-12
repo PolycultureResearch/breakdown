@@ -1,19 +1,69 @@
+/* ---------- Palette ----------
+   "Notebook": a warm paper ground with white cards sitting on it, so the only
+   saturated things on screen are the ones carrying meaning. The old cool grey
+   (#f6f7f9) was in the same family as the accent hues and quietly competed
+   with them, and white cards on near-white canvas had almost no separation.
+
+   This file is the single source of truth for color — app.js reads these
+   custom properties into `COL` at load rather than repeating literals, so a
+   palette change is one edit here.
+
+   Validated with the dataviz skill's `validate_palette.js` against the paper
+   surface (#faf7f2), all-pairs:
+     identity (accent #4f46e5 ↔ formula #0891b2): ALL PASS — CVD ΔE 16.4,
+       normal-vision ΔE 21.4, both ≥3:1 on paper.
+     status (up/down/warn): normal-vision ΔE 18.7 worst pair, all ≥3:1, but
+       up↔down is deutan ΔE 4.2 and always will be — red/green is the
+       CVD-hostile pair and no restep fixes it. That is legal here only
+       because direction never rides on hue alone: every delta pill carries
+       ▲/▼, overlay marks carry ◌/⊙/⚠, and the legend spells out
+       improved/worsened. Do not remove those glyphs.
+
+   Formula nodes were violet (#9333ea) until 2026-08-11. Against the indigo
+   accent that measured normal-vision ΔE 11.8 — under the 15 floor, i.e. hard
+   to tell apart with full color vision — and protan ΔE 0.9, i.e. identical.
+   Edges survived on solid-vs-dashed, but node borders encode type by color
+   alone, so "learned" and "arithmetic identity" were not distinguishable.
+   Cyan is the replacement: far from indigo, and far from the green/red/amber
+   the status channel has already claimed. */
 :root {
-  --bg: #f6f7f9;
-  --panel: #ffffff;
-  --border: #e2e6ea;
-  --text: #1a202c;
-  --muted: #64748b;
-  --accent: #4f46e5;
-  --accent-soft: #eef2ff;
-  --formula: #9333ea;
-  --source: #94a3b8;
-  --up: #16a34a;
-  --up-soft: #dcfce7;
-  --down: #dc2626;
-  --down-soft: #fee2e2;
-  --warn: #d97706;
-  --warn-soft: #fef3c7;
+  /* Ground & ink */
+  --bg: #faf7f2;          /* canvas paper */
+  --panel: #ffffff;       /* cards, sidebar, header — lifts off the paper */
+  --border: #e8e2d8;      /* warm hairline */
+  --rule: #f0ebe3;        /* fainter still: card dividers, chart gridlines */
+  --text: #1c1917;        /* warm near-black, not the old blue-black */
+  --text-2: #57534e;      /* secondary ink: card titles, edge labels */
+  --muted: #78716c;       /* labels, captions */
+  --faint: #a8a29e;       /* units, em-dashes, placeholders */
+  --grid: rgba(28, 25, 23, 0.07);  /* canvas dot grid */
+
+  /* Identity — what kind of node this is */
+  --source: #a8a29e;      /* no parents, no model: deliberately the neutral */
+  --accent: #4f46e5;      /* probabilistic, and the brand */
+  --accent-soft: #ecedfc;
+  --edge-prob: #6f6ae4;
+  --formula: #0891b2;     /* arithmetic identity */
+  --formula-soft: #e4f4f9;
+  --edge-formula: #10a0c0;
+
+  /* Status — always paired with a glyph, never hue alone (see above) */
+  --up: #15803d;
+  --up-soft: #e2f0e4;
+  --down: #b91c1c;
+  --down-soft: #fae7e3;
+  --warn: #c47b0c;
+  --warn-soft: #fbf0da;
+  --warn-ink: #8a5209;
+  --warn-border: #eddcb6;
+  --down-ink: #8f1717;
+  --down-border: #f2c9c2;
+
+  /* Derived UI surfaces, warmed to sit on the paper */
+  --accent-strong: #4338ca;  /* primary button hover */
+  --chip-bg: #f4f0e9;        /* type chips, code, source paths */
+  --track: #efe9e0;          /* bar/slider troughs */
+  --track-strong: #ddd6ca;   /* the filled part of a range strip */
 }
 
 * { box-sizing: border-box; }
@@ -94,7 +144,7 @@ button.primary {
   border-color: var(--accent);
   color: #fff;
 }
-button.primary:hover { background: #4338ca; }
+button.primary:hover { background: var(--accent-strong); }
 button:disabled { opacity: 0.5; cursor: default; }
 
 /* The header's right side carries two different things, kept in two elements:
@@ -154,9 +204,9 @@ button:disabled { opacity: 0.5; cursor: default; }
   white-space: nowrap;
 }
 .ctx-chip.warn {
-  color: #92400e;
+  color: var(--warn-ink);
   background: var(--warn-soft);
-  border-color: #fde68a;
+  border-color: var(--warn-border);
 }
 
 /* ---------- Main split ---------- */
@@ -164,7 +214,20 @@ button:disabled { opacity: 0.5; cursor: default; }
 #main { display: flex; flex: 1; overflow: hidden; }
 
 #canvas-wrap { flex: 1; position: relative; }
-#cy { position: absolute; inset: 0; }
+
+/* A dot grid, not ruled graph paper: the DAG is already made of lines and
+   ruling would compete with the edges. It also gives the canvas a texture that
+   visibly moves, which is the cheapest possible hint that this surface pans.
+   `background-size` / `-position` are re-written from cy's zoom and pan in
+   syncCanvasGrid(), so the dots travel with the graph instead of sitting
+   still while it slides underneath them. */
+#cy {
+  position: absolute;
+  inset: 0;
+  background-color: var(--bg);
+  background-image: radial-gradient(circle at center, var(--grid) 1.1px, transparent 1.2px);
+  background-size: 24px 24px;
+}
 
 #card-toolbar {
   position: absolute;
@@ -342,7 +405,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .swatch.fitted { border: 2px solid var(--accent); background: var(--accent-soft); }
 .swatch.up { border: 2px solid var(--up); background: var(--up-soft); }
 .swatch.down { border: 2px solid var(--down); background: var(--down-soft); }
-.edge-swatch { width: 18px; height: 0; border-top: 2px solid #818cf8; flex-shrink: 0; }
+.edge-swatch { width: 18px; height: 0; border-top: 2px solid var(--edge-prob); flex-shrink: 0; }
 .edge-swatch.dashed { border-top-style: dashed; }
 .edge-swatch.formula { border-top-color: var(--formula); }
 
@@ -402,11 +465,11 @@ button:disabled { opacity: 0.5; cursor: default; }
   padding: 2px 8px;
   border-radius: 999px;
 }
-.chip.source { background: #f1f5f9; color: #475569; }
+.chip.source { background: var(--chip-bg); color: var(--text-2); }
 .chip.prob { background: var(--accent-soft); color: var(--accent); }
-.chip.formula { background: #f3e8ff; color: var(--formula); }
-.chip.fitted { background: var(--up-soft); color: #15803d; }
-.chip.lag { background: #fef3c7; color: #92400e; text-transform: none; }
+.chip.formula { background: var(--formula-soft); color: var(--formula); }
+.chip.fitted { background: var(--up-soft); color: var(--up); }
+.chip.lag { background: var(--warn-soft); color: var(--warn-ink); text-transform: none; }
 
 .desc { color: var(--muted); margin: 6px 0 12px; line-height: 1.45; }
 
@@ -441,13 +504,13 @@ section:first-of-type h3 { border-top: none; padding-top: 0; }
   padding: 4px 6px;
   border-bottom: 1px solid var(--border);
 }
-.data-table td { padding: 5px 6px; border-bottom: 1px solid #f0f2f5; }
+.data-table td { padding: 5px 6px; border-bottom: 1px solid var(--rule); }
 .data-table td.num, .data-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .data-table tr.dim td { color: var(--muted); }
 
 .diag { font-size: 12px; color: var(--muted); margin-top: 8px; }
 .diag .ok { color: var(--up); font-weight: 600; }
-.diag .warn { color: #d97706; font-weight: 600; }
+.diag .warn { color: var(--warn); font-weight: 600; }
 
 details { margin-top: 10px; }
 details summary { font-size: 12px; color: var(--muted); cursor: pointer; }
@@ -483,7 +546,7 @@ details .data-table { margin-top: 8px; }
 .cause-row.active { background: var(--accent-soft); }
 .cause-rank { font-size: 12px; color: var(--muted); width: 16px; text-align: right; }
 .cause-name { font-weight: 600; font-size: 13px; flex-shrink: 0; }
-.cause-bar-wrap { flex: 1; height: 6px; background: #eef0f3; border-radius: 3px; overflow: hidden; }
+.cause-bar-wrap { flex: 1; height: 6px; background: var(--track); border-radius: 3px; overflow: hidden; }
 .cause-bar { height: 100%; background: var(--accent); border-radius: 3px; }
 /* Dimensional slicing, offered under each ranked cause: the tree says which
    metric moved, these say where inside it. */
@@ -564,8 +627,8 @@ details .data-table { margin-top: 8px; }
    the reference tracks the analysis window. */
 button.chip {
   border: 1px solid var(--border);
-  background: #f1f5f9;
-  color: #475569;
+  background: var(--chip-bg);
+  color: var(--text-2);
   cursor: pointer;
 }
 button.chip.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
@@ -578,28 +641,28 @@ button.chip.active { background: var(--accent-soft); color: var(--accent); borde
 
 .sign-warning {
   font-size: 12px;
-  color: #92400e;
-  background: #fef3c7;
-  border: 1px solid #fde68a;
+  color: var(--warn-ink);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-border);
   border-radius: 6px;
   padding: 6px 8px;
   margin: 6px 0;
   line-height: 1.4;
 }
-.sign-flag { color: #b45309; cursor: help; }
+.sign-flag { color: var(--warn-ink); cursor: help; }
 
 .attr-head { display: flex; align-items: center; justify-content: space-between; }
-.rca-view-toggle { display: inline-flex; border: 1px solid #d8dde4; border-radius: 6px; overflow: hidden; }
+.rca-view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .rca-view-btn {
   border: none; background: #fff; color: var(--muted);
   font-size: 11px; padding: 3px 10px; cursor: pointer;
 }
-.rca-view-btn + .rca-view-btn { border-left: 1px solid #d8dde4; }
+.rca-view-btn + .rca-view-btn { border-left: 1px solid var(--border); }
 .rca-view-btn.active { background: var(--accent); color: #fff; }
 .data-table tr.interaction-row td { font-style: italic; }
 .data-table .hint {
   display: inline-block; width: 13px; height: 13px; line-height: 13px;
-  border-radius: 50%; background: #e8ebf0; color: var(--muted);
+  border-radius: 50%; background: var(--track); color: var(--muted);
   font-size: 10px; font-style: normal; text-align: center; cursor: help;
 }
 
@@ -640,12 +703,12 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .range-strip {
   position: relative;
   height: 14px;
-  background: #eef0f3;
+  background: var(--track);
   border-radius: 4px;
   margin: 8px 0 2px;
   overflow: hidden;
 }
-.strip-band { position: absolute; top: 0; bottom: 0; background: #d7dbe2; }
+.strip-band { position: absolute; top: 0; bottom: 0; background: var(--track-strong); }
 .strip-tick { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--muted); }
 .strip-marker {
   position: absolute; top: 0; bottom: 0; width: 4px;
@@ -671,7 +734,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   padding: 1px 6px; border-radius: 999px; flex-shrink: 0;
 }
 .wf-item .kind.intervention { background: var(--accent-soft); color: var(--accent); }
-.wf-item .kind.assumption { background: var(--warn-soft); color: #92400e; }
+.wf-item .kind.assumption { background: var(--warn-soft); color: var(--warn-ink); }
 .wf-item .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wf-item .remove {
   border: none; background: none; color: var(--muted); cursor: pointer;
@@ -682,7 +745,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 /* waterfall: signed bars around a center axis */
 .wf-bar-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px; }
 .wf-src { width: 150px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wf-bar-wrap { flex: 1; position: relative; height: 10px; background: #eef0f3; border-radius: 3px; }
+.wf-bar-wrap { flex: 1; position: relative; height: 10px; background: var(--track); border-radius: 3px; }
 .wf-bar-wrap::before {
   content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px;
   width: 1px; background: var(--border);
@@ -694,8 +757,8 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .wf-shapley-note { font-size: 10.5px; color: var(--muted); margin-top: 2px; }
 
 .wf-warning {
-  background: var(--warn-soft); border: 1px solid #fde68a; border-radius: 6px;
-  padding: 6px 10px; font-size: 12px; color: #92400e; margin: 6px 0;
+  background: var(--warn-soft); border: 1px solid var(--warn-border); border-radius: 6px;
+  padding: 6px 10px; font-size: 12px; color: var(--warn-ink); margin: 6px 0;
 }
 .wf-caveats {
   font-size: 11px; color: var(--muted); border-top: 1px solid var(--border);
@@ -704,26 +767,26 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .wf-ci { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 #degraded-banner {
-  background: #fef2f2; border-bottom: 1px solid #fecaca; color: #991b1b;
+  background: var(--down-soft); border-bottom: 1px solid var(--down-border); color: var(--down-ink);
   padding: 10px 16px; font-size: 13px; line-height: 1.5;
 }
 #degraded-banner code {
-  background: #fee2e2; border-radius: 3px; padding: 1px 4px;
+  background: var(--down-soft); border-radius: 3px; padding: 1px 4px;
   font-size: 12px;
 }
 /* Unreachable server (an idle host still waking, a restart mid-session) is a
    wait, not a misconfiguration — amber rather than the degraded banner's red,
    and it carries the retry instead of asking for a page reload. */
 #retry-banner {
-  background: #fffbeb; border-bottom: 1px solid #fde68a; color: #92400e;
+  background: var(--warn-soft); border-bottom: 1px solid var(--warn-border); color: var(--warn-ink);
   padding: 10px 16px; font-size: 13px; line-height: 1.5;
 }
 #retry-banner button {
   margin-left: 8px; padding: 3px 10px; font-size: 12px; cursor: pointer;
-  background: #fff; color: #92400e;
-  border: 1px solid #fcd34d; border-radius: 4px;
+  background: #fff; color: var(--warn-ink);
+  border: 1px solid var(--warn-border); border-radius: 4px;
 }
-#retry-banner button:hover { background: #fef3c7; }
+#retry-banner button:hover { background: var(--warn-soft); }
 
 /* Query provenance (roadmap 2.11): the statement behind a number, on demand.
    Deliberately quiet — it is evidence a reader goes looking for, not chrome. */
@@ -733,7 +796,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   padding: 0 0 0 0.4rem;
   font: inherit;
   font-size: 0.85em;
-  color: var(--accent, #4f46e5);
+  color: var(--accent);
   cursor: pointer;
   text-decoration: underline;
 }
@@ -743,14 +806,14 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--muted, #6b7280);
+  color: var(--muted);
   margin-bottom: 0.25rem;
 }
 .query-sql {
   margin: 0;
   padding: 0.6rem 0.75rem;
-  background: var(--surface-2, #f6f7f9);
-  border: 1px solid var(--border, #e5e7eb);
+  background: var(--chip-bg);
+  border: 1px solid var(--border);
   border-radius: 6px;
   overflow-x: auto;
   font-size: 0.8rem;
@@ -765,14 +828,14 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .entity-flows {
   margin: 0.6rem 0 0.4rem;
   padding: 0.5rem 0.7rem;
-  border-left: 3px solid var(--border, #e5e7eb);
-  background: var(--surface-2, #f6f7f9);
+  border-left: 3px solid var(--border);
+  background: var(--chip-bg);
   border-radius: 0 6px 6px 0;
 }
 .flows-head {
   font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  color: var(--muted, #6b7280);
+  color: var(--muted);
   margin-bottom: 0.3rem;
 }

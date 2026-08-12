@@ -35,6 +35,30 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
+/* Color lives in style.css and nowhere else. The Cytoscape stylesheet, the
+   node-card SVGs and the Plotly charts all need real hex strings rather than
+   `var(--x)`, so they read the :root custom properties once at load instead of
+   repeating literals — there were 74 of them before 2026-08-11, which is why
+   retuning the palette used to mean a sweep through this file. The stylesheet
+   is a render-blocking <link> in <head>, so the values are resolved by the
+   time this module runs. Add a token to :root, add a line here. */
+const COL = (() => {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (name) => cs.getPropertyValue(name).trim();
+  return {
+    bg: v("--bg"), panel: v("--panel"), border: v("--border"), rule: v("--rule"),
+    text: v("--text"), text2: v("--text-2"), muted: v("--muted"), faint: v("--faint"),
+    source: v("--source"),
+    accent: v("--accent"), accentSoft: v("--accent-soft"), edgeProb: v("--edge-prob"),
+    formula: v("--formula"), edgeFormula: v("--edge-formula"),
+    up: v("--up"), upSoft: v("--up-soft"),
+    down: v("--down"), downSoft: v("--down-soft"),
+    warn: v("--warn"), warnSoft: v("--warn-soft"), warnInk: v("--warn-ink"),
+    track: v("--track"), trackStrong: v("--track-strong"),
+    chipBg: v("--chip-bg"), warnBorder: v("--warn-border"),
+  };
+})();
+
 /* ---------- helpers ---------- */
 
 function esc(s) {
@@ -421,7 +445,7 @@ async function downloadRcaReport() {
   const res = state.rca;
   let treePng = "";
   try {
-    treePng = state.cy.png({ full: true, scale: 2, bg: "#f7f8fa", maxWidth: 2400 });
+    treePng = state.cy.png({ full: true, scale: 2, bg: COL.bg, maxWidth: 2400 });
   } catch { /* snapshot is best-effort */ }
   let stripPng = "";
   try {
@@ -514,20 +538,20 @@ function buildRcaReportHtml(res, treePng, stripPng) {
 <html lang="en"><head><meta charset="utf-8">
 <title>RCA — ${esc(res.target)} · ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}</title>
 <style>
-  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; color: #1a202c; max-width: 960px; margin: 32px auto; padding: 0 20px; line-height: 1.45; }
-  h1 { font-size: 22px; margin-bottom: 2px; } h3 { font-size: 15px; margin: 22px 0 4px; } h4 { font-size: 12.5px; margin: 12px 0 4px; color: #475569; text-transform: uppercase; letter-spacing: 0.4px; }
-  .meta { color: #64748b; font-size: 12.5px; font-weight: 400; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; color: ${COL.text}; max-width: 960px; margin: 32px auto; padding: 0 20px; line-height: 1.45; }
+  h1 { font-size: 22px; margin-bottom: 2px; } h3 { font-size: 15px; margin: 22px 0 4px; } h4 { font-size: 12.5px; margin: 12px 0 4px; color: ${COL.text2}; text-transform: uppercase; letter-spacing: 0.4px; }
+  .meta { color: ${COL.muted}; font-size: 12.5px; font-weight: 400; }
   .gap { font-size: 26px; font-weight: 700; margin: 6px 0 14px; }
-  .gap.up { color: #16a34a; } .gap.down { color: #dc2626; }
+  .gap.up { color: ${COL.up}; } .gap.down { color: ${COL.down}; }
   table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin: 4px 0 10px; }
-  th { text-align: left; color: #64748b; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; padding: 4px 6px; border-bottom: 1px solid #e2e8f0; }
-  td { padding: 4px 6px; border-bottom: 1px solid #f0f2f5; }
+  th { text-align: left; color: ${COL.muted}; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; padding: 4px 6px; border-bottom: 1px solid ${COL.border}; }
+  td { padding: 4px 6px; border-bottom: 1px solid ${COL.rule}; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  tr.dim td { color: #94a3b8; } tr.em td { font-style: italic; }
-  img { max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; margin: 8px 0; }
-  code { background: #f1f5f9; padding: 1px 4px; border-radius: 4px; font-size: 12px; }
-  .warn { font-size: 12px; color: #92400e; background: #fef3c7; border: 1px solid #fde68a; border-radius: 6px; padding: 6px 8px; }
-  .footnote { margin-top: 28px; padding-top: 12px; border-top: 1px solid #e2e8f0; font-size: 11.5px; color: #64748b; }
+  tr.dim td { color: ${COL.faint}; } tr.em td { font-style: italic; }
+  img { max-width: 100%; border: 1px solid ${COL.border}; border-radius: 8px; margin: 8px 0; }
+  code { background: ${COL.chipBg}; padding: 1px 4px; border-radius: 4px; font-size: 12px; }
+  .warn { font-size: 12px; color: ${COL.warnInk}; background: ${COL.warnSoft}; border: 1px solid ${COL.warnBorder}; border-radius: 6px; padding: 6px 8px; }
+  .footnote { margin-top: 28px; padding-top: 12px; border-top: 1px solid ${COL.border}; font-size: 11.5px; color: ${COL.muted}; }
   @media print { body { margin: 8px auto; } section { break-inside: avoid; } }
 </style></head><body>
   <h1>Root cause analysis — <code>${esc(res.target)}</code></h1>
@@ -671,8 +695,8 @@ const CARD_W = 200;
 const CARD_H = { num: 64, delta: 92, spark: 112, full: 140 };
 const UNIT_H = 15; // extra card height when a metric declares a unit caption
 const CARD_FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
-const CARD_COL = { up: "#16a34a", down: "#dc2626", flat: "#64748b" };
-const CARD_COL_SOFT = { up: "#e7f6ec", down: "#fdeaea", flat: "#eef1f5" };
+const CARD_COL = { up: COL.up, down: COL.down, flat: COL.muted };
+const CARD_COL_SOFT = { up: COL.upSoft, down: COL.downSoft, flat: COL.track };
 const VARIANT_LABEL = {
   num: "Number", delta: "Number + Δ", spark: "Number + spark", full: "Number + Δ + spark",
 };
@@ -829,7 +853,7 @@ function sparkPaths(data, x0, x1, y0, y1, col) {
 function deltaSvg(dpct, dir, mark, cx, baseline, colorDir = dir) {
   const hasVal = dpct != null;
   if (!hasVal && !mark) {
-    return `<text x="${cx}" y="${baseline}" text-anchor="middle" font-size="12.5" fill="#8a94a6" font-family="${CARD_FONT}">—</text>`;
+    return `<text x="${cx}" y="${baseline}" text-anchor="middle" font-size="12.5" fill="${COL.faint}" font-family="${CARD_FONT}">—</text>`;
   }
   const col = CARD_COL[colorDir] || CARD_COL.flat, bg = CARD_COL_SOFT[colorDir] || CARD_COL_SOFT.flat;
   const tri = dir === "up" ? "▲" : dir === "down" ? "▼" : "▬";
@@ -863,12 +887,12 @@ function buildCardSVG(name, d, variant, isOverride, overlay) {
 
   let defs = "";
   let inner =
-    `<text x="${cx}" y="20" text-anchor="middle" font-size="13" font-weight="600" fill="#475569" font-family="${CARD_FONT}">${esc(dispName)}</text>` +
-    `<text x="${cx}" y="52" text-anchor="middle" font-size="34" font-weight="700" fill="#1a202c" font-family="${CARD_FONT}">${esc(fmtCardValue(name, val))}</text>`;
+    `<text x="${cx}" y="20" text-anchor="middle" font-size="13" font-weight="600" fill="${COL.text2}" font-family="${CARD_FONT}">${esc(dispName)}</text>` +
+    `<text x="${cx}" y="52" text-anchor="middle" font-size="34" font-weight="700" fill="${COL.text}" font-family="${CARD_FONT}">${esc(fmtCardValue(name, val))}</text>`;
 
   if (unit) {
     const u = unit.length > 22 ? unit.slice(0, 21) + "…" : unit;
-    inner += `<text x="${cx}" y="66" text-anchor="middle" font-size="11" fill="#8a94a6" font-family="${CARD_FONT}">${esc(u)}</text>`;
+    inner += `<text x="${cx}" y="66" text-anchor="middle" font-size="11" fill="${COL.faint}" font-family="${CARD_FONT}">${esc(u)}</text>`;
   }
 
   const colorDir = goodDir(name, dir);
@@ -884,7 +908,7 @@ function buildCardSVG(name, d, variant, isOverride, overlay) {
 
   if (showDelta) {
     if (showSpark) {
-      inner += `<line x1="16" y1="${110 + uOff}" x2="${CARD_W - 16}" y2="${110 + uOff}" stroke="#eef1f6" stroke-width="1"/>`;
+      inner += `<line x1="16" y1="${110 + uOff}" x2="${CARD_W - 16}" y2="${110 + uOff}" stroke="${COL.rule}" stroke-width="1"/>`;
       inner += deltaSvg(dpct, dir, mark, cx, 130 + uOff, colorDir);
     } else {
       inner += deltaSvg(dpct, dir, mark, cx, 82 + uOff, colorDir);
@@ -894,8 +918,8 @@ function buildCardSVG(name, d, variant, isOverride, overlay) {
   if (isOverride) {
     // small indigo dot: this node's variant is pinned, ignoring the canvas default
     inner +=
-      `<circle cx="${CARD_W - 12}" cy="12" r="6" fill="#4f46e5" fill-opacity="0.18"/>` +
-      `<circle cx="${CARD_W - 12}" cy="12" r="3.5" fill="#4f46e5"/>`;
+      `<circle cx="${CARD_W - 12}" cy="12" r="6" fill="${COL.accent}" fill-opacity="0.18"/>` +
+      `<circle cx="${CARD_W - 12}" cy="12" r="3.5" fill="${COL.accent}"/>`;
   }
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${CARD_W}" height="${H}" viewBox="0 0 ${CARD_W} ${H}">${defs}${inner}</svg>`;
@@ -911,8 +935,8 @@ function buildColdCardSVG(name, cb, overlay) {
   const H = CARD_H.delta;
 
   let inner =
-    `<text x="${cx}" y="20" text-anchor="middle" font-size="13" font-weight="600" fill="#475569" font-family="${CARD_FONT}">${esc(dispName)}</text>` +
-    `<text x="${cx}" y="52" text-anchor="middle" font-size="34" font-weight="700" fill="#1a202c" font-family="${CARD_FONT}">${esc(fmtCardValue(name, val))}</text>`;
+    `<text x="${cx}" y="20" text-anchor="middle" font-size="13" font-weight="600" fill="${COL.text2}" font-family="${CARD_FONT}">${esc(dispName)}</text>` +
+    `<text x="${cx}" y="52" text-anchor="middle" font-size="34" font-weight="700" fill="${COL.text}" font-family="${CARD_FONT}">${esc(fmtCardValue(name, val))}</text>`;
 
   if (overlay) {
     inner += deltaSvg(overlay.dpct, overlay.dir, overlay.mark, cx, 82, goodDir(name, overlay.dir));
@@ -920,7 +944,7 @@ function buildColdCardSVG(name, cb, overlay) {
     const sub = cb && cb.lo != null
       ? `${fmtCardValue(name, cb.lo)} – ${fmtCardValue(name, cb.hi)} · 90% belief`
       : cb && cb.derived ? "derived from parents" : "belief";
-    inner += `<text x="${cx}" y="80" text-anchor="middle" font-size="11.5" fill="#8a94a6" font-family="${CARD_FONT}">${esc(sub)}</text>`;
+    inner += `<text x="${cx}" y="80" text-anchor="middle" font-size="11.5" fill="${COL.faint}" font-family="${CARD_FONT}">${esc(sub)}</text>`;
   }
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${CARD_W}" height="${H}" viewBox="0 0 ${CARD_W} ${H}">${inner}</svg>`;
 }
@@ -1180,35 +1204,35 @@ const CY_STYLE = [
     selector: "node",
     style: {
       shape: "round-rectangle",
-      "background-color": "#ffffff",
+      "background-color": COL.panel,
       "border-width": 2,
-      "border-color": "#94a3b8",
+      "border-color": COL.source,
       label: "data(label)",
       "text-wrap": "wrap",
       "text-valign": "center",
       "text-halign": "center",
       "font-size": 12,
       "font-weight": 600,
-      color: "#1a202c",
+      color: COL.text,
       width: "label",
       height: "label",
       padding: "12px",
     },
   },
-  { selector: "node.prob", style: { "border-color": "#4f46e5" } },
-  { selector: "node.formula", style: { "border-color": "#9333ea" } },
-  { selector: "node.fitted", style: { "background-color": "#eef2ff" } },
+  { selector: "node.prob", style: { "border-color": COL.accent } },
+  { selector: "node.formula", style: { "border-color": COL.formula } },
+  { selector: "node.fitted", style: { "background-color": COL.accentSoft } },
   {
     selector: "node:selected",
-    style: { "border-width": 3.5, "border-color": "#4f46e5" },
+    style: { "border-width": 3.5, "border-color": COL.accent },
   },
   {
     selector: "node.rca-up",
-    style: { "background-color": "#dcfce7", "border-color": "#16a34a" },
+    style: { "background-color": COL.upSoft, "border-color": COL.up },
   },
   {
     selector: "node.rca-down",
-    style: { "background-color": "#fee2e2", "border-color": "#dc2626" },
+    style: { "background-color": COL.downSoft, "border-color": COL.down },
   },
   {
     selector: "edge",
@@ -1217,34 +1241,34 @@ const CY_STYLE = [
       "curve-style": "bezier",
       "target-arrow-shape": "triangle",
       "arrow-scale": 1.1,
-      "line-color": "#94a3b8",
-      "target-arrow-color": "#94a3b8",
+      "line-color": COL.source,
+      "target-arrow-color": COL.source,
       label: "data(label)",
       "font-size": 10,
-      color: "#475569",
-      "text-background-color": "#f6f7f9",
+      color: COL.text2,
+      "text-background-color": COL.bg,
       "text-background-opacity": 0.92,
       "text-background-padding": 3,
     },
   },
   {
     selector: "edge.formula",
-    style: { "line-color": "#c084fc", "target-arrow-color": "#c084fc" },
+    style: { "line-color": COL.edgeFormula, "target-arrow-color": COL.edgeFormula },
   },
   {
     selector: "edge.prob",
     style: {
       "line-style": "dashed",
-      "line-color": "#818cf8",
-      "target-arrow-color": "#818cf8",
+      "line-color": COL.edgeProb,
+      "target-arrow-color": COL.edgeProb,
     },
   },
   {
     selector: "edge.rca-up",
     style: {
       "line-style": "solid",
-      "line-color": "#16a34a",
-      "target-arrow-color": "#16a34a",
+      "line-color": COL.up,
+      "target-arrow-color": COL.up,
       width: "data(w)",
       "line-opacity": "data(op)",
       "text-opacity": "data(op)",
@@ -1254,8 +1278,8 @@ const CY_STYLE = [
     selector: "edge.rca-down",
     style: {
       "line-style": "solid",
-      "line-color": "#dc2626",
-      "target-arrow-color": "#dc2626",
+      "line-color": COL.down,
+      "target-arrow-color": COL.down,
       width: "data(w)",
       "line-opacity": "data(op)",
       "text-opacity": "data(op)",
@@ -1263,32 +1287,32 @@ const CY_STYLE = [
   },
   {
     selector: "node.rca-unexplained",
-    style: { "border-style": "dashed", "border-color": "#d97706", "border-width": 3 },
+    style: { "border-style": "dashed", "border-color": COL.warn, "border-width": 3 },
   },
   /* what-if overlay: sign=hue, certainty=background opacity, pinned=heavy border */
   {
     selector: "node.sim-up",
-    style: { "background-color": "#dcfce7", "border-color": "#16a34a", "background-opacity": "data(bgop)" },
+    style: { "background-color": COL.upSoft, "border-color": COL.up, "background-opacity": "data(bgop)" },
   },
   {
     selector: "node.sim-down",
-    style: { "background-color": "#fee2e2", "border-color": "#dc2626", "background-opacity": "data(bgop)" },
+    style: { "background-color": COL.downSoft, "border-color": COL.down, "background-opacity": "data(bgop)" },
   },
   {
     selector: "node.sim-pinned",
-    style: { "border-width": 4, "border-style": "solid", "border-color": "#4f46e5" },
+    style: { "border-width": 4, "border-style": "solid", "border-color": COL.accent },
   },
   {
     selector: "node.warn-border",
-    style: { "border-style": "dashed", "border-color": "#d97706", "border-width": 3 },
+    style: { "border-style": "dashed", "border-color": COL.warn, "border-width": 3 },
   },
   {
     selector: "node.lever",
     style: {
       shape: "ellipse",
-      "background-color": "#fef3c7",
+      "background-color": COL.warnSoft,
       "border-style": "dashed",
-      "border-color": "#d97706",
+      "border-color": COL.warn,
       "font-size": 11,
     },
   },
@@ -1296,18 +1320,18 @@ const CY_STYLE = [
     selector: "edge.assume",
     style: {
       "line-style": "dotted",
-      "line-color": "#d97706",
-      "target-arrow-color": "#d97706",
+      "line-color": COL.warn,
+      "target-arrow-color": COL.warn,
       width: 2.5,
-      color: "#92400e",
+      color: COL.warnInk,
     },
   },
   {
     selector: "edge.sim-up",
     style: {
       "line-style": "solid",
-      "line-color": "#16a34a",
-      "target-arrow-color": "#16a34a",
+      "line-color": COL.up,
+      "target-arrow-color": COL.up,
       "line-opacity": "data(op)",
     },
   },
@@ -1315,15 +1339,15 @@ const CY_STYLE = [
     selector: "edge.sim-down",
     style: {
       "line-style": "solid",
-      "line-color": "#dc2626",
-      "target-arrow-color": "#dc2626",
+      "line-color": COL.down,
+      "target-arrow-color": COL.down,
       "line-opacity": "data(op)",
     },
   },
   { selector: ".faded", style: { opacity: 0.25 } },
   {
     selector: ".pathhl",
-    style: { "border-color": "#d97706", "line-color": "#d97706", "target-arrow-color": "#d97706" },
+    style: { "border-color": COL.warn, "line-color": COL.warn, "target-arrow-color": COL.warn },
   },
 ];
 
@@ -1381,6 +1405,29 @@ function buildGraph() {
   });
   markFitted();
   initZoomControls();
+  initCanvasGrid();
+}
+
+/* Lock the paper's dot grid to the graph. Left alone the dots sit still while
+   the tree slides underneath them, which reads as a rendering bug rather than
+   as a canvas; moving them is also the cheapest hint that this surface pans at
+   all. Spacing is halved/doubled to stay in a legible 12–96px band so a
+   zoomed-out tree doesn't moiré. Dot *radius* stays fixed — it's paper
+   texture, not content, and shouldn't grow when you zoom in. */
+function initCanvasGrid() {
+  const cy = state.cy;
+  const el = $("cy");
+  const BASE = 24;
+  const paint = () => {
+    let step = BASE * cy.zoom();
+    while (step < 12) step *= 2;
+    while (step > 96) step /= 2;
+    const p = cy.pan();
+    el.style.backgroundSize = `${step}px ${step}px`;
+    el.style.backgroundPosition = `${p.x % step}px ${p.y % step}px`;
+  };
+  cy.on("pan zoom", paint);
+  paint();
 }
 
 /* Cytoscape pans on background-drag and zooms on wheel out of the box, but
@@ -1630,22 +1677,32 @@ function renderTimeSeries(name, series) {
   const shapes = [];
   const win = readWindows();
   if (win) {
+    // `readWindows()` omits the reference pair in auto mode — that is right for
+    // the *request* (the server computes it) but wrong for shading, and an
+    // undefined x0 makes Plotly place the rect in the year 2000, which blows
+    // the axis range out and collapses the real series into a spike at the
+    // right edge. The inputs still hold the previewed window, so shade from
+    // those; skip the band only when there genuinely isn't one.
+    const refStart = win.reference_start || $("ref-start").value;
+    const refEnd = win.reference_end || $("ref-end").value;
+    if (refStart && refEnd) {
+      shapes.push({ type: "rect", xref: "x", yref: "paper", x0: refStart, x1: refEnd, y0: 0, y1: 1, fillcolor: COL.source, opacity: 0.16, line: { width: 0 } });
+    }
     shapes.push(
-      { type: "rect", xref: "x", yref: "paper", x0: win.reference_start, x1: win.reference_end, y0: 0, y1: 1, fillcolor: "#94a3b8", opacity: 0.16, line: { width: 0 } },
-      { type: "rect", xref: "x", yref: "paper", x0: win.analysis_start, x1: win.analysis_end, y0: 0, y1: 1, fillcolor: "#4f46e5", opacity: 0.10, line: { width: 0 } },
+      { type: "rect", xref: "x", yref: "paper", x0: win.analysis_start, x1: win.analysis_end, y0: 0, y1: 1, fillcolor: COL.accent, opacity: 0.10, line: { width: 0 } },
     );
   }
   Plotly.newPlot(
     "ts-chart",
-    [{ x, y, mode: "lines", line: { color: "#4f46e5", width: 1.8 }, hovertemplate: "%{x|%b %d}: %{y:,.1f}<extra></extra>" }],
+    [{ x, y, mode: "lines", line: { color: COL.accent, width: 1.8 }, hovertemplate: "%{x|%b %d}: %{y:,.1f}<extra></extra>" }],
     {
       margin: { l: 45, r: 8, t: 6, b: 22 },
       height: 200,
       shapes,
-      xaxis: { tickfont: { size: 10 }, gridcolor: "#f0f2f5" },
-      yaxis: { tickfont: { size: 10 }, gridcolor: "#f0f2f5" },
-      plot_bgcolor: "#ffffff",
-      paper_bgcolor: "#ffffff",
+      xaxis: { tickfont: { size: 10 }, gridcolor: COL.rule },
+      yaxis: { tickfont: { size: 10 }, gridcolor: COL.rule },
+      plot_bgcolor: COL.panel,
+      paper_bgcolor: COL.panel,
     },
     { displayModeBar: false, responsive: true },
   );
@@ -2407,20 +2464,20 @@ async function renderRcaStrip(res) {
   const x = series.map((r) => r.date);
   const y = series.map((r) => r[name]);
   const shapes = [
-    { type: "rect", xref: "x", yref: "paper", x0: res.reference_window.start, x1: res.reference_window.end, y0: 0, y1: 1, fillcolor: "#94a3b8", opacity: 0.16, line: { width: 0 } },
-    { type: "rect", xref: "x", yref: "paper", x0: res.analysis_window.start, x1: res.analysis_window.end, y0: 0, y1: 1, fillcolor: "#4f46e5", opacity: 0.10, line: { width: 0 } },
+    { type: "rect", xref: "x", yref: "paper", x0: res.reference_window.start, x1: res.reference_window.end, y0: 0, y1: 1, fillcolor: COL.source, opacity: 0.16, line: { width: 0 } },
+    { type: "rect", xref: "x", yref: "paper", x0: res.analysis_window.start, x1: res.analysis_window.end, y0: 0, y1: 1, fillcolor: COL.accent, opacity: 0.10, line: { width: 0 } },
   ];
   Plotly.newPlot(
     el,
-    [{ x, y, mode: "lines", line: { color: "#4f46e5", width: 1.6 }, hovertemplate: "%{x|%b %d}: %{y:,.1f}<extra></extra>" }],
+    [{ x, y, mode: "lines", line: { color: COL.accent, width: 1.6 }, hovertemplate: "%{x|%b %d}: %{y:,.1f}<extra></extra>" }],
     {
       margin: { l: 38, r: 6, t: 4, b: 18 },
       height: 120,
       shapes,
-      xaxis: { tickfont: { size: 9 }, gridcolor: "#f0f2f5" },
-      yaxis: { tickfont: { size: 9 }, gridcolor: "#f0f2f5" },
-      plot_bgcolor: "#ffffff",
-      paper_bgcolor: "#ffffff",
+      xaxis: { tickfont: { size: 9 }, gridcolor: COL.rule },
+      yaxis: { tickfont: { size: 9 }, gridcolor: COL.rule },
+      plot_bgcolor: COL.panel,
+      paper_bgcolor: COL.panel,
     },
     { displayModeBar: false, responsive: true },
   );
@@ -2757,7 +2814,7 @@ function updateAdjustPreview({ base, hist, cold }) {
   const hi = Math.max(gHi + 0.1 * span, target);
   const p = (x) => (100 * (x - lo)) / (hi - lo);
   $("wf-strip").innerHTML = `
-    <div class="strip-band" style="left:${p(gLo)}%;width:${p(gHi) - p(gLo)}%;background:#e4e7ec"></div>
+    <div class="strip-band" style="left:${p(gLo)}%;width:${p(gHi) - p(gLo)}%;background:${COL.track}"></div>
     ${bandLo != null && bandHi != null && bandHi > bandLo
       ? `<div class="strip-band" style="left:${p(bandLo)}%;width:${Math.max(p(bandHi) - p(bandLo), 0)}%"></div>`
       : ""}

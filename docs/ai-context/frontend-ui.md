@@ -33,26 +33,64 @@ The breakdown UI is a single-page app served by FastAPI at `/ui`, in the spirit 
 - **RCA setup lives in the Root cause tab** (`#rca-setup`, persistent markup above the `#rca-results` render target), and is **analysis-first**: an analysis-window preset select (`last7` / `last14` / `last-full-week` / `custom`; too-short presets omitted) + the analysis date pair, then the reference pair with an **auto** chip. `state.refMode` is the two-state machine: `"auto"` (default) means the reference inputs preview the server's matched adjacent block (`defaultReferenceJS` mirrors `grains.default_reference_window`, with week alignment and coarsest grain derived from the selected target's ancestor scope via `referenceAlignment`) and the request **omits** the reference params — the server's computation is the number of record and the response overwrites the inputs; `"custom"` (any manual reference edit) sends all four dates. Analysis edits flip the preset to Custom but keep the refMode; the auto chip restores auto; target changes recompute the auto reference (scope changes alignment). `validateWindows` keeps the hard rules and adds muted advisories: whole-week (scope-keyed), short reference (< ~4 coarsest-grain periods), and non-adjacent gap (trend contamination). A `#history-nudge` line appears when `/meta.earliest_available` shows provider history before `date_start`. Setup sits with its results, so the windows are unambiguously RCA parameters rather than global filters.
 - **Canvas** is the primary surface; the graph is the product. Dagre layered layout with `rankDir: 'BT'` so the tree reads like a KPI tree: outcome metrics on top, drivers below. The card display options (variant / sparkline length / delta length) collapse behind a quiet **Display** toggle in the top-left toolbar.
 
+  The ground is a **dot grid**, not ruled graph paper — the DAG is already made
+  of lines and ruling would compete with the edges. `initCanvasGrid()` rewrites
+  `background-size`/`-position` from cy's zoom and pan so the dots travel with
+  the graph (sitting still while the tree slides reads as a rendering bug), with
+  spacing clamped to 12–96px so a zoomed-out tree doesn't moiré. Dot *radius* is
+  fixed: it's paper texture, not content.
+
   **Navigation** is Cytoscape's own: drag the background to pan, wheel to zoom (`wheelSensitivity: 0.2`). Both are kept as-is — the deliberate decision (2026-08-11) was *not* to adopt the Figma convention of scroll-to-pan / ⌘-scroll-to-zoom, because plain-wheel zoom is worth more here than trackpad-native panning. What was missing was the way back, so `#zoom-controls` (bottom-right, `initZoomControls()`) adds `−` / a live zoom-percent button that resets to 100% / `+` / **Fit**, with `F` bound to fit. Zoom steps hold the viewport centre fixed. The `F` handler is guarded on `e.target` so it never eats a keystroke typed into a date input or a scenario note.
 - **Sidebar** (410px) has three tabs: **Metric** (UC3/UC4), **Root cause** (UC1), and **What-if** (UC5). Clicking a node opens Metric — unless the What-if tab is active, in which case it opens that node's adjust panel. Finishing an RCA run switches to Root cause.
 - **Overlay exclusivity**: the RCA and what-if overlays never coexist; the active tab owns the canvas (switching to Root cause or What-if re-applies that tab's overlay via a shared `clearOverlays()`), and the Metric tab keeps whichever overlay was last showing.
 
 ## Visual language
 
-Light theme, quiet by default so RCA color can carry meaning when it appears.
+**"Notebook"**: a warm paper ground with white cards sitting on it, quiet by
+default so RCA color can carry meaning when it appears. Retuned 2026-08-11 —
+the previous cool grey `#f6f7f9` was in the same family as the accent hues and
+competed with them, and white cards on a near-white canvas barely separated.
+
+**`style.css` `:root` is the single source of truth.** `app.js` reads the custom
+properties into a `COL` object at load (the Cytoscape stylesheet, the card SVGs
+and the Plotly charts all need real hex, not `var()`), so a palette change is
+one edit in one file. It used to be 74 literals spread through `app.js`; adding
+a color means adding a `:root` token *and* a `COL` line, never a literal.
 
 | Token | Value | Use |
 |---|---|---|
-| bg / panel | `#f6f7f9` / `#ffffff` | canvas / cards, sidebar |
-| border | `#e2e6ea` | hairlines |
-| text / muted | `#1a202c` / `#64748b` | |
-| accent (indigo) | `#4f46e5`, soft `#eef2ff` | probabilistic edges, buttons, fitted tint |
-| formula (violet) | `#9333ea` | formula-node border + deterministic edges |
-| up / down | `#16a34a` / `#dc2626` (soft `#dcfce7` / `#fee2e2`) | RCA gap direction |
+| bg / panel | `#faf7f2` / `#ffffff` | paper canvas / cards, sidebar, header |
+| border / rule | `#e8e2d8` / `#f0ebe3` | hairlines / card dividers, chart gridlines |
+| text / text-2 / muted / faint | `#1c1917` / `#57534e` / `#78716c` / `#a8a29e` | warm ink, not blue-black |
+| grid | `rgba(28,25,23,0.07)` | canvas dot grid |
+| source | `#a8a29e` | source-node border — deliberately the *neutral*, "no model" |
+| accent (indigo) | `#4f46e5`, soft `#ecedfc` | probabilistic edges, buttons, fitted tint |
+| formula (cyan) | `#0891b2`, soft `#e4f4f9` | formula-node border + deterministic edges |
+| up / down | `#15803d` / `#b91c1c` (soft `#e2f0e4` / `#fae7e3`) | RCA gap direction |
+| warn | `#c47b0c`, soft `#fbf0da`, ink `#8a5209` | extrapolation, assumption edges, caveats |
 
-**Nodes** are white round-rects rendered as **stat cards** (see *Node cards* below): a big number, an optional period-over-period delta, and an optional sparkline. Border color encodes type — gray `#94a3b8` for source metrics (no parents), indigo for probabilistic, violet for formula nodes. A fitted model tints the node background `#eef2ff`. Selected node gets the accent border.
+**The palette is validated, not eyeballed** — the dataviz skill's
+`validate_palette.js`, all-pairs, against the paper surface:
 
-**Edges** point parent → child. Deterministic edges (child has a `formula`) are **solid violet**; probabilistic edges are **dashed indigo**. When a probabilistic child is fitted, its incoming edges label with the raw-scale coefficient: `β 0.10 [0.08, 0.13]`.
+- **Identity** (accent ↔ formula): all checks pass — CVD ΔE 16.4, normal-vision
+  ΔE 21.4, both ≥3:1 on paper.
+- **Status** (up / down / warn): worst normal-vision pair ΔE 18.7, all ≥3:1 —
+  but **up ↔ down is deutan ΔE 4.2 and always will be.** Red/green is the
+  CVD-hostile pair and no re-step fixes it. That is only legal because
+  direction never rides on hue alone: delta pills carry ▲/▼, overlays carry
+  ◌/⊙/⚠, and the legend spells out improved/worsened. **Those glyphs are load
+  bearing — do not remove them.**
+
+**Formula nodes were violet (`#9333ea`) until 2026-08-11.** Against the indigo
+accent that measured normal-vision ΔE 11.8 — below the 15 floor, i.e. hard to
+tell apart *with full color vision* — and protan ΔE 0.9, i.e. identical. Edges
+survived on solid-vs-dashed, but node borders encode type by color alone, so
+"learned" and "arithmetic identity" were not distinguishable. Cyan is far from
+indigo and far from the green/red/amber the status channel already claims.
+
+**Nodes** are white round-rects rendered as **stat cards** (see *Node cards* below): a big number, an optional period-over-period delta, and an optional sparkline. Border color encodes type — warm gray for source metrics (no parents), indigo for probabilistic, cyan for formula nodes. A fitted model tints the node background with `--accent-soft`. Selected node gets the accent border.
+
+**Edges** point parent → child. Deterministic edges (child has a `formula`) are **solid cyan**; probabilistic edges are **dashed indigo**. When a probabilistic child is fitted, its incoming edges label with the raw-scale coefficient: `β 0.10 [0.08, 0.13]`.
 
 ### Node cards
 
