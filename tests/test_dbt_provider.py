@@ -622,3 +622,96 @@ def test_the_grain_assertion_can_be_bounded_to_a_window(events):
     assert f.check_grain("dau") == (3, 3)
     assert f.check_grain("dau", start_date="2024-01-01", end_date="2024-01-01") == (3, 3)
     assert "WHERE" in f.last_sql["dau::grain"]
+
+
+# --- the bigquery connector --------------------------------------------------
+#
+# The generator has emitted BigQuery SQL since 2.10 (`ADAPTER_DIALECTS`, and an
+# ISOWEEK override for week bucketing); only the connection was missing, which
+# left a BigQuery shop on the `local` provider and its `mf` subprocess. These
+# cover the parts that are testable without a warehouse: which connector the
+# profile selects, and the credential branch it picks inside it.
+
+
+def test_bigquery_is_a_supported_adapter():
+    from breakdown.dbt_provider import CONNECTORS
+
+    assert "bigquery" in CONNECTORS
+
+
+def test_bigquery_dialect_is_mapped_for_the_adapter():
+    # The connector is only useful if the SQL it runs is BigQuery-shaped; this
+    # pins the pair together so neither half can be removed alone.
+    from breakdown.dbt_sql import dialect_for_adapter
+
+    assert dialect_for_adapter("bigquery") == "bigquery"
+
+
+def test_bigquery_unsupported_auth_method_is_named():
+    pytest.importorskip("google.cloud.bigquery", reason="needs the bigquery extra")
+
+    with pytest.raises(DbtProfileError, match="oauth"):
+        connect_from_profile({"type": "bigquery", "method": "oauth-secrets", "project": "p"})
+
+
+def test_bigquery_service_account_requires_a_keyfile():
+    pytest.importorskip("google.cloud.bigquery", reason="needs the bigquery extra")
+
+    with pytest.raises(DbtProfileError, match="keyfile"):
+        connect_from_profile({"type": "bigquery", "method": "service-account", "project": "p"})
+
+
+def test_bigquery_service_account_json_wants_an_inline_mapping():
+    pytest.importorskip("google.cloud.bigquery", reason="needs the bigquery extra")
+
+    with pytest.raises(DbtProfileError, match="keyfile_json"):
+        connect_from_profile(
+            {
+                "type": "bigquery",
+                "method": "service-account-json",
+                "project": "p",
+                "keyfile_json": "/not/a/mapping.json",
+            }
+        )
+
+
+def test_bigquery_oauth_builds_a_client_from_the_profile(monkeypatch):
+    """`oauth` means Application Default Credentials — the driver finds them, so
+    breakdown must pass `credentials=None` rather than invent one, and must read
+    `project`/`location` from the profile dbt itself would use."""
+    pytest.importorskip("google.cloud.bigquery", reason="needs the bigquery extra")
+    from google.cloud import bigquery
+
+    seen = {}
+
+    def fake_client(project=None, credentials=None, location=None):
+        seen.update(project=project, credentials=credentials, location=location)
+        return object()
+
+    monkeypatch.setattr(bigquery, "Client", fake_client)
+    monkeypatch.setattr("google.cloud.bigquery.dbapi.connect", lambda client: ("conn", client))
+
+    conn = connect_from_profile(
+        {"type": "bigquery", "method": "oauth", "project": "nn-prod", "location": "US"}
+    )
+
+    assert conn[0] == "conn"
+    assert seen == {"project": "nn-prod", "credentials": None, "location": "US"}
+
+
+def test_bigquery_reads_the_database_alias_for_project(monkeypatch):
+    # Real profiles use both spellings; dbt accepts `database` as the alias.
+    pytest.importorskip("google.cloud.bigquery", reason="needs the bigquery extra")
+    from google.cloud import bigquery
+
+    seen = {}
+    monkeypatch.setattr(
+        bigquery,
+        "Client",
+        lambda project=None, credentials=None, location=None: seen.update(project=project),
+    )
+    monkeypatch.setattr("google.cloud.bigquery.dbapi.connect", lambda client: "conn")
+
+    connect_from_profile({"type": "bigquery", "database": "nn-prod"})
+
+    assert seen["project"] == "nn-prod"

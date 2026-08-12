@@ -151,8 +151,73 @@ def resolve_profile(
 #
 # One connector per dbt adapter. Each imports its driver lazily and names the
 # package to install, because the driver a user needs is the one their own dbt
-# adapter already depends on — breakdown does not ship warehouse drivers of its
-# own beyond the `databricks` extra it already had.
+# adapter already depends on — breakdown ships no warehouse driver unconditionally,
+# only the optional `databricks` and `bigquery` extras.
+#
+# Note that this map and `ADAPTER_DIALECTS` in `dbt_sql.py` are independent: a
+# dialect entry means the generator emits correct SQL for that warehouse, not
+# that anything here can run it. BigQuery sat in that gap from 2.10 until a
+# connector was added, which is worth remembering before mapping a dialect and
+# calling a warehouse supported.
+
+
+def _connect_bigquery(out: Dict[str, Any]) -> Any:
+    try:
+        from google.cloud import bigquery
+        from google.cloud.bigquery import dbapi
+    except ImportError as e:
+        raise MissingProviderExtra(
+            "provider type 'dbt' with a bigquery target needs the bigquery "
+            "extra: pip install 'metric-breakdown[bigquery]'"
+        ) from e
+
+    # BigQuery is the one adapter here whose credential is chosen by a `method`
+    # rather than carried in a fixed field, so the profile is read as dbt reads
+    # it: `oauth` means Application Default Credentials (the driver finds them
+    # itself), and the two service-account methods differ only in whether the
+    # key is a path or already inline.
+    method = str(out.get("method") or "oauth").lower()
+    credentials = None
+    if method in ("service-account", "service_account"):
+        from google.oauth2 import service_account
+
+        keyfile = out.get("keyfile")
+        if not keyfile:
+            raise DbtProfileError(
+                "bigquery method 'service-account' requires `keyfile` in the profile."
+            )
+        credentials = service_account.Credentials.from_service_account_file(str(keyfile))
+    elif method in ("service-account-json", "service_account_json"):
+        from google.oauth2 import service_account
+
+        info = out.get("keyfile_json")
+        if not isinstance(info, dict):
+            raise DbtProfileError(
+                "bigquery method 'service-account-json' requires `keyfile_json` "
+                "in the profile, as an inline mapping."
+            )
+        credentials = service_account.Credentials.from_service_account_info(info)
+    elif method != "oauth":
+        # Named rather than silently fallen back to ADC: an unsupported method
+        # that quietly authenticates as somebody else is worse than a stop.
+        raise DbtProfileError(
+            f"bigquery method '{method}' is not supported. Supported: oauth "
+            "(Application Default Credentials), service-account, "
+            "service-account-json."
+        )
+
+    client = bigquery.Client(
+        # dbt writes `project`; `database` is its accepted alias and appears in
+        # real profiles, so both are read. No default dataset is set — the
+        # manifest gives every relation fully qualified and already quoted, so
+        # an unqualified name never reaches the warehouse.
+        project=out.get("project") or out.get("database"),
+        credentials=credentials,
+        location=out.get("location"),
+    )
+    # The DBAPI wrapper rather than the native `Client.query()` API, so the
+    # cursor satisfies `_frame` unchanged like every other connector.
+    return dbapi.connect(client)
 
 
 def _connect_databricks(out: Dict[str, Any]) -> Any:
@@ -217,6 +282,7 @@ def _connect_snowflake(out: Dict[str, Any]) -> Any:
 
 
 CONNECTORS: Dict[str, Callable[[Dict[str, Any]], Any]] = {
+    "bigquery": _connect_bigquery,
     "databricks": _connect_databricks,
     "duckdb": _connect_duckdb,
     "postgres": _connect_postgres,

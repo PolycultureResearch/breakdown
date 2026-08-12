@@ -1005,3 +1005,80 @@ def test_cloud_earliest_date_never_raises():
     fetcher = CloudDataFetcher.__new__(CloudDataFetcher)
     fetcher.client = _DownClient()
     assert fetcher.earliest_date("revenue") is None
+
+
+# --- zero-row metrics on the `local` provider --------------------------------
+#
+# `mf` writes a zero-byte CSV (not even a header) when a metric's filter matches
+# no rows in the window. `_align_to_spine` has always known what to do with an
+# empty result — "a source returning no rows at all keeps the full fill for
+# flows" — but `pd.read_csv` raised `EmptyDataError` on the way there, so a
+# seasonal tree with a product stream that has not gone on sale yet could not
+# start at all. Reported from an outside deployment.
+
+
+def _mf_writing(content: str, monkeypatch, tmp_path):
+    """A LocalDataFetcher whose `mf` writes exactly `content` to the CSV."""
+    import subprocess
+
+    fetcher = LocalDataFetcher(project_path=str(tmp_path))
+    monkeypatch.setattr("breakdown.data_fetch.provider_extra_missing", lambda p: None)
+
+    def fake_run(cmd, **kwargs):
+        with open(cmd[cmd.index("--csv") + 1], "w") as f:
+            f.write(content)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return fetcher
+
+
+def test_local_zero_row_flow_fills_the_spine_with_a_warning(monkeypatch, tmp_path, caplog):
+    import logging
+
+    fetcher = _mf_writing("", monkeypatch, tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        df = fetcher.fetch_metric(
+            "unlaunched_stream", "2024-01-01", "2024-01-05", grain="day", kind="flow"
+        )
+
+    assert list(df.columns) == ["date", "unlaunched_stream"]
+    assert len(df) == 5
+    assert (df["unlaunched_stream"] == 0.0).all()
+    assert "no rows" in caplog.text.lower()
+    assert "unlaunched_stream" in caplog.text
+
+
+def test_local_zero_row_rate_still_errors(monkeypatch, tmp_path):
+    # A rate cannot be invented — that rule is deliberate and survives the fix.
+    fetcher = _mf_writing("", monkeypatch, tmp_path)
+
+    with pytest.raises(RuntimeError):
+        fetcher.fetch_metric(
+            "conversion_rate", "2024-01-01", "2024-01-05", grain="day", kind="rate"
+        )
+
+
+def test_local_zero_row_sliced_fetch_returns_no_slices(monkeypatch, tmp_path):
+    fetcher = _mf_writing("", monkeypatch, tmp_path)
+
+    df = fetcher.fetch_metric_sliced(
+        "unlaunched_stream", "channel", "2024-01-01", "2024-01-05", grain="day"
+    )
+
+    assert df.empty
+    assert {"date", "slice", "value"} <= set(df.columns)
+
+
+def test_local_header_only_csv_is_unchanged(monkeypatch, tmp_path):
+    # The neighbouring case: `mf` wrote a header but no rows. This already
+    # worked, and must keep working through the same path.
+    fetcher = _mf_writing("metric_time__day,unlaunched_stream\n", monkeypatch, tmp_path)
+
+    df = fetcher.fetch_metric(
+        "unlaunched_stream", "2024-01-01", "2024-01-05", grain="day", kind="flow"
+    )
+
+    assert len(df) == 5
+    assert (df["unlaunched_stream"] == 0.0).all()

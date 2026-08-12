@@ -116,6 +116,7 @@ those are **extras** you opt into:
 | `local` (MetricFlow CLI) or `cloud` (dbt Cloud Semantic Layer) | `pip install 'metric-breakdown[dbt]'` | `dbt-metricflow`, `dbt-sl-sdk` |
 | `warehouse` (direct SQL) | `pip install 'metric-breakdown[databricks]'` | `databricks-sdk`, `databricks-sql-connector` |
 | reading a dbt project's own metric definitions | `pip install 'metric-breakdown[dbt-bridge]'` | `sqlglot` |
+| running that generated SQL on **BigQuery** | `pip install 'metric-breakdown[bigquery]'` | `google-cloud-bigquery` |
 | all of them | `pip install 'metric-breakdown[all]'` | all of the above — **except on Python 3.14**, where it installs `databricks` and `dbt-bridge` and omits `dbt` (see below) |
 
 `dbt-bridge` is deliberately not part of `dbt`, and depends on nothing from dbt
@@ -223,7 +224,19 @@ uv run breakdown serve --tree my_tree.yml --no-snapshots   # always hit the prov
 uv run breakdown serve --tree my_tree.yml --snapshot-dir /somewhere/writable
 ```
 
-A snapshot freezes what the provider returned at fetch time — if the warehouse backfills late-arriving data, run `--refresh` once to pick it up. In Docker, `compose.yaml` mounts `./snapshots` and sets `BREAKDOWN_SNAPSHOT_DIR` (the default tree-adjacent location is unwritable there because `/config` is read-only); an unwritable snapshot directory is never fatal — the server logs one warning and runs uncached.
+A snapshot freezes what the provider returned at fetch time — if the warehouse backfills late-arriving data, run `--refresh` once to pick it up. `BREAKDOWN_REFRESH=1` is the environment-variable form, for a scheduled refresh that has no command line to edit. In Docker, `compose.yaml` mounts `./snapshots` and sets `BREAKDOWN_SNAPSHOT_DIR` (the default tree-adjacent location is unwritable there because `/config` is read-only); an unwritable snapshot directory is never fatal — the server logs one warning and runs uncached.
+
+**If your metric restates, the snapshot key cannot tell.** The key is
+`(metric, grain, kind, window)` with no content hash, so a series whose *past*
+values change — payment plans settling backwards, late-arriving conversions,
+any bitemporal source — is frozen at whatever it said the first time. Two rules
+follow. Refresh unconditionally on a schedule (`BREAKDOWN_REFRESH=1`) rather
+than relying on the cache to notice. And prefer a basis that never restates for
+the series you actually fit: an order-*created* date including every status
+moves forward only, where a settled or completed basis rewrites history behind
+you. Keep the restating version in the tree if you report on it, but do not make
+it an RCA target mid-period — the model would be training on values that are
+still changing.
 
 ---
 
@@ -269,7 +282,7 @@ provider:
 | `mock` | Deterministic synthetic data that respects the tree structure (formula nodes satisfy their formulas, probabilistic children co-move with parents). No config needed. Use for development and testing. |
 | `local` | Queries a dbt project on disk via the MetricFlow CLI (`mf query`). Requires `project_path`. **Superseded by `dbt` for most trees** — see below. |
 | `cloud` | Queries the dbt Semantic Layer API via the `dbt-sl-sdk`. Requires `environment_id`, `host`, and `token`. |
-| `dbt` | Reads your dbt project's own `target/semantic_manifest.json` (written by plain `dbt parse` on **dbt Core**) and generates the SQL for each metric, running it over the connection in the project's `profiles.yml`. **No dbt Cloud, no Semantic Layer credential, no service token, and no new credentials of any kind.** Requires `project_path`. A node may override what dbt declares with its own `bind:` block. |
+| `dbt` | Reads your dbt project's own `target/semantic_manifest.json` (written by plain `dbt parse` on **dbt Core**) and generates the SQL for each metric, running it over the connection in the project's `profiles.yml`. **No dbt Cloud, no Semantic Layer credential, no service token, and no new credentials of any kind.** Requires `project_path`. A node may override what dbt declares with its own `bind:` block. Executes on **BigQuery, Databricks, DuckDB, Postgres or Snowflake** — whichever your project's own target already uses. |
 | `warehouse` | Runs each metric's own `sql` directly against a warehouse (currently Databricks SQL). Use when the semantic layer isn't queryable — the analyst mirrors governed definitions in SQL. Requires `http_path` plus **one of**: a PAT `token` (with `host`), or a Databricks CLI OAuth `profile` created by `databricks auth login --profile <name>` (host is read from the profile). |
 | `none` | No data is ever fetched — a **cold-start tree** of declared beliefs (`assumed` is an accepted alias). Only what-if simulation is available; every non-formula node needs a `baseline` and every probabilistic edge an explicit prior. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
 
@@ -327,6 +340,15 @@ provider:
   type: dbt                     # was: local
   project_path: /path/to/dbt    # unchanged
 ```
+
+Credentials, target and warehouse all come from the project's own
+`profiles.yml`, so there is nothing else to configure. You do need the driver
+for your adapter — the same one your dbt adapter already depends on, which is
+why it is not bundled: `bigquery` (`metric-breakdown[bigquery]`), `databricks`
+(`metric-breakdown[databricks]`), `duckdb`, `psycopg2-binary` for Postgres, or
+`snowflake-connector-python`. On BigQuery the profile's `method` is honoured —
+`oauth` (Application Default Credentials), `service-account`, and
+`service-account-json`.
 
 **It is not a drop-in for every tree.** `local` hands a metric name to
 MetricFlow, which plans the SQL, so it serves things the `dbt` provider refuses
@@ -517,6 +539,30 @@ Metrics have different natural time grains: signups are daily events, a cohort c
 **Windows snap per node.** RCA windows stay day-resolution dates in the API; each node interprets them as the whole periods fully inside. A node whose window holds no whole period reports `"status": "window_shorter_than_grain"` instead of failing the RCA, and every node reports its `grain` and `effective_windows`. Windows that snap to a single period suppress the bootstrap CI (`ci_status: "degenerate_single_period"`) rather than reporting a falsely-precise interval.
 
 **Warehouse SQL contract per grain.** The SQL owns the aggregation: return one row per period at the declared grain, labeled by period start. **Interior** gaps are filled by kind — flow → 0, stock → forward-fill (a gap before the first period is an error), rate → any missing period is an error. **Trailing** gaps are trimmed, not filled: periods after the last row the SQL returned are treated as not-yet-loaded, so a lagging mart ends the series early instead of manufacturing zeros at the tail. (A query returning no rows at all keeps the full zero spine for flows — an all-quiet window is legitimate.)
+
+**Rates over true-zero periods.** A seasonal business has stretches where the
+denominator is genuinely zero — nothing on sale, no sessions, no sends — and a
+rate is undefined there rather than low. Because a missing rate period is an
+error and a rate can never be invented, do not fetch such a metric as a rate.
+Declare the numerator and denominator as their own `flow` nodes, which fill to
+zero honestly, and make the rate a `formula` node over them:
+
+```yaml
+- name: orders            # flow: 0 in the dark window is a fact
+  source: my.metrics.orders
+- name: sessions          # flow
+  source: my.metrics.sessions
+- name: conversion_rate   # derived, not fetched
+  kind: rate
+  formula: "orders / sessions"
+  parents: [orders, sessions]
+```
+
+This also buys exact Shapley attribution on the rate, and it keeps the dark
+window visible as what it was — no traffic — instead of an error or an invented
+number. Coarsening the grain until every period has a denominator is the other
+option, and the worse one: it throws away resolution everywhere to fix a
+problem that exists in a few windows.
 
 **Data freshness.** Each metric's true data edge is tracked as it is fetched and exposed as `data_through` in `GET /meta` — the inclusive last date its last observed period covers. When sources disagree (one mart lags the others), the UI anchors every card's headline number, delta, and sparkline at the tree-wide edge via the **As of** selector (toolbar), which defaults to the oldest `data_through` across metrics and counts only periods *fully completed* by that date — so a calendar week the data edge cuts in half never becomes a headline number. The one case this cannot catch is a partially loaded most-recent period (the mart wrote *some* rows for it): detecting that needs load-completeness metadata on the mart side.
 
