@@ -984,3 +984,128 @@ metrics:
 """
     with pytest.raises(ValueError, match="counted column"):
         Parser(tree)
+
+
+# --- the `tree:` block (roadmap 2.16) --------------------------------------
+
+_GOAL_TREE = """
+tree:
+  title: "Q3 Pro member growth"
+  description: "200 net-new paying Pro members by Sep 30"
+  owner: "growth@acme.com"
+  period: "2026-Q3"
+  goal:
+    metric: pro_members_net_new
+    target: 200
+    deadline: "2026-09-30"
+
+metrics:
+  - name: pro_members_net_new
+    source: w.pro_members_net_new
+"""
+
+
+def test_tree_block_parses():
+    meta = Parser(_GOAL_TREE).config.tree
+    assert meta.title == "Q3 Pro member growth"
+    assert meta.owner == "growth@acme.com"
+    assert meta.period == "2026-Q3"
+    assert meta.goal.metric == "pro_members_net_new"
+    assert meta.goal.target == 200
+
+
+def test_tree_block_is_optional():
+    """A tree with no `tree:` block is exactly as valid as it was before the
+    block existed — there is no migration."""
+    tree = """
+metrics:
+  - name: dau
+    source: w.dau
+"""
+    assert Parser(tree).config.tree is None
+
+
+def test_every_tree_field_is_optional():
+    tree = """
+tree:
+  title: "The business"
+
+metrics:
+  - name: dau
+    source: w.dau
+"""
+    meta = Parser(tree).config.tree
+    assert meta.title == "The business"
+    assert meta.goal is None and meta.owner is None and meta.period is None
+
+
+def test_goal_metric_must_exist_in_the_tree():
+    tree = """
+tree:
+  goal: {metric: not_a_metric, target: 10}
+
+metrics:
+  - name: dau
+    source: w.dau
+"""
+    with pytest.raises(ValueError, match="not a metric in this tree"):
+        Parser(tree)
+
+
+def test_goal_direction_defaults_from_the_metric():
+    tree = """
+tree:
+  goal: {metric: support_tickets, target: 100}
+
+metrics:
+  - name: support_tickets
+    source: w.tickets
+    direction: down_is_good
+"""
+    assert Parser(tree).config.tree.goal.direction == "down"
+
+
+def test_goal_direction_defaults_to_up_when_the_metric_is_silent():
+    assert Parser(_GOAL_TREE).config.tree.goal.direction == "up"
+
+
+def test_goal_direction_disagreeing_with_the_metric_is_an_error():
+    tree = """
+tree:
+  goal: {metric: support_tickets, target: 100, direction: up}
+
+metrics:
+  - name: support_tickets
+    source: w.tickets
+    direction: down_is_good
+"""
+    with pytest.raises(ValueError, match="disagree about which way is winning"):
+        Parser(tree)
+
+
+def test_goal_on_a_neutral_metric_must_state_its_direction():
+    tree = """
+tree:
+  goal: {metric: headcount, target: 100}
+
+metrics:
+  - name: headcount
+    source: w.headcount
+    direction: neutral
+"""
+    with pytest.raises(ValueError, match="no goal direction can be inferred"):
+        Parser(tree)
+    assert Parser(tree.replace("target: 100", "target: 100, direction: up")).config.tree.goal
+
+
+def test_goal_deadline_must_be_a_date():
+    tree = """
+tree:
+  goal: {metric: dau, target: 10, deadline: "Q3"}
+
+metrics:
+  - name: dau
+    source: w.dau
+"""
+    with pytest.raises(ValueError, match="deadline must be a YYYY-MM-DD date"):
+        Parser(tree)
