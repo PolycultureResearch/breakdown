@@ -195,6 +195,122 @@ function setContext(chips) {
     .join("");
 }
 
+/* ---------- inline help ----------
+
+   breakdown asks a business user to read posteriors, so the UI has to teach a
+   little as it goes rather than assume the vocabulary. Two mechanisms, and the
+   split matters: a **control note** is always visible and says what the current
+   setting concretely does ("500 × 4 chains = 2,000 draws"); a **hint** is the ⓘ
+   the reader opens when they want the why. Explanations live here, but anything
+   with real depth links to docs/model.md rather than forking its prose — the
+   doc is the thing kept true.
+
+   `body` may be a function so a hint can read the current control state; that
+   is why `draws` can describe two genuinely different meanings. */
+const DOC = "https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md";
+
+const HINTS = {
+  method: {
+    title: "ADVI vs NUTS",
+    body: () => `
+      <p><strong>NUTS</strong> is exact MCMC: it walks the posterior and, given
+      enough draws, converges on the true shape. It is the slower one — a minute
+      or more per metric is normal — and it is the only method that reports
+      convergence diagnostics (R̂, divergences, effective sample size).</p>
+      <p><strong>ADVI</strong> fits a simpler stand-in distribution by
+      optimization. Seconds instead of minutes, but it is an approximation:
+      mean-field ADVI assumes the parameters are independent, so it tends to
+      <em>understate</em> uncertainty — intervals come out too narrow.</p>
+      <p>Explore with ADVI; quote NUTS.</p>`,
+  },
+  draws: {
+    title: "What the draws number does",
+    body: () => {
+      const nuts = $("an-method") && $("an-method").value === "nuts";
+      return nuts
+        ? `<p>Posterior draws to keep <strong>per chain</strong>, after 1,000
+           tuning steps that are discarded. The engine runs 4 chains, so 500
+           here means 2,000 draws behind every interval you see.</p>
+           <p>More draws mean less Monte-Carlo noise in the estimate — the
+           interval settles rather than shifts between runs. Cost is linear:
+           double the draws, double the wait. If R̂ says the fit converged, more
+           draws refine it; they cannot repair a fit that did not.</p>`
+        : `<p>Samples taken <strong>from the already-fitted approximation</strong>.
+           The ADVI optimization itself is a fixed 20,000 steps and this number
+           does not change it.</p>
+           <p>So raising it here does <strong>not</strong> make the answer more
+           accurate — it only smooths the summary statistics, and it is nearly
+           free. If you want a better answer rather than a smoother one, switch
+           to NUTS.</p>`;
+    },
+  },
+  beta: {
+    title: "Reading a coefficient",
+    body: () => `
+      <p>β is in <strong>business units</strong>: holding the other parents
+      fixed, a one-unit rise in the parent moves this metric by about β.</p>
+      <p>It is a posterior mean, not a measurement — the interval beside it is
+      the honest part of the answer.</p>`,
+    more: `${DOC}#reading-coefficients-beta-vs-beta_raw`,
+  },
+  hdi: {
+    title: "Reading a 95% interval",
+    body: () => `
+      <p>Given the model and the data, 95% of the posterior for this parameter
+      lies inside this interval — the plain-English reading a confidence
+      interval famously does not permit.</p>
+      <p>If the interval <strong>straddles zero</strong>, the data has not
+      resolved even the direction of the effect. Treat that parent as unproven
+      rather than as having no effect.</p>`,
+  },
+  diagnostics: {
+    title: "Is this fit trustworthy?",
+    body: () => `
+      <p><strong>R̂</strong> compares the chains against each other. At 1.00 they
+      agree; the engine flags anything above 1.05. Below ~1.01 is healthy.</p>
+      <p><strong>Divergences</strong> are steps the sampler could not take
+      accurately — a handful is tolerable, and the engine flags more than 1% of
+      draws. <strong>ESS</strong> is how many independent draws the correlated
+      ones are worth; under 100 gets flagged.</p>
+      <p>These are MCMC diagnostics, so an ADVI fit has none. That is not a
+      clean bill of health — it is the absence of a check.</p>`,
+    more: `${DOC}#what-gets-fitted`,
+  },
+};
+
+/* The ⓘ button. Pair each with a `hintSlot(id)` where the panel should open —
+   explicit placement beats guessing at a container from the DOM. */
+function hintHTML(id) {
+  return `<button type="button" class="hint" data-hint="${id}" aria-expanded="false"
+    title="${esc(HINTS[id].title)}" aria-label="${esc(HINTS[id].title)}">ⓘ</button>`;
+}
+
+function hintSlot(id) {
+  return `<div class="hint-slot" data-hint-slot="${id}"></div>`;
+}
+
+/* One delegated listener for every hint in the app, bound once — the sidebar
+   tabs are re-rendered wholesale, so per-button listeners would leak on every
+   node click. */
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".hint");
+  if (!btn) return;
+  const id = btn.dataset.hint;
+  const slot = document.querySelector(`[data-hint-slot="${id}"]`);
+  if (!slot || !HINTS[id]) return;
+  const open = btn.getAttribute("aria-expanded") === "true";
+  btn.setAttribute("aria-expanded", open ? "false" : "true");
+  if (open) {
+    slot.innerHTML = "";
+    return;
+  }
+  const h = HINTS[id];
+  const more = h.more
+    ? `<p><a href="${h.more}" target="_blank" rel="noopener">Read more in the model doc →</a></p>`
+    : "";
+  slot.innerHTML = `<div class="hint-panel">${h.body()}${more}</div>`;
+});
+
 /* ---------- date / window helpers (UTC to match ISO strings) ---------- */
 
 const DAY_MS = 86400000;
@@ -1634,13 +1750,22 @@ function renderMetricTab(name, data) {
     <section>
       <h3>Analyze</h3>
       <div class="analyze-row">
+        <label for="an-method">Method</label>
         <select id="an-method">
-          <option value="advi">ADVI (fast)</option>
-          <option value="nuts">NUTS (accurate)</option>
+          <option value="advi">ADVI — fast, approximate</option>
+          <option value="nuts">NUTS — slow, exact</option>
         </select>
+        ${hintHTML("method")}
+      </div>
+      ${hintSlot("method")}
+      <div class="analyze-row">
+        <label for="an-draws">Draws</label>
         <input type="number" id="an-draws" value="500" min="50" max="5000" step="50">
+        ${hintHTML("draws")}
         <button id="an-run" class="primary">Run</button>
       </div>
+      <p class="control-note" id="an-draws-note"></p>
+      ${hintSlot("draws")}
       <div class="inline-status" id="an-status"></div>
     </section>
   `;
@@ -1650,7 +1775,34 @@ function renderMetricTab(name, data) {
   renderTimeSeries(name, data.time_series);
   renderPosterior(name, data);
   $("an-run").addEventListener("click", () => runAnalyze(name));
+  wireAnalyzeNote();
   wireNodeVariant(name);
+}
+
+/* "500 of what?" answered in the place the question gets asked, without a
+   click. The two methods spend the number on completely different things, so
+   the note is rebuilt whenever either control changes — and an open `draws`
+   hint is re-rendered with it, since its text is method-dependent too. */
+function wireAnalyzeNote() {
+  const method = $("an-method"), draws = $("an-draws"), note = $("an-draws-note");
+  if (!method || !draws || !note) return;
+  const paint = () => {
+    const n = Math.max(0, parseInt(draws.value, 10) || 0);
+    note.textContent =
+      method.value === "nuts"
+        ? `${n.toLocaleString()} × 4 chains, after 1,000 discarded tuning steps `
+          + `— ${(n * 4).toLocaleString()} posterior draws. Expect a minute or more.`
+        : `20,000 optimization steps, then ${n.toLocaleString()} samples drawn `
+          + `from the fitted approximation. Seconds.`;
+    const openHint = document.querySelector('.hint[data-hint="draws"][aria-expanded="true"]');
+    if (openHint) {
+      const slot = document.querySelector('[data-hint-slot="draws"]');
+      if (slot) slot.innerHTML = `<div class="hint-panel">${HINTS.draws.body()}</div>`;
+    }
+  };
+  method.addEventListener("change", paint);
+  draws.addEventListener("input", paint);
+  paint();
 }
 
 /* Per-node card-variant override, set from the Metric tab. Empty value clears
@@ -1735,10 +1887,15 @@ function renderPosterior(name, data) {
   }
 
   const coefTable = rows
-    ? `<table class="data-table">
-         <tr><th>Parent</th><th class="num">β (raw units)</th><th class="num">95% HDI</th></tr>
+    ? `<p class="table-caption">Holding the other parents fixed, a one-unit rise
+         in the parent moves ${esc(name)} by about β. ${hintHTML("beta")}</p>
+       ${hintSlot("beta")}
+       <table class="data-table">
+         <tr><th>Parent</th><th class="num">β (raw units)</th>
+             <th class="num">95% HDI ${hintHTML("hdi")}</th></tr>
          ${rows}
-       </table>`
+       </table>
+       ${hintSlot("hdi")}`
     : `<p style="color:var(--muted);font-size:12.5px;margin:4px 0">
          ${def.formula ? "Formula node — the structural relationship is exact; the model fits the residual." : "No causal parents — trend and seasonality only."}</p>`;
 
@@ -1747,14 +1904,34 @@ function renderPosterior(name, data) {
     .map((w) => `<p class="sign-warning">⚠ ${esc(w)}</p>`)
     .join("");
 
-  // diagnostics: worst r_hat across all parameters (NUTS only; ADVI has none)
-  let diag = "";
+  // Diagnostics. These are MCMC-only, so an ADVI fit renders no numbers — but
+  // it used to render *nothing at all*, which reads as "no problems found"
+  // when it actually means "not checked". Say which one it is: the absence of
+  // a convergence check is itself something the reader needs to know (UC4).
+  const dx = data.diagnostics || {};
   const rhats = Object.values(summary.r_hat || {}).filter((v) => v !== null && !Number.isNaN(v));
+  const bits = [];
   if (rhats.length) {
     const worst = Math.max(...rhats);
     const cls = worst < 1.05 ? "ok" : "warn";
-    const note = worst < 1.05 ? "converged" : "check convergence";
-    diag = `<div class="diag">max R̂ = <span class="${cls}">${worst.toFixed(3)}</span> (${note})</div>`;
+    // "R̂" ends in a combining circumflex, which eats a following plain space;
+    // the explicit "=" keeps the number from colliding with the glyph.
+    bits.push(`max R̂ = <span class="${cls}">${worst.toFixed(3)}</span> `
+      + `(${worst < 1.01 ? "chains agree" : worst < 1.05 ? "acceptable" : "check convergence"})`);
+  }
+  if (typeof dx.divergences === "number") {
+    bits.push(`${dx.divergences} divergence${dx.divergences === 1 ? "" : "s"}`);
+  }
+  if (typeof dx.min_ess_bulk === "number" && Number.isFinite(dx.min_ess_bulk)) {
+    bits.push(`min ESS ${Math.round(dx.min_ess_bulk).toLocaleString()}`);
+  }
+  let diag = "";
+  if (bits.length) {
+    diag = `<div class="diag">${bits.join(" · ")} ${hintHTML("diagnostics")}</div>${hintSlot("diagnostics")}`;
+  } else if (dx.method === "advi") {
+    diag = `<div class="diag">ADVI approximation — <span class="warn">no convergence
+      diagnostics</span>; R̂, divergences and ESS are MCMC-only. Re-run with NUTS to
+      check the fit. ${hintHTML("diagnostics")}</div>${hintSlot("diagnostics")}`;
   }
 
   // full raw summary behind a collapsible

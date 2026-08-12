@@ -516,7 +516,18 @@ details { margin-top: 10px; }
 details summary { font-size: 12px; color: var(--muted); cursor: pointer; }
 details .data-table { margin-top: 8px; }
 
-.analyze-row { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+.analyze-row { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+.analyze-row label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  width: 48px;
+  flex-shrink: 0;
+}
+.analyze-row select { flex: 1; min-width: 0; }
+.analyze-row #an-run { margin-left: auto; }
+.table-caption { font-size: 11.5px; color: var(--muted); line-height: 1.45; margin: 0 0 6px; }
 .inline-status { font-size: 12px; color: var(--muted); margin-top: 8px; }
 .inline-status.error { color: var(--down); }
 
@@ -650,6 +661,46 @@ button.chip.active { background: var(--accent-soft); color: var(--accent); borde
   line-height: 1.4;
 }
 .sign-flag { color: var(--warn-ink); cursor: help; }
+
+/* ---------- Inline help ----------
+   A `title=` tooltip is undiscoverable and dead on touch, and a floating
+   popover needs positioning code this file doesn't otherwise need. So: a quiet
+   ⓘ that expands an inline panel into a slot the caller placed. Same idiom as
+   the <details> blocks already here, but anchored to one control. */
+.hint {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--faint);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.hint:hover, .hint[aria-expanded="true"] { color: var(--accent); background: none; }
+.hint-panel {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  background: var(--chip-bg);
+  border-left: 2px solid var(--border);
+  border-radius: 0 4px 4px 0;
+  padding: 7px 10px;
+  margin: 6px 0 2px;
+}
+.hint-panel p { margin: 0 0 6px; }
+.hint-panel p:last-child { margin-bottom: 0; }
+.hint-panel strong { color: var(--text-2); }
+.hint-panel code { background: var(--panel); padding: 1px 4px; border-radius: 3px; }
+.hint-panel a { color: var(--accent); }
+
+/* Always-visible one-liner under a control: what the current setting costs. */
+.control-note {
+  font-size: 11.5px;
+  color: var(--faint);
+  margin: 3px 0 0;
+  font-variant-numeric: tabular-nums;
+}
 
 .attr-head { display: flex; align-items: center; justify-content: space-between; }
 .rca-view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }

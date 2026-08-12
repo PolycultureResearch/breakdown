@@ -145,7 +145,26 @@ A `provider: none` tree has no data, so the UI boots **what-if-first** over decl
 
 ## Metric tab
 
-Name + type chip (Source / Probabilistic / Formula) + fitted chip. Description, source path, grain + kind row, parents (with lag badges in grain steps — `lag Nd` for daily nodes, `lag N week(s)` etc. for coarser). Time series chart (Plotly line, ~200px) with the reference window shaded gray and the analysis window shaded indigo whenever RCA windows are set. If fitted: coefficient table (parent, `beta_raw` mean, 95% HDI) mapped from `beta_raw[i]` by parent order, small diagnostics line (max R-hat, `sigma_obs`), and the full ArviZ summary behind `<details>`. Analyze controls: method (ADVI default — fast; NUTS for accuracy), draws, run button with inline busy state.
+Name + type chip (Source / Probabilistic / Formula) + fitted chip. Description, source path, grain + kind row, parents (with lag badges in grain steps — `lag Nd` for daily nodes, `lag N week(s)` etc. for coarser). Time series chart (Plotly line, ~200px) with the reference window shaded gray and the analysis window shaded indigo whenever RCA windows are set.
+
+If fitted: a caption stating how to read a coefficient, then the table (parent, `beta_raw` mean, 95% HDI) mapped from `beta_raw[i]` by parent order, then the diagnostics line, then the full ArviZ summary behind `<details>`.
+
+**Diagnostics say which case they are in.** NUTS renders `max R̂ … · N divergences · min ESS …` — the same three quantities `_nuts_diagnostics` thresholds on, so the UI and the engine's `fit_quality` agree about what matters. An ADVI fit renders **"ADVI approximation — no convergence diagnostics"** rather than the empty string it used to: R̂/divergences/ESS are MCMC-only, and rendering nothing reads as *"no problems found"* when it means *"not checked"*. That distinction is UC4's whole job.
+
+**Analyze controls** are `Method` (ADVI default) and `Draws`, both labelled — the number was previously a bare box, and it does not mean the same thing twice over. A `.control-note` under it always shows what the current setting costs: NUTS → `500 × 4 chains, after 1,000 discarded tuning steps — 2,000 posterior draws`; ADVI → `20,000 optimization steps, then 500 samples drawn from the fitted approximation`. The ADVI wording is the load-bearing one: `pm.fit(n=20_000)` is fixed, so `draws` only samples the *already-fitted* approximation and raising it buys smoothness, not accuracy. Anyone reading the control as "more = better" is wrong in exactly that case.
+
+### Inline help (`HINTS` / `hintHTML` / `hintSlot`)
+
+The product asks a business user to read posteriors, so the UI teaches as it goes. Two mechanisms, and the split is deliberate:
+
+- A **control note** is always visible and states what the current setting concretely does. No interaction, no discovery problem.
+- A **hint** is a quiet `ⓘ` that expands an inline `.hint-panel` into a slot the caller placed with `hintSlot(id)`. Explicit placement rather than walking up the DOM for a container; inline expansion rather than a floating popover, which would need positioning code this file otherwise doesn't have. `title=` was rejected outright — undiscoverable, and dead on touch.
+
+`HINTS[id].body` is a **function**, so a hint can read live control state: this is why `draws` describes two different meanings, and why `wireAnalyzeNote()` re-renders an open `draws` panel when the method changes. Entries carry an optional `more` link into `docs/model.md` — explanations short enough to answer the question live here, but anything with real depth links out rather than forking the doc's prose, since the doc is the copy kept true.
+
+One **delegated** click listener handles every hint in the app, bound once at module scope. Per-button listeners would leak on every node click, since the sidebar tabs are re-rendered wholesale rather than mutated.
+
+Current hints: `method` (ADVI vs NUTS, and that ADVI's mean-field assumption understates uncertainty), `draws`, `beta`, `hdi` (including that an interval straddling zero means *unproven*, not *no effect*), `diagnostics`.
 
 ## Tech choices
 
