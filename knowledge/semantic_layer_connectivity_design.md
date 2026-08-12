@@ -260,9 +260,23 @@ Two rules follow:
 
 ### 5.2 Metric coverage ladder
 
-v1 covers **simple + ratio + derived-without-offset + filters** — roughly 80% of
-real trees. Then `join_to_timespine`, derived offset windows, and cumulative
-(`window` and `grain_to_date`), each of which needs a time-spine join.
+v1 covers **simple + ratio + derived-without-offset**. Then `join_to_timespine`,
+derived offset windows, and cumulative (`window` and `grain_to_date`), each of
+which needs a time-spine join.
+
+**Corrected 2026-08-12.** This paragraph said v1 covered "**+ filters** — roughly
+80% of real trees", and that was never true: `BindingSpec` has no filter field,
+the manifest models didn't declare `filter`, and unknown keys are ignored — so a
+filtered metric translated *filterless* and served the whole relation under the
+governed metric's name, without appearing in `skipped`
+([C15](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend)).
+Filtered metrics are now **refused** by name. The 80% figure is the right
+estimate of how much of a real tree filters touch, which is why it now sizes
+[2.17](roadmap.md#horizon-2--make-it-repeatable-a-stranger-can-onboard) — real
+`where:` support on the binding — rather than describing something shipped. The
+lesson generalises past this row: a coverage ladder is a claim about *behaviour*,
+and writing a rung before the code has one is how a silent wrong number gets
+documented as a feature.
 
 **Out of scope, with an explicit unsupported diagnostic rather than an
 approximation:** `conversion` metrics (four stages — UUID tagging, a non-equi

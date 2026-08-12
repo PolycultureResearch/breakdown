@@ -12,13 +12,26 @@ Snapshotting is deliberately failure-soft: an unwritable directory (e.g. a
 read-only /config mount in a container) logs one warning and the app runs
 uncached, and a provider outage is survivable when every metric in the tree
 already has a snapshot.
+
+A snapshot is only as good as the question that produced it, so each record
+also carries a `definition_sha` — a fingerprint of the provider-side
+definition that determines the values (the `warehouse` metric's own `sql:`,
+the `dbt` node's binding). The window, grain and kind are in the filename;
+the definition is not, and without the fingerprint editing a metric's SQL to
+exclude refunds and restarting would serve the refund-including numbers
+forever (roadmap C16). Worse, `query_provenance` would then show the *new*
+statement beside the *old* number, so the one panel that exists to let a
+reader verify a number would certify a wrong one. Comparing the sha on read
+and refetching on a mismatch repairs both: a hit can only be served when the
+statement that would be shown is the statement that produced it.
 """
 
 import datetime
+import hashlib
 import json
 import logging
 import os
-from typing import Optional
+from typing import Any, Optional
 
 import pandas as pd
 
@@ -28,13 +41,92 @@ logger = logging.getLogger(__name__)
 
 MANIFEST = "manifest.json"
 
+# Attributes on a provider that hold its per-metric definitions, keyed by the
+# same name the snapshot store is keyed by (`provider_query_name`): the
+# `warehouse` fetcher's `metric_sql`, the `dbt` fetcher's `bindings`. The
+# semantic-layer providers (`local`, `cloud`) hand a metric *name* to someone
+# else's planner and hold no definition at all — for them the fingerprint is
+# legitimately None, not a failure.
+#
+# A provider that carries its definition somewhere else should implement
+# `snapshot_definition(metric_name) -> str | None`, which is checked first and
+# is the intended extension point; this tuple is the fallback for the two
+# providers that predate it.
+_DEFINITION_ATTRS = ("metric_sql", "bindings")
+
+
+def definition_sha(fetcher: BaseDataFetcher, metric_name: str) -> Optional[str]:
+    """Fingerprint of what `fetcher` would ask for `metric_name`, or None when
+    the provider has no per-metric definition to fingerprint.
+
+    Deliberately *not* derived from `query_provenance`: for the `dbt` provider
+    that string is generated per window and prefers the statement that last
+    ran, so the same binding fingerprints differently depending on which
+    windows this process happened to fetch — which would turn every hit into a
+    miss. The definition itself is window-independent, which is what the
+    sliced path needs too (`read_sliced` serves any stored window that covers
+    the request, so its fingerprint cannot mention a window).
+    """
+    hook = getattr(fetcher, "snapshot_definition", None)
+    if callable(hook):
+        text = hook(metric_name)
+    else:
+        text = None
+        for attr in _DEFINITION_ATTRS:
+            definitions = getattr(fetcher, attr, None)
+            if isinstance(definitions, dict) and metric_name in definitions:
+                text = _definition_text(definitions[metric_name])
+                break
+    if not text:
+        return None
+    # 64 bits: collision-free for any plausible number of snapshots, and short
+    # enough that a human scanning manifest.json can compare two by eye.
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _definition_text(value: Any) -> Optional[str]:
+    """Canonical text for one definition.
+
+    Only `.strip()` is normalized away. Collapsing interior whitespace would
+    make a reformat cheap, but it cannot tell whitespace inside a string
+    literal from whitespace between tokens, and hashing two genuinely
+    different queries to the same value serves a stale number silently — the
+    exact failure this fingerprint exists to prevent. A needless refetch costs
+    one query; a false hit costs a wrong answer nobody can see is wrong.
+
+    Pydantic models (`BindingSpec`) serialize by field order rather than by
+    the YAML author's key order, so re-ordering keys in a `bind:` block is
+    free where re-ordering SQL is not.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip() or None
+    dump = getattr(value, "model_dump_json", None)
+    if callable(dump):
+        return str(dump())
+    # Unknown definition object: `repr` may be unstable across processes, so
+    # this degrades to refetching every startup. Never to a false hit.
+    return repr(value)
+
 
 class SnapshotStore:
     """One parquet file per (metric, grain, kind, window), plus a manifest
-    recording provenance (provider, fetch time, row count) for humans."""
+    recording provenance (provider, fetch time, row count, definition sha).
+
+    The manifest is not only documentation: `definition_sha` is compared on
+    every read, and a file whose definition has moved on is refused rather
+    than served (roadmap C16)."""
 
     def __init__(self, directory: str):
         self.directory = directory
+        # Parsed manifest, loaded once. Only this process writes it during a
+        # run, and `_record` keeps the cache in step, so re-reading it once per
+        # metric on a cold start buys nothing.
+        self._manifest_cache: Optional[dict] = None
+        # Files already warned about, so an unverifiable snapshot re-read on
+        # every RCA does not repeat itself into noise.
+        self._warned: set[str] = set()
 
     def _filename(self, metric: str, start: str, end: str, grain: str, kind: str) -> str:
         return f"{metric}__{grain}-{kind}__{start}__{end}.parquet"
@@ -45,17 +137,33 @@ class SnapshotStore:
         return f"{metric}__by-{dimension}__{grain}-{kind}__{start}__{end}.parquet"
 
     def read(
-        self, metric: str, start: str, end: str, grain: str, kind: str
+        self,
+        metric: str,
+        start: str,
+        end: str,
+        grain: str,
+        kind: str,
+        definition_sha: Optional[str] = None,
     ) -> Optional[pd.DataFrame]:
-        path = os.path.join(self.directory, self._filename(metric, start, end, grain, kind))
+        filename = self._filename(metric, start, end, grain, kind)
+        path = os.path.join(self.directory, filename)
         if not os.path.isfile(path):
+            return None
+        if not self._definition_matches(filename, metric, definition_sha):
             return None
         df = pd.read_parquet(path)
         df["date"] = pd.to_datetime(df["date"])
         return df
 
     def read_sliced(
-        self, metric: str, dimension: str, start: str, end: str, grain: str, kind: str
+        self,
+        metric: str,
+        dimension: str,
+        start: str,
+        end: str,
+        grain: str,
+        kind: str,
+        definition_sha: Optional[str] = None,
     ) -> Optional[pd.DataFrame]:
         """Return a sliced frame covering [start, end], trimmed from any stored
         window that contains it.
@@ -64,9 +172,15 @@ class SnapshotStore:
         frames are fetched per analysis, so keying on the requested window would
         only ever serve the windows someone happened to snapshot — anyone
         picking their own dates would fall through to the provider. Storing the
-        widest window once and trimming makes every sub-window a hit."""
+        widest window once and trimming makes every sub-window a hit.
+
+        The definition is checked per candidate, exactly as in `read`: the
+        binding that produces a sliced frame is the same binding that produces
+        the unsliced series, so an edited `bind:` block must invalidate both."""
         for path, s, e in self._sliced_candidates(metric, dimension, grain, kind):
             if s <= start and e >= end:
+                if not self._definition_matches(os.path.basename(path), metric, definition_sha):
+                    continue
                 df = pd.read_parquet(path)
                 df["date"] = pd.to_datetime(df["date"])
                 window = df[(df["date"] >= start) & (df["date"] <= end)]
@@ -101,11 +215,12 @@ class SnapshotStore:
         kind: str,
         df: pd.DataFrame,
         provider: str,
+        definition_sha: Optional[str] = None,
     ) -> None:
         os.makedirs(self.directory, exist_ok=True)
         filename = self._filename(metric, start, end, grain, kind)
         df.to_parquet(os.path.join(self.directory, filename), index=False)
-        self._record(filename, provider, len(df))
+        self._record(filename, provider, len(df), definition_sha)
 
     def write_sliced(
         self,
@@ -117,28 +232,98 @@ class SnapshotStore:
         kind: str,
         df: pd.DataFrame,
         provider: str,
+        definition_sha: Optional[str] = None,
     ) -> None:
         os.makedirs(self.directory, exist_ok=True)
         filename = self._sliced_filename(metric, dimension, start, end, grain, kind)
         df.to_parquet(os.path.join(self.directory, filename), index=False)
-        self._record(filename, provider, len(df))
+        self._record(filename, provider, len(df), definition_sha)
 
-    def _record(self, filename: str, provider: str, rows: int) -> None:
+    def _manifest(self) -> dict:
+        """The parsed manifest, or `{}` when there isn't a readable one.
+
+        Unreadable is not fatal: a snapshot dir can be a read-only mount, and
+        losing the manifest must cost verification, never the data."""
+        if self._manifest_cache is None:
+            self._manifest_cache = self._read_manifest()
+        return self._manifest_cache
+
+    def _read_manifest(self) -> dict:
         path = os.path.join(self.directory, MANIFEST)
-        manifest = {}
-        if os.path.isfile(path):
-            try:
-                with open(path) as f:
-                    manifest = json.load(f)
-            except (OSError, json.JSONDecodeError):
-                manifest = {}
+        if not os.path.isfile(path):
+            return {}
+        try:
+            with open(path) as f:
+                loaded = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+    def _definition_matches(
+        self, filename: str, metric: str, definition_sha: Optional[str]
+    ) -> bool:
+        """Whether this file may be served for the current definition.
+
+        Three cases, and the middle one is the judgement call:
+
+        * The record carries a `definition_sha` — serve iff it is the same one.
+          A mismatch (including `null` vs a sha, i.e. the provider gained a
+          definition we can fingerprint) means the values on disk answer a
+          question nobody is asking any more.
+        * The record predates fingerprinting, or there is no record. Refusing
+          would break every snapshot dir written before this change, including
+          the committed ones a partner repo re-runs RCAs from and the
+          snapshot-only deployments that have no provider to refetch from —
+          the cure would be worse than the disease. So serve it, but say so:
+          silence is what made C16 a trap. One `BREAKDOWN_REFRESH=1` pass
+          rewrites the dir with fingerprints and the warning stops.
+        * There is nothing to fingerprint (`local`/`cloud` hold no per-metric
+          definition) — nothing to warn about either, then or now.
+        """
+        record = self._manifest().get(filename)
+        if not isinstance(record, dict) or "definition_sha" not in record:
+            if definition_sha is not None and filename not in self._warned:
+                self._warned.add(filename)
+                logger.warning(
+                    "snapshot %s predates definition fingerprinting, so it cannot be "
+                    "checked against the current definition of '%s'; serving it as-is. "
+                    "If you have edited its sql:/bind: since it was written, re-run with "
+                    "BREAKDOWN_REFRESH=1 to refetch and stamp it.",
+                    filename,
+                    metric,
+                )
+            return True
+        stored = record.get("definition_sha")
+        if stored == definition_sha:
+            return True
+        logger.warning(
+            "snapshot ignored: the definition behind '%s' changed since %s was written "
+            "(%s -> %s); refetching so the number and the query it is defended by agree.",
+            metric,
+            filename,
+            stored,
+            definition_sha,
+        )
+        return False
+
+    def _record(
+        self, filename: str, provider: str, rows: int, definition_sha: Optional[str] = None
+    ) -> None:
+        path = os.path.join(self.directory, MANIFEST)
+        # Re-read rather than trusting the cache: another process (a `doctor`
+        # run beside a live server) may own entries this one has never seen,
+        # and the manifest is a merge, not a snapshot of one process's beliefs.
+        manifest = self._read_manifest()
         manifest[filename] = {
             "provider": provider,
             "fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "rows": rows,
+            "definition_sha": definition_sha,
         }
         with open(path, "w") as f:
             json.dump(manifest, f, indent=2, sort_keys=True)
+        self._manifest_cache = manifest
+        self._warned.discard(filename)
 
 
 class SnapshotFetcher(BaseDataFetcher):
@@ -168,6 +353,12 @@ class SnapshotFetcher(BaseDataFetcher):
         that would produce the series is still what defends the number: the
         binding determines it exactly whether or not it executed just now. The
         caller labels which of the two it got.
+
+        What makes that argument sound rather than merely hopeful is the
+        definition sha: a snapshot whose definition has moved on is refused,
+        so the series being defended here was produced by the definition this
+        statement is generated from. Without that check the panel showed the
+        edited query beside the pre-edit number (roadmap C16).
         """
         return self.inner.query_provenance(metric_name, dimension_source, **kw)
 
@@ -188,6 +379,15 @@ class SnapshotFetcher(BaseDataFetcher):
         # it — which is what lets a snapshot-only deployment answer slice
         # questions nobody anticipated.
         self.slice_span = slice_span
+        # metric -> definition sha, memoized: a provider's definitions are
+        # loaded config and cannot change under a running process, and the dbt
+        # binding dump is not free to re-serialize once per RCA fetch.
+        self._sha_cache: dict[str, Optional[str]] = {}
+
+    def _definition_sha(self, metric_name: str) -> Optional[str]:
+        if metric_name not in self._sha_cache:
+            self._sha_cache[metric_name] = definition_sha(self.inner, metric_name)
+        return self._sha_cache[metric_name]
 
     def fetch_metric(
         self,
@@ -197,8 +397,12 @@ class SnapshotFetcher(BaseDataFetcher):
         grain: str = "day",
         kind: str = "flow",
     ) -> pd.DataFrame:
+        # Computed once per call, before the fetch, and used for both the
+        # compare and the write, so a hit and the record it would be stored
+        # under can never disagree about what the definition was.
+        sha = self._definition_sha(metric_name)
         if not self.refresh:
-            df = self.store.read(metric_name, start_date, end_date, grain, kind)
+            df = self.store.read(metric_name, start_date, end_date, grain, kind, sha)
             if df is not None:
                 logger.info(
                     "snapshot hit: %s [%s, %s] %s", metric_name, start_date, end_date, grain
@@ -215,6 +419,7 @@ class SnapshotFetcher(BaseDataFetcher):
                 kind,
                 df,
                 provider=type(self.inner).__name__,
+                definition_sha=sha,
             )
             logger.info(
                 "snapshot written: %s [%s, %s] %s", metric_name, start_date, end_date, grain
@@ -237,9 +442,10 @@ class SnapshotFetcher(BaseDataFetcher):
         grain: str = "day",
         kind: str = "flow",
     ) -> pd.DataFrame:
+        sha = self._definition_sha(metric_name)
         if not self.refresh:
             df = self.store.read_sliced(
-                metric_name, dimension_source, start_date, end_date, grain, kind
+                metric_name, dimension_source, start_date, end_date, grain, kind, sha
             )
             if df is not None:
                 logger.info(
@@ -271,6 +477,7 @@ class SnapshotFetcher(BaseDataFetcher):
                 kind,
                 df,
                 provider=type(self.inner).__name__,
+                definition_sha=sha,
             )
             logger.info(
                 "sliced snapshot written: %s by %s [%s, %s] %s",

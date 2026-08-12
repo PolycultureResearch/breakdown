@@ -125,7 +125,7 @@ The correlated jaffle-shop dataset used by tests lives in `tests/synthetic.py` (
 
 ### `snapshots.py` — `SnapshotStore` + `SnapshotFetcher`
 
-A read-through cache **at the `BaseDataFetcher` boundary**: `SnapshotFetcher` wraps the real fetcher; a hit returns the stored frame without touching the provider, a miss fetches, writes, and returns. One parquet file per `(metric, grain, kind, window)` plus a human-facing `manifest.json` (provider class, fetched_at, rows). Wiring lives in `api/main.py:_wrap_snapshots`, called in `lifespan` after `_build_fetcher`: mock is never wrapped; directory = `BREAKDOWN_SNAPSHOT_DIR` (`"off"` disables) or tree-adjacent `.breakdown/snapshots`; `BREAKDOWN_REFRESH=1` skips reads but still writes (one forced refetch pass). Failure-soft by design: an unwritable directory logs one warning and serves uncached (`/config` is read-only in the container, so `compose.yaml` mounts `./snapshots` and points `BREAKDOWN_SNAPSHOT_DIR` at it). Snapshots capture the **normalized** post-gap-fill frame, so what refits is byte-identical to what was originally served — and a tree whose metrics all have snapshots boots with the warehouse down. The doctor deliberately bypasses snapshots (it constructs raw fetchers) — its job is proving the provider path.
+A read-through cache **at the `BaseDataFetcher` boundary**: `SnapshotFetcher` wraps the real fetcher; a hit returns the stored frame without touching the provider, a miss fetches, writes, and returns. One parquet file per `(metric, grain, kind, window)` plus a human-facing `manifest.json` (provider class, fetched_at, rows, **`definition_sha`**). That last field is roadmap C16: the filename keys on the *window*, and the per-metric `sql:`/`bind:` block that actually determines the values was in neither the name nor the record, so editing a query to exclude refunds and restarting served the pre-edit numbers forever — while `query_provenance`, delegated straight through, displayed the *new* statement beside them. `definition_sha` is compared on read and a mismatch warns and refetches, so a hit can only be served when the statement that would be shown is the statement that produced it. It fingerprints the definition itself (window-independent, which the sliced path requires) rather than `query_provenance`, whose dbt output is generated per window and would turn every hit into a miss. Records written before the field existed are **served with one warning per file** naming `BREAKDOWN_REFRESH=1` — refusing them would break every committed snapshot dir and every snapshot-only deployment, which have no provider to refetch from; the sin in C16 was the silence, not the serving. Wiring lives in `api/main.py:_wrap_snapshots`, called in `lifespan` after `_build_fetcher`: mock is never wrapped; directory = `BREAKDOWN_SNAPSHOT_DIR` (`"off"` disables) or tree-adjacent `.breakdown/snapshots`; `BREAKDOWN_REFRESH=1` skips reads but still writes (one forced refetch pass). Failure-soft by design: an unwritable directory logs one warning and serves uncached (`/config` is read-only in the container, so `compose.yaml` mounts `./snapshots` and points `BREAKDOWN_SNAPSHOT_DIR` at it). Snapshots capture the **normalized** post-gap-fill frame, so what refits is byte-identical to what was originally served — and a tree whose metrics all have snapshots boots with the warehouse down. The doctor deliberately bypasses snapshots (it constructs raw fetchers) — its job is proving the provider path.
 
 ---
 
@@ -194,6 +194,29 @@ additive decomposition (`min`/`max`/`median`/`percentile`), `cumulative` and
 per grain window, so it is query-grain-dependent), offset inputs, models with no
 primary entity (nothing to assert the grain against), and granularities coarser
 than `month`.
+
+**`filter`, `join_to_timespine` and `fill_nulls_with` are refused too, and that
+refusal is a fix rather than a limitation** (roadmap C15). Until 2026-08-12 the
+manifest models didn't declare these fields and `_Node` sets
+`extra: "ignore"`, so a filtered dbt metric translated into a *filterless*
+`BindingSpec`, never appeared in `skipped`, and served the whole relation under
+the governed metric's name — with `doctor` green, because the grain assertion
+sees one row per grain key either way. `BindingSpec` cannot express a filter at
+all, so refusing by name is the only correct behaviour available; real `where:`
+support is [2.17](../../knowledge/roadmap.md).
+
+Three things about the check are easy to get wrong and are pinned by tests:
+
+- **`fill_nulls_with: 0` is falsy.** A truthiness test would let through the
+  single most common value; the check is `is not None`.
+- **An empty filter intersection is truthy.** `{"where_filters": []}` is a legal
+  serialisation of *no filter* and a Pydantic model is truthy whatever it holds,
+  so refusal keys on a non-empty predicate, not on the object.
+- **dbt writes these in four places** — `metric.filter`, `type_params`, the
+  measure input, and each metric input — depending on spec version and whether
+  the manifest has been through dbt's flattening transform (which merges a
+  measure input's filter up onto `metric.filter` while leaving the input
+  carrying it). All four are checked; checking one is how the defect survived.
 
 Ships in the `dbt-bridge` extra (`metricflow`, `sqlglot`) — deliberately *not*
 the `dbt` extra, since it needs neither dbt-core, an adapter, nor the `mf`

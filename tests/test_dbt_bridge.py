@@ -176,6 +176,107 @@ def test_non_additive_dimension_is_skipped_because_it_depends_on_query_grain():
     assert "per grain window" in r.skipped[0].reason
 
 
+def _filter(*predicates):
+    """dbt's canonical serialisation of a `filter:`."""
+    return {"where_filters": [{"where_sql_template": p} for p in predicates]}
+
+
+def test_filtered_simple_metric_is_refused_rather_than_served_unfiltered():
+    # The C15 failure: `BindingSpec` has no filter clause, so translating this
+    # metric binds the *whole* relation under the governed metric's name — a
+    # larger, plausible number that `doctor` cannot catch, because the grain
+    # assertion still sees one row per grain key.
+    metric = _classic()
+    metric["filter"] = _filter("{{ Dimension('order__is_paid') }}")
+    r = translate(_manifest([_model()], [metric]))
+    assert not r.bindings
+    reason = r.skipped[0].reason
+    assert "`filter`" in reason
+    assert "{{ Dimension('order__is_paid') }}" in reason
+    assert "unfiltered measure" in reason
+
+
+def test_a_filter_on_the_measure_input_is_refused_the_same_way():
+    # Classic spec puts the filter on the measure input; dbt's flattening
+    # transform lifts it to the metric. Manifests exist in both states.
+    metric = _classic()
+    metric["type_params"]["measure"]["filter"] = _filter("amount > 0")
+    r = translate(_manifest([_model()], [metric]))
+    assert not r.bindings
+    assert "its measure input declares a `filter` (amount > 0)" in r.skipped[0].reason
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "amount > 0",
+        {"where_sql_template": "amount > 0"},
+        ["amount > 0"],
+        {"where_filters": [{"where_sql_template": "amount > 0"}]},
+    ],
+)
+def test_every_serialisation_a_filter_has_ever_had_is_recognised(shape):
+    # MetricFlow has accepted all four and normalises them on parse; manifests
+    # written by older dbt versions still carry the legacy ones. A shape we did
+    # not recognise would parse as *no filter*, which is the whole failure.
+    metric = _classic()
+    metric["filter"] = shape
+    r = translate(_manifest([_model()], [metric]))
+    assert not r.bindings
+    assert "declares a `filter` (amount > 0)" in r.skipped[0].reason
+
+
+def test_an_empty_filter_intersection_is_not_a_filter():
+    # A pydantic model is truthy whatever it holds, so a truthiness check here
+    # would refuse metrics that have no filter at all.
+    metric = _classic()
+    metric["filter"] = {"where_filters": []}
+    r = translate(_manifest([_model()], [metric]))
+    assert "revenue" in r.bindings and not r.skipped
+
+
+@pytest.mark.parametrize("fill", [0, 5])
+def test_fill_nulls_with_is_refused_including_the_falsy_zero(fill):
+    # `fill_nulls_with: 0` is both the commonest value and falsy: a truthiness
+    # check would let the most common case straight through.
+    r = translate(_manifest([_model(measures=())], [_new_spec("revenue")]))
+    assert r.bindings  # same metric without the flag translates
+    metric = _new_spec("revenue")
+    metric["type_params"]["fill_nulls_with"] = fill
+    r = translate(_manifest([_model(measures=())], [metric]))
+    assert not r.bindings
+    assert f"`fill_nulls_with: {fill}`" in r.skipped[0].reason
+    assert "gap-fills from the node's `kind`" in r.skipped[0].reason
+
+
+def test_fill_nulls_with_on_the_measure_input_is_refused_too():
+    metric = _classic()
+    metric["type_params"]["measure"]["fill_nulls_with"] = 0
+    r = translate(_manifest([_model()], [metric]))
+    assert not r.bindings
+    assert "its measure input declares `fill_nulls_with: 0`" in r.skipped[0].reason
+
+
+def test_join_to_timespine_is_refused_because_the_empty_periods_are_the_analysis():
+    metric = _classic()
+    metric["type_params"]["measure"]["join_to_timespine"] = True
+    r = translate(_manifest([_model()], [metric]))
+    assert not r.bindings
+    assert "`join_to_timespine`" in r.skipped[0].reason
+    assert "time spine" in r.skipped[0].reason
+
+
+def test_a_measure_alias_is_not_a_reason_to_refuse_a_simple_metric():
+    # `alias` renames the column after aggregation; unlike its neighbours on
+    # the same object it changes no number, so refusing on it would cost real
+    # metrics for nothing. (A derived metric's input alias is still refused —
+    # there the name is what the expression references.)
+    metric = _classic()
+    metric["type_params"]["measure"]["alias"] = "rev"
+    r = translate(_manifest([_model()], [metric]))
+    assert r.bindings["revenue"].measure == "amount"
+
+
 def test_model_without_a_primary_entity_cannot_have_its_grain_asserted():
     models = [_model(entities=({"name": "cust", "type": "foreign", "expr": "customer_id"},))]
     r = translate(_manifest(models, [_classic()]))
@@ -272,6 +373,50 @@ def test_ratio_becomes_a_formula_edge_over_two_bound_metrics():
     f = r.formulas["signup_rate"]
     assert (f.formula, f.parents) == ("signups / sessions", ("signups", "sessions"))
     assert r.kinds["signup_rate"] == "rate"
+
+
+@pytest.mark.parametrize("side", ["numerator", "denominator"])
+def test_ratio_with_a_filtered_side_is_refused(side):
+    # `signups (US only) / sessions` becomes the formula `signups / sessions`,
+    # which references the metrics *by name* and so carries no scope: the edge
+    # would silently be over the unfiltered signups.
+    models = [
+        _model(
+            measures=(
+                {"name": "signups", "agg": "sum", "expr": "1"},
+                {"name": "sessions", "agg": "sum", "expr": "1"},
+            )
+        )
+    ]
+    ratio = _ratio("signup_rate", "signups", "sessions")
+    ratio["type_params"][side]["filter"] = _filter("{{ Dimension('order__region') }} = 'US'")
+    r = translate(_manifest(models, [ratio]))
+    assert not r.formulas
+    skipped = {s.name: s.reason for s in r.skipped}
+    assert f"its {side} declares a `filter`" in skipped["signup_rate"]
+    assert "'US'" in skipped["signup_rate"]
+
+
+def test_a_ratio_metrics_own_filter_is_refused():
+    ratio = _ratio("signup_rate", "signups", "sessions")
+    ratio["filter"] = _filter("region = 'US'")
+    r = translate(_manifest([_model()], [ratio]))
+    assert not r.formulas
+    assert "declares a `filter` (region = 'US')" in r.skipped[0].reason
+
+
+def test_derived_metric_with_a_filtered_input_is_refused():
+    metric = {
+        "name": "arr",
+        "type": "derived",
+        "type_params": {
+            "expr": "mrr * 12",
+            "metrics": [{"name": "mrr", "filter": _filter("plan = 'pro'")}],
+        },
+    }
+    r = translate(_manifest([_model()], [metric]))
+    assert not r.formulas
+    assert "its input metric 'mrr' declares a `filter` (plan = 'pro')" in r.skipped[0].reason
 
 
 def test_derived_metric_becomes_a_formula_edge():

@@ -24,7 +24,10 @@ dev-only differential oracle.
 What this module deliberately does not do is guess. Every metric it cannot
 translate exactly comes back in `BridgeResult.skipped` with a reason naming the
 construct, because a metric breakdown cannot express correctly must fail with
-its name attached rather than produce a plausible number.
+its name attached rather than produce a plausible number. The sharpest case is
+`filter`: a binding has no filter clause, so a filtered metric that translated
+would fetch the *unfiltered* measure under the governed metric's name — larger,
+plausible, and green in `doctor`. See `_unsupported_semantics`.
 """
 
 import json
@@ -245,6 +248,95 @@ def _measure_source(
     return None, None, None, None
 
 
+def _filter_sql(intersection: Any) -> Optional[str]:
+    """The predicate text of a `filter:`, or None when there is not one.
+
+    Not truthiness: an intersection of zero filters is a legal serialisation of
+    "no filter", and a pydantic model is truthy whatever it holds — so
+    `if metric.filter` would refuse metrics that are perfectly translatable.
+    """
+    predicates = getattr(intersection, "predicates", None)
+    return " AND ".join(predicates) if predicates else None
+
+
+def _filter_reason(where: str, sql: str) -> str:
+    return (
+        f"{where}declares a `filter` ({sql}), which narrows it to a subset of "
+        "the relation; neither a breakdown binding nor a formula edge can carry "
+        "a filter, so translating it would aggregate the unfiltered measure and "
+        "serve a larger number under this metric's governed name"
+    )
+
+
+def _unsupported_semantics(metric: Any) -> Optional[str]:
+    """Why `metric` must be refused outright, or None if nothing forbids it.
+
+    Three MetricFlow constructs change *which rows* or *which periods* a metric
+    covers, and `BindingSpec` can express none of them:
+
+    - `filter` — the single most common way a real dbt metric narrows a
+      measure. Dropping it is not a degraded translation but a different
+      number, served under the governed metric's name, with `doctor` still
+      green because the grain assertion sees one row per grain key either way.
+    - `join_to_timespine` / `fill_nulls_with` — what the metric reports for
+      periods its measure has no rows in. breakdown fills gaps from the node's
+      `kind`, which is its own rule and agrees with dbt's only by coincidence.
+
+    dbt writes them in four places (metric, `type_params`, the measure input,
+    and each metric input) depending on spec version and whether the manifest
+    has been through dbt's flattening transform, so all four are checked. Real
+    `where:` support on `BindingSpec` is a separate, much larger item; until it
+    exists, refusing by name is the only correct behaviour available.
+    """
+    tp = metric.type_params
+
+    sql = _filter_sql(getattr(metric, "filter", None))
+    if sql is not None:
+        return _filter_reason("", sql)
+
+    # `type_params` (new spec) and the measure input (classic spec) carry the
+    # same two flags; dbt lifts the latter to the former when it flattens.
+    for holder, where in ((tp, ""), (getattr(tp, "measure", None), "its measure input ")):
+        if holder is None:
+            continue
+        if getattr(holder, "join_to_timespine", False):
+            return (
+                f"{where}declares `join_to_timespine`, which emits a row for every "
+                "period in dbt's time spine rather than only the periods the "
+                "measure has rows in; that join is not built here, so the series "
+                "would differ from the governed metric at exactly the empty "
+                "periods a gap analysis is about"
+            )
+        # `fill_nulls_with: 0` is both the commonest value and falsy, so this
+        # tests presence rather than truth.
+        fill = getattr(holder, "fill_nulls_with", None)
+        if fill is not None:
+            return (
+                f"{where}declares `fill_nulls_with: {fill}`, which substitutes a "
+                "value on every period the measure has no rows in; breakdown "
+                "gap-fills from the node's `kind` instead of from a value on the "
+                "metric, so the two agree only by coincidence and would differ at "
+                "exactly the periods the flag exists to control"
+            )
+
+    measure_sql = _filter_sql(getattr(getattr(tp, "measure", None), "filter", None))
+    if measure_sql is not None:
+        return _filter_reason("its measure input ", measure_sql)
+
+    # A ratio's sides and a derived metric's inputs are references to other
+    # metrics, and a filter on one re-scopes that side alone — `signups (US
+    # only) / sessions`. Both become formula edges over the metrics *by name*,
+    # which carries no scope, so the edge would silently be the unfiltered one.
+    inputs = [
+        (f"its {side} ", getattr(tp, side, None)) for side in ("numerator", "denominator")
+    ] + [(f"its input metric '{i.name}' ", i) for i in (tp.metrics or [])]
+    for where, ref in inputs:
+        ref_sql = _filter_sql(getattr(ref, "filter", None))
+        if ref_sql is not None:
+            return _filter_reason(where, ref_sql)
+    return None
+
+
 def _translate_simple(manifest: Any, metric: Any, result: BridgeResult) -> None:
     name = metric.name
     model, agg, column, agg_time = _measure_source(manifest, metric)
@@ -431,6 +523,17 @@ def translate(manifest: SemanticManifest) -> BridgeResult:
         if getattr(metric.type_params, "is_private", False):
             continue
         kind = metric.type
+        if kind in ("simple", "ratio", "derived"):
+            # Checked before the per-type translators, because every one of
+            # them would otherwise succeed: a filter or a spine fill leaves a
+            # metric that looks perfectly translatable and simply means
+            # something narrower than what the translation says. The types
+            # below are refused for their own, more fundamental reasons, so
+            # they keep theirs.
+            unsupported = _unsupported_semantics(metric)
+            if unsupported is not None:
+                result.skip(metric.name, unsupported)
+                continue
         if kind == "simple":
             _translate_simple(manifest, metric, result)
         elif kind == "ratio":
