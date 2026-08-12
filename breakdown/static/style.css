@@ -890,3 +890,98 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   color: var(--muted);
   margin-bottom: 0.3rem;
 }
+
+/* ---------- Tree index (roadmap 2.16) ----------
+   The landing view when this process serves more than one tree. It is the goal
+   owner's whole surface — a persona who may never open a tree — so it reads as
+   a page of documents rather than a control panel: paper ground, white cards,
+   the same quiet defaults as the canvas. */
+#index {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px 32px 48px;
+  background: var(--bg);
+}
+.index-head h1 {
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.3px;
+  margin: 0 0 4px;
+}
+.index-head p { font-size: 13px; margin: 0 0 24px; }
+.index-group h2 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  margin: 0 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.index-group { margin-bottom: 30px; }
+.tree-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
+  gap: 14px;
+}
+.tree-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tree-card.errored { border-color: var(--down-border); background: var(--down-soft); }
+.tree-card h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.tree-open {
+  font: inherit; font-size: 15px; font-weight: 600; color: var(--text);
+  background: none; border: 0; padding: 0; cursor: pointer; text-align: left;
+}
+.tree-open:hover:not(:disabled) { color: var(--accent); }
+.tree-open:disabled { cursor: default; color: var(--down-ink); }
+.tree-desc { margin: 0; font-size: 13px; color: var(--text-2); line-height: 1.45; }
+.tree-meta, .tree-plain { margin: 0; font-size: 12px; }
+.tree-error { margin: 0; font-size: 12px; color: var(--down-ink); line-height: 1.45; }
+
+/* A goal's progress. The bar is the only place on the index where a number is
+   drawn rather than written, so it stays subordinate to the figures under it. */
+.goal-bar {
+  height: 6px; border-radius: 3px; background: var(--track);
+  overflow: hidden; margin-top: 6px;
+}
+.goal-fill { display: block; height: 100%; border-radius: 3px; background: var(--up); }
+.goal-fill.down { background: var(--accent); }
+.goal-row { font-size: 15px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.goal-target, .goal-asof { font-size: 12.5px; color: var(--muted); font-weight: 400; }
+.goal-dash { color: var(--faint); font-size: 18px; }
+/* Derived and uncertain, so visibly softer than anything the engine computed —
+   otherwise it reads as a forecast the engine never made. */
+.goal-pace { margin: 2px 0 0; font-size: 11.5px; font-style: italic; }
+
+.tree-actions {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin-top: auto; padding-top: 8px;
+}
+.tree-state {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--muted);
+}
+.tree-state.loaded { color: var(--up); }
+.tree-state.error { color: var(--down-ink); }
+.tree-load {
+  font: inherit; font-size: 12px; padding: 3px 10px; cursor: pointer;
+  background: var(--panel); color: var(--accent);
+  border: 1px solid var(--border); border-radius: 4px;
+}
+.tree-load:hover:not(:disabled) { background: var(--accent-soft); }
+.tree-load:disabled { color: var(--muted); cursor: default; }
+
+/* On the index the header's tree-scoped controls have nothing to point at. */
+body.index-view #target-select,
+body.index-view .control-group,
+body.index-view #share-wrap { display: none; }
+.brand.clickable { cursor: pointer; }
+.brand.clickable:hover span { color: var(--text); }
