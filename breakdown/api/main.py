@@ -690,9 +690,10 @@ async def health(request: Request):
     state = request.app.state
     if state.startup_error is not None:
         return {"status": "degraded", "error": state.startup_error}
+    # A parse failure sets `load_error`, which `startup_error` reads, so
+    # reaching here means the default tree parsed — its provider and metric
+    # count are known whether or not its data has been fetched yet.
     parser = state.parser
-    if parser is None:  # discovered and parsed, not yet loaded
-        return {"status": "ok", "provider": None, "metrics": 0}
     return {
         "status": "ok",
         "provider": parser.config.provider.type,
