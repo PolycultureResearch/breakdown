@@ -116,6 +116,8 @@ Runs each metric's own `sql` against Databricks SQL. The SQL owns the aggregatio
 ### `LocalDataFetcher`
 Invokes `mf query --metrics <name> --group-by metric_time__<grain> --start-time ... --end-time ... --csv <tmpfile>` as a subprocess. `project_path` becomes the working directory. Raises `RuntimeError` on non-zero exit code or OS errors (e.g., path not found), and `MissingProviderExtra` when `mf` is not on `PATH` — a `PATH` check rather than an import check, because `uv tool install dbt-metricflow` satisfies this provider just as well as the `dbt` extra.
 
+A metric matching **no rows** is not an error here. `mf` writes a zero-byte file — not even a header — and `pd.read_csv` raises `EmptyDataError`, so `_run_mf_query` catches it and synthesizes the empty frame with the columns the callers expect (from `group_by` plus the metric name). That is a fix, not a special case: `_align_to_spine` has always specified the behavior ("a source returning no rows at all keeps the full fill for flows"), and every other provider reaches it because their drivers return an empty result *with* its schema. Only the CSV round-trip loses the columns. The warning matters — an all-quiet window and a filter that silently matches nothing are indistinguishable from here, which is the same reasoning as the interior gap-fill warning.
+
 ### `CloudDataFetcher`
 Uses the `dbtsl.SemanticLayerClient` sync API; the Arrow result is converted to pandas and the `metric_time__<grain>` column renamed to `date`.
 
@@ -260,11 +262,31 @@ profile's target from `profiles.yml` (searching `profiles_dir` →
 `$DBT_PROFILES_DIR` → the project dir → `~/.dbt`). It renders `env_var()` and
 **refuses any other Jinja** rather than passing a template through to a driver,
 because `{{ var('x') }}` arriving as a literal password fails unreadably.
-Connectors are one function per adapter (`databricks`, `duckdb`, `postgres`,
-`snowflake`), each importing its driver lazily and naming the package to
-install — breakdown ships no warehouse drivers of its own beyond the existing
-`databricks` extra, since the driver a user needs is the one their dbt adapter
-already depends on.
+Connectors are one function per adapter (`bigquery`, `databricks`, `duckdb`,
+`postgres`, `snowflake`), each importing its driver lazily and naming the package
+to install — breakdown ships no warehouse drivers of its own beyond the
+`databricks` and `bigquery` extras, since the driver a user needs is the one
+their dbt adapter already depends on.
+
+**`CONNECTORS` and `ADAPTER_DIALECTS` are separate maps, and the gap between
+them is a real failure mode.** A dialect entry only means the *generator* emits
+correct SQL for that warehouse; without a connector nothing can run it, and the
+user is told to bind by hand and pick another provider. BigQuery sat in exactly
+that gap from 2.10 until 2026-08-11 — correct SQL, including the ISOWEEK week
+override, with no way to execute it — which pushed BigQuery shops onto `local`
+and its `mf` subprocess. Redshift, Spark, Trino, Athena and ClickHouse are still
+there. When adding one, add both halves or say which is missing.
+
+BigQuery is the one adapter whose credential is selected by a profile `method`
+rather than carried in fixed fields: `oauth` leaves `credentials=None` so the
+driver finds Application Default Credentials itself, and the two service-account
+methods differ only in whether the key is a path or inline. An unrecognized
+method raises instead of falling back to ADC — quietly authenticating as
+whoever the environment happens to be is worse than stopping. It connects
+through `google.cloud.bigquery.dbapi` rather than the native client API so the
+cursor satisfies `_frame` like every other connector; BigQuery populates
+`cursor.description` from the result *schema*, so a zero-row result still
+carries its columns and reaches `_align_to_spine` intact.
 
 `fetch_metric_sliced` builds `[date, slice, value]` **directly** rather than via
 `_sliced_long`, which finds its date column by looking for `metric_time` — a

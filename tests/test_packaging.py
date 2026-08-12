@@ -67,7 +67,7 @@ def test_the_duplicated_dbt_deps_in_all_match_the_dbt_extra():
 
 
 def test_extras_that_work_on_314_are_not_marked():
-    # `databricks` and `dbt-bridge` install on 3.14; marking them would deny
-    # them to the users who can actually use them.
+    # `bigquery`, `databricks` and `dbt-bridge` install on 3.14; marking them
+    # would deny them to the users who can actually use them.
     unmarked = [d for d in _extras()["all"] if "python_version" not in d]
-    assert unmarked == ["metric-breakdown[databricks,dbt-bridge]"]
+    assert unmarked == ["metric-breakdown[bigquery,databricks,dbt-bridge]"]

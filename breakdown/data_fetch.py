@@ -526,7 +526,27 @@ class LocalDataFetcher(BaseDataFetcher):
                 raise RuntimeError(
                     f"mf query failed for metric '{metric_name}':\n{result.stderr.strip()}"
                 )
-            return pd.read_csv(tmp_path)
+            try:
+                return pd.read_csv(tmp_path)
+            except pd.errors.EmptyDataError:
+                # `mf` writes a zero-byte file — not even a header — when the
+                # metric's filter matches no rows in the window. That is an
+                # ordinary state for a seasonal business (a product stream that
+                # has not gone on sale yet), and `_align_to_spine` already knows
+                # what to do with it: "a source returning no rows at all keeps
+                # the full fill for flows". Hand it the empty frame with the
+                # columns it expects so it can, instead of dying on the way.
+                # Warned rather than silent, on the same reasoning as the
+                # interior gap-fill: an all-quiet window and a filter that
+                # matches nothing look identical from here.
+                logger.warning(
+                    "Metric '%s' returned no rows for [%s, %s]; treating the "
+                    "window as empty (a flow fills to zero, a rate still errors).",
+                    metric_name,
+                    start_date,
+                    end_date,
+                )
+                return pd.DataFrame({c: [] for c in [*group_by.split(","), metric_name]})
         finally:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)

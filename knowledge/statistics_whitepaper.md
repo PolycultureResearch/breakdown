@@ -3,7 +3,7 @@
 **A white paper on the models behind Bayesian metric trees, why each was chosen,
 and where each one stops being trustworthy.**
 
-> **Written:** 2026-08-04 · **Last updated:** 2026-08-08 ·
+> **Written:** 2026-08-04 · **Last updated:** 2026-08-11 ·
 > **Engine version:** 0.1.0
 >
 > **This is a living document.** The assessment in §3 and the improvements in §4
@@ -871,6 +871,9 @@ attenuated bootstrap would just relocate the error.
 | S15 | Multiplicity and selection-aware reporting | ○ open |
 | S16 | Forward-simulation variance in the trend interval | ○ open |
 | S17 | Rebuild the calibration suite's coverage test | ○ open |
+| S18 | Right-censored metrics — series whose past values restate | ○ open |
+| S19 | Partial pooling across a repeated-cycle grouping | ○ open |
+| S20 | Zero-inflated and count likelihoods | ○ open |
 | 3.4 | Counterfactual RCA (Horizon 3, not the S track) | ○ open |
 
 Below, the reasoning behind each — ordered by value per unit of effort.
@@ -990,6 +993,45 @@ specific edge (`response: log` on ad spend → conversions) would cover the most
 common nonlinearity without opening the door to arbitrary model complexity.
 This fits the MVP-first posture: one named transform, not a modeling language.
 
+**Three gaps the seasonal, event-clocked business exposes** — `S18`, `S19`,
+`S20`, all ○ open. Grouped because they were found together, in one external
+deployment (a music festival, 2026-08-11) whose shape inverts most of what the
+engine's own reference tree assumes: one product cycle a year, five editions of
+history in total, months-long true-zero windows between cycles, and revenue that
+restates backwards as payment plans settle.
+
+*Right-censored metrics* (`S18`) is the one with no statistical content and the
+widest reach. The engine assumes a fetched series is final. A metric whose past
+values change — settlement, late-arriving conversions, refunds, chargebacks —
+violates that silently, and because the snapshot cache keys on
+`(metric, grain, kind, window)` with no content hash, a refit reproduces the
+first fetch rather than the warehouse. There is no way to declare that a number
+is provisional, so today the only defense is authoring discipline: fit a basis
+that never restates, and keep the restating one as a reporting leaf rather than
+an RCA target. That is now written down, which is what makes this a disclosed
+limitation rather than a trap.
+
+*Partial pooling across cycles* (`S19`) is the thin-panel case, and it is worth
+being precise about why it is not the pooling this paper already declined. `S15`
+rejected pooling `beta_raw` **across a node's parents**: they are heterogeneous
+quantities in different units, and shrinking them toward a common mean has no
+substantive justification. Pooling a single node's coefficient **across repeated
+instances of its own cycle** is the opposite situation — the instances are the
+same quantity measured again, which is the textbook justification for a
+hierarchical prior. With five observations, complete pooling and no pooling are
+both defensible and partial pooling is almost certainly better than either; the
+engine currently offers only the second.
+
+*Zero-inflated and count likelihoods* (`S20`) follows from the dark windows. The
+observation model is Gaussian everywhere, and a Gaussian fit to a series that is
+exactly zero for a third of its length puts posterior mass on negative counts
+and mis-states the variance in the periods that are real. Note that the same
+series also triggers `C4`, and the two are genuinely separate: `C4` is a
+degenerate *bootstrap* over a constant window, this is a misspecified
+*likelihood*. Fixing either alone leaves the other in place — which is the
+useful lesson, because the symptom (an implausibly tight interval on a spiky,
+mostly-zero parent) looks identical from the outside.
+
 ### 4.3 Explainability
 
 These do not add rigor; they add the ability to *see* it, which is often what
@@ -1031,6 +1073,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-08-11 | **An outside deployment on a shape this paper had not considered** — a music festival: one product cycle a year, five editions of history, a demand clock in days-to-event, months-long true-zero windows, and revenue that restates backwards. §4 gained `S18` (right-censored metrics), `S19` (partial pooling across cycles) and `S20` (zero-inflated/count likelihoods), with a §4.2 entry explaining why `S19` is not the pooling `S15` declined — S15's objection was to pooling across a node's *heterogeneous parents*, which does not apply to pooling one node's coefficient across repeated instances of its own cycle. No weakness changed status and none was added: `C4`'s degenerate-bootstrap failure was **confirmed in production** rather than newly found, on a parent held identically at zero across a whole reference window, and the roadmap row now records the measured instance. Worth logging that the deployment's own workarounds were sound — an expected-pacing *regressor* is the correct encoding of a non-repeating event clock, not a second-best one, since this engine's seasonality is Fourier in integer time and therefore strictly periodic. |
 | 2026-08-08 | **C10 shipped** — no weakness changed status, but §3.2 #6 (parent collinearity) and #7 (the coverage test) each made a factual claim that C10 falsified: both cited the reference tree as containing a live collinear structure. It was removed there rather than preserved as a specimen, since that file is the one new authors copy — so #6 now records that the structure *was* there and how easily it was authored, and #7 records that S17's collinear fixture has to be built rather than borrowed. The diagnostic itself is still missing; nothing about the engine's statistical position improved. |
 | 2026-08-05 | **C3 shipped** — no text changed. §2.3 already claimed that contributions "sum to the true gap exactly" and that `unexplained` on a formula node is "measurement residual only"; that was true of `GET /shapley` and false of what RCA published, which reported a bootstrap mean of a nonlinear decomposition instead. The code now matches the paper rather than the paper being softened to match the code. Logged because a reader comparing editions should be able to see that this section's meaning changed even though its words did not. |
 | 2026-08-05 | **C1/C2 shipped** — the two provider-boundary correctness defects are fixed, and §3.3 now says so, including what to re-run. Every provider shares one date-alignment contract (tz coercion, period spine, trailing trim, kind-aware interior fill). No §3.2 weakness changed status: neither defect was ever a numbered statistical weakness, which is exactly why §3.3 had to carry them. |
