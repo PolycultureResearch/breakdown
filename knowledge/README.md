@@ -51,6 +51,16 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
   (roadmap 1.10): why the reference is not the training window, and why "all
   history" is the wrong reference
 - [`what_if_design.md`](what_if_design.md) — what-if simulation design spec
+- [`multi_tree_design.md`](multi_tree_design.md) — **designed, not built**
+  (roadmap 2.16): serving many metric trees from one process, framed around a
+  tree per company goal per quarter. The optional `tree:` block (title, owner,
+  period, goal) and why every field is optional; filename-stem ids and
+  directory discovery; the `TreeState` refactor, per-tree locks and the
+  global trace cap; lazy loading, and why the index says *not loaded* rather
+  than showing a blank that reads as zero; tree-scoped routes with the current
+  paths aliased so nothing existing breaks. Records the three decisions taken
+  with their rejected alternatives, and the open questions (archiving a goal
+  tree after its deadline, grouping by `period` vs `deadline`)
 - [`grain_design.md`](grain_design.md) — per-node aggregation grain (roadmap
   1.7): decisions and contracts for `grain`/`kind`, resample-up, window
   snapping, and the two-level attribution view

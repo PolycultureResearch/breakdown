@@ -244,7 +244,7 @@ still changing.
 
 Start the server and open `http://localhost:9090/ui`. Breakdown fetches every metric's series from the provider at startup, so the first load takes a few seconds. The steps below use the bundled default `breakdown/examples/jaffle_shop_tree.yml` and its `2024-01-01`–`2024-04-09` window; substitute your own target and dates. The header date pickers are bounded to the loaded `--start-date`/`--end-date` window.
 
-**1. Inspect a metric — and fit its model.** Click any node in the graph to open the **Metric** tab (right sidebar) with its time series. Nodes that have a probabilistic parent (e.g. `order_count`) show an **Analyze** section: pick **ADVI (fast)** or **NUTS (accurate)** and click **Run** to fit the BSTS. The posterior — trend, seasonality, and the `beta` / `beta_raw` coefficient on each parent — fills in, and the node picks up the "fitted" tint. Leaf and formula nodes just show their series.
+**1. Inspect a metric — and fit its model.** Click any node in the graph to open the **Metric** tab (right sidebar) with its time series. Nodes that have a probabilistic parent (e.g. `order_count`) show an **Analyze** section: pick **ADVI — fast, approximate** or **NUTS — slow, exact** and click **Run** to fit the BSTS. Both controls are labelled, a line under the draws box says what the current setting actually costs, and the `ⓘ` beside each expands a short explanation (with a link into [docs/model.md](docs/model.md) where it goes deeper). The posterior — trend, seasonality, and the `beta` / `beta_raw` coefficient on each parent — fills in, and the node picks up the "fitted" tint. Leaf and formula nodes just show their series.
 
 **2. Run a root-cause analysis.** Choose a **Target** in the header bar, then open the **Root cause** tab and pick the **Analysis** window — the period you want explained — from a preset (Last 7 days, Last 14 days, Last full week) or the date pair. The **Reference** fills itself with the matched adjacent block (marked **auto**) and stays editable: touch it and it becomes custom; the auto chip restores it. The model doesn't train on the reference — it trains on *all* loaded history before the analysis window (each node's result says exactly what it was fitted on) — so the reference is only the baseline the gap is measured against. Click **Run RCA**: breakdown auto-fits any upstream probabilistic models it needs and paints the result on the graph — nodes tinted by direction of change, edges weighted by each parent's share of the explained gap, and a ranked cause list with credible intervals. **Copy link** yields a shareable `#rca=…` URL carrying the resolved windows; **Clear** resets.
 
@@ -707,7 +707,7 @@ Query parameters:
 | Param | Default | Description |
 |-------|---------|-------------|
 | `inference_method` | `nuts` | `nuts` (full MCMC) or `advi` (variational inference — faster, less accurate) |
-| `draws` | `500` | Posterior samples to draw |
+| `draws` | `500` | Posterior draws — but it buys different things per method. Under `nuts` it is draws **per chain** after `tune` discarded steps, so 500 × 4 chains = 2,000 draws, and more of them tighten the Monte-Carlo error. Under `advi` the optimization is a fixed 20,000 steps regardless, and this only sets how many samples are drawn **from the already-fitted approximation** — more is nearly free and does not make the answer more accurate. |
 | `tune` | `500` | Tuning steps (NUTS only) |
 | `chains` | `4` | Number of NUTS chains (NUTS only) |
 | `fit_end` | none | Exclusive date cutoff (`YYYY-MM-DD`): fit only on rows before it. Defaults to the full window; pass the analysis-window start to reproduce what RCA fits. |
@@ -854,6 +854,26 @@ Every contribution is reported as an `estimate` (mean), a 95% interval (`ci_95`)
 Unfitted probabilistic nodes in scope are fit with ADVI on demand — on data strictly before the analysis window — and cached, so the endpoint works without a prior `/analyze` call. `ranked_causes` is a documented heuristic that propagates an influence score from the target up the ancestor tree (weighting each hop by the parent's clamped share of its child's gap); use it as a triage ordering.
 
 See [docs/model.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md) for how to read `components`, `unexplained`, and the bootstrap's assumptions.
+
+### `GET /progress/{run_id}` — live progress
+
+RCA and simulation can spend a minute or more fitting ancestor models. Pass any
+opaque `run_id` you like to `POST /rca/{name}` or `POST /simulate` and poll this
+endpoint while the request is in flight to see what the engine is actually doing:
+
+```bash
+curl -X POST "http://localhost:9090/rca/revenue?analysis_start=2024-04-03&analysis_end=2024-04-09&run_id=abc123" &
+curl -s "http://localhost:9090/progress/abc123"
+# {"stage":"fitting","metric":"order_count","current":1,"total":3}
+```
+
+Stages are `waiting` (queued behind another analysis), `resolving`, `fitting`
+(with `metric`, `current`, `total`), then `attributing` or `simulating`. An
+unknown or finished id returns `{"stage": null}` with a 200 — to a poller a
+finished run and a never-started one are the same answer.
+
+Progress is entirely optional: **omit `run_id` and nothing is tracked**, which is
+the default for every non-UI caller. It never affects the analysis or its result.
 
 ### `POST /rca/{name}/slices`
 

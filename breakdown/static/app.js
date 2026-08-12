@@ -35,6 +35,30 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
+/* Color lives in style.css and nowhere else. The Cytoscape stylesheet, the
+   node-card SVGs and the Plotly charts all need real hex strings rather than
+   `var(--x)`, so they read the :root custom properties once at load instead of
+   repeating literals — there were 74 of them before 2026-08-11, which is why
+   retuning the palette used to mean a sweep through this file. The stylesheet
+   is a render-blocking <link> in <head>, so the values are resolved by the
+   time this module runs. Add a token to :root, add a line here. */
+const COL = (() => {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (name) => cs.getPropertyValue(name).trim();
+  return {
+    bg: v("--bg"), panel: v("--panel"), border: v("--border"), rule: v("--rule"),
+    text: v("--text"), text2: v("--text-2"), muted: v("--muted"), faint: v("--faint"),
+    source: v("--source"),
+    accent: v("--accent"), accentSoft: v("--accent-soft"), edgeProb: v("--edge-prob"),
+    formula: v("--formula"), edgeFormula: v("--edge-formula"),
+    up: v("--up"), upSoft: v("--up-soft"),
+    down: v("--down"), downSoft: v("--down-soft"),
+    warn: v("--warn"), warnSoft: v("--warn-soft"), warnInk: v("--warn-ink"),
+    track: v("--track"), trackStrong: v("--track-strong"),
+    chipBg: v("--chip-bg"), warnBorder: v("--warn-border"),
+  };
+})();
+
 /* ---------- helpers ---------- */
 
 function esc(s) {
@@ -143,11 +167,266 @@ function signedPct(x) {
   return (x >= 0 ? "+" : "") + (x * 100).toFixed(1) + "%";
 }
 
-function setStatus(msg, kind = "") {
+/* Two header slots, deliberately separate. `#status` is transient — run
+   progress, errors, window advisories — and `#context` is ambient: which tree
+   is loaded, from where, over what window. They shared one element until
+   2026-08-11, so finishing an RCA overwrote the tree context for the rest of
+   the session. `ttlMs` clears a message on its own; use it for success notices,
+   never for errors or advisories (those stand until something replaces them). */
+let statusTimer = null;
+
+function setStatus(msg, kind = "", ttlMs = 0) {
   const el = $("status");
+  clearTimeout(statusTimer);
   el.textContent = msg;
   el.className = kind; // "", "busy", "error"
+  if (msg && ttlMs) statusTimer = setTimeout(() => setStatus(""), ttlMs);
 }
+
+/* chips: [{text, title?, cls?}] — `cls: "warn"` for anything the reader should
+   not take at face value (a lagging data edge, a tree with no provider). */
+function setContext(chips) {
+  $("context").innerHTML = chips
+    .map(
+      (c) =>
+        `<span class="ctx-chip${c.cls ? " " + c.cls : ""}"` +
+        `${c.title ? ` title="${esc(c.title)}"` : ""}>${esc(c.text)}</span>`,
+    )
+    .join("");
+}
+
+/* ---------- run progress ----------
+
+   A spinner reading "Simulating…" for ninety seconds tells the operator
+   nothing about whether the thing is working or wedged. The server now reports
+   real stages (GET /progress/{run_id}), so this shows what is actually
+   happening: which ancestor model is being fitted, how many are left, and how
+   long it has been going.
+
+   The copy rotates, in the spirit of Claude Code's "percolating" — but every
+   phrase here is *literally true of the stage it belongs to*. `descending the
+   ELBO` is what ADVI does; `permuting coalitions` is what exact Shapley
+   attribution does. The joke and the status are the same string, so a curious
+   reader picks up how the engine works instead of watching a lie. Keep it that
+   way: if a phrase moves to a stage where it stops being true, it is no longer
+   funny, just wrong. */
+const PROGRESS_PHRASES = {
+  waiting: ["queued behind another run"],
+  resolving: ["snapping windows to grain", "resolving the reference window", "reading the tree"],
+  // Every on-demand fit is ADVI, so the vocabulary is variational, not MCMC.
+  fitting: [
+    "descending the ELBO",
+    "fitting the mean field",
+    "tuning the approximation",
+    "letting the posterior settle",
+  ],
+  attributing: [
+    "permuting coalitions",
+    "computing Shapley values",
+    "bridging window means",
+    "bootstrapping the intervals",
+    "walking the DAG",
+  ],
+  simulating: [
+    "applying the do-operator",
+    "propagating through the DAG",
+    "drawing from the posterior",
+  ],
+};
+
+const PHRASE_MS = 2400;
+const POLL_MS = 400;
+
+const runProg = {
+  id: null, poll: null, tick: null, started: 0,
+  stage: null, phraseIx: 0, last: {}, pulsing: null,
+};
+
+const mmss = (ms) => {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+
+function paintProgress() {
+  const p = runProg.last || {};
+  const stage = p.stage || runProg.stage || "resolving";
+  const list = PROGRESS_PHRASES[stage] || PROGRESS_PHRASES.resolving;
+  const phrase = list[runProg.phraseIx % list.length];
+  const bits = [phrase];
+  if (p.metric) {
+    bits.push(p.total > 1 ? `${p.metric} (${p.current}/${p.total})` : String(p.metric));
+  }
+  bits.push(mmss(Date.now() - runProg.started));
+  setStatus(bits.join(" · "), "busy");
+}
+
+/* Mark the node currently being fitted so the tree shows the engine walking up
+   it. This is the honest version of a progress bar: the position is real. */
+function pulseFitting(name) {
+  if (runProg.pulsing === name || !state.cy) return;
+  if (runProg.pulsing) state.cy.getElementById(runProg.pulsing).removeClass("fitting-now");
+  runProg.pulsing = name;
+  if (name) {
+    const n = state.cy.getElementById(name);
+    if (n && n.length) n.addClass("fitting-now");
+  }
+}
+
+/* Returns the run id to pass to the server. Polling and the phrase timer are
+   independent: the phrase rotates on its own clock so the line stays alive
+   even while a single slow fit holds one stage for a minute. */
+function startRunProgress(initialStage) {
+  stopRunProgress();
+  runProg.id = `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  runProg.started = Date.now();
+  runProg.stage = initialStage;
+  runProg.phraseIx = 0;
+  runProg.last = { stage: initialStage };
+  paintProgress();
+  runProg.tick = setInterval(() => {
+    runProg.phraseIx++;
+    paintProgress();
+  }, PHRASE_MS);
+  runProg.poll = setInterval(async () => {
+    const id = runProg.id;
+    try {
+      const p = await api(`/progress/${encodeURIComponent(id)}`);
+      if (runProg.id !== id || !p || !p.stage) return; // superseded or finished
+      // A stage change restarts the vocabulary rather than continuing mid-list,
+      // so the first phrase a reader sees names the phase they just entered.
+      if (p.stage !== runProg.last.stage) runProg.phraseIx = 0;
+      runProg.last = p;
+      pulseFitting(p.stage === "fitting" ? p.metric : null);
+      paintProgress();
+    } catch { /* progress is advisory — a failed poll must not surface */ }
+  }, POLL_MS);
+  return runProg.id;
+}
+
+function stopRunProgress() {
+  clearInterval(runProg.poll);
+  clearInterval(runProg.tick);
+  pulseFitting(null);
+  runProg.id = null;
+  runProg.poll = runProg.tick = null;
+  runProg.last = {};
+}
+
+/* ---------- inline help ----------
+
+   breakdown asks a business user to read posteriors, so the UI has to teach a
+   little as it goes rather than assume the vocabulary. Two mechanisms, and the
+   split matters: a **control note** is always visible and says what the current
+   setting concretely does ("500 × 4 chains = 2,000 draws"); a **hint** is the ⓘ
+   the reader opens when they want the why. Explanations live here, but anything
+   with real depth links to docs/model.md rather than forking its prose — the
+   doc is the thing kept true.
+
+   `body` may be a function so a hint can read the current control state; that
+   is why `draws` can describe two genuinely different meanings. */
+const DOC = "https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md";
+
+const HINTS = {
+  method: {
+    title: "ADVI vs NUTS",
+    body: () => `
+      <p><strong>NUTS</strong> is exact MCMC: it walks the posterior and, given
+      enough draws, converges on the true shape. It is the slower one — a minute
+      or more per metric is normal — and it is the only method that reports
+      convergence diagnostics (R̂, divergences, effective sample size).</p>
+      <p><strong>ADVI</strong> fits a simpler stand-in distribution by
+      optimization. Seconds instead of minutes, but it is an approximation:
+      mean-field ADVI assumes the parameters are independent, so it tends to
+      <em>understate</em> uncertainty — intervals come out too narrow.</p>
+      <p>Explore with ADVI; quote NUTS.</p>`,
+  },
+  draws: {
+    title: "What the draws number does",
+    body: () => {
+      const nuts = $("an-method") && $("an-method").value === "nuts";
+      return nuts
+        ? `<p>Posterior draws to keep <strong>per chain</strong>, after 1,000
+           tuning steps that are discarded. The engine runs 4 chains, so 500
+           here means 2,000 draws behind every interval you see.</p>
+           <p>More draws mean less Monte-Carlo noise in the estimate — the
+           interval settles rather than shifts between runs. Cost is linear:
+           double the draws, double the wait. If R̂ says the fit converged, more
+           draws refine it; they cannot repair a fit that did not.</p>`
+        : `<p>Samples taken <strong>from the already-fitted approximation</strong>.
+           The ADVI optimization itself is a fixed 20,000 steps and this number
+           does not change it.</p>
+           <p>So raising it here does <strong>not</strong> make the answer more
+           accurate — it only smooths the summary statistics, and it is nearly
+           free. If you want a better answer rather than a smoother one, switch
+           to NUTS.</p>`;
+    },
+  },
+  beta: {
+    title: "Reading a coefficient",
+    body: () => `
+      <p>β is in <strong>business units</strong>: holding the other parents
+      fixed, a one-unit rise in the parent moves this metric by about β.</p>
+      <p>It is a posterior mean, not a measurement — the interval beside it is
+      the honest part of the answer.</p>`,
+    more: `${DOC}#reading-coefficients-beta-vs-beta_raw`,
+  },
+  hdi: {
+    title: "Reading a 95% interval",
+    body: () => `
+      <p>Given the model and the data, 95% of the posterior for this parameter
+      lies inside this interval — the plain-English reading a confidence
+      interval famously does not permit.</p>
+      <p>If the interval <strong>straddles zero</strong>, the data has not
+      resolved even the direction of the effect. Treat that parent as unproven
+      rather than as having no effect.</p>`,
+  },
+  diagnostics: {
+    title: "Is this fit trustworthy?",
+    body: () => `
+      <p><strong>R̂</strong> compares the chains against each other. At 1.00 they
+      agree; the engine flags anything above 1.05. Below ~1.01 is healthy.</p>
+      <p><strong>Divergences</strong> are steps the sampler could not take
+      accurately — a handful is tolerable, and the engine flags more than 1% of
+      draws. <strong>ESS</strong> is how many independent draws the correlated
+      ones are worth; under 100 gets flagged.</p>
+      <p>These are MCMC diagnostics, so an ADVI fit has none. That is not a
+      clean bill of health — it is the absence of a check.</p>`,
+    more: `${DOC}#what-gets-fitted`,
+  },
+};
+
+/* The ⓘ button. Pair each with a `hintSlot(id)` where the panel should open —
+   explicit placement beats guessing at a container from the DOM. */
+function hintHTML(id) {
+  return `<button type="button" class="hint" data-hint="${id}" aria-expanded="false"
+    title="${esc(HINTS[id].title)}" aria-label="${esc(HINTS[id].title)}">ⓘ</button>`;
+}
+
+function hintSlot(id) {
+  return `<div class="hint-slot" data-hint-slot="${id}"></div>`;
+}
+
+/* One delegated listener for every hint in the app, bound once — the sidebar
+   tabs are re-rendered wholesale, so per-button listeners would leak on every
+   node click. */
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".hint");
+  if (!btn) return;
+  const id = btn.dataset.hint;
+  const slot = document.querySelector(`[data-hint-slot="${id}"]`);
+  if (!slot || !HINTS[id]) return;
+  const open = btn.getAttribute("aria-expanded") === "true";
+  btn.setAttribute("aria-expanded", open ? "false" : "true");
+  if (open) {
+    slot.innerHTML = "";
+    return;
+  }
+  const h = HINTS[id];
+  const more = h.more
+    ? `<p><a href="${h.more}" target="_blank" rel="noopener">Read more in the model doc →</a></p>`
+    : "";
+  slot.innerHTML = `<div class="hint-panel">${h.body()}${more}</div>`;
+});
 
 /* ---------- date / window helpers (UTC to match ISO strings) ---------- */
 
@@ -399,7 +678,7 @@ async function downloadRcaReport() {
   const res = state.rca;
   let treePng = "";
   try {
-    treePng = state.cy.png({ full: true, scale: 2, bg: "#f7f8fa", maxWidth: 2400 });
+    treePng = state.cy.png({ full: true, scale: 2, bg: COL.bg, maxWidth: 2400 });
   } catch { /* snapshot is best-effort */ }
   let stripPng = "";
   try {
@@ -492,20 +771,20 @@ function buildRcaReportHtml(res, treePng, stripPng) {
 <html lang="en"><head><meta charset="utf-8">
 <title>RCA — ${esc(res.target)} · ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}</title>
 <style>
-  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; color: #1a202c; max-width: 960px; margin: 32px auto; padding: 0 20px; line-height: 1.45; }
-  h1 { font-size: 22px; margin-bottom: 2px; } h3 { font-size: 15px; margin: 22px 0 4px; } h4 { font-size: 12.5px; margin: 12px 0 4px; color: #475569; text-transform: uppercase; letter-spacing: 0.4px; }
-  .meta { color: #64748b; font-size: 12.5px; font-weight: 400; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; color: ${COL.text}; max-width: 960px; margin: 32px auto; padding: 0 20px; line-height: 1.45; }
+  h1 { font-size: 22px; margin-bottom: 2px; } h3 { font-size: 15px; margin: 22px 0 4px; } h4 { font-size: 12.5px; margin: 12px 0 4px; color: ${COL.text2}; text-transform: uppercase; letter-spacing: 0.4px; }
+  .meta { color: ${COL.muted}; font-size: 12.5px; font-weight: 400; }
   .gap { font-size: 26px; font-weight: 700; margin: 6px 0 14px; }
-  .gap.up { color: #16a34a; } .gap.down { color: #dc2626; }
+  .gap.up { color: ${COL.up}; } .gap.down { color: ${COL.down}; }
   table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin: 4px 0 10px; }
-  th { text-align: left; color: #64748b; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; padding: 4px 6px; border-bottom: 1px solid #e2e8f0; }
-  td { padding: 4px 6px; border-bottom: 1px solid #f0f2f5; }
+  th { text-align: left; color: ${COL.muted}; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; padding: 4px 6px; border-bottom: 1px solid ${COL.border}; }
+  td { padding: 4px 6px; border-bottom: 1px solid ${COL.rule}; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  tr.dim td { color: #94a3b8; } tr.em td { font-style: italic; }
-  img { max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; margin: 8px 0; }
-  code { background: #f1f5f9; padding: 1px 4px; border-radius: 4px; font-size: 12px; }
-  .warn { font-size: 12px; color: #92400e; background: #fef3c7; border: 1px solid #fde68a; border-radius: 6px; padding: 6px 8px; }
-  .footnote { margin-top: 28px; padding-top: 12px; border-top: 1px solid #e2e8f0; font-size: 11.5px; color: #64748b; }
+  tr.dim td { color: ${COL.faint}; } tr.em td { font-style: italic; }
+  img { max-width: 100%; border: 1px solid ${COL.border}; border-radius: 8px; margin: 8px 0; }
+  code { background: ${COL.chipBg}; padding: 1px 4px; border-radius: 4px; font-size: 12px; }
+  .warn { font-size: 12px; color: ${COL.warnInk}; background: ${COL.warnSoft}; border: 1px solid ${COL.warnBorder}; border-radius: 6px; padding: 6px 8px; }
+  .footnote { margin-top: 28px; padding-top: 12px; border-top: 1px solid ${COL.border}; font-size: 11.5px; color: ${COL.muted}; }
   @media print { body { margin: 8px auto; } section { break-inside: avoid; } }
 </style></head><body>
   <h1>Root cause analysis — <code>${esc(res.target)}</code></h1>
@@ -649,8 +928,8 @@ const CARD_W = 200;
 const CARD_H = { num: 64, delta: 92, spark: 112, full: 140 };
 const UNIT_H = 15; // extra card height when a metric declares a unit caption
 const CARD_FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
-const CARD_COL = { up: "#16a34a", down: "#dc2626", flat: "#64748b" };
-const CARD_COL_SOFT = { up: "#e7f6ec", down: "#fdeaea", flat: "#eef1f5" };
+const CARD_COL = { up: COL.up, down: COL.down, flat: COL.muted };
+const CARD_COL_SOFT = { up: COL.upSoft, down: COL.downSoft, flat: COL.track };
 const VARIANT_LABEL = {
   num: "Number", delta: "Number + Δ", spark: "Number + spark", full: "Number + Δ + spark",
 };
@@ -807,7 +1086,7 @@ function sparkPaths(data, x0, x1, y0, y1, col) {
 function deltaSvg(dpct, dir, mark, cx, baseline, colorDir = dir) {
   const hasVal = dpct != null;
   if (!hasVal && !mark) {
-    return `<text x="${cx}" y="${baseline}" text-anchor="middle" font-size="12.5" fill="#8a94a6" font-family="${CARD_FONT}">—</text>`;
+    return `<text x="${cx}" y="${baseline}" text-anchor="middle" font-size="12.5" fill="${COL.faint}" font-family="${CARD_FONT}">—</text>`;
   }
   const col = CARD_COL[colorDir] || CARD_COL.flat, bg = CARD_COL_SOFT[colorDir] || CARD_COL_SOFT.flat;
   const tri = dir === "up" ? "▲" : dir === "down" ? "▼" : "▬";
@@ -841,12 +1120,12 @@ function buildCardSVG(name, d, variant, isOverride, overlay) {
 
   let defs = "";
   let inner =
-    `<text x="${cx}" y="20" text-anchor="middle" font-size="13" font-weight="600" fill="#475569" font-family="${CARD_FONT}">${esc(dispName)}</text>` +
-    `<text x="${cx}" y="52" text-anchor="middle" font-size="34" font-weight="700" fill="#1a202c" font-family="${CARD_FONT}">${esc(fmtCardValue(name, val))}</text>`;
+    `<text x="${cx}" y="20" text-anchor="middle" font-size="13" font-weight="600" fill="${COL.text2}" font-family="${CARD_FONT}">${esc(dispName)}</text>` +
+    `<text x="${cx}" y="52" text-anchor="middle" font-size="34" font-weight="700" fill="${COL.text}" font-family="${CARD_FONT}">${esc(fmtCardValue(name, val))}</text>`;
 
   if (unit) {
     const u = unit.length > 22 ? unit.slice(0, 21) + "…" : unit;
-    inner += `<text x="${cx}" y="66" text-anchor="middle" font-size="11" fill="#8a94a6" font-family="${CARD_FONT}">${esc(u)}</text>`;
+    inner += `<text x="${cx}" y="66" text-anchor="middle" font-size="11" fill="${COL.faint}" font-family="${CARD_FONT}">${esc(u)}</text>`;
   }
 
   const colorDir = goodDir(name, dir);
@@ -862,7 +1141,7 @@ function buildCardSVG(name, d, variant, isOverride, overlay) {
 
   if (showDelta) {
     if (showSpark) {
-      inner += `<line x1="16" y1="${110 + uOff}" x2="${CARD_W - 16}" y2="${110 + uOff}" stroke="#eef1f6" stroke-width="1"/>`;
+      inner += `<line x1="16" y1="${110 + uOff}" x2="${CARD_W - 16}" y2="${110 + uOff}" stroke="${COL.rule}" stroke-width="1"/>`;
       inner += deltaSvg(dpct, dir, mark, cx, 130 + uOff, colorDir);
     } else {
       inner += deltaSvg(dpct, dir, mark, cx, 82 + uOff, colorDir);
@@ -872,8 +1151,8 @@ function buildCardSVG(name, d, variant, isOverride, overlay) {
   if (isOverride) {
     // small indigo dot: this node's variant is pinned, ignoring the canvas default
     inner +=
-      `<circle cx="${CARD_W - 12}" cy="12" r="6" fill="#4f46e5" fill-opacity="0.18"/>` +
-      `<circle cx="${CARD_W - 12}" cy="12" r="3.5" fill="#4f46e5"/>`;
+      `<circle cx="${CARD_W - 12}" cy="12" r="6" fill="${COL.accent}" fill-opacity="0.18"/>` +
+      `<circle cx="${CARD_W - 12}" cy="12" r="3.5" fill="${COL.accent}"/>`;
   }
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${CARD_W}" height="${H}" viewBox="0 0 ${CARD_W} ${H}">${defs}${inner}</svg>`;
@@ -889,8 +1168,8 @@ function buildColdCardSVG(name, cb, overlay) {
   const H = CARD_H.delta;
 
   let inner =
-    `<text x="${cx}" y="20" text-anchor="middle" font-size="13" font-weight="600" fill="#475569" font-family="${CARD_FONT}">${esc(dispName)}</text>` +
-    `<text x="${cx}" y="52" text-anchor="middle" font-size="34" font-weight="700" fill="#1a202c" font-family="${CARD_FONT}">${esc(fmtCardValue(name, val))}</text>`;
+    `<text x="${cx}" y="20" text-anchor="middle" font-size="13" font-weight="600" fill="${COL.text2}" font-family="${CARD_FONT}">${esc(dispName)}</text>` +
+    `<text x="${cx}" y="52" text-anchor="middle" font-size="34" font-weight="700" fill="${COL.text}" font-family="${CARD_FONT}">${esc(fmtCardValue(name, val))}</text>`;
 
   if (overlay) {
     inner += deltaSvg(overlay.dpct, overlay.dir, overlay.mark, cx, 82, goodDir(name, overlay.dir));
@@ -898,7 +1177,7 @@ function buildColdCardSVG(name, cb, overlay) {
     const sub = cb && cb.lo != null
       ? `${fmtCardValue(name, cb.lo)} – ${fmtCardValue(name, cb.hi)} · 90% belief`
       : cb && cb.derived ? "derived from parents" : "belief";
-    inner += `<text x="${cx}" y="80" text-anchor="middle" font-size="11.5" fill="#8a94a6" font-family="${CARD_FONT}">${esc(sub)}</text>`;
+    inner += `<text x="${cx}" y="80" text-anchor="middle" font-size="11.5" fill="${COL.faint}" font-family="${CARD_FONT}">${esc(sub)}</text>`;
   }
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${CARD_W}" height="${H}" viewBox="0 0 ${CARD_W} ${H}">${inner}</svg>`;
 }
@@ -1158,35 +1437,46 @@ const CY_STYLE = [
     selector: "node",
     style: {
       shape: "round-rectangle",
-      "background-color": "#ffffff",
+      "background-color": COL.panel,
       "border-width": 2,
-      "border-color": "#94a3b8",
+      "border-color": COL.source,
       label: "data(label)",
       "text-wrap": "wrap",
       "text-valign": "center",
       "text-halign": "center",
       "font-size": 12,
       "font-weight": 600,
-      color: "#1a202c",
+      color: COL.text,
       width: "label",
       height: "label",
       padding: "12px",
     },
   },
-  { selector: "node.prob", style: { "border-color": "#4f46e5" } },
-  { selector: "node.formula", style: { "border-color": "#9333ea" } },
-  { selector: "node.fitted", style: { "background-color": "#eef2ff" } },
+  { selector: "node.prob", style: { "border-color": COL.accent } },
+  { selector: "node.formula", style: { "border-color": COL.formula } },
+  { selector: "node.fitted", style: { "background-color": COL.accentSoft } },
   {
     selector: "node:selected",
-    style: { "border-width": 3.5, "border-color": "#4f46e5" },
+    style: { "border-width": 3.5, "border-color": COL.accent },
+  },
+  {
+    // The ancestor being fitted right now. Placed after :selected so it wins
+    // while a run is in flight — during a fit, where the engine *is* matters
+    // more than what the user last clicked.
+    selector: "node.fitting-now",
+    style: {
+      "border-width": 5,
+      "border-color": COL.accent,
+      "background-color": COL.accentSoft,
+    },
   },
   {
     selector: "node.rca-up",
-    style: { "background-color": "#dcfce7", "border-color": "#16a34a" },
+    style: { "background-color": COL.upSoft, "border-color": COL.up },
   },
   {
     selector: "node.rca-down",
-    style: { "background-color": "#fee2e2", "border-color": "#dc2626" },
+    style: { "background-color": COL.downSoft, "border-color": COL.down },
   },
   {
     selector: "edge",
@@ -1195,34 +1485,34 @@ const CY_STYLE = [
       "curve-style": "bezier",
       "target-arrow-shape": "triangle",
       "arrow-scale": 1.1,
-      "line-color": "#94a3b8",
-      "target-arrow-color": "#94a3b8",
+      "line-color": COL.source,
+      "target-arrow-color": COL.source,
       label: "data(label)",
       "font-size": 10,
-      color: "#475569",
-      "text-background-color": "#f6f7f9",
+      color: COL.text2,
+      "text-background-color": COL.bg,
       "text-background-opacity": 0.92,
       "text-background-padding": 3,
     },
   },
   {
     selector: "edge.formula",
-    style: { "line-color": "#c084fc", "target-arrow-color": "#c084fc" },
+    style: { "line-color": COL.edgeFormula, "target-arrow-color": COL.edgeFormula },
   },
   {
     selector: "edge.prob",
     style: {
       "line-style": "dashed",
-      "line-color": "#818cf8",
-      "target-arrow-color": "#818cf8",
+      "line-color": COL.edgeProb,
+      "target-arrow-color": COL.edgeProb,
     },
   },
   {
     selector: "edge.rca-up",
     style: {
       "line-style": "solid",
-      "line-color": "#16a34a",
-      "target-arrow-color": "#16a34a",
+      "line-color": COL.up,
+      "target-arrow-color": COL.up,
       width: "data(w)",
       "line-opacity": "data(op)",
       "text-opacity": "data(op)",
@@ -1232,8 +1522,8 @@ const CY_STYLE = [
     selector: "edge.rca-down",
     style: {
       "line-style": "solid",
-      "line-color": "#dc2626",
-      "target-arrow-color": "#dc2626",
+      "line-color": COL.down,
+      "target-arrow-color": COL.down,
       width: "data(w)",
       "line-opacity": "data(op)",
       "text-opacity": "data(op)",
@@ -1241,32 +1531,32 @@ const CY_STYLE = [
   },
   {
     selector: "node.rca-unexplained",
-    style: { "border-style": "dashed", "border-color": "#d97706", "border-width": 3 },
+    style: { "border-style": "dashed", "border-color": COL.warn, "border-width": 3 },
   },
   /* what-if overlay: sign=hue, certainty=background opacity, pinned=heavy border */
   {
     selector: "node.sim-up",
-    style: { "background-color": "#dcfce7", "border-color": "#16a34a", "background-opacity": "data(bgop)" },
+    style: { "background-color": COL.upSoft, "border-color": COL.up, "background-opacity": "data(bgop)" },
   },
   {
     selector: "node.sim-down",
-    style: { "background-color": "#fee2e2", "border-color": "#dc2626", "background-opacity": "data(bgop)" },
+    style: { "background-color": COL.downSoft, "border-color": COL.down, "background-opacity": "data(bgop)" },
   },
   {
     selector: "node.sim-pinned",
-    style: { "border-width": 4, "border-style": "solid", "border-color": "#4f46e5" },
+    style: { "border-width": 4, "border-style": "solid", "border-color": COL.accent },
   },
   {
     selector: "node.warn-border",
-    style: { "border-style": "dashed", "border-color": "#d97706", "border-width": 3 },
+    style: { "border-style": "dashed", "border-color": COL.warn, "border-width": 3 },
   },
   {
     selector: "node.lever",
     style: {
       shape: "ellipse",
-      "background-color": "#fef3c7",
+      "background-color": COL.warnSoft,
       "border-style": "dashed",
-      "border-color": "#d97706",
+      "border-color": COL.warn,
       "font-size": 11,
     },
   },
@@ -1274,18 +1564,18 @@ const CY_STYLE = [
     selector: "edge.assume",
     style: {
       "line-style": "dotted",
-      "line-color": "#d97706",
-      "target-arrow-color": "#d97706",
+      "line-color": COL.warn,
+      "target-arrow-color": COL.warn,
       width: 2.5,
-      color: "#92400e",
+      color: COL.warnInk,
     },
   },
   {
     selector: "edge.sim-up",
     style: {
       "line-style": "solid",
-      "line-color": "#16a34a",
-      "target-arrow-color": "#16a34a",
+      "line-color": COL.up,
+      "target-arrow-color": COL.up,
       "line-opacity": "data(op)",
     },
   },
@@ -1293,15 +1583,15 @@ const CY_STYLE = [
     selector: "edge.sim-down",
     style: {
       "line-style": "solid",
-      "line-color": "#dc2626",
-      "target-arrow-color": "#dc2626",
+      "line-color": COL.down,
+      "target-arrow-color": COL.down,
       "line-opacity": "data(op)",
     },
   },
   { selector: ".faded", style: { opacity: 0.25 } },
   {
     selector: ".pathhl",
-    style: { "border-color": "#d97706", "line-color": "#d97706", "target-arrow-color": "#d97706" },
+    style: { "border-color": COL.warn, "line-color": COL.warn, "target-arrow-color": COL.warn },
   },
 ];
 
@@ -1358,6 +1648,73 @@ function buildGraph() {
     else selectMetric(evt.target.id());
   });
   markFitted();
+  initZoomControls();
+  initCanvasGrid();
+}
+
+/* Lock the paper's dot grid to the graph. Left alone the dots sit still while
+   the tree slides underneath them, which reads as a rendering bug rather than
+   as a canvas; moving them is also the cheapest hint that this surface pans at
+   all. Spacing is halved/doubled to stay in a legible 12–96px band so a
+   zoomed-out tree doesn't moiré. Dot *radius* stays fixed — it's paper
+   texture, not content, and shouldn't grow when you zoom in. */
+function initCanvasGrid() {
+  const cy = state.cy;
+  const el = $("cy");
+  const BASE = 24;
+  const paint = () => {
+    let step = BASE * cy.zoom();
+    while (step < 12) step *= 2;
+    while (step > 96) step /= 2;
+    const p = cy.pan();
+    el.style.backgroundSize = `${step}px ${step}px`;
+    el.style.backgroundPosition = `${p.x % step}px ${p.y % step}px`;
+  };
+  cy.on("pan zoom", paint);
+  paint();
+}
+
+/* Cytoscape pans on background-drag and zooms on wheel out of the box, but
+   neither is discoverable and neither gets you back once a big tree is off
+   screen. These are the way home. Zoom steps keep the viewport centre fixed so
+   the thing you were looking at stays where it is. */
+let zoomWired = false;
+
+function initZoomControls() {
+  const ZOOM_STEP = 1.25;
+  // Resolved at click time, not captured: the retry banner re-runs init() —
+  // and so buildGraph() — without a page reload, replacing the instance.
+  const cy = () => state.cy;
+  const label = $("zoom-level");
+  const paint = () => (label.textContent = `${Math.round(cy().zoom() * 100)}%`);
+  const fit = () => cy().fit(undefined, 40);
+  const setZoom = (level) => {
+    const c = cy();
+    c.zoom({
+      level: Math.min(c.maxZoom(), Math.max(c.minZoom(), level)),
+      renderedPosition: { x: c.container().clientWidth / 2, y: c.container().clientHeight / 2 },
+    });
+  };
+
+  cy().on("zoom", paint); // per-instance, so it re-binds on every rebuild
+  paint();
+
+  // The buttons and `document` outlive the graph, so their listeners bind once
+  // — a second buildGraph() would otherwise make every click zoom twice.
+  if (zoomWired) return;
+  zoomWired = true;
+  $("zoom-in").addEventListener("click", () => setZoom(cy().zoom() * ZOOM_STEP));
+  $("zoom-out").addEventListener("click", () => setZoom(cy().zoom() / ZOOM_STEP));
+  $("zoom-level").addEventListener("click", () => setZoom(1));
+  $("zoom-fit").addEventListener("click", fit);
+  // `F` fits. Guarded on the event target so it never eats a keystroke meant
+  // for a date input, the metric filter, or a scenario note.
+  document.addEventListener("keydown", (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName))) return;
+    if (e.key === "f" || e.key === "F") fit();
+  });
 }
 
 function markFitted() {
@@ -1365,25 +1722,6 @@ function markFitted() {
     const n = state.cy.getElementById(name);
     if (n) n.addClass("fitted");
   });
-}
-
-/* How many probabilistic ancestors of `target` still need fitting — drives the
-   run-progress status. Walks the reverse adjacency built in buildGraph. */
-function countUpstreamFits(target) {
-  const defs = state.defs || {};
-  const fitted = new Set(state.meta.fitted);
-  const seen = new Set();
-  const stack = [...(state.revAdj[target] || [])];
-  let k = 0;
-  while (stack.length) {
-    const name = stack.pop();
-    if (seen.has(name)) continue;
-    seen.add(name);
-    const def = defs[name];
-    if (def && def.parents && def.parents.length && !def.formula && !fitted.has(name)) k++;
-    (state.revAdj[name] || []).forEach((p) => stack.push(p));
-  }
-  return k;
 }
 
 /* Label a fitted probabilistic node's incoming edges with beta_raw. */
@@ -1521,13 +1859,22 @@ function renderMetricTab(name, data) {
     <section>
       <h3>Analyze</h3>
       <div class="analyze-row">
+        <label for="an-method">Method</label>
         <select id="an-method">
-          <option value="advi">ADVI (fast)</option>
-          <option value="nuts">NUTS (accurate)</option>
+          <option value="advi">ADVI — fast, approximate</option>
+          <option value="nuts">NUTS — slow, exact</option>
         </select>
+        ${hintHTML("method")}
+      </div>
+      ${hintSlot("method")}
+      <div class="analyze-row">
+        <label for="an-draws">Draws</label>
         <input type="number" id="an-draws" value="500" min="50" max="5000" step="50">
+        ${hintHTML("draws")}
         <button id="an-run" class="primary">Run</button>
       </div>
+      <p class="control-note" id="an-draws-note"></p>
+      ${hintSlot("draws")}
       <div class="inline-status" id="an-status"></div>
     </section>
   `;
@@ -1537,7 +1884,34 @@ function renderMetricTab(name, data) {
   renderTimeSeries(name, data.time_series);
   renderPosterior(name, data);
   $("an-run").addEventListener("click", () => runAnalyze(name));
+  wireAnalyzeNote();
   wireNodeVariant(name);
+}
+
+/* "500 of what?" answered in the place the question gets asked, without a
+   click. The two methods spend the number on completely different things, so
+   the note is rebuilt whenever either control changes — and an open `draws`
+   hint is re-rendered with it, since its text is method-dependent too. */
+function wireAnalyzeNote() {
+  const method = $("an-method"), draws = $("an-draws"), note = $("an-draws-note");
+  if (!method || !draws || !note) return;
+  const paint = () => {
+    const n = Math.max(0, parseInt(draws.value, 10) || 0);
+    note.textContent =
+      method.value === "nuts"
+        ? `${n.toLocaleString()} × 4 chains, after 1,000 discarded tuning steps `
+          + `— ${(n * 4).toLocaleString()} posterior draws. Expect a minute or more.`
+        : `20,000 optimization steps, then ${n.toLocaleString()} samples drawn `
+          + `from the fitted approximation. Seconds.`;
+    const openHint = document.querySelector('.hint[data-hint="draws"][aria-expanded="true"]');
+    if (openHint) {
+      const slot = document.querySelector('[data-hint-slot="draws"]');
+      if (slot) slot.innerHTML = `<div class="hint-panel">${HINTS.draws.body()}</div>`;
+    }
+  };
+  method.addEventListener("change", paint);
+  draws.addEventListener("input", paint);
+  paint();
 }
 
 /* Per-node card-variant override, set from the Metric tab. Empty value clears
@@ -1564,22 +1938,32 @@ function renderTimeSeries(name, series) {
   const shapes = [];
   const win = readWindows();
   if (win) {
+    // `readWindows()` omits the reference pair in auto mode — that is right for
+    // the *request* (the server computes it) but wrong for shading, and an
+    // undefined x0 makes Plotly place the rect in the year 2000, which blows
+    // the axis range out and collapses the real series into a spike at the
+    // right edge. The inputs still hold the previewed window, so shade from
+    // those; skip the band only when there genuinely isn't one.
+    const refStart = win.reference_start || $("ref-start").value;
+    const refEnd = win.reference_end || $("ref-end").value;
+    if (refStart && refEnd) {
+      shapes.push({ type: "rect", xref: "x", yref: "paper", x0: refStart, x1: refEnd, y0: 0, y1: 1, fillcolor: COL.source, opacity: 0.16, line: { width: 0 } });
+    }
     shapes.push(
-      { type: "rect", xref: "x", yref: "paper", x0: win.reference_start, x1: win.reference_end, y0: 0, y1: 1, fillcolor: "#94a3b8", opacity: 0.16, line: { width: 0 } },
-      { type: "rect", xref: "x", yref: "paper", x0: win.analysis_start, x1: win.analysis_end, y0: 0, y1: 1, fillcolor: "#4f46e5", opacity: 0.10, line: { width: 0 } },
+      { type: "rect", xref: "x", yref: "paper", x0: win.analysis_start, x1: win.analysis_end, y0: 0, y1: 1, fillcolor: COL.accent, opacity: 0.10, line: { width: 0 } },
     );
   }
   Plotly.newPlot(
     "ts-chart",
-    [{ x, y, mode: "lines", line: { color: "#4f46e5", width: 1.8 }, hovertemplate: "%{x|%b %d}: %{y:,.1f}<extra></extra>" }],
+    [{ x, y, mode: "lines", line: { color: COL.accent, width: 1.8 }, hovertemplate: "%{x|%b %d}: %{y:,.1f}<extra></extra>" }],
     {
       margin: { l: 45, r: 8, t: 6, b: 22 },
       height: 200,
       shapes,
-      xaxis: { tickfont: { size: 10 }, gridcolor: "#f0f2f5" },
-      yaxis: { tickfont: { size: 10 }, gridcolor: "#f0f2f5" },
-      plot_bgcolor: "#ffffff",
-      paper_bgcolor: "#ffffff",
+      xaxis: { tickfont: { size: 10 }, gridcolor: COL.rule },
+      yaxis: { tickfont: { size: 10 }, gridcolor: COL.rule },
+      plot_bgcolor: COL.panel,
+      paper_bgcolor: COL.panel,
     },
     { displayModeBar: false, responsive: true },
   );
@@ -1612,10 +1996,15 @@ function renderPosterior(name, data) {
   }
 
   const coefTable = rows
-    ? `<table class="data-table">
-         <tr><th>Parent</th><th class="num">β (raw units)</th><th class="num">95% HDI</th></tr>
+    ? `<p class="table-caption">Holding the other parents fixed, a one-unit rise
+         in the parent moves ${esc(name)} by about β. ${hintHTML("beta")}</p>
+       ${hintSlot("beta")}
+       <table class="data-table">
+         <tr><th>Parent</th><th class="num">β (raw units)</th>
+             <th class="num">95% HDI ${hintHTML("hdi")}</th></tr>
          ${rows}
-       </table>`
+       </table>
+       ${hintSlot("hdi")}`
     : `<p style="color:var(--muted);font-size:12.5px;margin:4px 0">
          ${def.formula ? "Formula node — the structural relationship is exact; the model fits the residual." : "No causal parents — trend and seasonality only."}</p>`;
 
@@ -1624,14 +2013,34 @@ function renderPosterior(name, data) {
     .map((w) => `<p class="sign-warning">⚠ ${esc(w)}</p>`)
     .join("");
 
-  // diagnostics: worst r_hat across all parameters (NUTS only; ADVI has none)
-  let diag = "";
+  // Diagnostics. These are MCMC-only, so an ADVI fit renders no numbers — but
+  // it used to render *nothing at all*, which reads as "no problems found"
+  // when it actually means "not checked". Say which one it is: the absence of
+  // a convergence check is itself something the reader needs to know (UC4).
+  const dx = data.diagnostics || {};
   const rhats = Object.values(summary.r_hat || {}).filter((v) => v !== null && !Number.isNaN(v));
+  const bits = [];
   if (rhats.length) {
     const worst = Math.max(...rhats);
     const cls = worst < 1.05 ? "ok" : "warn";
-    const note = worst < 1.05 ? "converged" : "check convergence";
-    diag = `<div class="diag">max R̂ = <span class="${cls}">${worst.toFixed(3)}</span> (${note})</div>`;
+    // "R̂" ends in a combining circumflex, which eats a following plain space;
+    // the explicit "=" keeps the number from colliding with the glyph.
+    bits.push(`max R̂ = <span class="${cls}">${worst.toFixed(3)}</span> `
+      + `(${worst < 1.01 ? "chains agree" : worst < 1.05 ? "acceptable" : "check convergence"})`);
+  }
+  if (typeof dx.divergences === "number") {
+    bits.push(`${dx.divergences} divergence${dx.divergences === 1 ? "" : "s"}`);
+  }
+  if (typeof dx.min_ess_bulk === "number" && Number.isFinite(dx.min_ess_bulk)) {
+    bits.push(`min ESS ${Math.round(dx.min_ess_bulk).toLocaleString()}`);
+  }
+  let diag = "";
+  if (bits.length) {
+    diag = `<div class="diag">${bits.join(" · ")} ${hintHTML("diagnostics")}</div>${hintSlot("diagnostics")}`;
+  } else if (dx.method === "advi") {
+    diag = `<div class="diag">ADVI approximation — <span class="warn">no convergence
+      diagnostics</span>; R̂, divergences and ESS are MCMC-only. Re-run with NUTS to
+      check the fit. ${hintHTML("diagnostics")}</div>${hintSlot("diagnostics")}`;
   }
 
   // full raw summary behind a collapsible
@@ -1710,13 +2119,9 @@ async function runRCA() {
   }
   const btn = $("run-rca");
   btn.disabled = true;
-  const k = countUpstreamFits(target);
-  setStatus(
-    k > 0 ? `Running RCA — fitting ${k} upstream model${k === 1 ? "" : "s"}…` : "Running RCA…",
-    "busy",
-  );
+  const runId = startRunProgress("resolving");
   try {
-    const qs = new URLSearchParams(win).toString();
+    const qs = new URLSearchParams({ ...win, run_id: runId }).toString();
     state.slices = {}; // a new analysis invalidates any slice of the old one
     state.rca = await api(`/rca/${encodeURIComponent(target)}?${qs}`, { method: "POST" });
     // The resolved reference comes back either way; reflect it in the inputs
@@ -1739,10 +2144,11 @@ async function runRCA() {
     renderRcaTab();
     switchTab("rca");
     $("clear-rca").style.display = "";
-    setStatus(`RCA complete for ${target}.`);
+    setStatus(`RCA complete for ${target} in ${mmss(Date.now() - runProg.started)}.`, "", 6000);
   } catch (err) {
     setStatus(`RCA failed: ${err.message}`, "error");
   } finally {
+    stopRunProgress();
     btn.disabled = false;
   }
 }
@@ -2341,20 +2747,20 @@ async function renderRcaStrip(res) {
   const x = series.map((r) => r.date);
   const y = series.map((r) => r[name]);
   const shapes = [
-    { type: "rect", xref: "x", yref: "paper", x0: res.reference_window.start, x1: res.reference_window.end, y0: 0, y1: 1, fillcolor: "#94a3b8", opacity: 0.16, line: { width: 0 } },
-    { type: "rect", xref: "x", yref: "paper", x0: res.analysis_window.start, x1: res.analysis_window.end, y0: 0, y1: 1, fillcolor: "#4f46e5", opacity: 0.10, line: { width: 0 } },
+    { type: "rect", xref: "x", yref: "paper", x0: res.reference_window.start, x1: res.reference_window.end, y0: 0, y1: 1, fillcolor: COL.source, opacity: 0.16, line: { width: 0 } },
+    { type: "rect", xref: "x", yref: "paper", x0: res.analysis_window.start, x1: res.analysis_window.end, y0: 0, y1: 1, fillcolor: COL.accent, opacity: 0.10, line: { width: 0 } },
   ];
   Plotly.newPlot(
     el,
-    [{ x, y, mode: "lines", line: { color: "#4f46e5", width: 1.6 }, hovertemplate: "%{x|%b %d}: %{y:,.1f}<extra></extra>" }],
+    [{ x, y, mode: "lines", line: { color: COL.accent, width: 1.6 }, hovertemplate: "%{x|%b %d}: %{y:,.1f}<extra></extra>" }],
     {
       margin: { l: 38, r: 6, t: 4, b: 18 },
       height: 120,
       shapes,
-      xaxis: { tickfont: { size: 9 }, gridcolor: "#f0f2f5" },
-      yaxis: { tickfont: { size: 9 }, gridcolor: "#f0f2f5" },
-      plot_bgcolor: "#ffffff",
-      paper_bgcolor: "#ffffff",
+      xaxis: { tickfont: { size: 9 }, gridcolor: COL.rule },
+      yaxis: { tickfont: { size: 9 }, gridcolor: COL.rule },
+      plot_bgcolor: COL.panel,
+      paper_bgcolor: COL.panel,
     },
     { displayModeBar: false, responsive: true },
   );
@@ -2691,7 +3097,7 @@ function updateAdjustPreview({ base, hist, cold }) {
   const hi = Math.max(gHi + 0.1 * span, target);
   const p = (x) => (100 * (x - lo)) / (hi - lo);
   $("wf-strip").innerHTML = `
-    <div class="strip-band" style="left:${p(gLo)}%;width:${p(gHi) - p(gLo)}%;background:#e4e7ec"></div>
+    <div class="strip-band" style="left:${p(gLo)}%;width:${p(gHi) - p(gLo)}%;background:${COL.track}"></div>
     ${bandLo != null && bandHi != null && bandHi > bandLo
       ? `<div class="strip-band" style="left:${p(bandLo)}%;width:${Math.max(p(bandHi) - p(bandLo), 0)}%"></div>`
       : ""}
@@ -2750,40 +3156,14 @@ function buildScenarioPayload() {
   return payload;
 }
 
-/* How many probabilistic nodes on affected paths still need fitting — drives
-   the run-progress status. Mirrors the engine's fit-on-demand rule. */
-function countWhatifFits() {
-  if (coldStart()) return 0; // nothing is ever fit — slopes are the stated priors
-  const w = state.whatif;
-  const fitted = new Set(state.meta.fitted);
-  const seeds = [...w.interventions.map((iv) => iv.metric), ...w.assumptions.map((a) => a.target)]
-    .filter((m) => m in state.fwdAdj);
-  const affected = new Set(seeds);
-  const stack = [...seeds];
-  while (stack.length) {
-    const n = stack.pop();
-    (state.fwdAdj[n] || []).forEach((c) => {
-      if (!affected.has(c)) { affected.add(c); stack.push(c); }
-    });
-  }
-  let k = 0;
-  affected.forEach((n) => {
-    const def = state.defs[n];
-    if (def && def.parents && def.parents.length && !def.formula && !fitted.has(n)
-        && def.parents.some((p) => affected.has(p))) k++;
-  });
-  return k;
-}
-
 async function runWhatif() {
   const scenario = buildScenarioPayload();
   if (!scenario) return;
   const btn = $("wf-run");
   if (btn) btn.disabled = true;
-  const k = countWhatifFits();
-  setStatus(k > 0 ? `Simulating — fitting ${k} model${k === 1 ? "" : "s"}…` : "Simulating…", "busy");
+  const runId = startRunProgress("resolving");
   try {
-    state.whatif.result = await api("/simulate", {
+    state.whatif.result = await api(`/simulate?run_id=${encodeURIComponent(runId)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(scenario),
@@ -2795,11 +3175,13 @@ async function runWhatif() {
     renderWhatifTab();
     switchTab("whatif");
     applyWhatifOverlay();
-    setStatus("Simulation complete.");
+    setStatus(`Simulation complete in ${mmss(Date.now() - runProg.started)}.`, "", 6000);
   } catch (err) {
     setStatus(`Simulation failed: ${err.message}`, "error");
     const b = $("wf-run");
     if (b) b.disabled = false;
+  } finally {
+    stopRunProgress();
   }
 }
 
@@ -3318,11 +3700,38 @@ async function init() {
     initWhatif();
     if (coldStart()) {
       // What-if is the only analysis a dataless tree supports — boot into it.
-      setStatus(`${state.meta.metrics.length} metrics · cold start — declared beliefs, no data provider`);
+      setContext([
+        { text: `${state.meta.metrics.length} metrics` },
+        {
+          text: "cold start",
+          cls: "warn",
+          title:
+            "This tree declares no data provider. What-if runs over the declared " +
+            "beliefs in the YAML; there is no history to analyse.",
+        },
+      ]);
+      setStatus("");
       switchTab("whatif");
     } else {
-      const edgeNote = state.asOf < state.meta.date_end ? ` · data → ${state.asOf}` : "";
-      setStatus(`${state.meta.metrics.length} metrics · provider: ${state.meta.provider} · ${state.meta.date_start} → ${state.meta.date_end}${edgeNote}`);
+      const chips = [
+        { text: `${state.meta.metrics.length} metrics` },
+        { text: state.meta.provider, title: "Data provider" },
+        {
+          text: `${state.meta.date_start} → ${state.meta.date_end}`,
+          title: "Loaded data window (set at startup by --start-date / --end-date)",
+        },
+      ];
+      if (state.asOf < state.meta.date_end) {
+        chips.push({
+          text: `data → ${state.asOf}`,
+          cls: "warn",
+          title:
+            `The tree-wide data edge lags the loaded window: at least one metric ` +
+            `has no data after ${state.asOf}, so cards anchor there.`,
+        });
+      }
+      setContext(chips);
+      setStatus("");
       renderHistoryNudge();
     }
     applyDeepLink();

@@ -47,7 +47,10 @@
             </div>
         </div>
 
-        <div id="status"></div>
+        <div id="header-right">
+            <div id="status"></div>
+            <div id="context"></div>
+        </div>
     </header>
 
     <div id="main">
@@ -74,6 +77,12 @@
                         <input type="number" id="card-delta" min="1" max="365" value="7"><span class="ct-unit">pts ago</span>
                     </div>
                 </div>
+            </div>
+            <div id="zoom-controls">
+                <button id="zoom-out" type="button" title="Zoom out">&minus;</button>
+                <button id="zoom-level" type="button" title="Reset zoom to 100%">100%</button>
+                <button id="zoom-in" type="button" title="Zoom in">+</button>
+                <button id="zoom-fit" type="button" title="Fit the whole tree in view (F)">Fit</button>
             </div>
             <div id="legend">
                 <div class="legend-row"><span class="swatch source"></span> source metric</div>

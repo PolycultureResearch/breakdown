@@ -55,6 +55,8 @@ import pandas as pd
 from pydantic import BaseModel, Field, model_validator
 
 from breakdown.engine.model import fit_metric
+from breakdown.engine.progress import ProgressFn
+from breakdown.engine.progress import report as _report
 from breakdown.engine.rca import window_mean
 from breakdown.formula import eval_formula
 from breakdown.grains import ensure_grained, fit_grain, snap_window
@@ -246,6 +248,7 @@ def run_scenario(
     scenario: ScenarioRequest,
     advi_draws: int = 500,
     n_draws: int = _N_DRAWS,
+    progress: Optional[ProgressFn] = None,
 ) -> Dict[str, Any]:
     """Simulate a scenario and return the `POST /simulate` response shape.
 
@@ -404,22 +407,31 @@ def run_scenario(
         fit_end_key = (
             None if b_end >= data_end else (b_end + pd.Timedelta(days=1)).date().isoformat()
         )
+    # Work list first, fits second, so `progress` can report a real denominator
+    # rather than counting toward an unknown total.
     needs_beta = set()
+    to_fit = []
     for node in order:
         defn = dag.nodes[node]["definition"]
         parents = list(dag.predecessors(node))
         if parents and not defn.formula and set(parents) & affected:
             needs_beta.add(node)
             if not cold_start and (node, fit_end_key) not in traces:
-                traces[(node, fit_end_key)] = fit_metric(
-                    dag,
-                    data,
-                    node,
-                    draws=advi_draws,
-                    inference_method="advi",
-                    fit_end=fit_end_key,
-                    random_seed=0,
-                )
+                to_fit.append(node)
+
+    for i, node in enumerate(to_fit, 1):
+        _report(progress, stage="fitting", metric=node, current=i, total=len(to_fit))
+        traces[(node, fit_end_key)] = fit_metric(
+            dag,
+            data,
+            node,
+            draws=advi_draws,
+            inference_method="advi",
+            fit_end=fit_end_key,
+            random_seed=0,
+        )
+
+    _report(progress, stage="simulating", total=len(to_fit))
 
     # Draw coefficients and assumption effects up front, in a fixed order, so
     # identical calls consume the rng identically. Fitted mode indexes the

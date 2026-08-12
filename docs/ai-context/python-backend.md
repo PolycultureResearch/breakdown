@@ -530,11 +530,19 @@ Static files and the default tree resolve via `importlib.resources` (`files("bre
 
 **`GET /shapley/{name}`** — analysis params required, reference params optional (omit both → engine default; exactly one → 422); thin wrapper over `rca.shapley_attribution`. 422 if no formula or bad windows.
 
-**`POST /rca/{name}`** — analysis params required, reference params optional (same rule). Runs `run_rca` via `asyncio.to_thread` under the lock, passing `app.state.traces` directly — on-demand fits land in the cache with no copying. 404 unknown metric; `ValueError` → 422.
+**`POST /rca/{name}`** — analysis params required, reference params optional (same rule). Runs `run_rca` via `asyncio.to_thread` under the lock, passing `app.state.traces` directly — on-demand fits land in the cache with no copying. 404 unknown metric; `ValueError` → 422. Optional `run_id` opts into progress reporting (below).
 
 **`POST /rca/{name}/slices`** — `dimension` + analysis params required, reference params optional (resolved in `_run_slice` via `resolve_reference_window`, since `slice_attribution` keeps concrete dates — the engine stays pure; result carries `reference_defaulted`). 404 unknown metric; 422 for an undeclared dimension, a provider that raises `SliceNotSupported`, or engine `ValueError`s. `_run_slice` (sync, via `asyncio.to_thread` under the lock) computes the fetch span (`min(starts)..max(ends)` — lag-shifted windows are the *caller's* to pass when slicing a lagged parent), reads through `slice_cache` (querying by the same `source`-last-segment rule as startup for SL providers), fetches the `weight` metric's slices too for rates (must share the rate's grain), and calls the pure `slice_attribution`.
 
-**`POST /simulate`** — `ScenarioRequest` body. Runs `run_scenario` via `asyncio.to_thread` under the lock; `app.state.data` is passed straight through, so a cold-start tree (data `None`) selects the engine's cold-start branch with no route logic. `ValueError` → 422.
+**`POST /simulate`** — `ScenarioRequest` body. Runs `run_scenario` via `asyncio.to_thread` under the lock; `app.state.data` is passed straight through, so a cold-start tree (data `None`) selects the engine's cold-start branch with no route logic. `ValueError` → 422. Optional `run_id` opts into progress reporting (below).
+
+**`GET /progress/{run_id}`** — the live stage of an in-flight RCA or simulation. Exists because a minute-long fit behind a spinner is indistinguishable from a hung one, and it needs no job queue: the analysis already runs in `asyncio.to_thread`, so the event loop is free to answer. Three deliberate choices:
+
+- **No lock.** The analysis holds `app.state.lock` for its whole duration, so taking it here would deadlock the report against the thing being reported on.
+- **Unknown id → `{"stage": null}` with 200**, not 404. To a poller a finished run and a never-started one are the same answer, and neither is an error worth client-side handling.
+- **`app.state.progress` is bounded** (`MAX_PROGRESS_ENTRIES`, insertion-ordered eviction) for the same reason as `traces`: a client that navigates away mid-run never sends the request that would clean its entry up, and on the public demo that is every visitor.
+
+`_progress_reporter` registers the id *before* acquiring the lock (stage `waiting`), so a queued run says so. The returned callback is handed to the engine explicitly — `run_rca(..., progress=)` — never read from a global, so `fit_metric` and friends stay pure functions of their arguments and the no-`run_id` path is byte-identical to the old behavior. The callback runs on the worker thread while the poll reads from the event loop, so it **replaces** the dict rather than mutating it: a reader sees the old update or the new one, never a half-written one. `engine/progress.py`'s `report()` swallows callback exceptions — progress must never be able to fail an analysis.
 
 `/series`, `/analyze`, `/shapley`, `/rca`, and `/rca/{name}/slices` guard with `_require_data` (503 degraded, then 422 on a cold-start tree — those analyses consume history that deliberately doesn't exist); everything else guards with `_require_ready` alone.
 
