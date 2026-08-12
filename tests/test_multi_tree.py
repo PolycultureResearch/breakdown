@@ -284,3 +284,70 @@ def test_the_trace_cap_is_global_not_per_tree(tree_dir):
         assert len(app.state.trace_store._entries) == MAX_CACHED_TRACES
         assert len(b) == 10  # the newcomers survive; the oldest entries went
         assert ("m0", None) not in a
+
+
+# --- MCP ------------------------------------------------------------------
+
+HEADERS = {
+    "Accept": "application/json, text/event-stream",
+    "Content-Type": "application/json",
+}
+
+
+def _call_tool(client, name, arguments, id=2):
+    resp = client.post(
+        "/mcp/",
+        json={
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        },
+        headers=HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["result"]
+
+
+def test_mcp_list_trees_then_scope_a_tool_to_one(tree_dir, monkeypatch):
+    """An analyst asking "why did Q3 Pro signups stall" has to be able to
+    *find* the goal tree before analysing it."""
+    monkeypatch.setenv("BREAKDOWN_DEFAULT_TREE", "business")
+    with TestClient(app, base_url="http://127.0.0.1:9090") as client:
+        res = _call_tool(client, "list_trees", {})
+        assert res["isError"] is False
+        listing = res["structuredContent"]["result"]
+        assert listing["default"] == "business"
+        goal = next(t for t in listing["trees"] if t["id"] == "q3_pro_growth")
+        assert goal["goal"]["metric"] == "pro_members_net_new"
+        assert goal["state"] == "not_loaded" and goal["progress"] is None
+
+        # ...and naming it scopes the tool, loading it on the way
+        out = _call_tool(client, "get_tree", {"tree": "q3_pro_growth"})
+        tree = out["structuredContent"]["result"]
+        assert tree["tree"] == "q3_pro_growth"
+        assert {m["name"] for m in tree["metrics"]} == {
+            "pro_trials",
+            "pro_members_net_new",
+        }
+        # omitting `tree` still means the default tree
+        default = _call_tool(client, "get_tree", {})["structuredContent"]["result"]
+        assert default["tree"] == "business"
+
+
+def test_mcp_report_url_carries_the_tree(tree_dir, monkeypatch):
+    monkeypatch.setenv("BREAKDOWN_DEFAULT_TREE", "business")
+    with TestClient(app, base_url="http://127.0.0.1:9090") as client:
+        out = _call_tool(
+            client,
+            "explain_metric",
+            {"name": "pro_trials", "tree": "q3_pro_growth"},
+        )["structuredContent"]["result"]
+        assert out["report_url"].endswith("#tree=q3_pro_growth&metric=pro_trials")
+
+
+def test_mcp_unknown_tree_names_the_known_ones(tree_dir):
+    with TestClient(app, base_url="http://127.0.0.1:9090") as client:
+        res = _call_tool(client, "get_tree", {"tree": "nope"})
+        assert res["isError"] is True
+        assert "list_trees" in res["content"][0]["text"]

@@ -82,7 +82,14 @@ def test_list_tools():
     with _client() as client:
         result = _rpc(client, "tools/list", {})
         tools = {t["name"]: t for t in result["tools"]}
-        assert set(tools) == {"get_tree", "explain_metric", "run_rca", "slice_metric", "run_whatif"}
+        assert set(tools) == {
+            "list_trees",
+            "get_tree",
+            "explain_metric",
+            "run_rca",
+            "slice_metric",
+            "run_whatif",
+        }
         for tool in tools.values():
             assert tool["description"].strip()
         # window-selection guidance is part of the run_rca contract: it is
@@ -112,7 +119,9 @@ def test_explain_metric():
         assert out["series_summary"]["n_periods"] == 100
         assert len(out["series_summary"]["recent"]) == 8
         assert out["fit"] == {"fitted": False}
-        assert out["report_url"].endswith("/ui/#metric=revenue")
+        # the link names its tree: a link an assistant hands over outlives
+        # whichever tree this server happens to default to
+        assert out["report_url"].endswith("/ui/#tree=jaffle_shop_tree&metric=revenue")
 
         # unknown metric -> tool error naming the valid metrics
         res = _call_tool(client, "explain_metric", {"name": "nope"}, id=3)
@@ -173,7 +182,7 @@ def test_run_whatif():
         )
         assert len(out["caveats"]) == 3
         assert "how_to_read" in out
-        assert "#whatif=" in out["report_url"]
+        assert "#tree=jaffle_shop_tree&whatif=" in out["report_url"]
         # extrapolation stats collapse to a flag
         assert isinstance(revenue["extrapolation"], bool)
 
