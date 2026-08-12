@@ -97,15 +97,30 @@ button.primary {
 button.primary:hover { background: #4338ca; }
 button:disabled { opacity: 0.5; cursor: default; }
 
-#status {
+/* The header's right side carries two different things, kept in two elements:
+   #status is transient (run progress, errors, advisories), #context is ambient
+   (which tree is loaded). Sharing one element meant every run's outcome
+   permanently overwrote the tree context. */
+#header-right {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* No max-width: the message shows in full whenever the header has the room,
+   and gives it up (ellipsis) only when the window is genuinely too narrow. */
+#status {
   font-size: 12.5px;
   color: var(--muted);
-  max-width: 340px;
+  min-width: 0;
+  text-align: right;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+#status:empty { display: none; }
 #status.error { color: var(--down); }
 #status.busy::before {
   content: "";
@@ -119,6 +134,30 @@ button:disabled { opacity: 0.5; cursor: default; }
   vertical-align: -1px;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Ambient tree context. Chips rather than one sentence so freshness can carry
+   its own tone without recoloring the whole line. Shrinks after #status. */
+#context {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+.ctx-chip {
+  font-size: 11.5px;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 9px;
+  white-space: nowrap;
+}
+.ctx-chip.warn {
+  color: #92400e;
+  background: var(--warn-soft);
+  border-color: #fde68a;
+}
 
 /* ---------- Main split ---------- */
 
@@ -140,6 +179,39 @@ button:disabled { opacity: 0.5; cursor: default; }
   flex-direction: column;
   gap: 6px;
 }
+/* Dragging the background already pans; this is the way back when a big tree
+   has been zoomed or dragged out of view. Bottom-right — the legend owns
+   bottom-left, the card toolbar top-left. */
+#zoom-controls {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: stretch;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+#zoom-controls button {
+  border: none;
+  border-radius: 0;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 0;
+  width: 30px;
+  text-align: center;
+}
+#zoom-controls button:first-child { border-left: none; }
+#zoom-controls button:hover { background: var(--accent-soft); color: var(--accent); }
+/* Wider: these carry text, not a glyph. */
+#zoom-controls #zoom-level { width: 52px; font-variant-numeric: tabular-nums; }
+#zoom-controls #zoom-fit { width: 40px; }
+
 #share-wrap { position: relative; }
 .share-caret { font-size: 10px; }
 #share-menu {

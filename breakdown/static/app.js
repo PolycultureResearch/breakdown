@@ -143,10 +143,32 @@ function signedPct(x) {
   return (x >= 0 ? "+" : "") + (x * 100).toFixed(1) + "%";
 }
 
-function setStatus(msg, kind = "") {
+/* Two header slots, deliberately separate. `#status` is transient — run
+   progress, errors, window advisories — and `#context` is ambient: which tree
+   is loaded, from where, over what window. They shared one element until
+   2026-08-11, so finishing an RCA overwrote the tree context for the rest of
+   the session. `ttlMs` clears a message on its own; use it for success notices,
+   never for errors or advisories (those stand until something replaces them). */
+let statusTimer = null;
+
+function setStatus(msg, kind = "", ttlMs = 0) {
   const el = $("status");
+  clearTimeout(statusTimer);
   el.textContent = msg;
   el.className = kind; // "", "busy", "error"
+  if (msg && ttlMs) statusTimer = setTimeout(() => setStatus(""), ttlMs);
+}
+
+/* chips: [{text, title?, cls?}] — `cls: "warn"` for anything the reader should
+   not take at face value (a lagging data edge, a tree with no provider). */
+function setContext(chips) {
+  $("context").innerHTML = chips
+    .map(
+      (c) =>
+        `<span class="ctx-chip${c.cls ? " " + c.cls : ""}"` +
+        `${c.title ? ` title="${esc(c.title)}"` : ""}>${esc(c.text)}</span>`,
+    )
+    .join("");
 }
 
 /* ---------- date / window helpers (UTC to match ISO strings) ---------- */
@@ -1358,6 +1380,50 @@ function buildGraph() {
     else selectMetric(evt.target.id());
   });
   markFitted();
+  initZoomControls();
+}
+
+/* Cytoscape pans on background-drag and zooms on wheel out of the box, but
+   neither is discoverable and neither gets you back once a big tree is off
+   screen. These are the way home. Zoom steps keep the viewport centre fixed so
+   the thing you were looking at stays where it is. */
+let zoomWired = false;
+
+function initZoomControls() {
+  const ZOOM_STEP = 1.25;
+  // Resolved at click time, not captured: the retry banner re-runs init() —
+  // and so buildGraph() — without a page reload, replacing the instance.
+  const cy = () => state.cy;
+  const label = $("zoom-level");
+  const paint = () => (label.textContent = `${Math.round(cy().zoom() * 100)}%`);
+  const fit = () => cy().fit(undefined, 40);
+  const setZoom = (level) => {
+    const c = cy();
+    c.zoom({
+      level: Math.min(c.maxZoom(), Math.max(c.minZoom(), level)),
+      renderedPosition: { x: c.container().clientWidth / 2, y: c.container().clientHeight / 2 },
+    });
+  };
+
+  cy().on("zoom", paint); // per-instance, so it re-binds on every rebuild
+  paint();
+
+  // The buttons and `document` outlive the graph, so their listeners bind once
+  // — a second buildGraph() would otherwise make every click zoom twice.
+  if (zoomWired) return;
+  zoomWired = true;
+  $("zoom-in").addEventListener("click", () => setZoom(cy().zoom() * ZOOM_STEP));
+  $("zoom-out").addEventListener("click", () => setZoom(cy().zoom() / ZOOM_STEP));
+  $("zoom-level").addEventListener("click", () => setZoom(1));
+  $("zoom-fit").addEventListener("click", fit);
+  // `F` fits. Guarded on the event target so it never eats a keystroke meant
+  // for a date input, the metric filter, or a scenario note.
+  document.addEventListener("keydown", (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName))) return;
+    if (e.key === "f" || e.key === "F") fit();
+  });
 }
 
 function markFitted() {
@@ -1739,7 +1805,7 @@ async function runRCA() {
     renderRcaTab();
     switchTab("rca");
     $("clear-rca").style.display = "";
-    setStatus(`RCA complete for ${target}.`);
+    setStatus(`RCA complete for ${target}.`, "", 6000);
   } catch (err) {
     setStatus(`RCA failed: ${err.message}`, "error");
   } finally {
@@ -2795,7 +2861,7 @@ async function runWhatif() {
     renderWhatifTab();
     switchTab("whatif");
     applyWhatifOverlay();
-    setStatus("Simulation complete.");
+    setStatus("Simulation complete.", "", 6000);
   } catch (err) {
     setStatus(`Simulation failed: ${err.message}`, "error");
     const b = $("wf-run");
@@ -3318,11 +3384,38 @@ async function init() {
     initWhatif();
     if (coldStart()) {
       // What-if is the only analysis a dataless tree supports — boot into it.
-      setStatus(`${state.meta.metrics.length} metrics · cold start — declared beliefs, no data provider`);
+      setContext([
+        { text: `${state.meta.metrics.length} metrics` },
+        {
+          text: "cold start",
+          cls: "warn",
+          title:
+            "This tree declares no data provider. What-if runs over the declared " +
+            "beliefs in the YAML; there is no history to analyse.",
+        },
+      ]);
+      setStatus("");
       switchTab("whatif");
     } else {
-      const edgeNote = state.asOf < state.meta.date_end ? ` · data → ${state.asOf}` : "";
-      setStatus(`${state.meta.metrics.length} metrics · provider: ${state.meta.provider} · ${state.meta.date_start} → ${state.meta.date_end}${edgeNote}`);
+      const chips = [
+        { text: `${state.meta.metrics.length} metrics` },
+        { text: state.meta.provider, title: "Data provider" },
+        {
+          text: `${state.meta.date_start} → ${state.meta.date_end}`,
+          title: "Loaded data window (set at startup by --start-date / --end-date)",
+        },
+      ];
+      if (state.asOf < state.meta.date_end) {
+        chips.push({
+          text: `data → ${state.asOf}`,
+          cls: "warn",
+          title:
+            `The tree-wide data edge lags the loaded window: at least one metric ` +
+            `has no data after ${state.asOf}, so cards anchor there.`,
+        });
+      }
+      setContext(chips);
+      setStatus("");
       renderHistoryNudge();
     }
     applyDeepLink();
