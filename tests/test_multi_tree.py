@@ -1,7 +1,9 @@
-"""Many metric trees in one process (roadmap 2.16).
+"""Several metric trees in one process (roadmap 2.16).
 
-The framing is a tree per company goal per quarter, so the properties that
-matter here are: one bad file doesn't take the others down, nobody pays for a
+Trees are peers — a wide revenue tree, a team's, a feature's, one standing
+behind a target — of any lifetime, with a goal or without. So the properties
+that matter here are: a tree with no `tree:` block at all is as first-class as
+an annotated one, one bad file doesn't take the others down, nobody pays for a
 tree they didn't open, and the index says when it doesn't know.
 """
 
@@ -26,6 +28,20 @@ metrics:
   - name: orders
     source: w.orders
     parents: [sessions]
+"""
+
+# A team's tree: no `tree:` block at all, no goal, no period. It is a peer of
+# the others and every part of the index has to treat it as one.
+BARE_TREE = """
+provider:
+  type: mock
+
+metrics:
+  - name: paid_clicks
+    source: w.paid_clicks
+  - name: paid_signups
+    source: w.paid_signups
+    parents: [paid_clicks]
 """
 
 GOAL_TREE = """
@@ -66,6 +82,7 @@ def tree_dir(tmp_path, monkeypatch):
     d = tmp_path / "breakdown"
     d.mkdir()
     (d / "business.yml").write_text(BUSINESS_TREE)
+    (d / "marketing.yml").write_text(BARE_TREE)
     (d / "q3_pro_growth.yml").write_text(GOAL_TREE)
     (d / "broken.yml").write_text(BROKEN_TREE)
     monkeypatch.setenv("BREAKDOWN_TREE", str(d))
@@ -75,7 +92,12 @@ def tree_dir(tmp_path, monkeypatch):
 def test_directory_discovers_one_tree_per_file(tree_dir):
     with TestClient(app) as client:
         body = client.get("/trees").json()
-        assert {t["id"] for t in body["trees"]} == {"business", "q3_pro_growth", "broken"}
+        assert {t["id"] for t in body["trees"]} == {
+            "business",
+            "marketing",
+            "q3_pro_growth",
+            "broken",
+        }
         # id is the filename stem; title falls back to it when undeclared
         card = next(t for t in body["trees"] if t["id"] == "q3_pro_growth")
         assert card["title"] == "Q3 Pro member growth"
@@ -83,6 +105,55 @@ def test_directory_discovers_one_tree_per_file(tree_dir):
         assert card["period"] == "2026-Q3"
         assert card["goal"]["target"] == 200
         assert card["metric_count"] == 2
+
+
+def test_a_tree_with_no_tree_block_is_a_peer(tree_dir):
+    """Most trees declare no goal and many declare nothing at all — a team's
+    tree, the wide revenue tree. None of that is a deficiency, so the card
+    carries no goal furniture and the tree opens like any other."""
+    with TestClient(app) as client:
+        card = next(t for t in client.get("/trees").json()["trees"] if t["id"] == "marketing")
+        assert card["title"] == "marketing"  # falls back to the filename stem
+        assert card["goal"] is None and card["progress"] is None
+        assert card["period"] is None and card["owner"] is None
+        assert card["metric_count"] == 2
+        assert client.get("/trees/marketing/meta").status_code == 200
+
+
+def test_a_goal_needs_neither_a_deadline_nor_a_period(tmp_path, monkeypatch):
+    """breakdown takes no position on how long a tree lives: a target with no
+    date is an ordinary thing to be held to."""
+    d = tmp_path / "trees"
+    d.mkdir()
+    (d / "business.yml").write_text(BUSINESS_TREE)
+    (d / "platform.yml").write_text("""
+tree:
+  title: "Platform reliability"
+  goal:
+    metric: orders
+    target: 5000
+
+provider:
+  type: mock
+
+metrics:
+  - name: sessions
+    source: w.sessions
+  - name: orders
+    source: w.orders
+    parents: [sessions]
+""")
+    monkeypatch.setenv("BREAKDOWN_TREE", str(d))
+    with TestClient(app) as client:
+        card = client.post("/trees/platform/load").json()
+        assert card["goal"] == {
+            "metric": "orders",
+            "target": 5000,
+            "direction": "up",
+            "deadline": None,
+        }
+        assert card["period"] is None
+        assert card["progress"]["target"] == 5000
 
 
 def test_default_is_the_alphabetically_first_tree(tree_dir):
@@ -125,9 +196,9 @@ def test_one_broken_tree_does_not_take_down_the_others(tree_dir, monkeypatch):
 
 
 def test_a_directory_of_trees_fetches_nothing_at_boot(tree_dir):
-    """§5.1: boot parses every tree and loads none. Eight goal trees is eight
-    sets of warehouse round-trips, and paying for the seven nobody opened is
-    the difference between starting in three seconds and three minutes."""
+    """§5.1: boot parses every tree and loads none. Eight trees is eight sets
+    of warehouse round-trips, and paying for the seven nobody opened is the
+    difference between starting in three seconds and three minutes."""
     with TestClient(app) as client:
         states = {t["id"]: t["state"] for t in client.get("/trees").json()["trees"]}
         assert states["business"] == "not_loaded"
@@ -308,8 +379,8 @@ def _call_tool(client, name, arguments, id=2):
 
 
 def test_mcp_list_trees_then_scope_a_tool_to_one(tree_dir, monkeypatch):
-    """An analyst asking "why did Q3 Pro signups stall" has to be able to
-    *find* the goal tree before analysing it."""
+    """An analyst asking about one part of the business has to be able to
+    *find* the tree that models it before analysing it."""
     monkeypatch.setenv("BREAKDOWN_DEFAULT_TREE", "business")
     with TestClient(app, base_url="http://127.0.0.1:9090") as client:
         res = _call_tool(client, "list_trees", {})

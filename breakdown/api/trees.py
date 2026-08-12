@@ -5,6 +5,12 @@ single-tree app kept directly on `app.state` — parser, fetcher, data, the
 caches, the lock — is per-tree and lives here; only `progress` stayed global,
 because run ids are already unique.
 
+Trees are peers. A company might keep one wide tree with revenue at the top, a
+marketing tree detailing channels and campaigns, a product tree about feature
+adoption and retention, and a tree standing behind a specific goal — each may
+be durable or disposable, and each may declare a goal or not. Nothing here
+ranks them or assumes a lifetime.
+
 Two things are deliberately *not* per-tree:
 
 - **The trace cap.** `MAX_CACHED_TRACES` entries per tree would be 256 x N
@@ -14,7 +20,7 @@ Two things are deliberately *not* per-tree:
   `run_rca` and `run_scenario` are untouched.
 - **The lock is per-tree**, which is the opposite move and for the same reason:
   two trees' caches are disjoint, so one global lock would park an RCA on the
-  durable business tree behind a simulation on an unrelated goal tree for no
+  revenue tree behind a simulation on an unrelated marketing tree for no
   reason. (`waiting` progress now means "queued behind another run *on this
   tree*".)
 """

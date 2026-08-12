@@ -35,9 +35,11 @@ mcp = MCPServer(
     instructions=(
         "breakdown is a Bayesian metric-tree engine for root-cause analysis and "
         "what-if simulation over a business's metric DAG. A server may hold "
-        "several trees — one durable business tree plus a tree per company goal "
-        "per quarter — so call list_trees when the question names a goal or a "
-        "quarter, and pass the tree id to every other tool. "
+        "several trees, each a different lens on the same business — a wide one "
+        "with revenue at the top, a team's (marketing channels and campaigns), a "
+        "product area's (feature adoption and retention), one standing behind a "
+        "specific goal — so call list_trees first when the question is about a "
+        "particular area, and pass the tree id to every other tool. "
         "Call get_tree first to "
         "learn the metrics, their grains, and the loaded data window; then run_rca "
         "to explain why a metric moved, slice_metric to localize a gap within a "
@@ -53,11 +55,12 @@ mcp = MCPServer(
 async def _state(tree: Optional[str] = None):
     """The `TreeState` a tool addresses: the named tree, else the default.
 
-    Every tool takes an optional `tree`, so an analyst asking "why did Q3 Pro
-    signups stall" can call `list_trees`, find the goal tree and stay in it.
-    Omitting it is the default tree, which is what keeps every existing client
-    working. Loads the tree's data if this is the first call that needs it —
-    the tools are the one caller with no page to show a `loading` state to.
+    Every tool takes an optional `tree`, so an analyst asking "why did paid
+    signups stall" can call `list_trees`, find the tree that models paid
+    acquisition, and stay in it. Omitting it is the default tree, which is what
+    keeps every existing client working. Loads the tree's data if this is the
+    first call that needs it — the tools are the one caller with no page to
+    show a `loading` state to.
     """
     # Imported lazily: breakdown.api.main imports this module to mount the
     # MCP app, so a module-level import back would be a cycle.
@@ -105,17 +108,21 @@ def _require_data(state) -> None:
 
 @mcp.tool()
 async def list_trees() -> Dict[str, Any]:
-    """List every metric tree this server holds: id, title, owner, period, and
-    the goal it exists to hit. Call this first when the question names a goal
-    or a quarter ("are we going to hit 200 new Pro members?") rather than the
-    business as a whole — then pass the `id` as the `tree` argument to
-    get_tree, run_rca, slice_metric or run_whatif.
+    """List every metric tree this server holds: id, title, owner, and (when
+    it declares them) a period and a goal. Trees are different lenses on the
+    same business — a wide revenue tree, a marketing tree detailing channels, a
+    product tree about feature adoption, a tree standing behind a target — and
+    any of them may be long-lived or short-lived. Call this first whenever the
+    question points at a particular area or target rather than the business as
+    a whole, then pass the `id` as the `tree` argument to get_tree, run_rca,
+    slice_metric or run_whatif.
 
     Answers from parsed YAML alone and never loads data, so it is instant.
     `state` is `loaded` | `not_loaded` | `loading` | `error`: `not_loaded`
     means nobody has opened that tree in this process yet, which is why its
-    `progress` is null — it is "we haven't looked", not zero. Any tool call
-    naming the tree loads it."""
+    `progress` is null — it is "we haven't looked", not zero. A tree with no
+    declared goal has no `progress` at all, which is normal rather than a gap.
+    Any tool call naming the tree loads it."""
     from breakdown.api.main import _tree_card, app
 
     state = app.state

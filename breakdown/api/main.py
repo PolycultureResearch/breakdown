@@ -542,7 +542,7 @@ async def lifespan(app: FastAPI):
 
     # Boot parses every tree's YAML (cheap, no I/O beyond the file) and fetches
     # none, so `GET /trees` is a complete, instant index without touching a
-    # warehouse. Eight goal trees in a dbt repo is eight sets of warehouse
+    # warehouse. Eight trees in a dbt repo is eight sets of warehouse
     # round-trips, and paying for the seven nobody opened is the difference
     # between a tool that starts in three seconds and one that starts in three
     # minutes. `_eager_trees` names the exceptions.
@@ -702,7 +702,7 @@ async def health(request: Request):
 
 
 def _goal_progress(tree: TreeState) -> Optional[Dict[str, Any]]:
-    """Current-vs-target for a loaded goal tree, or None.
+    """Current-vs-target for a loaded tree that declares a goal, else None.
 
     `current` is the goal metric's value at the tree's own data edge — the same
     anchor the node cards use (the oldest `data_through` across the tree, and
@@ -710,6 +710,8 @@ def _goal_progress(tree: TreeState) -> Optional[Dict[str, Any]]:
     tree itself shows rather than quoting a fresher half-period nothing else
     displays. None for a tree that isn't loaded: §2.3's whole point is that the
     index says when it doesn't know, and a dash is the one honest answer there.
+    A tree with no `tree.goal` simply has no progress to report — most trees
+    don't, and that is not a gap.
     """
     meta = tree.meta
     goal = meta.goal if meta else None
@@ -764,9 +766,9 @@ def _tree_card(tree: TreeState) -> Dict[str, Any]:
 @app.get("/trees")
 async def list_trees(request: Request):
     """The index's data source. Answers from parsed YAML alone and **never
-    triggers a load** — eight goal trees in a dbt repo is eight sets of
-    warehouse round-trips, and this endpoint has to be instant on a cold
-    process for the lazy loading below it to be worth anything."""
+    triggers a load** — eight trees in a dbt repo is eight sets of warehouse
+    round-trips, and this endpoint has to be instant on a cold process for the
+    lazy loading below it to be worth anything."""
     state = request.app.state
     return {
         "default": state.default_tree,

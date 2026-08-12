@@ -73,7 +73,10 @@ is covered in the [README](README.md#deploying).
 - **The engine is stateless.** `fit_metric` is a pure function
   (DAG + data + target → trace). The only cache is the addressed tree's
   `traces`, passed in explicitly — never introduce hidden global state.
-- **A process serves many trees.** Per-tree state lives on `TreeState`
+- **A process serves several trees, and they are peers.** A wide revenue tree,
+  a team's tree, a feature's tree, a tree behind a target — any durable or
+  disposable, any with a goal or without; nothing in the code should assume a
+  lifetime or require a goal. Per-tree state lives on `TreeState`
   (`breakdown/api/trees.py`), held in `app.state.trees[id]`; `app.state.X` is an
   alias for the **default** tree's. New per-tree state goes on `TreeState`, not
   on `app.state`. The lock is per-tree; the trace cap is process-wide.

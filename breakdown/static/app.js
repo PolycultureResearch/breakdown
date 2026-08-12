@@ -3710,33 +3710,29 @@ function showDegradedBanner(error) {
 }
 
 /* ---------- The tree index (roadmap 2.16) ----------
-   One process can serve many trees: the durable business tree plus a tree per
-   company goal per quarter. The index is the goal owner's whole surface — a
-   persona who may never open a tree — so it answers "how are we doing" across
-   trees, or says plainly that it doesn't know.
+   One process can serve several trees, and they are peers. A company might
+   keep one wide tree with revenue at the top, a marketing tree that goes deep
+   on channels and campaigns, a product tree about feature adoption and its
+   effect on retention, and a tree standing behind a specific goal. Any of them
+   may be durable or disposable, and any may carry a goal or not — the index
+   makes no claim about which kind a tree is.
+
+   So the cards sit in **one flat grid** rather than grouped by `period`:
+   grouping by time would file every tree that isn't time-bound under "other",
+   which is the opposite of the point. `period` is one optional label on a
+   card, beside the owner.
 
    It renders `GET /trees`, which reads parsed YAML only and never triggers a
    load. That is what makes a `not loaded` card honest rather than lazy: the
    alternative (fetch everything to fill the index) is the exact cost lazy
    loading exists to avoid. */
 
-const NO_PERIOD = " "; // sorts after any real label; rendered as "No period"
-
-function treeGroups(trees) {
-  const groups = new Map();
-  trees.forEach((t) => {
-    const key = t.period || NO_PERIOD;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(t);
-  });
-  return [...groups.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-}
-
-/* The derived, uncertain half of a goal card. Deliberately two facts and no
-   verdict: `period` is a free-form label rather than a parsed range, so the
-   *start* of the goal window is not in the tree at all and "on track" /
-   "behind" would be a forecast the engine never made. Share of target and days
-   left are both checkable; the reader does the arithmetic the data supports. */
+/* The derived, uncertain half of a card that declares a goal. Deliberately two
+   facts and no verdict: `period` is a free-form label rather than a parsed
+   range, so the *start* of the window is not in the tree at all and "on track"
+   / "behind" would be a forecast the engine never made. Share of target and
+   days left are both checkable; the reader does the arithmetic the data
+   supports. A tree with a target and no deadline simply shows the first. */
 function goalPace(card) {
   const bits = [];
   const goal = card.goal || {};
@@ -3798,8 +3794,9 @@ function treeCardHtml(card) {
   } else if (card.goal) {
     body = goalBarHtml(card);
   } else {
-    // A tree without a goal is not a failed goal card: the durable business
-    // tree and an exploratory tree are first-class.
+    // A tree without a goal is not a failed goal card. The wide revenue tree,
+    // a marketing tree detailing channels, a product tree about feature
+    // adoption — none of them owes anyone a target.
     body = `<p class="tree-plain">${card.metric_count} metrics · ${esc(card.provider || "—")}</p>`;
   }
   const load =
@@ -3819,19 +3816,11 @@ function treeCardHtml(card) {
 
 function renderIndex() {
   const host = $("index");
-  const goals = state.trees.filter((t) => t.goal).length;
   host.innerHTML =
     `<div class="index-head"><h1>Metric trees</h1>` +
     `<p class="muted">${state.trees.length} tree${state.trees.length === 1 ? "" : "s"}` +
-    (goals ? ` · ${goals} with a goal` : "") +
     ` · data loads when you open one</p></div>` +
-    treeGroups(state.trees)
-      .map(
-        ([period, trees]) =>
-          `<section class="index-group"><h2>${esc(period === NO_PERIOD ? "No period" : period)}</h2>` +
-          `<div class="tree-cards">${trees.map(treeCardHtml).join("")}</div></section>`
-      )
-      .join("");
+    `<div class="tree-cards">${state.trees.map(treeCardHtml).join("")}</div>`;
   host.querySelectorAll("[data-open]").forEach((btn) =>
     btn.addEventListener("click", () => navigateToTree(btn.dataset.open))
   );
@@ -3846,8 +3835,8 @@ function renderIndex() {
 }
 
 /* The Load affordance: fetch this one tree's data and repaint its card. The
-   index stays where it is — a goal owner comparing eight goals should not be
-   thrown into one of them just for asking what the number is. */
+   index stays where it is — someone comparing several trees should not be
+   thrown into one of them just for asking what its number is. */
 async function loadTreeFromIndex(btn) {
   const id = btn.dataset.load;
   btn.disabled = true;

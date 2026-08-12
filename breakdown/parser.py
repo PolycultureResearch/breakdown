@@ -146,14 +146,16 @@ class DataProviderConfig(BaseModel):
 
 
 class GoalSpec(BaseModel):
-    """The target a goal tree exists to hit.
+    """A target a tree is being held to. Optional, like everything in `tree:`.
 
-    `metric` names a metric in this tree and is the one field here that can be
-    wrong in a way the author cannot see, so `Parser._validate_goal` rejects a
-    dangling name rather than leaving a silently dead card on the index.
-    `direction` says which way is winning and defaults from the named metric's
-    own `direction` (the tree already has the concept); `deadline` is the
-    machine-readable date behind the index's pace read.
+    Any tree may declare one — a five-year platform tree as readily as a
+    quarterly push — and most trees won't. `metric` names a metric in this tree
+    and is the one field here that can be wrong in a way the author cannot see,
+    so `Parser._validate_goal` rejects a dangling name rather than leaving a
+    silently dead card on the index. `direction` says which way is winning and
+    defaults from the named metric's own `direction` (the tree already has the
+    concept); `deadline` is optional too — a target with no date is a perfectly
+    ordinary thing to be held to.
     """
 
     metric: str
@@ -183,14 +185,17 @@ class GoalSpec(BaseModel):
 class TreeMeta(BaseModel):
     """The optional `tree:` block — a tree's identity as a document.
 
-    **Every field is optional, including the block itself**, so the durable
-    business tree, an exploratory tree and the bundled examples stay
-    first-class: a tree that is not a goal declares only `title`, or nothing at
-    all and takes its identity from its filename. `id` is never declared here —
-    it is always the filename stem, so two files can't claim one id.
+    **Every field is optional, including the block itself.** A process serves
+    several trees and they are peers: a wide tree with revenue at the top, a
+    marketing tree detailing channels and campaigns, a product tree about
+    feature adoption, a tree standing behind a target. Nothing here says how
+    long a tree should live or that it owes anyone a goal — a tree can declare
+    only `title`, or nothing at all and take its identity from its filename.
+    `id` is never declared here: it is always the filename stem, so two files
+    can't claim one id.
 
-    `period` is a free-form label for grouping the index ("2026-Q3", "Summer");
-    `goal.deadline` is the parsed date.
+    `period` is a free-form label the card shows ("2026-Q3", "FY27",
+    "2026-2031"), deliberately unparsed; `goal.deadline` is the parsed date.
     """
 
     title: Optional[str] = None

@@ -1,7 +1,10 @@
 # Multiple metric trees — design spec
 
-Status: **shipped 2026-08-12**, with two deviations recorded in §11. Roadmap
-item **2.16**. Companion to
+Status: **shipped 2026-08-12**, with two deviations recorded in §11. The
+product framing in §1 was **amended by the author the same day, after first
+implementation** — see **§12**, which supersedes it: this document over-fitted
+to the quarterly-goal case, and trees are peers of any lifetime, with or
+without a goal. §§2–8 stand as built. Roadmap item **2.16**. Companion to
 [`ui_design_spec.md`](ui_design_spec.md) (UI) and
 [`../docs/ai-context/python-backend.md`](../docs/ai-context/python-backend.md)
 (the single-tree architecture this amends).
@@ -430,3 +433,55 @@ Also worth recording, because it is not obvious from §5: the **single-file**
 cheap, but with one tree it buys nothing and would mean the port comes up
 before the data does, which is a regression for every existing deployment.
 `--eager` asks for the same behaviour from a directory.
+
+## 12. Amendment (2026-08-12): trees are peers, not goal trees
+
+**What the author actually asked for**, restated after reading the first
+implementation: *the ability for a company to create and analyse one **or
+more** trees. Any tree can be durable or disposable. Any tree can have a goal
+attached or not have a goal attached.*
+
+§1 above reads as though the feature exists to serve thirteen-week disposable
+goal trees. That is one use case, not the shape of the thing. The intended
+picture:
+
+- One **wide tree** with a revenue metric at the top — the net-MRR tree — which
+  most companies will have.
+- A **team's tree**: a marketing tree whose leaves go into far more detail on
+  channels and campaigns than the wide tree would carry.
+- A **product or feature tree**, where the emphasis is adoption of a feature
+  and what that does to retention.
+- A **goal tree**, standing behind a target — and the target may be quarterly,
+  annual, five-year, or undated. Deadlines and durability are the author's
+  business, not breakdown's.
+
+Any of those focused trees may be as useful as the big revenue-focused one,
+and any of them may be long-lived. **Nothing prescribes a lifetime, and nothing
+requires a goal.**
+
+### What changed in the code
+
+The mechanism was already right — `tree:` and `goal:` were optional from the
+start, `deadline` included, and a tree without a goal was already a first-class
+card. The over-prescription lived in the framing, and in one piece of layout:
+
+- **The index is one flat grid**, not sections grouped by `period`. Grouping by
+  time made every tree that isn't time-bound an "other" — the wide revenue tree
+  and the marketing tree both filed under a "No period" heading, which is
+  exactly backwards. `period` is now one optional label on a card, beside the
+  owner. (This reverses the grouping choice recorded against §10's first
+  question; §7.1's "grouped by `period`" no longer describes the build.)
+- **The copy stopped prescribing.** README, the MCP tool and server
+  descriptions, the module docstrings and the UI comments now describe several
+  peer trees and name the marketing / product / goal cases as equals, rather
+  than "the durable business tree plus a tree per company goal per quarter".
+
+### What did not change
+
+`GoalSpec`, `TreeMeta`, the `TreeState` shape, the routes, lazy loading and the
+MCP surface are all as built. A tree that declares a goal still gets its
+progress bar and its `progress` block on `GET /trees`; a tree that declares
+none simply has `goal: null` and `progress: null`, which is the common case and
+not a gap. §10's remaining questions — archiving, and whether the durable tree
+should look distinct — are, if anything, less pressing now: there is no special
+class of tree to archive or distinguish.

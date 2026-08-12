@@ -892,10 +892,10 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 }
 
 /* ---------- Tree index (roadmap 2.16) ----------
-   The landing view when this process serves more than one tree. It is the goal
-   owner's whole surface — a persona who may never open a tree — so it reads as
+   The landing view when this process serves more than one tree. Trees are
+   peers — a wide revenue tree, a team's tree, a goal's tree — so this reads as
    a page of documents rather than a control panel: paper ground, white cards,
-   the same quiet defaults as the canvas. */
+   one flat grid, the same quiet defaults as the canvas. */
 #index {
   flex: 1;
   overflow-y: auto;
@@ -909,17 +909,6 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   margin: 0 0 4px;
 }
 .index-head p { font-size: 13px; margin: 0 0 24px; }
-.index-group h2 {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  color: var(--muted);
-  margin: 0 0 10px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--border);
-}
-.index-group { margin-bottom: 30px; }
 .tree-cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
