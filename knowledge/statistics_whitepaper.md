@@ -825,26 +825,31 @@ or `local` provider at a non-period-aligned window boundary before that date, or
 against a warehouse returning `TIMESTAMP`, re-run it — and delete any snapshot
 written from it, because a snapshot of the old behavior is still wrong.
 
-**A second review, on 2026-08-12, found two more at the same boundary, and they
-are open.** A dbt metric's `filter` is silently dropped, so a node can serve the
-*unfiltered* measure under the governed metric's name
-([`C15`](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend)); and
-a snapshot is not invalidated when the metric's own `sql:`/`bind:` block
-changes, so an edited query keeps serving pre-edit numbers while the *show
-query* panel displays the new statement beside them
-([`C16`](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend)) —
-the provenance feature vouching for a figure it did not produce. Neither is a
-statistical limitation; both are engineering defects at the seam where this
-engine meets someone else's data. That seam has now produced four
-silent-wrong-number defects and no other part of the system has produced any, so
-the honest inference is that it should be assumed to hold more until it has the
-test discipline the engine half has — not that the count is now zero because
-the first two were fixed.
+**A second review, on 2026-08-12, found two more at the same boundary. Both are
+now fixed** (`C15`/`C16`, shipped the same day). A dbt metric's `filter` was
+silently dropped, so a node served the *unfiltered* measure under the governed
+metric's name — the manifest models never declared the field and unknown keys
+are ignored, so nothing anywhere reported it and `doctor` stayed green. And a
+snapshot was not invalidated when the metric's own `sql:`/`bind:` block changed,
+so an edited query kept serving pre-edit numbers while the *show query* panel
+displayed the new statement beside them — the one feature that exists to let a
+reader verify a number was certifying a wrong one. Filtered metrics are now
+refused by name until the binding language can carry a predicate, and every
+snapshot record is fingerprinted against the definition that produced it.
+
+Neither was a statistical limitation; both were engineering defects at the seam
+where this engine meets someone else's data. That seam has now produced four of
+the five silent-wrong-number defects this project has found, and no other part
+of the system has produced more than one — which is the more useful fact than
+any individual fix. Treat a number's *provenance* as the least-tested thing in
+this system, and prefer a provider path with a `doctor` check behind it over one
+without.
 
 The remaining Horizon 0 items are open. Until they close, the honest statement
 is: the *statistical* limitations are documented; a short, named list of
 *correctness* defects is documented, and is being worked down — though it grew
-by two on 2026-08-12, because looking harder still finds things. We would rather you read that
+by two on 2026-08-12 before shrinking again the same day, because looking harder
+still finds things. We would rather you read that
 list than trust the claim it replaced.
 
 ---
@@ -1091,7 +1096,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
-| 2026-08-12 | **Two new provider-boundary defects, disclosed while still open** — a second hostile review (against `c18d150`, scoped to the first client deployment and PyPI publication) found that a dbt metric's `filter` is silently dropped (`C15`) and that a snapshot survives an edit to the metric's own `sql:`/`bind:` block (`C16`), with `query_provenance` then attesting the new statement for the old numbers. No weakness changed status and none was added to §3.2 — both are engineering defects rather than statistical ones. What changed is §3.3, which said flatly that *the* two provider-boundary defects were fixed; that sentence was true of C1/C2 and, left alone, would have told a reader this boundary was now sound. It is the fourth and fifth silent-wrong-number defect at the seam where the engine meets someone else's data, and the section now says so and draws the obvious inference about the seam rather than reporting each instance as a surprise. Logged with both items **open**, since a paper that only records defects once they are fixed is a marketing document. |
+| 2026-08-12 | **Two new provider-boundary defects, found and fixed the same day** — a second hostile review (against `c18d150`, scoped to the first client deployment and PyPI publication) found that a dbt metric's `filter` was silently dropped (`C15`) and that a snapshot survived an edit to the metric's own `sql:`/`bind:` block (`C16`), with `query_provenance` then attesting the new statement for the old numbers. Both shipped. No weakness changed status and none was added to §3.2 — both are engineering defects rather than statistical ones. What changed is §3.3, which said flatly that *the* two provider-boundary defects were fixed; that was true of C1/C2 and would have told a reader this boundary was sound. It now records four of the project's five silent-wrong-number defects at this one seam and draws the inference — treat a number's provenance as the least-tested thing here — rather than reporting each instance as a surprise. C15 also falsified a **roadmap** claim rather than a paper one: 2.10 had listed `filters` among what the dbt binding shipped, and they had never worked; that row now says so and real support is filed as 2.17. |
 | 2026-08-11 | **An outside deployment on a shape this paper had not considered** — a music festival: one product cycle a year, five editions of history, a demand clock in days-to-event, months-long true-zero windows, and revenue that restates backwards. §4 gained `S18` (right-censored metrics), `S19` (partial pooling across cycles) and `S20` (zero-inflated/count likelihoods), with a §4.2 entry explaining why `S19` is not the pooling `S15` declined — S15's objection was to pooling across a node's *heterogeneous parents*, which does not apply to pooling one node's coefficient across repeated instances of its own cycle. No weakness changed status and none was added: `C4`'s degenerate-bootstrap failure was **confirmed in production** rather than newly found, on a parent held identically at zero across a whole reference window, and the roadmap row now records the measured instance. Worth logging that the deployment's own workarounds were sound — an expected-pacing *regressor* is the correct encoding of a non-repeating event clock, not a second-best one, since this engine's seasonality is Fourier in integer time and therefore strictly periodic. |
 | 2026-08-08 | **C10 shipped** — no weakness changed status, but §3.2 #6 (parent collinearity) and #7 (the coverage test) each made a factual claim that C10 falsified: both cited the reference tree as containing a live collinear structure. It was removed there rather than preserved as a specimen, since that file is the one new authors copy — so #6 now records that the structure *was* there and how easily it was authored, and #7 records that S17's collinear fixture has to be built rather than borrowed. The diagnostic itself is still missing; nothing about the engine's statistical position improved. |
 | 2026-08-05 | **C3 shipped** — no text changed. §2.3 already claimed that contributions "sum to the true gap exactly" and that `unexplained` on a formula node is "measurement residual only"; that was true of `GET /shapley` and false of what RCA published, which reported a bootstrap mean of a nonlinear decomposition instead. The code now matches the paper rather than the paper being softened to match the code. Logged because a reader comparing editions should be able to see that this section's meaning changed even though its words did not. |

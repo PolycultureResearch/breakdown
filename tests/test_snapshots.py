@@ -1,6 +1,7 @@
 """Snapshot store: parquet round-trips, read-through semantics, wiring."""
 
 import json
+import logging
 import os
 
 import pandas as pd
@@ -8,7 +9,8 @@ import pytest
 
 from breakdown.api.main import _wrap_snapshots
 from breakdown.data_fetch import BaseDataFetcher, MockDataFetcher
-from breakdown.snapshots import MANIFEST, SnapshotFetcher, SnapshotStore
+from breakdown.parser import BindingSpec
+from breakdown.snapshots import MANIFEST, SnapshotFetcher, SnapshotStore, definition_sha
 
 
 class CountingFetcher(BaseDataFetcher):
@@ -52,6 +54,62 @@ class CountingSlicedFetcher(BaseDataFetcher):
                 "value": [float(i) for i in range(len(dates))] * 2,
             }
         )
+
+
+# The C16 reproduction, verbatim: a query that includes refunds, and the same
+# query after the author noticed and excluded them.
+REFUNDS_IN = (
+    "SELECT d AS date, amount AS value FROM orders\nWHERE :start_date <= d AND d <= :end_date"
+)
+REFUNDS_OUT = (
+    "SELECT d AS date, amount AS value FROM orders\n"
+    "WHERE is_refund = false AND :start_date <= d AND d <= :end_date"
+)
+
+
+class SqlFetcher(BaseDataFetcher):
+    """A `warehouse`-shaped provider: each metric carries its own SQL, and the
+    numbers follow the SQL text. Editing the query changes the answer, which is
+    the whole of C16 — a cache keyed only on (metric, window, grain, kind)
+    cannot tell the two apart."""
+
+    def __init__(self, metric_sql):
+        self.metric_sql = dict(metric_sql)
+        self.calls = 0
+
+    def _value(self, metric_name):
+        return 60.0 if "is_refund" in self.metric_sql[metric_name] else 100.0
+
+    def fetch_metric(self, metric_name, start_date, end_date, grain="day", kind="flow"):
+        self.calls += 1
+        dates = pd.date_range(start_date, end_date, freq="D")
+        return pd.DataFrame({"date": dates, metric_name: [self._value(metric_name)] * len(dates)})
+
+    def fetch_metric_sliced(
+        self, metric_name, dimension_source, start_date, end_date, grain="day", kind="flow"
+    ):
+        self.calls += 1
+        dates = pd.date_range(start_date, end_date, freq="D")
+        return pd.DataFrame(
+            {
+                "date": list(dates),
+                "slice": ["a"] * len(dates),
+                "value": [self._value(metric_name)] * len(dates),
+            }
+        )
+
+    def query_provenance(self, metric_name, dimension_source=None, **kw):
+        return self.metric_sql.get(metric_name)
+
+
+def _binding(measure: str) -> BindingSpec:
+    return BindingSpec(
+        relation="analytics.orders",
+        grain_key="order_id",
+        time_column="d",
+        agg="sum",
+        measure=measure,
+    )
 
 
 def test_store_round_trip(tmp_path):
@@ -253,3 +311,193 @@ def test_snapshot_fetcher_earliest_date_never_raises(tmp_path):
 
     fetcher = SnapshotFetcher(RaisingFetcher(), SnapshotStore(str(tmp_path)))
     assert fetcher.earliest_date("m") is None
+
+
+# --- definition fingerprinting (roadmap C16) --------------------------------
+
+
+def test_edited_sql_invalidates_the_snapshot(tmp_path, caplog):
+    """The reproduction: snapshot the refund-including query, edit it to
+    exclude refunds, restart. The server must not keep serving 100.0."""
+    SnapshotFetcher(
+        SqlFetcher({"ticket_revenue": REFUNDS_IN}), SnapshotStore(str(tmp_path))
+    ).fetch_metric("ticket_revenue", "2024-01-01", "2024-01-05")
+
+    inner = SqlFetcher({"ticket_revenue": REFUNDS_OUT})
+    restarted = SnapshotFetcher(inner, SnapshotStore(str(tmp_path)))
+    with caplog.at_level(logging.WARNING):
+        df = restarted.fetch_metric("ticket_revenue", "2024-01-01", "2024-01-05")
+
+    assert df["ticket_revenue"].mean() == 60.0
+    assert inner.calls == 1  # the stale snapshot was refused, not served
+    assert "definition behind 'ticket_revenue' changed" in caplog.text
+
+
+def test_edited_sql_keeps_provenance_and_number_in_agreement(tmp_path):
+    """The worse half of C16: *show query* must never display the edited SQL
+    beside the pre-edit number."""
+    SnapshotFetcher(
+        SqlFetcher({"ticket_revenue": REFUNDS_IN}), SnapshotStore(str(tmp_path))
+    ).fetch_metric("ticket_revenue", "2024-01-01", "2024-01-05")
+
+    restarted = SnapshotFetcher(
+        SqlFetcher({"ticket_revenue": REFUNDS_OUT}), SnapshotStore(str(tmp_path))
+    )
+    df = restarted.fetch_metric("ticket_revenue", "2024-01-01", "2024-01-05")
+    shown = restarted.query_provenance("ticket_revenue")
+
+    assert shown == REFUNDS_OUT
+    assert df["ticket_revenue"].mean() == 60.0  # what REFUNDS_OUT actually returns
+
+
+def test_unchanged_sql_still_hits_the_snapshot(tmp_path):
+    """Caching still works: an identical definition is a hit, not a refetch."""
+    SnapshotFetcher(
+        SqlFetcher({"ticket_revenue": REFUNDS_IN}), SnapshotStore(str(tmp_path))
+    ).fetch_metric("ticket_revenue", "2024-01-01", "2024-01-05")
+
+    inner = SqlFetcher({"ticket_revenue": REFUNDS_IN})
+    df = SnapshotFetcher(inner, SnapshotStore(str(tmp_path))).fetch_metric(
+        "ticket_revenue", "2024-01-01", "2024-01-05"
+    )
+    assert inner.calls == 0
+    assert df["ticket_revenue"].mean() == 100.0
+
+
+def test_reformatted_sql_is_the_same_definition(tmp_path):
+    """Leading/trailing whitespace is not a change. Interior whitespace is left
+    alone on purpose — collapsing it cannot tell a string literal apart."""
+    padded = f"\n  {REFUNDS_IN}  \n"
+    SnapshotFetcher(
+        SqlFetcher({"ticket_revenue": REFUNDS_IN}), SnapshotStore(str(tmp_path))
+    ).fetch_metric("ticket_revenue", "2024-01-01", "2024-01-05")
+
+    inner = SqlFetcher({"ticket_revenue": padded})
+    SnapshotFetcher(inner, SnapshotStore(str(tmp_path))).fetch_metric(
+        "ticket_revenue", "2024-01-01", "2024-01-05"
+    )
+    assert inner.calls == 0
+
+
+def test_manifest_records_definition_sha(tmp_path):
+    store = SnapshotStore(str(tmp_path))
+    SnapshotFetcher(SqlFetcher({"m": REFUNDS_IN}), store).fetch_metric(
+        "m", "2024-01-01", "2024-01-02"
+    )
+    with open(tmp_path / MANIFEST) as f:
+        (entry,) = json.load(f).values()
+    assert entry["definition_sha"] == definition_sha(SqlFetcher({"m": REFUNDS_IN}), "m")
+
+
+def test_legacy_snapshot_without_sha_is_served_with_a_warning(tmp_path, caplog):
+    """Pre-C16 dirs keep working — refusing them would break every committed
+    snapshot and every snapshot-only deployment — but say so out loud."""
+    SnapshotFetcher(
+        SqlFetcher({"ticket_revenue": REFUNDS_IN}), SnapshotStore(str(tmp_path))
+    ).fetch_metric("ticket_revenue", "2024-01-01", "2024-01-05")
+    # Age the manifest back to what the old writer produced.
+    with open(tmp_path / MANIFEST) as f:
+        manifest = json.load(f)
+    for record in manifest.values():
+        record.pop("definition_sha")
+    with open(tmp_path / MANIFEST, "w") as f:
+        json.dump(manifest, f)
+
+    inner = SqlFetcher({"ticket_revenue": REFUNDS_OUT})
+    with caplog.at_level(logging.WARNING):
+        df = SnapshotFetcher(inner, SnapshotStore(str(tmp_path))).fetch_metric(
+            "ticket_revenue", "2024-01-01", "2024-01-05"
+        )
+    assert inner.calls == 0
+    assert df["ticket_revenue"].mean() == 100.0
+    assert "predates definition fingerprinting" in caplog.text
+    assert "BREAKDOWN_REFRESH=1" in caplog.text
+
+
+def test_refresh_stamps_a_legacy_snapshot(tmp_path, caplog):
+    """And the disclosed remedy actually works: one refresh pass ends it."""
+    store = SnapshotStore(str(tmp_path))
+    inner = SqlFetcher({"m": REFUNDS_IN})
+    SnapshotFetcher(inner, store, refresh=True).fetch_metric("m", "2024-01-01", "2024-01-05")
+    with caplog.at_level(logging.WARNING):
+        SnapshotFetcher(inner, SnapshotStore(str(tmp_path))).fetch_metric(
+            "m", "2024-01-01", "2024-01-05"
+        )
+    assert inner.calls == 1
+    assert caplog.text == ""
+
+
+def test_provider_without_definitions_neither_warns_nor_refetches(tmp_path, caplog):
+    """`local`/`cloud` hold no per-metric definition — there is nothing to
+    fingerprint, so there is nothing to warn about."""
+    inner = CountingFetcher()
+    SnapshotFetcher(inner, SnapshotStore(str(tmp_path))).fetch_metric(
+        "m", "2024-01-01", "2024-01-05"
+    )
+    with caplog.at_level(logging.WARNING):
+        SnapshotFetcher(inner, SnapshotStore(str(tmp_path))).fetch_metric(
+            "m", "2024-01-01", "2024-01-05"
+        )
+    assert inner.calls == 1
+    assert caplog.text == ""
+
+
+def test_edited_binding_invalidates_the_sliced_snapshot(tmp_path):
+    """`read_sliced` matches any covering window, so it needs the same check —
+    and the fingerprint must not mention a window for that to work."""
+    store = SnapshotStore(str(tmp_path))
+    SnapshotFetcher(
+        SqlFetcher({"m": REFUNDS_IN}), store, slice_span=("2024-01-01", "2024-01-31")
+    ).fetch_metric_sliced("m", "region", "2024-01-10", "2024-01-12")
+
+    inner = SqlFetcher({"m": REFUNDS_OUT})
+    df = SnapshotFetcher(
+        inner, SnapshotStore(str(tmp_path)), slice_span=("2024-01-01", "2024-01-31")
+    ).fetch_metric_sliced("m", "region", "2024-01-20", "2024-01-22")
+    assert inner.calls == 1
+    assert df["value"].mean() == 60.0
+
+
+def test_unchanged_binding_still_hits_the_sliced_snapshot(tmp_path):
+    SnapshotFetcher(
+        SqlFetcher({"m": REFUNDS_IN}),
+        SnapshotStore(str(tmp_path)),
+        slice_span=("2024-01-01", "2024-01-31"),
+    ).fetch_metric_sliced("m", "region", "2024-01-10", "2024-01-12")
+
+    inner = SqlFetcher({"m": REFUNDS_IN})
+    df = SnapshotFetcher(
+        inner, SnapshotStore(str(tmp_path)), slice_span=("2024-01-01", "2024-01-31")
+    ).fetch_metric_sliced("m", "region", "2024-01-20", "2024-01-22")
+    assert inner.calls == 0
+    assert len(df) == 3
+
+
+def test_dbt_binding_is_fingerprinted(tmp_path):
+    """The `dbt` provider's definition is a `BindingSpec`, not SQL: it must
+    fingerprint by value, and by field rather than by YAML key order."""
+
+    class BoundFetcher(BaseDataFetcher):
+        def __init__(self, bindings):
+            self.bindings = bindings
+
+        def fetch_metric(self, *a, **kw):
+            raise AssertionError("not called")
+
+    revenue = definition_sha(BoundFetcher({"m": _binding("amount")}), "m")
+    assert revenue == definition_sha(BoundFetcher({"m": _binding("amount")}), "m")
+    assert revenue != definition_sha(BoundFetcher({"m": _binding("net_amount")}), "m")
+    assert definition_sha(BoundFetcher({"m": _binding("amount")}), "other") is None
+
+
+def test_snapshot_definition_hook_takes_precedence(tmp_path):
+    """The extension point a future provider implements instead of being
+    special-cased inside snapshots.py."""
+
+    class HookedFetcher(SqlFetcher):
+        def snapshot_definition(self, metric_name):
+            return "pinned"
+
+    hooked = definition_sha(HookedFetcher({"m": REFUNDS_IN}), "m")
+    assert hooked == definition_sha(HookedFetcher({"m": REFUNDS_OUT}), "m")
+    assert hooked != definition_sha(SqlFetcher({"m": REFUNDS_IN}), "m")

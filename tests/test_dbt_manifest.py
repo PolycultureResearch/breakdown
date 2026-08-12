@@ -80,6 +80,39 @@ CLASSIC = {
             },
         },
         {"name": "wau", "type": "cumulative", "type_params": {"measure": {"name": "revenue"}}},
+        # Semantics-changing constructs the bridge refuses (roadmap C15). They
+        # are here because agreeing on the fields we *read for a value* is not
+        # enough: a field we never model reads as absent, and absent is exactly
+        # what makes a filtered metric translate into an unfiltered binding.
+        {
+            "name": "paid_revenue",
+            "type": "simple",
+            "type_params": {"measure": {"name": "revenue"}},
+            "filter": {"where_filters": [{"where_sql_template": "{{ Dimension('order__paid') }}"}]},
+        },
+        {
+            "name": "filled_orders",
+            "type": "simple",
+            "type_params": {
+                "measure": {
+                    "name": "orders",
+                    "filter": {"where_filters": [{"where_sql_template": "amount > 0"}]},
+                    "join_to_timespine": True,
+                    "fill_nulls_with": 0,
+                }
+            },
+        },
+        {
+            "name": "us_conv",
+            "type": "ratio",
+            "type_params": {
+                "numerator": {
+                    "name": "revenue",
+                    "filter": {"where_filters": [{"where_sql_template": "region = 'US'"}]},
+                },
+                "denominator": {"name": "orders"},
+            },
+        },
     ],
     "project_configuration": {"time_spine_table_configurations": [], "metadata": None},
 }
@@ -142,6 +175,23 @@ NEW_SPEC = {
             },
         },
         {
+            # The new spec writes the spine flags on `type_params`, not on a
+            # measure input — there is no measure layer left to write them on.
+            "name": "filled_balance",
+            "type": "simple",
+            "type_params": {
+                "expr": "amount",
+                "join_to_timespine": True,
+                "fill_nulls_with": 0,
+                "metric_aggregation_params": {
+                    "semantic_model": "mrr",
+                    "agg": "sum",
+                    "agg_time_dimension": "day",
+                    "non_additive_dimension": None,
+                },
+            },
+        },
+        {
             "name": "hidden",
             "type": "simple",
             "type_params": {
@@ -164,6 +214,25 @@ def _enum(v):
     """MSI models these as enums and callers read `.value`; ours are plain
     lowercase strings. Normalise so the comparison is about the *data*."""
     return getattr(v, "value", v)
+
+
+def _filters(obj):
+    """The predicates of a `filter:` on `obj`, from either model.
+
+    Both hold a where-filter intersection with the same two field names, and
+    the bridge reads only whether there is a predicate and what it says — so
+    comparing the templates compares everything that can change a refusal.
+    """
+    intersection = getattr(obj, "filter", None)
+    return [f.where_sql_template for f in getattr(intersection, "where_filters", None) or []]
+
+
+def _spine_flags(obj):
+    """The two time-spine directives, wherever they hang. `fill_nulls_with: 0`
+    is falsy, so this returns the value rather than its truth — an oracle that
+    compared truthiness would agree on `0` and `None`, which are the two cases
+    that must not be confused."""
+    return (getattr(obj, "join_to_timespine", False), getattr(obj, "fill_nulls_with", None))
 
 
 @pytest.mark.parametrize("name", sorted(MANIFESTS))
@@ -206,13 +275,24 @@ def test_metrics_agree_on_everything_the_bridge_reads(name):
         assert getattr(pa.measure, "name", None) == getattr(pb.measure, "name", None)
         assert pa.expr == pb.expr
         assert getattr(pa, "is_private", False) == getattr(pb, "is_private", False)
+        # The constructs the bridge refuses. Read for presence, never for a
+        # value — but a field we failed to model would read as absent here and
+        # translate into a binding that means something else (roadmap C15).
+        assert _filters(a) == _filters(b)
+        assert _spine_flags(pa) == _spine_flags(pb)
+        assert _filters(pa.measure) == _filters(pb.measure)
+        assert _spine_flags(pa.measure) == _spine_flags(pb.measure)
         for side in ("numerator", "denominator"):
             assert getattr(getattr(pa, side), "name", None) == getattr(
                 getattr(pb, side), "name", None
             )
+            assert _filters(getattr(pa, side)) == _filters(getattr(pb, side))
         assert [i.name for i in (pa.metrics or [])] == [i.name for i in (pb.metrics or [])]
         assert [bool(i.offset_window) for i in (pa.metrics or [])] == [
             bool(i.offset_window) for i in (pb.metrics or [])
+        ]
+        assert [_filters(i) for i in (pa.metrics or [])] == [
+            _filters(i) for i in (pb.metrics or [])
         ]
         qa = getattr(pa, "metric_aggregation_params", None)
         qb = getattr(pb, "metric_aggregation_params", None)
@@ -263,6 +343,27 @@ def test_the_fixtures_actually_exercise_the_bridge(name):
     r = translate(parse_manifest(MANIFESTS[name]))
     assert r.bindings, "fixture produced no bindings"
     assert r.skipped or r.formulas, "fixture exercises neither skips nor formulas"
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "amount > 0",
+        {"where_sql_template": "amount > 0"},
+        ["amount > 0"],
+        {"where_filters": [{"where_sql_template": "amount > 0"}]},
+    ],
+)
+def test_legacy_filter_serialisations_normalise_the_way_msi_normalises(shape):
+    # MSI carries four accepted shapes for a filter and collapses them on
+    # parse. We collapse the same four; this asserts we collapse them *to the
+    # same thing*, because a shape read as no-filter is a metric the bridge
+    # would translate into an unfiltered binding.
+    payload = json.loads(json.dumps(CLASSIC))
+    payload["metrics"][0]["filter"] = shape
+    ours = parse_manifest(payload).metrics[0]
+    theirs = _msi(payload).metrics[0]
+    assert _filters(ours) == _filters(theirs) == ["amount > 0"]
 
 
 def test_unknown_keys_are_ignored_the_same_way_dbt_adds_them():
