@@ -61,6 +61,25 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
   paths aliased so nothing existing breaks. Records the three decisions taken
   with their rejected alternatives, and the open questions (archiving a goal
   tree after its deadline, grouping by `period` vs `deadline`)
+- [`filter_support_design.md`](filter_support_design.md) — **designed, not built**
+  (roadmap 2.17): carrying a dbt metric's `filter` onto the binding and compiling
+  it into the generated SQL, replacing the blanket refusal
+  [C15](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend) had to
+  ship. Records the boundary decision this needed —
+  [`semantic_layer_connectivity_design.md`](semantic_layer_connectivity_design.md)
+  §4.1's line moves from *which fields exist* to *which fields an author may
+  write*, because `bind.sql` already expresses every hand-written filter, so
+  `where:` is import-only and hand-authoring one is a parse error. Why a filter's
+  `{{ Dimension('order__is_food_order') }}` is a resolution problem against the
+  semantic graph rather than a column (and why v1 resolves only same-relation
+  categorical dimensions, refusing cross-join references because a filter that
+  fans out is invisible where a slice that fans out is not); why the predicate
+  goes through sqlglot's AST rather than string interpolation; why the grain
+  claim moves post-filter; the new `filters narrow` warehouse check that turns a
+  constant-true or everything-drops predicate into a startup failure; why slices
+  still sum; and an explicit account of what is and is not proven while
+  [2.14](roadmap.md#horizon-2--make-it-repeatable-a-stranger-can-onboard)
+  differential verification stays blocked on `mf` and Python 3.14
 - [`grain_design.md`](grain_design.md) — per-node aggregation grain (roadmap
   1.7): decisions and contracts for `grain`/`kind`, resample-up, window
   snapping, and the two-level attribution view
