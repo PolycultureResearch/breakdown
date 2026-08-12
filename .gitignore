@@ -14,3 +14,11 @@ wheels/
 
 # agent worktrees
 .claude/worktrees/
+
+# Review reports (`grill`): internal critique that names clients and describes
+# undisclosed defects. This repo is public, so these are ignored by default and
+# published only by explicit decision, never by `git add -A`. Archived on their
+# own branches; findings reach main as roadmap rows instead.
+knowledge/grill_*.md
+_to_delete/
+_grill_tmp/
