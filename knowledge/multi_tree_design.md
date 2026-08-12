@@ -1,6 +1,7 @@
 # Multiple metric trees — design spec
 
-Status: designed, not built. Roadmap item **2.16**. Companion to
+Status: **shipped 2026-08-12**, with two deviations recorded in §11. Roadmap
+item **2.16**. Companion to
 [`ui_design_spec.md`](ui_design_spec.md) (UI) and
 [`../docs/ai-context/python-backend.md`](../docs/ai-context/python-backend.md)
 (the single-tree architecture this amends).
@@ -395,3 +396,37 @@ Each step should land green; the first three are invisible to users.
   or an `archive/` convention are both plausible; neither is designed.
 - **Should the durable business tree be visually distinct** from disposable goal
   trees on the index, beyond "has no goal block"?
+
+## 11. What shipped (2026-08-12)
+
+Everything in §§3–8 shipped as designed, in the §8 order, with `api/trees.py`
+holding `TreeState` and the process-wide `TraceStore`. Two places where the
+implementation differs from this document, both deliberate:
+
+- **`/ui` opens the tree directly when there is exactly one.** §7.1 moves the
+  tree view to `/ui#tree=<id>` unconditionally; §4 already contemplates the
+  index being skipped, and an index of one card is a toll booth in front of
+  every existing single-tree deployment. The index is the landing view **only**
+  when the process serves more than one tree, and `#tree=` is omitted from
+  minted links in that case, so every URL shared before this feature resolves
+  byte-identically.
+
+- **The index states pace, it does not judge it.** §7.1 asks for an "on track"
+  / "behind" read against `deadline`. That cannot be computed from the block
+  §3 defines: `period` is a free-form label rather than a parsed range, so the
+  goal window's *start* is nowhere in the tree, and elapsed-vs-achieved has no
+  denominator. The card states the two facts that are checkable — share of
+  target and days to deadline — in visibly softer type. Making the verdict
+  available needs a `period_start` (or a parsed `period`), which is a YAML
+  change and belongs with the archiving question in §10.
+
+§10's other two questions were settled with the author when they came up:
+the index groups by `period` as §7.1 says (deadline-derived grouping deferred),
+and a past-deadline goal tree renders as an ordinary card — archiving stays
+undesigned rather than half-invented.
+
+Also worth recording, because it is not obvious from §5: the **single-file**
+`--tree` loads eagerly. §5.1's lazy loading is what makes eight goal trees
+cheap, but with one tree it buys nothing and would mean the port comes up
+before the data does, which is a regression for every existing deployment.
+`--eager` asks for the same behaviour from a directory.

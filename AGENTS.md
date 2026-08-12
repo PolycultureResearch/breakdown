@@ -56,7 +56,9 @@ and `databricks` extras, so nothing provider-specific may be imported at module
 scope and the three tests that need a real SDK skip themselves when it's absent.
 CI proves this with a no-extras job; see `docs/ai-context/python-backend.md`.
 
-Point at your own tree with `--tree path/to/tree.yml --start-date … --end-date …`.
+Point at your own tree with `--tree path/to/tree.yml --start-date … --end-date …`,
+or at a **directory** of trees (roadmap 2.16 — one `*.yml` per tree, id = filename
+stem; `--default-tree <id>` picks the one the unprefixed routes mean).
 `--reload` is opt-in (the installed CLI defaults to no reload, loopback bind);
 `breakdown doctor --tree …` checks provider connectivity. Deployment (uvx, Docker)
 is covered in the [README](README.md#deploying).
@@ -69,8 +71,12 @@ is covered in the [README](README.md#deploying).
   statistical models (e.g. stochastic volatility) or frontend frameworks
   (e.g. React/Next) without a clear, stated reason.
 - **The engine is stateless.** `fit_metric` is a pure function
-  (DAG + data + target → trace). The only cache is `app.state.traces`, passed in
-  explicitly — never introduce hidden global state.
+  (DAG + data + target → trace). The only cache is the addressed tree's
+  `traces`, passed in explicitly — never introduce hidden global state.
+- **A process serves many trees.** Per-tree state lives on `TreeState`
+  (`breakdown/api/trees.py`), held in `app.state.trees[id]`; `app.state.X` is an
+  alias for the **default** tree's. New per-tree state goes on `TreeState`, not
+  on `app.state`. The lock is per-tree; the trace cap is process-wide.
 - **Parent order is load-bearing.** Parents always come from
   `list(dag.predecessors(name))`; that is the axis order of `beta` / `beta_raw`.
   Any new component must use the same call.
