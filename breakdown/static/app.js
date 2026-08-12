@@ -18,6 +18,7 @@ const state = {
   cardOverlay: {},     // metric name -> {value,dpct,dir,mark} while RCA / what-if is active (transient)
   asOf: null,          // ISO date anchoring card headlines; defaults to the tree-wide data edge
   rca: null,           // last POST /rca response
+  refMode: "auto",     // "auto": server picks the reference (matched adjacent block); "custom": user-typed
   rcaView: "headline", // formula-node attribution view: "headline" | "detailed"
   activeCause: null,   // highlighted ranked cause
   slices: {},          // metric -> {dimension, result|error|loading, lag} for the open slice
@@ -155,60 +156,39 @@ const isoUTC = (d) => d.toISOString().slice(0, 10);
 const addDays = (d, n) => new Date(d.getTime() + n * DAY_MS);
 const daysInclusive = (start, end) => Math.round((end - start) / DAY_MS) + 1;
 
-/* Window presets. compute(startDate, endDate) -> {refStart, refEnd, anStart, anEnd}
-   as ISO strings, or null when the data window is too short (preset omitted). */
+/* Analysis-window presets. compute(startDate, endDate) -> {anStart, anEnd}
+   as ISO strings, or null when the data window is too short (preset omitted).
+   The reference is not part of a preset: in auto mode it tracks the analysis
+   window (the server's matched adjacent block, mirrored by
+   defaultReferenceJS), and a hand-edited reference is "custom". Each preset
+   needs at least one day before the analysis for a reference to exist. */
 const WINDOW_PRESETS = [
   {
-    id: "last7-prior28",
-    label: "Last 7d vs prior 28d",
+    id: "last7",
+    label: "Last 7 days",
     compute(start, end) {
-      if (daysInclusive(start, end) < 35) return null;
-      const anEnd = end;
       const anStart = addDays(end, -6);
-      const refEnd = addDays(anStart, -1);
-      const refStart = addDays(refEnd, -27);
-      if (refStart < start) return null;
-      return { refStart: isoUTC(refStart), refEnd: isoUTC(refEnd), anStart: isoUTC(anStart), anEnd: isoUTC(anEnd) };
+      if (daysInclusive(start, end) < 8) return null;
+      return { anStart: isoUTC(anStart), anEnd: isoUTC(end) };
     },
   },
   {
-    id: "last14-prior28",
-    label: "Last 14d vs prior 28d",
+    id: "last14",
+    label: "Last 14 days",
     compute(start, end) {
-      if (daysInclusive(start, end) < 42) return null;
-      const anEnd = end;
       const anStart = addDays(end, -13);
-      const refEnd = addDays(anStart, -1);
-      const refStart = addDays(refEnd, -27);
-      if (refStart < start) return null;
-      return { refStart: isoUTC(refStart), refEnd: isoUTC(refEnd), anStart: isoUTC(anStart), anEnd: isoUTC(anEnd) };
+      if (daysInclusive(start, end) < 15) return null;
+      return { anStart: isoUTC(anStart), anEnd: isoUTC(end) };
     },
   },
   {
-    id: "weeks-1v4",
-    label: "Last full week vs prior 4 weeks",
+    id: "last-full-week",
+    label: "Last full week (Mon–Sun)",
     compute(start, end) {
-      // analysis = last full Mon–Sun week fully inside the window; ref = 4 weeks before.
       const lastSunday = addDays(end, -end.getUTCDay()); // getUTCDay: Sun=0
-      const anEnd = lastSunday;
       const anStart = addDays(lastSunday, -6); // Monday
-      const refEnd = addDays(anStart, -1); // prior Sunday
-      const refStart = addDays(anStart, -28); // Monday, 4 weeks earlier
-      if (refStart < start) return null; // needs >= 5 full weeks
-      return { refStart: isoUTC(refStart), refEnd: isoUTC(refEnd), anStart: isoUTC(anStart), anEnd: isoUTC(anEnd) };
-    },
-  },
-  {
-    id: "split60",
-    label: "First 60% vs rest",
-    compute(start, end) {
-      const splitMs = start.getTime() + 0.6 * (end.getTime() - start.getTime());
-      return {
-        refStart: isoUTC(start),
-        refEnd: isoUTC(new Date(splitMs)),
-        anStart: isoUTC(new Date(splitMs + DAY_MS)),
-        anEnd: isoUTC(end),
-      };
+      if (anStart <= start) return null; // needs >= 1 day of history before it
+      return { anStart: isoUTC(anStart), anEnd: isoUTC(lastSunday) };
     },
   },
   { id: "custom", label: "Custom", compute: null },
@@ -219,10 +199,119 @@ function applyPreset(id) {
   if (!preset || !preset.compute) return; // custom: leave inputs untouched
   const w = preset.compute(new Date(state.meta.date_start), new Date(state.meta.date_end));
   if (!w) return;
-  $("ref-start").value = w.refStart;
-  $("ref-end").value = w.refEnd;
   $("an-start").value = w.anStart;
   $("an-end").value = w.anEnd;
+  applyAutoReference();
+}
+
+/* ---------- default reference window (display mirror) ----------
+   Mirrors the engine's `default_reference_window` (grains.py) so the inputs
+   show what the server will use. Display-only: in auto mode the request
+   OMITS the reference params — the server's computation is the number of
+   record, and the response overwrites these inputs. */
+
+function ancestorScope(target) {
+  // target + all its ancestors, walked over the DAG edges.
+  const parentsOf = {};
+  (state.dag.edges || []).forEach(([p, c]) => {
+    (parentsOf[c] = parentsOf[c] || []).push(p);
+  });
+  const scope = new Set([target]);
+  const queue = [target];
+  while (queue.length) {
+    for (const p of parentsOf[queue.pop()] || []) {
+      if (!scope.has(p)) {
+        scope.add(p);
+        queue.push(p);
+      }
+    }
+  }
+  return scope;
+}
+
+function referenceAlignment(target) {
+  const scope = ancestorScope(target);
+  let weekAlign = false;
+  let coarsest = "day";
+  const order = { day: 0, week: 1, month: 2 };
+  (state.dag.nodes || []).forEach(([name, def]) => {
+    if (!scope.has(name)) return;
+    if (def.seasonality && def.seasonality.length) weekAlign = true;
+    const g = (state.meta.grains || {})[name] || "day";
+    if (order[g] > order[coarsest]) coarsest = g;
+  });
+  return { weekAlign, coarsest };
+}
+
+function defaultReferenceJS(anStart, anEnd, { weekAlign, coarsest }) {
+  const dataStart = new Date(state.meta.date_start);
+  const anS = new Date(anStart);
+  const refEnd = addDays(anS, -1);
+  if (refEnd < dataStart) return null; // no room: the server will 422 too
+  let length = Math.max(4 * daysInclusive(anS, new Date(anEnd)), 28);
+  if (weekAlign) length = Math.ceil(length / 7) * 7;
+  let refStart = addDays(refEnd, -(length - 1));
+  if (refStart < dataStart) {
+    refStart = dataStart;
+    if (weekAlign) {
+      const avail = daysInclusive(refStart, refEnd);
+      if (avail >= 7) refStart = addDays(refEnd, -(7 * Math.floor(avail / 7) - 1));
+    }
+  }
+  // Coarse-grain extension (month/week trees): reach back to cover the last
+  // whole coarse period ending on/before refEnd, when the data allows it.
+  if (coarsest !== "day") {
+    const needsWhole =
+      coarsest === "week"
+        ? !wholeWeekInside(refStart, refEnd)
+        : !wholeMonthInside(refStart, refEnd);
+    if (needsWhole) {
+      const last = lastWholePeriodStart(refEnd, coarsest);
+      if (last && last >= dataStart && last < refStart) refStart = last;
+    }
+  }
+  return { refStart: isoUTC(refStart), refEnd: isoUTC(refEnd) };
+}
+
+function wholeWeekInside(start, end) {
+  // first Monday on/after start, plus 6 days, must be on/before end
+  const firstMonday = addDays(start, (8 - start.getUTCDay()) % 7);
+  return addDays(firstMonday, 6) <= end;
+}
+
+function wholeMonthInside(start, end) {
+  const firstOfNext = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + (start.getUTCDate() === 1 ? 0 : 1), 1));
+  const monthEnd = new Date(Date.UTC(firstOfNext.getUTCFullYear(), firstOfNext.getUTCMonth() + 1, 0));
+  return monthEnd <= end;
+}
+
+function lastWholePeriodStart(refEnd, grain) {
+  if (grain === "week") {
+    const monday = addDays(refEnd, -((refEnd.getUTCDay() + 6) % 7));
+    const start = addDays(monday, 6) > refEnd ? addDays(monday, -7) : monday;
+    return start;
+  }
+  // month
+  let first = new Date(Date.UTC(refEnd.getUTCFullYear(), refEnd.getUTCMonth(), 1));
+  const end = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0));
+  if (end > refEnd) first = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() - 1, 1));
+  return first;
+}
+
+function applyAutoReference() {
+  if (state.refMode !== "auto") return;
+  const as = $("an-start").value, ae = $("an-end").value;
+  if (!as || !ae || as > ae) return;
+  const target = $("target-select").value;
+  const w = defaultReferenceJS(as, ae, referenceAlignment(target));
+  $("ref-start").value = w ? w.refStart : "";
+  $("ref-end").value = w ? w.refEnd : "";
+}
+
+function setRefMode(mode) {
+  state.refMode = mode;
+  $("ref-auto").classList.toggle("active", mode === "auto");
+  if (mode === "auto") applyAutoReference();
 }
 
 /* Client-side mirror of the backend window rules. Returns true when valid.
@@ -248,7 +337,15 @@ function validateWindows() {
 
   const rs = $("ref-start").value, re = $("ref-end").value;
   const as = $("an-start").value, ae = $("an-end").value;
-  if (!rs || !re || !as || !ae) return fail(ids.filter((id) => !$(id).value), "Set all four window dates.");
+  if (!as || !ae) return fail(["an-start", "an-end"].filter((id) => !$(id).value), "Set the analysis window dates.");
+  if (!rs || !re) {
+    // Auto mode with no room for a reference (analysis starts at the data
+    // edge) leaves these empty; custom mode requires typing them.
+    const msg = state.refMode === "auto"
+      ? "No room for a reference before this analysis window — load more history (earlier --start-date) or move the window."
+      : "Set the reference window dates (or click auto).";
+    return fail(["ref-start", "ref-end"].filter((id) => !$(id).value), msg);
+  }
 
   const lo = state.meta.date_start, hi = state.meta.date_end;
   const oob = ids.filter((id) => $(id).value < lo || $(id).value > hi);
@@ -258,16 +355,25 @@ function validateWindows() {
   if (as > ae) return fail(["an-start", "an-end"], "Analysis window start must be on or before its end.");
 
   runBtn.disabled = false;
-  // whole-week advisory (muted, not an error) when seasonality is in play
+  // Muted advisories, not errors. Scope-keyed to the selected target: only
+  // seasonality that can actually shape this comparison triggers the
+  // whole-week nudge.
   const refLen = daysInclusive(new Date(rs), new Date(re));
   const anLen = daysInclusive(new Date(as), new Date(ae));
-  const hasSeasonality =
-    state.dag && state.dag.nodes.some(([, def]) => def.seasonality && def.seasonality.length);
-  if (hasSeasonality && (refLen % 7 !== 0 || anLen % 7 !== 0)) {
-    setStatus("ⓘ Windows aren't whole weeks — weekday mix can distort the comparison.");
-  } else {
-    setStatus("");
+  const target = $("target-select").value;
+  const align = state.dag ? referenceAlignment(target) : { weekAlign: false, coarsest: "day" };
+  const grainDays = { day: 1, week: 7, month: 30 }[align.coarsest] || 1;
+  const advisories = [];
+  if (align.weekAlign && (refLen % 7 !== 0 || anLen % 7 !== 0)) {
+    advisories.push("windows aren't whole weeks — weekday mix can distort the comparison");
   }
+  if (refLen < 4 * grainDays) {
+    advisories.push(`short reference — the baseline mean rides on ~${Math.max(1, Math.floor(refLen / grainDays))} ${align.coarsest} period${refLen < 2 * grainDays ? "" : "s"}, so its interval may be optimistic`);
+  }
+  if (daysInclusive(new Date(re), new Date(as)) > 2) {
+    advisories.push("gap between windows — in a trending business a non-adjacent reference absorbs trend into the comparison");
+  }
+  setStatus(advisories.length ? "ⓘ " + advisories.join(" · ") : "");
   return true;
 }
 
@@ -1578,7 +1684,14 @@ async function runAnalyze(name) {
 
 function readWindows() {
   const v = (id) => $(id).value;
-  if (!v("ref-start") || !v("ref-end") || !v("an-start") || !v("an-end")) return null;
+  if (!v("an-start") || !v("an-end")) return null;
+  // Auto mode omits the reference params: the server's matched adjacent
+  // block is the number of record (the inputs only previewed it), so the JS
+  // mirror can never drift the analysis.
+  if (state.refMode === "auto") {
+    return { analysis_start: v("an-start"), analysis_end: v("an-end") };
+  }
+  if (!v("ref-start") || !v("ref-end")) return null;
   return {
     reference_start: v("ref-start"),
     reference_end: v("ref-end"),
@@ -1592,7 +1705,7 @@ async function runRCA() {
   if (!validateWindows()) return;
   const win = readWindows();
   if (!win) {
-    setStatus("Set all four window dates first.", "error");
+    setStatus("Set the window dates first.", "error");
     return;
   }
   const btn = $("run-rca");
@@ -1606,7 +1719,18 @@ async function runRCA() {
     const qs = new URLSearchParams(win).toString();
     state.slices = {}; // a new analysis invalidates any slice of the old one
     state.rca = await api(`/rca/${encodeURIComponent(target)}?${qs}`, { method: "POST" });
-    history.replaceState(null, "", `#rca=${encodeURIComponent(target)}&${qs}`);
+    // The resolved reference comes back either way; reflect it in the inputs
+    // and build the deep link from resolved dates so a defaulted run replays
+    // identically even if the server later boots with a different range.
+    $("ref-start").value = state.rca.reference_window.start;
+    $("ref-end").value = state.rca.reference_window.end;
+    const resolvedQs = new URLSearchParams({
+      reference_start: state.rca.reference_window.start,
+      reference_end: state.rca.reference_window.end,
+      analysis_start: state.rca.analysis_window.start,
+      analysis_end: state.rca.analysis_window.end,
+    }).toString();
+    history.replaceState(null, "", `#rca=${encodeURIComponent(target)}&${resolvedQs}`);
     updateShareMenu();
     state.meta = await api("/meta"); // on-demand fits may have been cached
     state.metricCache = {};
@@ -2050,6 +2174,16 @@ function renderRcaTab() {
         node.sign_warnings && node.sign_warnings.length
           ? ` · <span class="sign-flag" title="${esc(node.sign_warnings.join("\n\n"))}">⚠ learned sign contradicts expectation</span>`
           : "";
+      // The fit window is all loaded history before the analysis window —
+      // surfacing it here is what keeps it from being confused with the
+      // reference window.
+      const fitNote = node.fit_window
+        ? ` · fitted on ${node.fit_window.n_periods} ${esc(node.grain)}s (${esc(node.fit_window.start)} → ${esc(node.fit_window.end)})`
+        : "";
+      const seasNote =
+        node.seasonality_warnings && node.seasonality_warnings.length
+          ? ` · <span class="sign-flag" title="${esc(node.seasonality_warnings.join("\n\n"))}">⚠ seasonality unidentifiable from fitted history</span>`
+          : "";
       const twoLevel = node.contributions.some((c) => c.decomposition);
       let header, rows, nCols;
 
@@ -2121,7 +2255,7 @@ function renderRcaTab() {
       }
       return `
         <div class="attr-block">
-          <h4>${esc(name)} <span class="method">· ${method}${snapNote}${ciNote}${signNote}</span></h4>
+          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${signNote}${seasNote}</span></h4>
           <table class="data-table">
             ${header}
             ${rows}
@@ -2140,7 +2274,7 @@ function renderRcaTab() {
 
   $("rca-results").innerHTML = `
     <div class="rca-card">
-      <div class="sub">${esc(res.target)} · ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)} vs ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}</div>
+      <div class="sub">${esc(res.target)} · ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)}${res.reference_defaulted ? " (auto)" : ""} vs ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}</div>
       <div class="gap-line ${dirCls}">${target.gap >= 0 ? "+" : ""}${fmt(target.gap)} <span style="font-size:14px">(${signedPct(target.relative_change)})</span></div>
       <div id="rca-strip"></div>
       <div class="sub">${fmt(target.baseline)} → ${fmt(target.actual)} (window means${target.grain && target.grain !== "day" ? ` per ${esc(target.grain)}` : ""})</div>
@@ -2976,19 +3110,41 @@ function initControls() {
     opt.textContent = p.label;
     presetSelect.appendChild(opt);
   });
-  const defaultPreset = available.has("last7-prior28") ? "last7-prior28" : "split60";
+  const defaultPreset = available.has("last7") ? "last7" : available.has("last14") ? "last14" : "custom";
   presetSelect.value = defaultPreset;
 
-  // date inputs: bound to the data range; any manual edit -> Custom + revalidate
+  // Date inputs, analysis-first: editing the analysis window flips the
+  // preset to Custom and (in auto mode) recomputes the reference; editing a
+  // reference date makes the reference custom. The auto chip restores the
+  // matched adjacent block.
   const bounds = { min: state.meta.date_start, max: state.meta.date_end };
   ["ref-start", "ref-end", "an-start", "an-end"].forEach((id) => {
     const el = $(id);
     el.min = bounds.min;
     el.max = bounds.max;
-    el.addEventListener("change", () => {
+  });
+  ["an-start", "an-end"].forEach((id) => {
+    $(id).addEventListener("change", () => {
       presetSelect.value = "custom";
+      applyAutoReference();
       validateWindows();
     });
+  });
+  ["ref-start", "ref-end"].forEach((id) => {
+    $(id).addEventListener("change", () => {
+      setRefMode("custom");
+      validateWindows();
+    });
+  });
+  $("ref-auto").addEventListener("click", () => {
+    setRefMode("auto");
+    validateWindows();
+  });
+  // A different target can change the auto reference (its ancestor scope
+  // decides week alignment and the coarsest grain).
+  select.addEventListener("change", () => {
+    applyAutoReference();
+    validateWindows();
   });
 
   applyPreset(defaultPreset);
@@ -3071,10 +3227,40 @@ function applyDeepLink() {
       const v = params.get(k);
       if (v) $(["ref-start", "ref-end", "an-start", "an-end"][i]).value = v;
     });
+    // Links carrying explicit reference dates replay exactly (custom mode);
+    // analysis-only links let the server pick the reference (auto mode).
+    setRefMode(params.get("reference_start") ? "custom" : "auto");
     runRCA();
   } else if (metric && state.meta.metrics.includes(metric)) {
     selectMetric(metric);
   }
+}
+
+/* History nudge: when the provider reports history before the loaded
+   --start-date, say so once in the RCA setup panel — the fit trains on
+   everything loaded, so more history is a free upgrade. Discovery runs in
+   the background server-side, so retry briefly if /meta hasn't filled yet. */
+function renderHistoryNudge(attempt = 0) {
+  const known = Object.entries(state.meta.earliest_available || {}).filter(([, d]) => d);
+  if (!known.length) {
+    if (attempt < 3) {
+      setTimeout(async () => {
+        try {
+          state.meta = await api("/meta");
+        } catch { return; }
+        renderHistoryNudge(attempt + 1);
+      }, 2500);
+    }
+    return;
+  }
+  const older = known.filter(([, d]) => d < state.meta.date_start);
+  if (!older.length || $("history-nudge")) return;
+  const oldest = older.map(([, d]) => d).sort()[0];
+  const p = document.createElement("p");
+  p.id = "history-nudge";
+  p.className = "inline-status";
+  p.textContent = `ⓘ Provider has history back to ${oldest}; loaded from ${state.meta.date_start}. Restart with an earlier --start-date to train on more.`;
+  $("rca-setup").appendChild(p);
 }
 
 function showDegradedBanner(error) {
@@ -3137,6 +3323,7 @@ async function init() {
     } else {
       const edgeNote = state.asOf < state.meta.date_end ? ` · data → ${state.asOf}` : "";
       setStatus(`${state.meta.metrics.length} metrics · provider: ${state.meta.provider} · ${state.meta.date_start} → ${state.meta.date_end}${edgeNote}`);
+      renderHistoryNudge();
     }
     applyDeepLink();
     updateShareMenu();

@@ -118,6 +118,35 @@ Two consequences worth knowing:
   an RCA node with NUTS on exactly the data RCA used, pass
   `?fit_end=<analysis_start>&inference_method=nuts`.
 
+### The reference window is not the training window
+
+A natural misreading of RCA's four dates is that the model is fitted on the
+reference window — and that a longer reference therefore buys a better model.
+Neither is true. The fit window is **all loaded history before
+`analysis_start`**, regardless of the reference dates; the reference window
+only defines the **comparison baseline** the gap is measured against
+(`gap = mean(analysis) − mean(reference)`). Widening the reference does
+nothing for fit quality — widening `--start-date` does.
+
+That baseline role is why "as long as possible" is the wrong instinct for the
+reference. On a metric with any underlying trend, a very long reference turns
+the gap into "current level vs long-run average", and the attribution dutifully
+hands most of it to trend — coherent, and useless for incident analysis. The
+model's trend component already measures drift explicitly; the reference should
+isolate the *regime the analysis window departed from*.
+
+When you omit both reference dates, RCA supplies the **matched adjacent
+block**: the window ending the day before `analysis_start`, sized 4× the
+analysis length with a floor of 28 days, rounded to a whole-week length when
+any node in the target's ancestor scope declares seasonality (so the weekday
+mix stays balanced), extended to hold at least one whole period at the
+coarsest grain in scope, and clamped to the loaded data. Adjacent, so no trend
+accumulates between the windows; a few multiples long, so the baseline mean is
+stable without reaching into a different regime. The response echoes the
+resolved window and sets `reference_defaulted: true`. Override it when you
+have a deliberate baseline in mind — and if you pick a non-adjacent one on a
+growing metric, expect trend to absorb part of the gap.
+
 ## Declared signs and scale confounding
 
 `expected_signs` on a probabilistic node declares the direction you believe an
@@ -235,7 +264,9 @@ component is absent.
 >   windows this mechanism exists to be honest about, and it is not monotone in
 >   window length — a 14-day daily window is not necessarily better off than a
 >   5-day one. Treat a short-window formula CI as a **lower bound** on the true
->   uncertainty until C4 lands.
+>   uncertainty until C4 lands. The default reference window's 28-day floor
+>   reduces how often a *reference* sits in this regime, but does not fix the
+>   defect — short analysis windows and hand-picked short references still hit it.
 > - **The degeneracy guard is keyed on the wrong quantity.** It fires on a
 >   single-period window, but the failure it exists to catch is *any* resampling
 >   that produces identical replicates. A parent that is constant across the

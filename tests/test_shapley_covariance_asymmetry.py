@@ -23,6 +23,7 @@ import pandas as pd
 
 from breakdown.engine.rca import run_rca, shapley_attribution
 from breakdown.parser import Parser
+from tests.synthetic import win
 
 YAML = """
 metrics:
@@ -81,7 +82,7 @@ def test_efficiency_vs_formula_gap():
     dag = Parser(YAML).dag
     frame = make_frame(cov_ref=2.0, cov_an=1.0)
 
-    result = shapley_attribution(dag, frame, "volume", *REF, *AN)
+    result = shapley_attribution(dag, frame, "volume", **win(REF, AN))
 
     assert abs(sum(result["attribution"].values()) - result["gap"]) < 1e-9
     for p, parts in result["decomposition"].items():
@@ -96,8 +97,8 @@ def test_nothing_moved_nothing_attributed():
     dag = Parser(YAML).dag
     frame = make_frame(cov_ref=K, cov_an=K)
 
-    sh = shapley_attribution(dag, frame, "volume", *REF, *AN)
-    result = run_rca(dag, frame, {}, "volume", *REF, *AN)
+    sh = shapley_attribution(dag, frame, "volume", **win(REF, AN))
+    result = run_rca(dag, frame, {}, "volume", **win(REF, AN))
     node = result["nodes"]["volume"]
 
     assert abs(node["gap"]) < 1e-9
@@ -120,8 +121,8 @@ def test_mean_shift_recovered_covariance_cancels():
     dag = Parser(YAML).dag
     frame = make_frame(cov_ref=K, cov_an=K, mu_b_an=mu_b_an, mu_c_an=mu_c_an)
 
-    sh = shapley_attribution(dag, frame, "volume", *REF, *AN)
-    result = run_rca(dag, frame, {}, "volume", *REF, *AN)
+    sh = shapley_attribution(dag, frame, "volume", **win(REF, AN))
+    result = run_rca(dag, frame, {}, "volume", **win(REF, AN))
 
     expected_orders = (mu_b_an - MU_B) * (MU_C + mu_c_an) / 2
     expected_rate = (mu_c_an - MU_C) * (MU_B + mu_b_an) / 2
@@ -139,8 +140,8 @@ def test_covariance_shift_attributed_symmetrically():
     dag = Parser(YAML).dag
     frame = make_frame(cov_ref=cov_ref, cov_an=cov_an)
 
-    sh = shapley_attribution(dag, frame, "volume", *REF, *AN)
-    result = run_rca(dag, frame, {}, "volume", *REF, *AN)
+    sh = shapley_attribution(dag, frame, "volume", **win(REF, AN))
+    result = run_rca(dag, frame, {}, "volume", **win(REF, AN))
     node = result["nodes"]["volume"]
 
     assert abs(node["gap"] - delta) < 1e-9
@@ -156,7 +157,7 @@ def test_unexplained_is_measurement_residual_only():
     dag = Parser(YAML).dag
     for k in [0.0, 0.5, 1.0, 2.0, 4.0]:
         frame = make_frame(cov_ref=k, cov_an=1.0)
-        result = run_rca(dag, frame, {}, "volume", *REF, *AN)
+        result = run_rca(dag, frame, {}, "volume", **win(REF, AN))
         assert abs(result["nodes"]["volume"]["unexplained"]) < 1e-9
 
 
@@ -169,7 +170,7 @@ def test_two_level_decomposition_separates_means_and_comovement():
 
     # Covariance shift only (means fixed): gap = cov_an - cov_ref = -3.
     frame = make_frame(cov_ref=2.0, cov_an=-1.0)
-    node = run_rca(dag, frame, {}, "volume", *REF, *AN)["nodes"]["volume"]
+    node = run_rca(dag, frame, {}, "volume", **win(REF, AN))["nodes"]["volume"]
     total_means = 0.0
     for c in node["contributions"]:
         parts = c["decomposition"]
@@ -192,7 +193,7 @@ def test_two_level_decomposition_separates_means_and_comovement():
 
     # Mean shift only (covariance fixed): the interaction row is ~0.
     frame = make_frame(cov_ref=2.0, cov_an=2.0, mu_b_an=12.0, mu_c_an=4.0)
-    node = run_rca(dag, frame, {}, "volume", *REF, *AN)["nodes"]["volume"]
+    node = run_rca(dag, frame, {}, "volume", **win(REF, AN))["nodes"]["volume"]
     assert abs(node["interaction"]["estimate"]) < 0.5
     # And the means bridge carries the gap.
     total_means = sum(c["decomposition"]["means"]["estimate"] for c in node["contributions"])

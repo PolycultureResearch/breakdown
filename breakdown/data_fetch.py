@@ -349,6 +349,16 @@ class BaseDataFetcher(ABC):
         """
         return None
 
+    def earliest_date(self, metric_name: str, grain: str = "day") -> Optional[str]:
+        """Earliest period-start date the source has for this metric
+        (ISO ``YYYY-MM-DD``), or None when the provider cannot answer cheaply.
+
+        A capability, not a contract: implementations must never raise —
+        return None and log instead. Used only to tell users that history
+        exists before ``--start-date``; nothing downstream depends on it.
+        """
+        return None
+
 
 def _sliced_long(df: pd.DataFrame, metric_name: str, grain: str) -> pd.DataFrame:
     """Reshape a semantic-layer result (metric_time, dimension, value) into the
@@ -419,6 +429,25 @@ class CloudDataFetcher(BaseDataFetcher):
         return _align_to_spine(
             df, metric_name, grain, kind, start_date, end_date, value_col=metric_name
         )
+
+    def earliest_date(self, metric_name: str, grain: str = "day") -> Optional[str]:
+        grain_dim = f"metric_time__{grain}"
+        try:
+            with self.client.session():
+                table = self.client.query(
+                    metrics=[metric_name],
+                    group_by=[grain_dim],
+                    order_by=[grain_dim],
+                    limit=1,
+                )
+            df = table.to_pandas()
+            date_col = next(c for c in df.columns if "metric_time" in c.lower())
+            if df.empty:
+                return None
+            return str(pd.Timestamp(df[date_col].iloc[0]).date())
+        except Exception as e:
+            logger.info("earliest_date unavailable for '%s': %s", metric_name, e)
+            return None
 
     def fetch_metric_sliced(
         self,
@@ -540,6 +569,53 @@ class LocalDataFetcher(BaseDataFetcher):
             end_date,
         )
         return _sliced_long(df, metric_name, grain)
+
+    def earliest_date(self, metric_name: str, grain: str = "day") -> Optional[str]:
+        import os
+        import subprocess
+        import tempfile
+
+        # Failure-soft everywhere: a snapshot-only deployment has no `mf`
+        # binary and must simply not know, not crash.
+        if provider_extra_missing("local"):
+            return None
+        group_by = f"metric_time__{grain}"
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
+            tmp_path = f.name
+        try:
+            result = subprocess.run(
+                [
+                    "mf", "query",
+                    "--metrics", metric_name,
+                    "--group-by", group_by,
+                    "--order", group_by,
+                    "--limit", "1",
+                    "--csv", tmp_path,
+                ],
+                cwd=self.project_path,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode != 0:
+                logger.info(
+                    "earliest_date unavailable for '%s': %s",
+                    metric_name, result.stderr.strip(),
+                )
+                return None
+            df = pd.read_csv(tmp_path)
+            date_col = next(
+                (c for c in df.columns if "metric_time" in c.lower()), None
+            )
+            if date_col is None or df.empty:
+                return None
+            return str(pd.Timestamp(df[date_col].iloc[0]).date())
+        except Exception as e:
+            logger.info("earliest_date unavailable for '%s': %s", metric_name, e)
+            return None
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
 
 class WarehouseDataFetcher(BaseDataFetcher):
@@ -693,6 +769,30 @@ class WarehouseDataFetcher(BaseDataFetcher):
         return _align_to_spine(
             df, metric_name, grain, kind, start_date, end_date, value_col="value"
         )
+
+    def earliest_date(self, metric_name: str, grain: str = "day") -> Optional[str]:
+        sql = self.metric_sql.get(metric_name)
+        if sql is None:
+            return None
+        try:
+            cur = self._cursor()
+            try:
+                # The metric's own SELECT, probed over an effectively unbounded
+                # window: MIN over the subquery is cheap for a warehouse, and
+                # the named parameters live inside it and must still be bound.
+                cur.execute(
+                    f"SELECT MIN(date) AS date FROM ({sql}) AS __breakdown_probe",
+                    parameters={"start_date": "1900-01-01", "end_date": "9999-12-31"},
+                )
+                row = cur.fetchone()
+            finally:
+                cur.close()
+            if row is None or row[0] is None:
+                return None
+            return str(pd.Timestamp(row[0]).date())
+        except Exception as e:
+            logger.info("earliest_date unavailable for '%s': %s", metric_name, e)
+            return None
 
 
 # --- Mock-only scale heuristics ---------------------------------------------
@@ -916,6 +1016,12 @@ class MockDataFetcher(BaseDataFetcher):
         rng = self._rng_for(metric_name)
         values = 1000 + np.cumsum(rng.normal(0, 10, len(spine)))
         return pd.DataFrame({"date": spine, metric_name: values})
+
+    def earliest_date(self, metric_name: str, grain: str = "day") -> Optional[str]:
+        # Mock history is effectively unbounded; the epoch (also the anchor of
+        # the slice-share curves) is a deterministic answer that keeps the
+        # history-discovery path exercisable in dev and demo.
+        return str(self._EPOCH.date())
 
     _SLICE_SUFFIXES = ("a", "b", "c", "d")
     _EPOCH = pd.Timestamp("2020-01-01")

@@ -23,7 +23,7 @@ from breakdown.data_fetch import (
     provider_query_name,
 )
 from breakdown.engine.model import fit_metric, summarize_trace, warm_inference_imports
-from breakdown.engine.rca import run_rca, shapley_attribution
+from breakdown.engine.rca import resolve_reference_window, run_rca, shapley_attribution
 from breakdown.engine.simulate import ScenarioRequest, run_scenario, validate_cold_start
 from breakdown.engine.slices import entity_flows, slice_attribution
 from breakdown.grains import GrainedData, build_grained
@@ -289,6 +289,11 @@ async def lifespan(app: FastAPI):
     # OUTER JOIN over two windows on the warehouse.
     app.state.flow_cache: Dict[Tuple[str, str, str, str, str, str], Any] = {}
     app.state.lock = asyncio.Lock()
+    # Filled by the background discovery task: metric -> earliest ISO date the
+    # provider has (None = provider can't say). Read by /meta so the UI can
+    # nudge "history exists before --start-date".
+    app.state.earliest: Dict[str, Optional[str]] = {}
+    app.state.earliest_task: Optional[asyncio.Task] = None
 
     try:
         with open(tree_path, "r") as f:
@@ -334,6 +339,13 @@ async def lifespan(app: FastAPI):
             app.state.fetcher = fetcher
             app.state.data = data
 
+            # History discovery runs in the background: one provider
+            # round-trip per metric would roughly double a cold startup, and
+            # /meta must stay instant — it reports whatever has arrived.
+            app.state.earliest_task = asyncio.create_task(
+                _discover_earliest(app, parser, fetcher, provider_cfg.type)
+            )
+
             logger.info(
                 "breakdown API started: tree=%s provider=%s window=[%s, %s] rows=%s",
                 tree_path,
@@ -363,8 +375,33 @@ async def lifespan(app: FastAPI):
     # The MCP sub-app's own lifespan never runs under a Starlette mount, so
     # its session manager must be driven from here.
     _mcp_mount.rebuild()
-    async with mcp.session_manager.run():
-        yield
+    try:
+        async with mcp.session_manager.run():
+            yield
+    finally:
+        task = app.state.earliest_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+
+async def _discover_earliest(app: FastAPI, parser, fetcher, provider_type: str) -> None:
+    """Fill app.state.earliest metric by metric. Failure-soft per metric:
+    earliest_date never raises by contract, and a surprise here must not
+    take the app down with it."""
+    for metric in parser.config.metrics:
+        query_name = provider_query_name(provider_type, metric)
+        try:
+            earliest = await asyncio.to_thread(
+                fetcher.earliest_date, query_name, metric.grain
+            )
+        except Exception as e:  # pragma: no cover - belt over the contract
+            logger.info("earliest_date failed for '%s': %s", metric.name, e)
+            earliest = None
+        app.state.earliest[metric.name] = earliest
 
 
 app = FastAPI(title="breakdown API", lifespan=lifespan)
@@ -458,6 +495,7 @@ async def get_meta(request: Request):
             "grains": {m.name: m.grain for m in parser.config.metrics},
             "kinds": {m.name: m.kind for m in parser.config.metrics},
             "data_through": {},
+            "earliest_available": {},
             "fitted": [],
         }
     data_through = {}
@@ -477,6 +515,11 @@ async def get_meta(request: Request):
         # period) — the honest data edge, which may lag the requested window
         # when a source mart is behind.
         "data_through": data_through,
+        # Earliest date the provider has per metric (null = can't say), from
+        # the background discovery task — dict(...) snapshots it for the same
+        # worker-thread reason as `fitted` below. Lets the UI say "history
+        # exists before --start-date; widen it to train on more".
+        "earliest_available": dict(request.app.state.earliest),
         # `list(...)` snapshots the keys in one bytecode op rather than
         # iterating lazily: `run_rca` mutates this dict from a worker thread
         # (it is handed the cache directly and fits on demand), so a lazy
@@ -711,10 +754,16 @@ async def analyze_metric(
 async def get_shapley(
     name: str,
     request: Request,
-    reference_start: str = Query(..., description="Start of baseline window (YYYY-MM-DD)"),
-    reference_end: str = Query(..., description="End of baseline window (YYYY-MM-DD)"),
     analysis_start: str = Query(..., description="Start of analysis window (YYYY-MM-DD)"),
     analysis_end: str = Query(..., description="End of analysis window (YYYY-MM-DD)"),
+    reference_start: Optional[str] = Query(
+        default=None,
+        description="Start of baseline window (YYYY-MM-DD); omit both reference "
+        "dates to default to the matched adjacent block before the analysis window",
+    ),
+    reference_end: Optional[str] = Query(
+        default=None, description="End of baseline window (YYYY-MM-DD)"
+    ),
 ):
     _require_data(request)
     parser = request.app.state.parser
@@ -743,10 +792,16 @@ async def get_shapley(
 async def root_cause_analysis(
     name: str,
     request: Request,
-    reference_start: str = Query(..., description="Start of baseline window (YYYY-MM-DD)"),
-    reference_end: str = Query(..., description="End of baseline window (YYYY-MM-DD)"),
     analysis_start: str = Query(..., description="Start of analysis window (YYYY-MM-DD)"),
     analysis_end: str = Query(..., description="End of analysis window (YYYY-MM-DD)"),
+    reference_start: Optional[str] = Query(
+        default=None,
+        description="Start of baseline window (YYYY-MM-DD); omit both reference "
+        "dates to default to the matched adjacent block before the analysis window",
+    ),
+    reference_end: Optional[str] = Query(
+        default=None, description="End of baseline window (YYYY-MM-DD)"
+    ),
 ):
     _require_data(request)
     parser = request.app.state.parser
@@ -759,15 +814,9 @@ async def root_cause_analysis(
         # run_rca adds any traces it fits on demand to app.state.traces itself.
         try:
             result = await asyncio.to_thread(
-                run_rca,
-                parser.dag,
-                data,
-                request.app.state.traces,
-                name,
-                reference_start,
-                reference_end,
-                analysis_start,
-                analysis_end,
+                run_rca, parser.dag, data, request.app.state.traces, name,
+                analysis_start=analysis_start, analysis_end=analysis_end,
+                reference_start=reference_start, reference_end=reference_end,
             )
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
@@ -835,7 +884,12 @@ def _run_slice(
 ):
     """Fetch the sliced frames (and the weight's, for a rate) and attribute.
     Sync — called via asyncio.to_thread under the app lock. The engine stays
-    pure: all I/O happens here."""
+    pure: all I/O happens here (slice_attribution keeps concrete dates, so
+    omitted references resolve here too)."""
+    reference_start, reference_end, reference_defaulted = resolve_reference_window(
+        parser.dag, data, defn.name,
+        analysis_start, analysis_end, reference_start, reference_end,
+    )
     spec = defn.dimensions[dimension]
     span_start = min(reference_start, analysis_start)
     span_end = max(reference_end, analysis_end)
@@ -869,6 +923,7 @@ def _run_slice(
         weight_sliced=weight_sliced,
         additivity=additivity,
     )
+    result["reference_defaulted"] = reference_defaulted
 
     # Entity flows are a *diagnostic alongside* the attribution, never a second
     # decomposition of the same gap: they compare window-level sets, which do
@@ -903,16 +958,23 @@ async def slice_metric_gap(
     name: str,
     request: Request,
     dimension: str = Query(..., description="Declared dimension name on the metric"),
-    reference_start: str = Query(..., description="Start of baseline window (YYYY-MM-DD)"),
-    reference_end: str = Query(..., description="End of baseline window (YYYY-MM-DD)"),
     analysis_start: str = Query(..., description="Start of analysis window (YYYY-MM-DD)"),
     analysis_end: str = Query(..., description="End of analysis window (YYYY-MM-DD)"),
+    reference_start: Optional[str] = Query(
+        default=None,
+        description="Start of baseline window (YYYY-MM-DD); omit both reference "
+        "dates to default to the matched adjacent block before the analysis window",
+    ),
+    reference_end: Optional[str] = Query(
+        default=None, description="End of baseline window (YYYY-MM-DD)"
+    ),
 ):
     """Attribute `name`'s window-over-window gap across one dimension's slices.
 
     The traverse-then-slice follow-up to POST /rca/{name}: tree RCA says which
     upstream metric moved; this says where inside it. When slicing a lagged
-    parent, pass the parent's own lag-shifted windows.
+    parent, pass the parent's own lag-shifted windows (a defaulted reference
+    matches the metric's own timeline, not a lag-shifted one).
     """
     _require_data(request)
     parser = request.app.state.parser
@@ -933,6 +995,8 @@ async def slice_metric_gap(
         ("analysis_start", analysis_start),
         ("analysis_end", analysis_end),
     ]:
+        if value is None:  # omitted reference dates default downstream
+            continue
         try:
             datetime.date.fromisoformat(value)
         except ValueError:

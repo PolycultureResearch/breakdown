@@ -152,7 +152,9 @@ the steep part of its growth curve, and an eight-week gap would carry ~25%
 underlying growth in trial volume — enough that the tree would have credited
 volume rather than the change. Choosing comparable windows is a real part of
 using this well, and the tool will faithfully attribute trend if you hand it a
-trendy comparison.
+trendy comparison. (Adjacency is now the default: leave the reference on
+**auto** and it is exactly the matched adjacent block described here — this
+paragraph is the *why* behind that default.)
 
 ---
 

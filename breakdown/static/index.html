@@ -105,27 +105,28 @@
             <div id="tab-rca" class="tab-content">
                 <div id="rca-setup">
                     <div class="rca-ctl">
-                        <label for="win-preset">Windows</label>
+                        <label for="win-preset">Analysis</label>
                         <select id="win-preset"></select>
+                    </div>
+                    <div class="rca-ctl">
+                        <label>Window</label>
+                        <input type="date" id="an-start">
+                        <input type="date" id="an-end">
                     </div>
                     <div class="rca-ctl">
                         <label>Reference</label>
                         <input type="date" id="ref-start">
                         <input type="date" id="ref-end">
-                    </div>
-                    <div class="rca-ctl">
-                        <label>Analysis</label>
-                        <input type="date" id="an-start">
-                        <input type="date" id="an-end">
+                        <button id="ref-auto" class="chip active" type="button" title="Matched adjacent block: ~4× the analysis length (min 28 days, whole weeks when seasonality is in scope), ending the day before the analysis window">auto</button>
                     </div>
                     <div class="rca-actions">
                         <button id="run-rca" class="primary">Run RCA</button>
                         <button id="clear-rca" style="display:none">Clear</button>
                     </div>
-                    <p class="inline-status">Explains the target's move from the reference window to the analysis window across its upstream tree.</p>
+                    <p class="inline-status">The model trains on all loaded history before the analysis window. The reference is only the comparison baseline the gap is measured against — by default the matched block just before the analysis window.</p>
                 </div>
                 <div id="rca-results">
-                    <p class="placeholder">Set the two windows and run.</p>
+                    <p class="placeholder">Pick the analysis window and run.</p>
                 </div>
             </div>
             <div id="tab-whatif" class="tab-content">

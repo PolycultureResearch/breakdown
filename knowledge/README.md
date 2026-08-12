@@ -46,6 +46,10 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
   non-additive decomposition at entity grain; and the evaluations of Boring
   Semantic Layer (MIT, but zero dbt interop) and Sidemantic (technically
   strongest, AGPL-3.0 — incompatible with our Apache-2.0)
+- [`reference_window_design.md`](reference_window_design.md) — reference-window
+  defaulting (the matched adjacent block) and provider history discovery
+  (roadmap 1.10): why the reference is not the training window, and why "all
+  history" is the wrong reference
 - [`what_if_design.md`](what_if_design.md) — what-if simulation design spec
 - [`grain_design.md`](grain_design.md) — per-node aggregation grain (roadmap
   1.7): decisions and contracts for `grain`/`kind`, resample-up, window

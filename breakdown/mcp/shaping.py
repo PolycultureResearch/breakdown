@@ -42,6 +42,10 @@ RCA_HOW_TO_READ = (
     "uneven weekday mix is nobody's fault.\n"
     "- `sign_warnings` mean a fitted slope contradicts its declared sign, the classic mark of "
     "scale confounding — do not narrate that edge causally.\n"
+    "- `seasonality_warnings` mean a declared seasonal component could not be identified "
+    "from the fitted history (`fit_periods` says how much there was); its share of the gap "
+    "may be misallocated between `components.seasonal`, trend, and `unexplained` — load "
+    "more history rather than narrating that split as precise.\n"
     "- Fits use ADVI, which can understate uncertainty; treat this as triage and confirm "
     "load-bearing findings with a NUTS fit before big decisions."
 )
@@ -172,6 +176,10 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
             "attribution_method": node["attribution_method"],
             "fit_quality": node["fit_quality"],
             "sign_warnings": node["sign_warnings"],
+            # fit_window start/end are dropped for token economy; n_periods is
+            # the decision-relevant number.
+            "fit_periods": (node.get("fit_window") or {}).get("n_periods"),
+            "seasonality_warnings": node.get("seasonality_warnings"),
             "ci_status": node["ci_status"],
             "unexplained": node["unexplained"],
             "components": (
@@ -206,6 +214,7 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
         "target": result["target"],
         "reference_window": result["reference_window"],
         "analysis_window": result["analysis_window"],
+        "reference_defaulted": result.get("reference_defaulted"),
         "nodes": nodes,
         "ranked_causes": result["ranked_causes"][:_MAX_RANKED_CAUSES],
     }

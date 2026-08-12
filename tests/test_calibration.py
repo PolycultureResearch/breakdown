@@ -22,6 +22,7 @@ import pytest
 
 from breakdown.engine.rca import run_rca
 from breakdown.parser import Parser
+from tests.synthetic import win
 
 PROB_YAML = """
 metrics:
@@ -106,7 +107,7 @@ def test_recovers_planted_contemporaneous_cause():
     frame, truth = _planted_step_world(seed=101)
     dag = Parser(PROB_YAML).dag
 
-    result = run_rca(dag, frame, {}, "y", *REF, *AN, advi_draws=300)
+    result = run_rca(dag, frame, {}, "y", **win(REF, AN), advi_draws=300)
 
     node = result["nodes"]["y"]
     c = node["contributions"][0]
@@ -122,7 +123,7 @@ def test_recovers_planted_lagged_cause():
     frame, truth = _planted_step_world(seed=202, lag=5)
     dag = Parser(LAGGED_YAML).dag
 
-    result = run_rca(dag, frame, {}, "y", *REF, *AN, advi_draws=300)
+    result = run_rca(dag, frame, {}, "y", **win(REF, AN), advi_draws=300)
 
     c = result["nodes"]["y"]["contributions"][0]
     assert abs(c["estimate"] - truth) < 0.25 * abs(truth)
@@ -140,7 +141,7 @@ def test_recovers_moved_factor_in_identity():
     frame = _frame({"orders": orders, "aov": aov, "revenue": revenue})
     dag = Parser(FORMULA_YAML).dag
 
-    result = run_rca(dag, frame, {}, "revenue", *REF, *AN)
+    result = run_rca(dag, frame, {}, "revenue", **win(REF, AN))
 
     node = result["nodes"]["revenue"]
     by_parent = {c["parent"]: c for c in node["contributions"]}
@@ -161,7 +162,7 @@ def test_null_case_attributes_nothing_confidently():
     frame = _frame({"x": x, "y": y})
     dag = Parser(PROB_YAML).dag
 
-    result = run_rca(dag, frame, {}, "y", *REF, *AN, advi_draws=300)
+    result = run_rca(dag, frame, {}, "y", **win(REF, AN), advi_draws=300)
 
     node = result["nodes"]["y"]
     c = node["contributions"][0]
@@ -181,7 +182,7 @@ def test_unrelated_parent_gets_no_credit():
     frame = _frame({"x1": x1, "x2": x2, "y": y})
     dag = Parser(TWO_PARENT_YAML).dag
 
-    result = run_rca(dag, frame, {}, "y", *REF, *AN, advi_draws=300)
+    result = run_rca(dag, frame, {}, "y", **win(REF, AN), advi_draws=300)
 
     by_parent = {c["parent"]: c for c in result["nodes"]["y"]["contributions"]}
     truth = 0.5 * 30.0
@@ -201,7 +202,7 @@ def test_contribution_ci_coverage(worlds):
     for k in range(worlds):
         frame, truth = _planted_step_world(seed=1000 + k)
         dag = Parser(PROB_YAML).dag
-        result = run_rca(dag, frame, {}, "y", *REF, *AN, advi_draws=300)
+        result = run_rca(dag, frame, {}, "y", **win(REF, AN), advi_draws=300)
         ci = result["nodes"]["y"]["contributions"][0]["ci_95"]
         if ci[0] <= truth <= ci[1]:
             covered += 1

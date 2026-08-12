@@ -235,3 +235,21 @@ def test_kind_passed_through_to_inner(tmp_path, kind):
         "m", "2024-01-01", "2024-01-07", grain="week", kind=kind
     )
     assert seen == {"grain": "week", "kind": kind}
+
+
+def test_snapshot_fetcher_delegates_earliest_date(tmp_path):
+    class EpochFetcher(CountingFetcher):
+        def earliest_date(self, metric_name, grain="day"):
+            return "2019-06-01"
+
+    fetcher = SnapshotFetcher(EpochFetcher(), SnapshotStore(str(tmp_path)))
+    assert fetcher.earliest_date("m") == "2019-06-01"
+
+
+def test_snapshot_fetcher_earliest_date_never_raises(tmp_path):
+    class RaisingFetcher(CountingFetcher):
+        def earliest_date(self, metric_name, grain="day"):
+            raise RuntimeError("no SDK in this deployment")
+
+    fetcher = SnapshotFetcher(RaisingFetcher(), SnapshotStore(str(tmp_path)))
+    assert fetcher.earliest_date("m") is None

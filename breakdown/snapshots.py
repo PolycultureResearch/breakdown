@@ -292,6 +292,15 @@ class SnapshotFetcher(BaseDataFetcher):
         window = df[(df["date"] >= start_date) & (df["date"] <= end_date)]
         return window.reset_index(drop=True)
 
+    def earliest_date(self, metric_name: str, grain: str = "day") -> Optional[str]:
+        # Pure passthrough — snapshot-only deployments (no SDK, no warehouse)
+        # must simply not know, never crash.
+        try:
+            return self.inner.earliest_date(metric_name, grain)
+        except Exception as e:
+            logger.info("earliest_date unavailable for '%s': %s", metric_name, e)
+            return None
+
     def _span(self, start_date: str, end_date: str) -> tuple[str, str]:
         """Widen a sliced fetch to the configured span when it covers the request."""
         if not self.slice_span:

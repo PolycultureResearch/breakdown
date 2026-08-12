@@ -81,6 +81,8 @@ def _rca_fixture():
         "inference_method": None,
         "fit_quality": None,
         "sign_warnings": None,
+        "fit_window": None,
+        "seasonality_warnings": None,
         "ci_status": "ok",
         "unexplained": 3608.0,
         "components": {
@@ -111,6 +113,7 @@ def _rca_fixture():
         "target": "revenue",
         "reference_window": {"start": "2024-01-01", "end": "2024-02-15"},
         "analysis_window": {"start": "2024-02-16", "end": "2024-04-09"},
+        "reference_defaulted": False,
         "nodes": {"revenue": ok_node, "monthly_costs": skipped_node},
         "ranked_causes": [
             {"metric": f"m{i}", "score": 1.0 - i / 20, "via": "revenue"} for i in range(15)
@@ -121,7 +124,11 @@ def _rca_fixture():
 def test_compact_rca():
     out = compact_rca(_rca_fixture())
 
-    assert set(out) == {"target", "reference_window", "analysis_window", "nodes", "ranked_causes"}
+    assert set(out) == {
+        "target", "reference_window", "analysis_window", "reference_defaulted",
+        "nodes", "ranked_causes",
+    }
+    assert out["reference_defaulted"] is False
     assert len(out["ranked_causes"]) == 10  # capped
 
     node = out["nodes"]["revenue"]
@@ -130,6 +137,7 @@ def test_compact_rca():
     assert node["components"] == {"trend": -0.13, "seasonal": 0.0}
     # null node fields are omitted, not serialized
     assert "fit_quality" not in node and "sign_warnings" not in node
+    assert "fit_periods" not in node and "seasonality_warnings" not in node
     # contributions keep the narration channels and drop the decomposition
     contrib = node["contributions"][0]
     assert set(contrib) == {"parent", "estimate", "share_of_gap", "ci_95", "prob_same_direction"}
@@ -139,6 +147,24 @@ def test_compact_rca():
         "status": "window_shorter_than_grain",
         "grain": "month",
     }
+
+
+def test_compact_rca_surfaces_fit_window_and_seasonality_warnings():
+    """Posterior nodes carry the fit-window length (the training data is all
+    loaded history, not the reference window) and any seasonality
+    identifiability warnings — both decision-relevant for the caller."""
+    fixture = _rca_fixture()
+    node = fixture["nodes"]["revenue"]
+    node["attribution_method"] = "posterior"
+    node["fit_window"] = {"start": "2024-01-01", "end": "2024-02-15", "n_periods": 46}
+    node["seasonality_warnings"] = ["seasonality 'weekly' (period 7) needs >= 14 periods"]
+
+    out = compact_rca(fixture)
+
+    compact = out["nodes"]["revenue"]
+    assert compact["fit_periods"] == 46
+    assert "start" not in compact  # start/end dropped for token economy
+    assert compact["seasonality_warnings"] == node["seasonality_warnings"]
 
 
 def test_compact_rca_keeps_withheld_ci():

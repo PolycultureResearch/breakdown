@@ -203,7 +203,7 @@ uv run breakdown doctor --tree path/to/my_tree.yml
 
 It walks the provider's auth chain step by step (tree parses → env vars set → CLI/profile/token valid → connection opens → every metric's query actually runs) and prints `[PASS]`/`[FAIL]` per step with copy-paste remediation for each failure. Exit code is non-zero if anything failed. Probes run over the last 7 days by default; override with `--start-date`/`--end-date`.
 
-Two mode-specific checks ride along: a cold-start tree (`provider: none`) gets its declarations validated instead of a connection probe, and when you pass an explicit `--start-date`/`--end-date` window the doctor adds a **fit readiness** report — each metric's whole-period count against the 10-period fit minimum, the graduation check for a tree [moving from cold start to fitted mode](#cold-start-mode-what-if-with-no-data).
+Two mode-specific checks ride along: a cold-start tree (`provider: none`) gets its declarations validated instead of a connection probe, and when you pass an explicit `--start-date`/`--end-date` window the doctor adds a **fit readiness** report — each metric's whole-period count against the 10-period fit minimum, the graduation check for a tree [moving from cold start to fitted mode](#cold-start-mode-what-if-with-no-data) — plus a **history headroom** report: whether the provider has history before your `--start-date`. Breakdown trains on everything you load, so an earlier start date strengthens every fit (and the default RCA reference windows) at no cost beyond fetch time.
 
 For the **`dbt` provider**, `doctor` walks manifest → profile → connection →
 bindings → dimensions → grain claims, in the order a failure cascades. The last
@@ -233,7 +233,7 @@ Start the server and open `http://localhost:9090/ui`. Breakdown fetches every me
 
 **1. Inspect a metric — and fit its model.** Click any node in the graph to open the **Metric** tab (right sidebar) with its time series. Nodes that have a probabilistic parent (e.g. `order_count`) show an **Analyze** section: pick **ADVI (fast)** or **NUTS (accurate)** and click **Run** to fit the BSTS. The posterior — trend, seasonality, and the `beta` / `beta_raw` coefficient on each parent — fills in, and the node picks up the "fitted" tint. Leaf and formula nodes just show their series.
 
-**2. Run a root-cause analysis.** In the header bar: choose a **Target** (must be a metric with a `formula`, e.g. `revenue`), set the **Reference** and **Analysis** date pairs (or pick a canned pair from the **Windows** preset), then click **Run RCA**. Breakdown auto-fits any upstream probabilistic models it needs (on data strictly before the analysis window) and paints the result on the graph: nodes tinted by direction of change, edges weighted by each parent's share of the explained gap, and a ranked cause list with credible intervals in the **Root cause** tab. **Copy link** yields a shareable `#rca=…` URL; **Clear** resets.
+**2. Run a root-cause analysis.** Choose a **Target** in the header bar, then open the **Root cause** tab and pick the **Analysis** window — the period you want explained — from a preset (Last 7 days, Last 14 days, Last full week) or the date pair. The **Reference** fills itself with the matched adjacent block (marked **auto**) and stays editable: touch it and it becomes custom; the auto chip restores it. The model doesn't train on the reference — it trains on *all* loaded history before the analysis window (each node's result says exactly what it was fitted on) — so the reference is only the baseline the gap is measured against. Click **Run RCA**: breakdown auto-fits any upstream probabilistic models it needs and paints the result on the graph — nodes tinted by direction of change, edges weighted by each parent's share of the explained gap, and a ranked cause list with credible intervals. **Copy link** yields a shareable `#rca=…` URL carrying the resolved windows; **Clear** resets.
 
 **3. Localize a cause with a slice (optional).** Any ranked cause whose metric declares [`dimensions`](#dimensions-slicing) shows a **slice by** row — click a dimension to attribute that metric's gap across its values. Slices are ranked by excess concentration (how much more of the gap a value carries than its baseline share predicts), with the leader highlighted, `noise` badges where the bootstrap can't separate concentration from zero, and an explicit "not localized" verdict when nothing stands out. Across a lagged edge the slice automatically uses the parent's lag-shifted windows, so it compares the periods the contribution was actually measured over.
 
@@ -433,7 +433,7 @@ Each seasonality component is modeled with up to 2 Fourier harmonics (4 paramete
 **Declare only seasonality your fit window can see.** Two constraints, both enforced:
 
 - **Period vs. grain.** A harmonic needs more than two steps per cycle to be distinguishable from the level (Nyquist), so `period` must be ≥ 3, and the second harmonic is dropped below `period: 5`. Dropped harmonics are reported in the fit's `seasonality_warnings` diagnostic.
-- **Period vs. data.** Identifying a component takes at least two full periods *inside the fit window* — and RCA fits stop at `analysis_start`, so the window is shorter than your data. A `period: 365` component on a few months of history is unidentifiable and will soak up degrees of freedom the parents need; it too lands in `seasonality_warnings`.
+- **Period vs. data.** Identifying a component takes at least two full periods *inside the fit window* — and RCA fits stop at `analysis_start`, so the window is shorter than your data. A `period: 365` component on a few months of history is unidentifiable and will soak up degrees of freedom the parents need; it too lands in `seasonality_warnings`. RCA responses surface these warnings per node (with the fitted window under `fit_window`), so an unidentifiable component is flagged in the result, not just the server log — the fix is more history (an earlier `--start-date`), not a different reference window.
 
 ### Formula
 
@@ -645,7 +645,7 @@ It reports every metric's whole-period count against the fit minimum (`signups: 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), fitted models (UI bootstrap) |
+| `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), fitted models, per-metric `earliest_available` history discovery (UI bootstrap) |
 | `GET` | `/dag` | Full metric DAG (nodes + edges) |
 | `GET` | `/metrics/{name}` | Metric definition, time series, and posterior summary |
 | `POST` | `/analyze/{name}` | Run Bayesian sampling for a metric |
@@ -682,10 +682,19 @@ Query parameters:
 
 | Param | Description |
 |-------|-------------|
-| `reference_start` | Start of the baseline window (`YYYY-MM-DD`) |
-| `reference_end` | End of the baseline window (`YYYY-MM-DD`) |
 | `analysis_start` | Start of the analysis window (`YYYY-MM-DD`) |
 | `analysis_end` | End of the analysis window (`YYYY-MM-DD`) |
+| `reference_start` | *(optional)* Start of the baseline window (`YYYY-MM-DD`) |
+| `reference_end` | *(optional)* End of the baseline window (`YYYY-MM-DD`) |
+
+Omit **both** reference dates (passing exactly one is a 422) and the engine
+defaults to the **matched adjacent block**: the window ending the day before
+`analysis_start`, 4× the analysis length (min 28 days, whole weeks when
+seasonality is in the target's scope), clamped to the loaded data. The
+response echoes the resolved `reference_window`/`analysis_window` and sets
+`reference_defaulted`. The reference is only the comparison baseline — the
+model always fits on all loaded history before `analysis_start` — see
+[docs/model.md](docs/model.md).
 
 Example response:
 
@@ -718,10 +727,16 @@ Example response:
 
 Walks the ancestor DAG of `name` and attributes the change between a reference window and an analysis window to upstream metrics. Any probabilistic node in scope that hasn't been fit yet is fit on demand with ADVI and its trace is cached (a second call is much faster).
 
-Query parameters (all required, `YYYY-MM-DD`): `reference_start`, `reference_end`, `analysis_start`, `analysis_end`.
+Query parameters (`YYYY-MM-DD`): `analysis_start`, `analysis_end` (required),
+`reference_start`, `reference_end` (optional — omitting both uses the matched
+adjacent block, exactly as on `GET /shapley/{name}` above; the response carries
+`reference_defaulted`).
 
 ```bash
+# explicit reference
 curl -X POST "http://localhost:9090/rca/revenue?reference_start=2024-01-01&reference_end=2024-02-15&analysis_start=2024-02-16&analysis_end=2024-04-09"
+# defaulted reference
+curl -X POST "http://localhost:9090/rca/revenue?analysis_start=2024-02-16&analysis_end=2024-04-09"
 ```
 
 Trimmed response:
@@ -796,7 +811,7 @@ See [docs/model.md](https://github.com/PolycultureResearch/breakdown/blob/main/d
 
 ### `POST /rca/{name}/slices`
 
-The traverse-then-slice follow-up: attribute one metric's window-over-window gap across a declared dimension's values.
+The traverse-then-slice follow-up: attribute one metric's window-over-window gap across a declared dimension's values. The reference dates are optional here too (same defaulting rule; the response carries `reference_defaulted`) — but when slicing a **lagged parent** surfaced by an RCA, pass its `parent_windows` explicitly: the default matches the metric's own timeline, not a lag-shifted one.
 
 ```bash
 curl -X POST "http://localhost:9090/rca/signups/slices?dimension=region&reference_start=2024-02-05&reference_end=2024-03-03&analysis_start=2024-03-04&analysis_end=2024-03-10"

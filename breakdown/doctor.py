@@ -724,11 +724,14 @@ def _check_entity_grain(config, fetcher, wanted, start_date=None, end_date=None)
     )
 
 
-def check_fit_readiness(parser, start_date: str, end_date: str) -> CheckResult:
+def check_fit_readiness(parser, start_date: str, end_date: str) -> List[CheckResult]:
     """Per-metric whole periods over the window vs the fit minimum — the
     graduation check for a tree migrating from cold start to fitted mode.
     Fetches through the real provider path (never a lookalike), so it also
-    exercises every metric's query end to end."""
+    exercises every metric's query end to end. A second result reports
+    **history headroom**: whether the provider has history before
+    --start-date (RCA trains on everything loaded, so an earlier start
+    strengthens fits and default reference windows)."""
     from breakdown.api.main import _build_fetcher  # lazy: pulls FastAPI
     from breakdown.data_fetch import provider_query_name
     from breakdown.engine.model import MIN_FIT_PERIODS
@@ -737,11 +740,15 @@ def check_fit_readiness(parser, start_date: str, end_date: str) -> CheckResult:
     try:
         fetcher = _build_fetcher(cfg, parser.dag, parser.config.metrics)
     except Exception as e:
-        return CheckResult.fail("fit readiness", f"could not build fetcher: {e}")
+        return [CheckResult.fail("fit readiness", f"could not build fetcher: {e}")]
 
     lines, short = [], []
+    headroom = []  # (metric, earliest) where history exists before start_date
     for m in parser.config.metrics:
         query_name = provider_query_name(cfg.type, m)
+        earliest = fetcher.earliest_date(query_name, m.grain)
+        if earliest is not None and earliest < start_date:
+            headroom.append((m.name, earliest))
         try:
             df = fetcher.fetch_metric(query_name, start_date, end_date, grain=m.grain, kind=m.kind)
             n = len(df)
@@ -758,7 +765,7 @@ def check_fit_readiness(parser, start_date: str, end_date: str) -> CheckResult:
 
     detail = "; ".join(lines)
     if short:
-        return CheckResult.fail(
+        readiness = CheckResult.fail(
             "fit readiness",
             detail,
             f"Metrics below {MIN_FIT_PERIODS} periods cannot be fitted: "
@@ -766,7 +773,23 @@ def check_fit_readiness(parser, start_date: str, end_date: str) -> CheckResult:
             "history, or wait for it to accumulate — what-if and RCA fit on "
             "demand and will fail on these nodes until then.",
         )
-    return CheckResult.ok("fit readiness", detail)
+    else:
+        readiness = CheckResult.ok("fit readiness", detail)
+
+    if headroom:
+        oldest = min(e for _, e in headroom)
+        history = CheckResult.ok(
+            "history headroom",
+            f"history exists before --start-date for {len(headroom)} metric(s) "
+            f"(earliest {oldest}); breakdown trains on everything loaded, so an "
+            "earlier --start-date strengthens fits and default reference windows",
+        )
+    else:
+        history = CheckResult.ok(
+            "history headroom",
+            "no history before --start-date detected (or the provider can't say)",
+        )
+    return [readiness, history]
 
 
 # What each provider's own checks would have reported, had its SDK been there.
@@ -851,7 +874,7 @@ def run_doctor(
     elif any(r.status == "fail" for r in results):
         results.append(CheckResult.skip("fit readiness", "provider checks failed above"))
     else:
-        results.append(check_fit_readiness(tree.parser, start_date, end_date))
+        results += check_fit_readiness(tree.parser, start_date, end_date)
     return results
 
 
