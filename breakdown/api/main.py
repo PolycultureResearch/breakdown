@@ -35,7 +35,7 @@ from breakdown.engine.model import fit_metric, summarize_trace, warm_inference_i
 from breakdown.engine.rca import resolve_reference_window, run_rca, shapley_attribution
 from breakdown.engine.simulate import ScenarioRequest, run_scenario, validate_cold_start
 from breakdown.engine.slices import entity_flows, slice_attribution
-from breakdown.grains import GrainedData, build_grained
+from breakdown.grains import GrainedData, build_grained, next_start
 from breakdown.mcp.server import mcp
 from breakdown.snapshots import SnapshotFetcher, SnapshotStore
 
@@ -698,6 +698,89 @@ async def health(request: Request):
         "provider": parser.config.provider.type,
         "metrics": len(parser.config.metrics),
     }
+
+
+def _goal_progress(tree: TreeState) -> Optional[Dict[str, Any]]:
+    """Current-vs-target for a loaded goal tree, or None.
+
+    `current` is the goal metric's value at the tree's own data edge — the same
+    anchor the node cards use (the oldest `data_through` across the tree, and
+    only periods *fully completed* by it) — so the index agrees with what the
+    tree itself shows rather than quoting a fresher half-period nothing else
+    displays. None for a tree that isn't loaded: §2.3's whole point is that the
+    index says when it doesn't know, and a dash is the one honest answer there.
+    """
+    meta = tree.meta
+    goal = meta.goal if meta else None
+    data = tree.data
+    if goal is None or data is None or goal.metric not in data.grain_of:
+        return None
+    edges = [e for e in (data.data_through(n) for n in data.grain_of) if e is not None]
+    anchor = min(edges) if edges else data.date_end
+    grain = data.grain_of[goal.metric]
+    series = data.series(goal.metric)
+    day = pd.Timedelta(days=1)
+    complete = [
+        (next_start(d, grain) - day, v)
+        for d, v in zip(series["date"], series[goal.metric])
+        if next_start(d, grain) - day <= anchor
+    ]
+    if not complete:
+        return None
+    period_end, value = complete[-1]
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    return {
+        "current": float(value),
+        "target": goal.target,
+        "as_of": str(period_end.date()),
+    }
+
+
+def _tree_card(tree: TreeState) -> Dict[str, Any]:
+    """One row of the index: what `GET /trees` can say from parsed YAML alone,
+    plus progress when this tree happens to be loaded already."""
+    meta = tree.meta
+    goal = meta.goal if meta else None
+    return {
+        "id": tree.id,
+        "title": tree.title,
+        "description": meta.description if meta else None,
+        "owner": meta.owner if meta else None,
+        "period": meta.period if meta else None,
+        "goal": goal.model_dump() if goal else None,
+        "provider": tree.provider_type,
+        "metric_count": len(tree.parser.config.metrics) if tree.parser else 0,
+        # `loaded` | `loading` | `not_loaded` | `error`. This is the field that
+        # keeps the lazy index honest: `progress: null` with `not_loaded` is
+        # "we haven't looked", which must not render as a zero.
+        "state": tree.state,
+        "load_error": tree.load_error,
+        "progress": _goal_progress(tree),
+    }
+
+
+@app.get("/trees")
+async def list_trees(request: Request):
+    """The index's data source. Answers from parsed YAML alone and **never
+    triggers a load** — eight goal trees in a dbt repo is eight sets of
+    warehouse round-trips, and this endpoint has to be instant on a cold
+    process for the lazy loading below it to be worth anything."""
+    state = request.app.state
+    return {
+        "default": state.default_tree,
+        "trees": [_tree_card(t) for t in state.trees.values()],
+    }
+
+
+@app.post("/trees/{tree_id}/load")
+async def load_tree_endpoint(tree_id: str, request: Request):
+    """Explicit load, behind the index's **Load** affordance. Returns when the
+    fetch completes; a second caller that arrives mid-fetch waits on the same
+    lock rather than starting a second one."""
+    tree = _tree(request)
+    await _ensure_loaded(tree)
+    return _tree_card(tree)
 
 
 @router.get("/meta")

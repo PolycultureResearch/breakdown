@@ -11,6 +11,8 @@ def serve(
     port: int = 9090,
     host: str = "127.0.0.1",
     tree: str | None = None,
+    default_tree: str | None = None,
+    eager: bool = False,
     start_date: str | None = None,
     end_date: str | None = None,
     reload: bool = False,
@@ -24,9 +26,15 @@ def serve(
     # reload subprocess (and doubles as the container config surface).
     if tree:
         tree_path = os.path.abspath(tree)
-        if not os.path.isfile(tree_path):
-            raise SystemExit(f"Metric tree file not found: {tree_path}")
+        # A directory serves every *.yml in it as its own tree (roadmap 2.16);
+        # a file is the single-tree case, unchanged.
+        if not os.path.exists(tree_path):
+            raise SystemExit(f"Metric tree file or directory not found: {tree_path}")
         os.environ["BREAKDOWN_TREE"] = tree_path
+    if default_tree:
+        os.environ["BREAKDOWN_DEFAULT_TREE"] = default_tree
+    if eager:
+        os.environ["BREAKDOWN_EAGER"] = "1"
     for flag, value, env in (
         ("--start-date", start_date, "BREAKDOWN_START_DATE"),
         ("--end-date", end_date, "BREAKDOWN_END_DATE"),
@@ -90,7 +98,22 @@ def main(argv: list[str] | None = None) -> None:
         "--tree",
         type=str,
         default=None,
-        help="Path to a metric tree YAML (default: the bundled jaffle_shop example)",
+        help="Path to a metric tree YAML, or a directory of them — each *.yml "
+        "is one tree, its id the filename stem (default: the bundled "
+        "jaffle_shop example)",
+    )
+    serve_parser.add_argument(
+        "--default-tree",
+        type=str,
+        default=None,
+        help="Which tree id the unprefixed routes and a bare /ui open "
+        "(default: the only tree, else the alphabetically first)",
+    )
+    serve_parser.add_argument(
+        "--eager",
+        action="store_true",
+        help="Fetch the default tree's data at startup instead of on first "
+        "use (a directory of trees loads lazily by default)",
     )
     serve_parser.add_argument(
         "--start-date",
@@ -151,6 +174,8 @@ def main(argv: list[str] | None = None) -> None:
             args.port,
             host=args.host,
             tree=args.tree,
+            default_tree=args.default_tree,
+            eager=args.eager,
             start_date=args.start_date,
             end_date=args.end_date,
             reload=args.reload,
