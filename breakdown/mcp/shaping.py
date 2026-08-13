@@ -30,7 +30,8 @@ RCA_HOW_TO_READ = (
     "- `share_of_gap` is unclamped: opposing parents can legitimately sum past 100% or go negative.\n"
     "- `ci_95` is a 95% credible interval; `prob_same_direction` near 1.0 means the sign is "
     "near-certain, near 0.5 means it could go either way. A null `ci_95` means the interval "
-    "was honestly withheld (see `ci_status`), not that it is zero.\n"
+    "was honestly withheld (see `ci_status`), not that it is zero. `*_censored: true` means "
+    "it saturated at the estimator's ceiling — a bound ('>99.8%'), not certainty.\n"
     "- `gap` is mean-per-period at each node's own grain — never compare raw gaps across "
     "nodes with different grains; compare shares and ranked-cause scores instead.\n"
     "- A contribution carrying `lag`/`parent_windows` was measured against the parent's "
@@ -66,7 +67,10 @@ SLICE_HOW_TO_READ = (
     "concentration is a reallocation of the gap, not extra gap.\n"
     "- `prob_concentrated` near 1.0 means the concentration direction is "
     "near-certain; `noise_level: true` means the bootstrap cannot distinguish "
-    "this slice from a proportional move — do not narrate it as localized.\n"
+    "this slice from a proportional move — do not narrate it as localized. "
+    "`prob_concentrated_censored: true` means the estimate saturated at the "
+    "bootstrap's resolution ceiling — narrate it as a bound ('>99.8%'), not a "
+    "measured value.\n"
     "- `__other__` folds the non-top slices (`n_values` of them) and can "
     "itself be the finding — a long-tail move is real.\n"
     "- For rates: `within` is the slice's own rate moving, `mix` is traffic "
@@ -85,7 +89,9 @@ WHATIF_HOW_TO_READ = (
     "How to read this result:\n"
     "- `delta` is a posterior over the change: an estimate with a 95% credible interval. "
     "`prob_direction` near 0.5 means the sign is genuinely uncertain — narrate the odds "
-    "(e.g. 'a 20% chance this loses money'), not just the point estimate.\n"
+    "(e.g. 'a 20% chance this loses money'), not just the point estimate. "
+    "`prob_direction_censored: true` means every draw landed on one side, so the published "
+    "number is the resolution ceiling of `n_draws` — a lower bound, not a measurement.\n"
     "- Interventions are do-operator: the metric is pinned, its usual drivers are severed, "
     "and effects propagate only downstream through the tree.\n"
     "- Fitted slopes are local to the observed operating range; `extrapolation: true` "
@@ -237,7 +243,15 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
                             "prob_same_direction",
                         )
                     },
-                    **{k: c[k] for k in ("lag", "parent_windows") if c.get(k) is not None},
+                    **{
+                        k: c[k]
+                        for k in (
+                            "lag",
+                            "parent_windows",
+                            "prob_same_direction_censored",
+                        )
+                        if c.get(k) is not None
+                    },
                 }
                 for c in node["contributions"]
             ],
@@ -301,6 +315,7 @@ def compact_scenario(result: Dict[str, Any]) -> Dict[str, Any]:
                 "delta": node["delta"],
                 "relative_delta": node["relative_delta"],
                 "prob_direction": node["prob_direction"],
+                **{k: node[k] for k in ("prob_direction_censored",) if node.get(k) is not None},
                 "fit_quality": node["fit_quality"],
                 "extrapolation": node["extrapolation"]["flag"],
                 "contributions": node["contributions"],

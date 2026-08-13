@@ -665,11 +665,23 @@ class MetricDefinition(BaseModel):
     # UI display hint for the node card's big number; does not affect modeling.
     format: Optional[MetricFormat] = None
     # Which way is good news, for UI coloring only (never affects modeling or
-    # attribution): "up_is_good" (default — growth metrics), "down_is_good"
-    # (costs, tickets, time-to-X), or "neutral" (no judgment, gray). Note a
+    # attribution): "up_is_good" (growth metrics), "down_is_good" (costs,
+    # tickets, time-to-X), or "neutral" (no judgment, gray). Note a
     # stored-negative flow like churn_mrr is up_is_good: moving toward zero
     # means less churn.
-    direction: str = "up_is_good"
+    #
+    # `None` — the default — means the author did not say, and that is a
+    # *different* statement from "up is good". It used to default to
+    # `up_is_good`, and since `/dag` serializes with `model_dump()` the default
+    # reached the browser indistinguishable from a declaration: an undeclared
+    # metric rendered green for "improved" on a rise, which on `churn_arpu`
+    # (rising cost per churned subscription, contributing 27% of the damage)
+    # is a confident wrong claim. The UI's own `|| "up_is_good"` fallback could
+    # never fire, because the payload was never missing the field. Undeclared
+    # has to survive serialization for any renderer to be able to decline to
+    # judge, so it does: the field is null, and the UI paints such a metric
+    # like `neutral` — arrow and sign, no good/bad colour.
+    direction: Optional[str] = None
 
     @field_validator("grain")
     @classmethod
@@ -687,8 +699,8 @@ class MetricDefinition(BaseModel):
 
     @field_validator("direction")
     @classmethod
-    def check_direction(cls, v: str) -> str:
-        if v not in ("up_is_good", "down_is_good", "neutral"):
+    def check_direction(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ("up_is_good", "down_is_good", "neutral"):
             raise ValueError(
                 f"direction must be one of ['up_is_good', 'down_is_good', 'neutral'], got '{v}'"
             )
@@ -1149,11 +1161,11 @@ class Parser:
           that doesn't exist would show as a permanently blank card on the
           index, which reads as "no progress yet" rather than "typo".
         - `goal.direction` defaults from the named metric's own `direction`
-          when the metric *declares* one (`model_fields_set`, so the field's
-          own default never masquerades as a declaration). Declaring both and
-          disagreeing is an error: one of the two is telling the reader the
-          wrong thing about which way is winning, and guessing which would be
-          worse than stopping.
+          when the metric *declares* one — `direction` is null when the author
+          did not say, so undeclared cannot masquerade as a declaration here or
+          anywhere downstream. Declaring both and disagreeing is an error: one
+          of the two is telling the reader the wrong thing about which way is
+          winning, and guessing which would be worse than stopping.
         """
         meta = self.config.tree
         goal = meta.goal if meta else None
@@ -1165,7 +1177,7 @@ class Parser:
                 f"(known: {', '.join(sorted(G.nodes))})."
             )
         defn = G.nodes[goal.metric]["definition"]
-        declared = "direction" in defn.model_fields_set
+        declared = defn.direction is not None
         implied = {"up_is_good": "up", "down_is_good": "down"}.get(defn.direction)
         if goal.direction is None:
             # `neutral` implies nothing, so a goal on a neutral metric must say

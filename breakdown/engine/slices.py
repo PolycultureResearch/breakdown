@@ -50,6 +50,7 @@ from breakdown.engine.rca import (
     _block_bootstrap_indices,
     _sample_summary,
     _window_info,
+    direction_fields,
 )
 from breakdown.grains import BOOT_BLOCK, period_spine, snap_window
 
@@ -534,14 +535,19 @@ def _excess_fields(excess_b: Optional[np.ndarray], single_period: bool) -> Dict[
     excess_b = excess_b[np.isfinite(excess_b)]
     if excess_b.size < _MIN_CI_REPLICATES:
         return {"ci_95": None, "prob_concentrated": None, "noise_level": None}
-    prob = float(max((excess_b > 0).mean(), (excess_b < 0).mean()))
+    # Same estimator as RCA's `prob_same_direction`, so the same resolution
+    # ceiling: a proportion over `_N_BOOT` replicates has nothing between
+    # 1 − 1/500 and 1, and publishing the saturated 1.0 claims a certainty the
+    # bootstrap cannot express. `prob_concentrated` goes through the shared
+    # helper rather than repeating the one-liner it used to be.
+    fields = direction_fields(excess_b, key="prob_concentrated")
     return {
         "ci_95": [
             float(np.percentile(excess_b, 2.5)),
             float(np.percentile(excess_b, 97.5)),
         ],
-        "prob_concentrated": prob,
-        "noise_level": prob < _NOISE_PROB,
+        **fields,
+        "noise_level": fields["prob_concentrated"] < _NOISE_PROB,
     }
 
 

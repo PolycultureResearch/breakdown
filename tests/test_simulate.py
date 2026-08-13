@@ -159,7 +159,11 @@ def test_prob_edge_posterior_spread_composes_downstream():
     lo, hi = oc["delta"]["ci_95"]
     assert 9.0 < lo < 12.0  # ~ 200 * 5.25th-percentile beta
     assert 28.0 < hi < 31.0
-    assert oc["prob_direction"] == 1.0
+    # Every draw is positive, so the proportion saturates: the published value
+    # is the Monte Carlo's resolution ceiling, flagged as the bound it is,
+    # rather than a 1.0 the estimator cannot express.
+    assert oc["prob_direction_censored"] is True
+    assert oc["prob_direction"] == pytest.approx(1.0 - 1.0 / len(beta_post))
 
     # revenue delta = 50 * order_count delta per draw, so the CI scales by 50.
     rev = result["nodes"]["revenue"]

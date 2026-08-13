@@ -156,7 +156,10 @@ def test_uncertain_baseline_composes_into_deltas():
     dlo, dhi = rev["delta"]["ci_95"]
     assert 730.0 < dlo < 790.0
     assert 1210.0 < dhi < 1270.0
-    assert rev["prob_direction"] == 1.0
+    # Every draw is positive but the draws do vary, so the direction
+    # probability saturates and publishes the Monte Carlo's ceiling as a bound.
+    assert rev["prob_direction_censored"] is True
+    assert rev["prob_direction"] == pytest.approx(1.0 - 1.0 / result["n_draws"])
 
 
 def test_set_intervention_pins_level_not_delta():
@@ -261,7 +264,10 @@ def test_sign_constrained_prior_stays_positive():
     expected_mean = 200.0 * 0.1 * np.sqrt(2.0 / np.pi)  # ~15.96
     assert oc["delta"]["estimate"] == pytest.approx(expected_mean, rel=0.05)
     assert oc["delta"]["ci_95"][0] > 0.0
-    assert oc["prob_direction"] == 1.0
+    # "Every draw respects the sign" is a saturated count, not certainty: it
+    # publishes the resolution ceiling, flagged as the bound it is.
+    assert oc["prob_direction_censored"] is True
+    assert oc["prob_direction"] == pytest.approx(1.0 - 1.0 / result["n_draws"])
     contribs = {c["source"]: c["estimate"] for c in oc["contributions"]}
     assert contribs["i:daily_sessions"] == pytest.approx(expected_mean)
 

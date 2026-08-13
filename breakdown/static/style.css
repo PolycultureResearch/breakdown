@@ -609,7 +609,11 @@ details .data-table { margin-top: 8px; }
   flex-shrink: 0;
 }
 
-.attr-block { margin-bottom: 6px; }
+/* The five-column posterior table does not fit a 410px sidebar, and the column
+   it loses is the last one — P(dir), the certainty. It was clipping before the
+   `>` on a censored probability made it 7px wider; a clipped `>99.8` reads as a
+   number cut in half rather than as a bound, so the block scrolls instead. */
+.attr-block { margin-bottom: 6px; overflow-x: auto; }
 .attr-block h4 { font-size: 13px; margin: 12px 0 6px; }
 .attr-block h4 .method { font-weight: 400; font-size: 11px; color: var(--muted); }
 
@@ -783,6 +787,11 @@ button.chip.active { background: var(--accent-soft); color: var(--accent); borde
 
 .swatch.pinned { border: 3px solid var(--accent); }
 .swatch.unexp { border: 2px dashed var(--warn); }
+/* An untinted card under an RCA overlay is not an error and not a node the
+   engine skipped — it is a metric whose tree never said which way is good, so
+   the UI declines to call the move an improvement. Without a legend row it
+   reads as missing ink. */
+.swatch.nodirection { border: 2px solid var(--border); }
 .edge-swatch.assume { border-top: 2px dotted var(--warn); }
 
 .wf-row { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }

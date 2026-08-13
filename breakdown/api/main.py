@@ -7,12 +7,13 @@ import os
 import threading
 from contextlib import asynccontextmanager
 from importlib.resources import files
-from typing import Any, Dict, MutableMapping, Optional, Tuple
+from typing import Annotated, Any, Dict, MutableMapping, Optional, Tuple
 
 import pandas as pd
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import AfterValidator
 from starlette.datastructures import State
 
 from breakdown.api.trees import (
@@ -163,6 +164,45 @@ def _validate_date(value: str, label: str) -> str:
     except ValueError:
         raise RuntimeError(f"{label} must be a valid YYYY-MM-DD date, got '{value}'")
     return value
+
+
+def _iso_date(value: Optional[str]) -> Optional[str]:
+    """Reject anything that is not a real YYYY-MM-DD date, at the boundary.
+
+    `str` is not a date type, and the engine's `pd.Timestamp(value)` is not a
+    validator: `pd.Timestamp("")` is `NaT`, which satisfies the annotation,
+    survives every `if value is None` guard and reaches `snap_window`, where
+    `NaT.normalize()` is an `AttributeError` — a 500 for any client that
+    submits a cleared date field. `"banana"` raised `ValueError` and became a
+    correct 422; the empty string took the other path, which is the whole
+    defect. Two routes already ran exactly this check inline (`/analyze`'s
+    `fit_end`, `/rca/{name}/slices`' four dates) and their neighbours did not,
+    so it is one annotated type now and every date parameter carries it.
+
+    Raising `ValueError` here is what makes it a 422: FastAPI validates query
+    parameters through pydantic, so this lands in the request-validation error
+    response like a type mismatch would, rather than as an exception from the
+    handler body.
+    """
+    if value is None:  # an omitted optional date, not a bad one
+        return None
+    try:
+        datetime.date.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"must be a valid YYYY-MM-DD date, got '{value}'")
+    return value
+
+
+# The two date parameter shapes. Every date-taking route uses one of them —
+# `tests/test_project_invariants.py` enumerates the routes and checks it.
+#
+# Each site writes `Annotated[IsoDate, Query(description=...)]` rather than
+# `IsoDate = Query(...)`: FastAPI rebuilds the field from a `Query` passed as
+# the *default value* and drops the `Annotated` metadata with it, so the
+# validator would silently never run. Nested `Annotated` flattens, so putting
+# the `Query` inside keeps both.
+IsoDate = Annotated[str, AfterValidator(_iso_date)]
+OptionalIsoDate = Annotated[Optional[str], AfterValidator(_iso_date)]
 
 
 # Live progress for the two long calls, keyed by a client-supplied run id.
@@ -1202,7 +1242,7 @@ async def analyze_metric(
     draws: int = Query(default=500, ge=50, le=5000),
     tune: int = Query(default=500, ge=50, le=5000),
     chains: int = Query(default=4, ge=1, le=8),
-    fit_end: Optional[str] = Query(default=None),
+    fit_end: Annotated[OptionalIsoDate, Query()] = None,
 ):
     tree = await _loaded_tree(request)
     _require_data(tree)
@@ -1212,15 +1252,8 @@ async def analyze_metric(
     if name not in parser.dag:
         raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
 
-    if fit_end is not None:
-        # Lets the "confirm with NUTS" workflow reproduce exactly what RCA fitted.
-        try:
-            datetime.date.fromisoformat(fit_end)
-        except ValueError:
-            raise HTTPException(
-                status_code=422, detail=f"fit_end must be YYYY-MM-DD, got '{fit_end}'"
-            )
-
+    # `fit_end` lets the "confirm with NUTS" workflow reproduce exactly what
+    # RCA fitted; `OptionalIsoDate` is what checks it is a date.
     async with tree.lock:
         fit = await asyncio.to_thread(
             fit_metric,
@@ -1247,16 +1280,18 @@ async def analyze_metric(
 async def get_shapley(
     name: str,
     request: Request,
-    analysis_start: str = Query(..., description="Start of analysis window (YYYY-MM-DD)"),
-    analysis_end: str = Query(..., description="End of analysis window (YYYY-MM-DD)"),
-    reference_start: Optional[str] = Query(
-        default=None,
-        description="Start of baseline window (YYYY-MM-DD); omit both reference "
-        "dates to default to the matched adjacent block before the analysis window",
-    ),
-    reference_end: Optional[str] = Query(
-        default=None, description="End of baseline window (YYYY-MM-DD)"
-    ),
+    analysis_start: Annotated[IsoDate, Query(description="Start of analysis window (YYYY-MM-DD)")],
+    analysis_end: Annotated[IsoDate, Query(description="End of analysis window (YYYY-MM-DD)")],
+    reference_start: Annotated[
+        OptionalIsoDate,
+        Query(
+            description="Start of baseline window (YYYY-MM-DD); omit both reference "
+            "dates to default to the matched adjacent block before the analysis window"
+        ),
+    ] = None,
+    reference_end: Annotated[
+        OptionalIsoDate, Query(description="End of baseline window (YYYY-MM-DD)")
+    ] = None,
 ):
     tree = await _loaded_tree(request)
     _require_data(tree)
@@ -1286,16 +1321,18 @@ async def get_shapley(
 async def root_cause_analysis(
     name: str,
     request: Request,
-    analysis_start: str = Query(..., description="Start of analysis window (YYYY-MM-DD)"),
-    analysis_end: str = Query(..., description="End of analysis window (YYYY-MM-DD)"),
-    reference_start: Optional[str] = Query(
-        default=None,
-        description="Start of baseline window (YYYY-MM-DD); omit both reference "
-        "dates to default to the matched adjacent block before the analysis window",
-    ),
-    reference_end: Optional[str] = Query(
-        default=None, description="End of baseline window (YYYY-MM-DD)"
-    ),
+    analysis_start: Annotated[IsoDate, Query(description="Start of analysis window (YYYY-MM-DD)")],
+    analysis_end: Annotated[IsoDate, Query(description="End of analysis window (YYYY-MM-DD)")],
+    reference_start: Annotated[
+        OptionalIsoDate,
+        Query(
+            description="Start of baseline window (YYYY-MM-DD); omit both reference "
+            "dates to default to the matched adjacent block before the analysis window"
+        ),
+    ] = None,
+    reference_end: Annotated[
+        OptionalIsoDate, Query(description="End of baseline window (YYYY-MM-DD)")
+    ] = None,
     run_id: Optional[str] = Query(
         default=None,
         description="Opaque client-generated id. Poll GET /progress/{run_id} for "
@@ -1522,17 +1559,19 @@ def _run_slice(
 async def slice_metric_gap(
     name: str,
     request: Request,
-    dimension: str = Query(..., description="Declared dimension name on the metric"),
-    analysis_start: str = Query(..., description="Start of analysis window (YYYY-MM-DD)"),
-    analysis_end: str = Query(..., description="End of analysis window (YYYY-MM-DD)"),
-    reference_start: Optional[str] = Query(
-        default=None,
-        description="Start of baseline window (YYYY-MM-DD); omit both reference "
-        "dates to default to the matched adjacent block before the analysis window",
-    ),
-    reference_end: Optional[str] = Query(
-        default=None, description="End of baseline window (YYYY-MM-DD)"
-    ),
+    dimension: Annotated[str, Query(description="Declared dimension name on the metric")],
+    analysis_start: Annotated[IsoDate, Query(description="Start of analysis window (YYYY-MM-DD)")],
+    analysis_end: Annotated[IsoDate, Query(description="End of analysis window (YYYY-MM-DD)")],
+    reference_start: Annotated[
+        OptionalIsoDate,
+        Query(
+            description="Start of baseline window (YYYY-MM-DD); omit both reference "
+            "dates to default to the matched adjacent block before the analysis window"
+        ),
+    ] = None,
+    reference_end: Annotated[
+        OptionalIsoDate, Query(description="End of baseline window (YYYY-MM-DD)")
+    ] = None,
 ):
     """Attribute `name`'s window-over-window gap across one dimension's slices.
 
@@ -1555,21 +1594,6 @@ async def slice_metric_gap(
             detail=f"Metric '{name}' declares no dimension '{dimension}' "
             f"(declared: {sorted(defn.dimensions) or 'none'}).",
         )
-    for label, value in [
-        ("reference_start", reference_start),
-        ("reference_end", reference_end),
-        ("analysis_start", analysis_start),
-        ("analysis_end", analysis_end),
-    ]:
-        if value is None:  # omitted reference dates default downstream
-            continue
-        try:
-            datetime.date.fromisoformat(value)
-        except ValueError:
-            raise HTTPException(
-                status_code=422, detail=f"{label} must be YYYY-MM-DD, got '{value}'"
-            )
-
     async with tree.lock:
         try:
             result = await asyncio.to_thread(

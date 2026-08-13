@@ -81,6 +81,27 @@ def fit_grain(dag, node: str) -> str:
     return getattr(defn, "grain", "day")
 
 
+def to_date(value, label: str) -> pd.Timestamp:
+    """`pd.Timestamp(value).normalize()`, refusing what pandas would swallow.
+
+    `pd.Timestamp("")` and `pd.Timestamp(None)` are `NaT`, not an error — so a
+    caller that passed an empty date got a value that satisfied every `is None`
+    guard and every `str` annotation, and then failed deep inside the engine
+    with `'NaTType' object has no attribute 'normalize'`: an unhandled 500 for
+    a client that submitted a cleared date field. `pd.Timestamp("banana")`
+    raises, so the same input in a different spelling behaved correctly.
+
+    The API rejects these at the boundary now, but the engine is a library with
+    its own callers (the MCP tools, notebooks), and a `ValueError` naming the
+    parameter is the answer they should get too — the same posture the provider
+    boundary takes: refuse, do not coerce.
+    """
+    ts = pd.Timestamp(value)
+    if ts is pd.NaT or pd.isna(ts):
+        raise ValueError(f"{label} must be a valid date, got {value!r}")
+    return ts.normalize()
+
+
 def floor_period(
     ts: Union[pd.Timestamp, pd.DatetimeIndex, pd.Series], grain: str
 ) -> Union[pd.Timestamp, pd.DatetimeIndex, pd.Series]:
@@ -163,8 +184,8 @@ def snap_window(start, end, grain: str) -> Optional[SnappedWindow]:
     For day grain this is the identity on normalized dates.
     """
     _check_grain(grain)
-    start = pd.Timestamp(start).normalize()
-    end = pd.Timestamp(end).normalize()
+    start = to_date(start, "window start")
+    end = to_date(end, "window end")
 
     first = floor_period(start, grain)
     if first < start:  # partial leading period — advance to the next start
@@ -232,8 +253,8 @@ def default_reference_window(
     """
     _check_grain(coarsest_grain)
     try:
-        an_s = pd.Timestamp(analysis_start).normalize()
-        an_e = pd.Timestamp(analysis_end).normalize()
+        an_s = to_date(analysis_start, "analysis_start")
+        an_e = to_date(analysis_end, "analysis_end")
     except (ValueError, TypeError):
         raise ValueError("analysis_start/analysis_end is not a valid date")
     if an_s > an_e:

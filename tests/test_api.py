@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 
 import pytest
@@ -521,14 +522,23 @@ def test_slice_endpoint_unknown_metric_404(sliced_env):
         assert resp.status_code == 404
 
 
-def test_slice_endpoint_bad_date_422(sliced_env):
+@pytest.mark.parametrize("bad", ["not-a-date", "", "   ", "2026-13-45"])
+def test_slice_endpoint_bad_date_422(sliced_env, bad):
+    """Every shape of not-a-date names the offending parameter and 422s.
+
+    The empty string used to take a different path from `not-a-date`:
+    `pd.Timestamp("")` is `NaT` rather than an error, so it reached the engine
+    and came back a 500. Validation is now the annotated parameter type, so the
+    parameter name arrives in FastAPI's own `loc` rather than in a hand-written
+    message.
+    """
     with TestClient(app) as client:
         resp = client.post(
             "/rca/signups/slices",
-            params={**_SLICE_WINDOWS, "analysis_end": "not-a-date"},
+            params={**_SLICE_WINDOWS, "analysis_end": bad},
         )
         assert resp.status_code == 422
-        assert "analysis_end" in resp.json()["detail"]
+        assert "analysis_end" in json.dumps(resp.json()["detail"])
 
 
 def test_slice_endpoint_provider_without_slicing_422(sliced_env):
