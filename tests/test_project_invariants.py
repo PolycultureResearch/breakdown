@@ -101,6 +101,49 @@ def test_the_one_silent_fill_is_the_documented_one(caplog):
     assert not caplog.records, "the empty-source fill is deliberate and silent; nothing else is"
 
 
+def _fetcher_classes():
+    """Every concrete `BaseDataFetcher` in the package, wherever it lives.
+
+    Was `vars(data_fetch)` filtered on a `DataFetcher` name suffix, and
+    `SnapshotFetcher` failed **both** filters — wrong module, wrong suffix — so
+    the one fetcher that serves files written by an older release was the one
+    the invariant could not see. It served pre-C2 snapshots verbatim, including
+    a four-day partial week presented as a whole one on the demo a prospect is
+    shown. Enumerate by base class, not by where something lives or what it is
+    called.
+    """
+    import importlib
+    import pkgutil
+
+    import breakdown
+
+    found = {}
+    for mod in pkgutil.walk_packages(breakdown.__path__, "breakdown."):
+        try:
+            module = importlib.import_module(mod.name)
+        except Exception:  # pragma: no cover - optional provider extras
+            continue
+        for name, obj in vars(module).items():
+            if (
+                inspect.isclass(obj)
+                and issubclass(obj, data_fetch.BaseDataFetcher)
+                and obj is not data_fetch.BaseDataFetcher
+                and not inspect.isabstract(obj)
+            ):
+                found[obj.__qualname__] = (name, obj)
+    return list(found.values())
+
+
+def test_the_fetcher_scan_sees_the_one_that_hid_from_it():
+    """Guard on the guard: `SnapshotFetcher` must be in scope."""
+    names = {n for n, _ in _fetcher_classes()}
+    assert "SnapshotFetcher" in names, (
+        "SnapshotFetcher is not being enumerated — the alignment invariant is "
+        "blind to the fetcher most likely to serve a stale-shaped frame."
+    )
+    assert len(names) >= 5, f"only {len(names)} fetchers found; the scan is too narrow: {names}"
+
+
 def test_every_fetcher_goes_through_the_shared_alignment_contract():
     """Rule 1, structurally: C2's invariant is that no provider has its own copy.
 
@@ -109,9 +152,7 @@ def test_every_fetcher_goes_through_the_shared_alignment_contract():
     that hand-rolls alignment is the same defect returning.
     """
     offenders = []
-    for name, obj in vars(data_fetch).items():
-        if not (inspect.isclass(obj) and name.endswith("DataFetcher")):
-            continue
+    for name, obj in _fetcher_classes():
         fetch = getattr(obj, "fetch_metric", None)
         if fetch is None or inspect.isabstract(obj):
             continue
@@ -129,6 +170,13 @@ def test_every_fetcher_goes_through_the_shared_alignment_contract():
         # rather than the name, so a mock that stopped generating on the spine
         # (and started needing alignment like everyone else) fails here.
         if name == "MockDataFetcher" and "period_spine" in src:
+            continue
+        # A wrapper that reaches the contract through its own helper:
+        # `SnapshotFetcher` re-aligns a hit in `_realign_snapshot`, because a
+        # snapshot outlives the code that wrote it and nothing fingerprints the
+        # *engine's* alignment rules the way `definition_sha` fingerprints the
+        # metric's.
+        if "_realign_snapshot" in src:
             continue
         offenders.append(name)
     assert not offenders, (

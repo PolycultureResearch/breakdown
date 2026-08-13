@@ -35,7 +35,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from breakdown.data_fetch import BaseDataFetcher
+from breakdown.data_fetch import BaseDataFetcher, _align_to_spine
 
 logger = logging.getLogger(__name__)
 
@@ -326,6 +326,66 @@ class SnapshotStore:
         self._warned.discard(filename)
 
 
+def _realign_snapshot(
+    df: pd.DataFrame,
+    metric_name: str,
+    grain: str,
+    kind: str,
+    start_date: str,
+    end_date: str,
+) -> pd.DataFrame:
+    """Put a snapshot hit through the same date contract every provider obeys.
+
+    A snapshot outlives the code that wrote it. `definition_sha` (C16)
+    invalidates a record when the *metric's* definition changes, but nothing
+    fingerprints the **engine's** alignment rules, so a file written before C2
+    landed keeps its pre-C2 shape forever — `store.read` returned it verbatim
+    and no provider contract ever touched it again.
+
+    Not hypothetical: the committed White Cube demo snapshots predate C2 and
+    carried a four-day partial trailing week as a whole one. `new_mrr` served
+    5,032 against a trailing level near 1,900, the UI drew a terminal spike, and
+    `/meta` reported coverage three days past the loaded window — verbatim the
+    symptom C2's roadmap row predicts.
+
+    Re-aligning on read is idempotent for anything written by current code (the
+    write path already went through `_align_to_spine`, and reindexing an aligned
+    frame onto the same spine is a no-op), so this costs correct snapshots
+    nothing and repairs stale-shaped ones.
+    """
+    try:
+        aligned = _align_to_spine(df, metric_name, grain, kind, start_date, end_date, metric_name)
+    except RuntimeError as e:
+        # The contract can *refuse* as well as reshape — a `rate` with a gap is
+        # an error, because a rate cannot be invented. Refusing here would take
+        # down a deployment that was serving, in order to repair a file the
+        # operator may not be able to refetch (a snapshot-only deployment has no
+        # provider behind it). So: say so, loudly, and serve what is stored. The
+        # frame is no worse than it was a release ago; the difference is that it
+        # is now disclosed rather than silent.
+        logger.warning(
+            "Metric '%s': snapshot could not be re-aligned on read and is served as "
+            "stored — %s This file predates the shared date contract (roadmap C2); "
+            "its edge periods may be partial.",
+            metric_name,
+            e,
+        )
+        return df
+    if len(aligned) != len(df):
+        logger.warning(
+            "Metric '%s': snapshot held %d %s period(s), the window's spine holds %d — "
+            "re-aligned on read. This file predates the shared date contract (roadmap "
+            "C2); it was serving partial edge periods as whole ones. The numbers are "
+            "correct now, but the file on disk is still the old shape: refetch with "
+            "BREAKDOWN_REFRESH=1 to fix it at rest.",
+            metric_name,
+            len(df),
+            grain,
+            len(aligned),
+        )
+    return aligned
+
+
 class SnapshotFetcher(BaseDataFetcher):
     """Read-through cache over another fetcher.
 
@@ -407,7 +467,7 @@ class SnapshotFetcher(BaseDataFetcher):
                 logger.info(
                     "snapshot hit: %s [%s, %s] %s", metric_name, start_date, end_date, grain
                 )
-                return df
+                return _realign_snapshot(df, metric_name, grain, kind, start_date, end_date)
 
         df = self.inner.fetch_metric(metric_name, start_date, end_date, grain=grain, kind=kind)
         try:
