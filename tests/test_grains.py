@@ -415,3 +415,53 @@ def test_default_reference_inverted_analysis_raises():
 def test_default_reference_invalid_date_raises():
     with pytest.raises(ValueError, match="not a valid date"):
         default_reference_window("not-a-date", "2024-03-01", "2023-01-01")
+
+
+# --- the readable-history floor (roadmap M1) ---
+
+
+def test_default_reference_clamped_to_earliest_start():
+    """`earliest_start` is a hard floor above the data start: the block is
+    shortened to respect it rather than reaching into history that the caller's
+    lags make unreadable."""
+    ref = default_reference_window(
+        "2024-01-21", "2024-01-27", "2024-01-01", earliest_start="2024-01-08"
+    )
+    assert ref == ("2024-01-08", "2024-01-20")
+
+
+def test_default_reference_earliest_start_below_data_start_is_ignored():
+    """The loaded data is still the other hard bound; the floor only ever
+    tightens it."""
+    ref = default_reference_window(
+        "2024-01-21", "2024-01-27", "2024-01-01", earliest_start="2023-06-01"
+    )
+    assert ref == ("2024-01-01", "2024-01-20")
+
+
+def test_default_reference_earliest_start_trims_to_whole_weeks():
+    ref = default_reference_window(
+        "2024-01-21", "2024-01-27", "2024-01-01", week_align=True, earliest_start="2024-01-03"
+    )
+    assert ref == ("2024-01-07", "2024-01-20")
+
+
+def test_default_reference_below_earliest_start_raises_about_the_lags():
+    """No readable reference at all: the refusal names the floor, the data
+    start and the fix, instead of leaving a coverage check downstream to cite a
+    shifted date the caller never typed."""
+    with pytest.raises(ValueError, match="not enough history") as excinfo:
+        default_reference_window(
+            "2024-01-06", "2024-01-12", "2024-01-01", earliest_start="2024-01-10"
+        )
+    message = str(excinfo.value)
+    assert "2024-01-10" in message and "2024-01-01" in message
+
+
+def test_default_reference_at_data_start_keeps_its_own_message():
+    """The pre-existing refusal is unchanged when no floor is in play — it is a
+    different problem with a different fix."""
+    with pytest.raises(ValueError, match="beginning of the loaded data"):
+        default_reference_window(
+            "2024-01-01", "2024-01-07", "2024-01-01", earliest_start="2024-01-01"
+        )

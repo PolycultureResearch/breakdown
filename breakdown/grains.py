@@ -207,6 +207,7 @@ def default_reference_window(
     *,
     week_align: bool = False,
     coarsest_grain: str = "day",
+    earliest_start: Optional[Union[str, pd.Timestamp]] = None,
 ) -> tuple:
     """Matched adjacent reference block for an analysis window.
 
@@ -217,6 +218,13 @@ def default_reference_window(
     and clamped to the loaded data range. When `coarsest_grain` is coarser
     than a day, the block is extended backwards if needed so it contains at
     least one whole period at that grain (data permitting).
+
+    `earliest_start` is a hard floor later than `data_start`, for callers who
+    know the loaded data is not all readable — a lagged node reads its parents
+    from whole periods *before* the window it is evaluated over, so the first
+    few days of history can never open a reference window (roadmap M1). The
+    block is shortened to respect it, and the refusal below says so rather
+    than reporting a date the caller never typed.
 
     Returns ``(reference_start, reference_end)`` as ISO date strings.
     Raises ValueError when no reference day exists before the analysis
@@ -231,9 +239,19 @@ def default_reference_window(
     if an_s > an_e:
         raise ValueError("analysis_start must be on or before analysis_end")
     d0 = pd.Timestamp(data_start).normalize()
+    floor = d0 if earliest_start is None else max(d0, pd.Timestamp(earliest_start).normalize())
 
     ref_end = an_s - pd.Timedelta(days=1)
-    if ref_end < d0:
+    if ref_end < floor:
+        if floor > d0:
+            raise ValueError(
+                f"There is not enough history before {an_s.date()} for this "
+                f"target's lags: the loaded data starts at {d0.date()}, but the "
+                f"earliest reference period every node in scope can read is "
+                f"{floor.date()} — a lagged parent is read from whole periods "
+                f"before the window it explains. Load more history (an earlier "
+                f"--start-date) or start the analysis window later."
+            )
         raise ValueError(
             f"The analysis window starts at the beginning of the loaded data "
             f"({d0.date()}), so no reference block exists before it. Pass "
@@ -247,8 +265,8 @@ def default_reference_window(
         length = -(-length // 7) * 7  # round up to a whole-week length
     ref_start = ref_end - pd.Timedelta(days=length - 1)
 
-    if ref_start < d0:  # loaded data is the hard bound
-        ref_start = d0
+    if ref_start < floor:  # readable data is the hard bound
+        ref_start = floor
         if week_align:
             avail = (ref_end - ref_start).days + 1
             if avail >= 7:
@@ -266,7 +284,7 @@ def default_reference_window(
         last = floor_period(ref_end, coarsest_grain)
         if next_start(last, coarsest_grain) - pd.Timedelta(days=1) > ref_end:
             last = shift_periods(last, -1, coarsest_grain)
-        if last >= d0:
+        if last >= floor:
             ref_start = min(ref_start, last)
 
     return (str(ref_start.date()), str(ref_end.date()))
