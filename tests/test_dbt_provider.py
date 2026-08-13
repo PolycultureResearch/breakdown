@@ -195,6 +195,71 @@ def test_construction_does_not_touch_the_warehouse():
     DbtDataFetcher({}, connect=explode, dialect="duckdb")
 
 
+# --- filters, end to end (roadmap 2.17) --------------------------------------
+
+
+def _filtered_fetcher(con):
+    bind = BindingSpec(
+        relation="fct_orders",
+        grain_key="order_id",
+        time_column="ordered_at",
+        agg="sum",
+        measure="amount",
+        dimensions={"region": BindingDimension(column="region")},
+        where=["region = 'EMEA'"],
+    )
+    return DbtDataFetcher({"revenue": bind}, connect=lambda: con, dialect="duckdb")
+
+
+def test_a_filtered_binding_serves_a_smaller_series_through_the_whole_chain(fetcher, con):
+    # Generate, execute, align — the join between the three pieces, which is
+    # where a provider actually goes wrong. The unfiltered series is
+    # [10, 25, 0, 40] = 75; EMEA is orders 1 and 3, so [10, 5, 0, 0] = 15.
+    everything = fetcher.fetch_metric("revenue", "2024-01-01", "2024-01-04")["revenue"]
+    filtered = _filtered_fetcher(con).fetch_metric("revenue", "2024-01-01", "2024-01-04")["revenue"]
+    assert everything.tolist() == [10.0, 25.0, 0.0, 40.0]
+    assert filtered.tolist() == [10.0, 5.0]
+    assert filtered.sum() < everything.sum()
+
+
+def test_the_filtered_slices_still_reconcile_with_the_filtered_total(con):
+    f = _filtered_fetcher(con)
+    total = f.fetch_metric("revenue", "2024-01-01", "2024-01-04")["revenue"].sum()
+    sliced = f.fetch_metric_sliced("revenue", "region", "2024-01-01", "2024-01-04")["value"].sum()
+    assert total == sliced == 15.0
+
+
+def test_the_predicate_is_visible_in_the_statement_provenance(con):
+    # Principle 3: a number the engine cannot defend is not shipped. A filtered
+    # node is smaller than the dashboard metric of the same name, and *show
+    # query* is where a reader can see why.
+    f = _filtered_fetcher(con)
+    f.fetch_metric("revenue", "2024-01-01", "2024-01-04")
+    assert "region = 'EMEA'" in f.query_provenance("revenue")
+
+
+def test_the_filter_claim_is_checkable(con):
+    f = _filtered_fetcher(con)
+    assert f.check_filter("revenue") == (4, 2)
+    assert "kept" in f.last_sql["revenue::filter"]
+
+
+def test_the_filter_claim_can_be_bounded_to_a_window(con):
+    f = _filtered_fetcher(con)
+    assert f.check_filter("revenue", start_date="2024-01-01", end_date="2024-01-02") == (3, 2)
+
+
+def test_an_empty_probe_window_reports_no_rows_rather_than_everything_dropped(con):
+    # `SUM(...)` over no rows is NULL, not 0. Reporting that as `kept == 0` would
+    # fail a healthy binding whose window simply has no data in it.
+    f = _filtered_fetcher(con)
+    assert f.check_filter("revenue", start_date="2023-01-01", end_date="2023-01-02") == (0, 0)
+
+
+def test_the_grain_claim_over_a_filtered_binding_counts_the_filtered_rows(con):
+    assert _filtered_fetcher(con).check_grain("revenue") == (2, 2)
+
+
 # --- profile resolution -----------------------------------------------------
 
 

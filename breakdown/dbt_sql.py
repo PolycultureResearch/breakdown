@@ -174,6 +174,104 @@ def _qualified(expr: str, alias: str) -> str:
     return token
 
 
+def _where_predicates(bind: BindingSpec, read: Optional[str], alias: str) -> list:
+    """Parse, validate and alias-qualify `bind.where` for one query.
+
+    The predicate is compiled through sqlglot's AST and never pasted as text,
+    for two independent reasons.
+
+    **Qualification.** `build_query` LEFT JOINs a dimension table when a slice
+    is requested, so an unqualified `region` in a filter is ambiguous against
+    `bd_dim.region` and resolves differently — or errors — depending on the
+    warehouse. Textual prefixing cannot fix that, which is why `_qualified`
+    already refuses to prefix anything that is not a lone identifier. Walking
+    `exp.Column` nodes qualifies every column reference and nothing else.
+
+    **Dialect.** A quoted `"date"` is an identifier on DuckDB and a string
+    literal on Spark and BigQuery; `TRUNC(col, 'DAY')` returns NULL on Spark
+    rather than erroring. This module's rule is *generate in the target
+    dialect, never translate into it*, and parsing the stored predicate with
+    the target dialect's own parser is the cheapest form of it.
+
+    A predicate that does not parse, or that carries a subquery, a set
+    operation or a second statement, raises `UnsupportedBinding`. The bridge
+    already refused such a metric at import; this is the same check at the
+    builder, for a binding that reached here any other way.
+    """
+    if not bind.where:
+        return []
+    sqlglot = _require_sqlglot()
+    exp = sqlglot.expressions
+
+    out = []
+    for text in bind.where:
+        try:
+            statements = [s for s in sqlglot.parse(text, read=read) if s is not None]
+        except Exception as e:
+            raise UnsupportedBinding(
+                f"filter predicate {text!r} does not parse as {read or 'generic'} SQL: {e}"
+            ) from e
+        if len(statements) != 1:
+            raise UnsupportedBinding(
+                f"filter predicate {text!r} is {len(statements)} statements, not one predicate."
+            )
+        tree = statements[0]
+        forbidden = (exp.Select, exp.Subquery, exp.Union, exp.Except, exp.Intersect)
+        if isinstance(tree, forbidden) or any(tree.find_all(*forbidden)):
+            raise UnsupportedBinding(
+                f"filter predicate {text!r} contains a subquery or set operation, "
+                "which this generator does not compile."
+            )
+        for column in tree.find_all(exp.Column):
+            if not column.table:
+                column.set("table", exp.to_identifier(alias))
+        out.append(tree)
+    return out
+
+
+def _filtered(query, bind: BindingSpec, read: Optional[str], alias: str = "bd_fact"):
+    """Apply the binding's `where` to one query."""
+    for predicate in _where_predicates(bind, read, alias):
+        query = query.where(predicate, dialect=read)
+    return query
+
+
+def _windowed(query, bind: BindingSpec, read, start_date, end_date, alias: str = "bd_fact"):
+    """Bound a query to a window, when one is given.
+
+    Unbounded, the diagnostic queries scan the whole relation — fine on a few
+    million rows, a full table scan per metric on a genuinely large fact table,
+    and `doctor` runs several of them. A window turns each into a **sample**,
+    which is a real change in what the check proves: fan-out and
+    multi-valuedness are properties of the data, and absence over seven days is
+    not proof of absence. Callers therefore report which window they used, so
+    the result reads as "checked over these dates" rather than "checked".
+    """
+    if start_date is None or end_date is None:
+        return query
+    time_col = _qualified(bind.time_column, alias)
+    start, end_exclusive = _window_bounds(start_date, end_date)
+    return query.where(f"{time_col} >= '{start}'", dialect=read).where(
+        f"{time_col} < '{end_exclusive}'", dialect=read
+    )
+
+
+def _bounded(query, bind: BindingSpec, read, start_date, end_date, alias: str = "bd_fact"):
+    """The window **and** the binding's filter: the rows this node reads.
+
+    Every builder routes through here, which is what makes *every diagnostic
+    sees the same rows as the series* structural rather than remembered. The
+    invariant is worth stating because breaking it is quiet: a filter applied
+    to the total query but not to the sliced one produces slices that do not
+    sum, which the slicing maths reads as an unexplained residual — a wrong
+    *finding* rather than a wrong number, and harder to spot than either.
+
+    The one caller that deliberately does not come through here is
+    `build_filter_probe`, which measures the predicate and so must not apply it.
+    """
+    return _filtered(_windowed(query, bind, read, start_date, end_date, alias), bind, read, alias)
+
+
 def _dimension_join(dim: BindingDimension, fact_alias: str, dim_alias: str) -> Optional[str]:
     if dim.join is None:
         return None
@@ -213,7 +311,6 @@ def build_query(
     source = f"({bind.sql}) AS {fact}" if bind.sql else f"{bind.relation} AS {fact}"
     time_col = _qualified(bind.time_column, fact)
     date_expr = _truncate(time_col, grain, dialect)
-    start, end_exclusive = _window_bounds(start_date, end_date)
 
     selects = [f'{date_expr} AS "{DATE_COL}"']
     group_by = ["1"]
@@ -249,12 +346,8 @@ def build_query(
     query = sqlglot.select(*selects, dialect=read).from_(source, dialect=read)
     for join in joins:
         query = query.join(join, join_type="LEFT", dialect=read)
-    query = (
-        query.where(f"{time_col} >= '{start}'", dialect=read)
-        .where(f"{time_col} < '{end_exclusive}'", dialect=read)
-        .group_by(*group_by, dialect=read)
-        .order_by(*group_by, dialect=read)
-    )
+    query = _bounded(query, bind, read, start_date, end_date, fact)
+    query = query.group_by(*group_by, dialect=read).order_by(*group_by, dialect=read)
     return query.sql(dialect=dialect, pretty=True)
 
 
@@ -320,7 +413,6 @@ def build_resolved_slice_query(
             "Express the join in a `bind.sql` relation instead."
         )
     slice_expr = _qualified(dim.column, fact)
-    start, end_exclusive = _window_bounds(start_date, end_date)
     # `first` keeps the earliest row in the period, `last` the latest — the two
     # answer different business questions, which is why neither is a default.
     order = "ASC" if spec.resolve == "first" else "DESC"
@@ -332,17 +424,19 @@ def build_resolved_slice_query(
     # a date, found only by running this against Databricks. The public
     # `date`/`slice`/`value` names are applied once, as aliases, which is the
     # path `build_query` already proves on that warehouse.
-    ranked = (
+    ranked = _bounded(
         sqlglot.select(
             f"{date_expr} AS bd_date",
             f"{slice_expr} AS bd_slice",
             f"ROW_NUMBER() OVER (PARTITION BY {entity}, {date_expr} "
             f"ORDER BY {time_col} {order}) AS bd_rn",
             dialect=read,
-        )
-        .from_(source, dialect=read)
-        .where(f"{time_col} >= '{start}'", dialect=read)
-        .where(f"{time_col} < '{end_exclusive}'", dialect=read)
+        ).from_(source, dialect=read),
+        bind,
+        read,
+        start_date,
+        end_date,
+        fact,
     )
     return (
         sqlglot.select(
@@ -356,26 +450,6 @@ def build_resolved_slice_query(
         .group_by("1", "2", dialect=read)
         .order_by("1", "2", dialect=read)
         .sql(dialect=dialect, pretty=True)
-    )
-
-
-def _bounded(query, bind: BindingSpec, read, start_date, end_date):
-    """Bound a diagnostic query to a window, when one is given.
-
-    Unbounded, these scan the whole relation — fine on a few million rows, a
-    full table scan per metric on a genuinely large fact table, and `doctor`
-    runs two of them. A window turns each into a **sample**, which is a real
-    change in what the check proves: fan-out and multi-valuedness are
-    properties of the data, and absence over seven days is not proof of
-    absence. Callers therefore report which window they used, so the result
-    reads as "checked over these dates" rather than "checked".
-    """
-    if start_date is None or end_date is None:
-        return query
-    time_col = _qualified(bind.time_column, "bd_fact")
-    start, end_exclusive = _window_bounds(start_date, end_date)
-    return query.where(f"{time_col} >= '{start}'", dialect=read).where(
-        f"{time_col} < '{end_exclusive}'", dialect=read
     )
 
 
@@ -435,17 +509,18 @@ def build_entity_flow_query(
     order = "ASC" if spec.resolve == "first" else "DESC"
 
     def window_cte(start_date: str, end_date: str) -> Any:
-        start, end_exclusive = _window_bounds(start_date, end_date)
-        ranked = (
+        ranked = _bounded(
             sqlglot.select(
                 f"{entity} AS bd_entity",
                 f"{slice_expr} AS bd_slice",
                 f"ROW_NUMBER() OVER (PARTITION BY {entity} ORDER BY {time_col} {order}) AS bd_rn",
                 dialect=read,
-            )
-            .from_(source, dialect=read)
-            .where(f"{time_col} >= '{start}'", dialect=read)
-            .where(f"{time_col} < '{end_exclusive}'", dialect=read)
+            ).from_(source, dialect=read),
+            bind,
+            read,
+            start_date,
+            end_date,
+            fact,
         )
         return (
             sqlglot.select("bd_entity", "bd_slice", dialect=read)
@@ -536,6 +611,18 @@ def build_grain_assertion(
     aggregate — into a startup error. MetricFlow and Cube cannot do this: they
     accept declared relationships on trust, so the same defect reaches the
     number. Owning the contract is what makes it checkable.
+
+    **The claim is made post-filter** (roadmap 2.17). Fan-out is a property of
+    the relation, so filtering first is the *less* conservative check — but it
+    is conservative in the wrong direction: a `fct_order_lines` relation
+    filtered to `line_number = 1` is one row per order under this binding and
+    multi-row without it, and a pre-filter pass would fail a binding whose every
+    number is correct. The assertion exists to protect the aggregate this node
+    computes, and that aggregate is the filtered one. What post-filter gives up
+    — telling the author the relation is unsafe if the filter is ever widened —
+    is covered by naming the predicate in the check's own output, and the thing
+    it structurally cannot catch (a mis-translated predicate still leaves one
+    row per grain key) is what `build_filter_probe` exists for.
     """
     sqlglot = _require_sqlglot()
     read = _parse_dialect(dialect)
@@ -548,6 +635,68 @@ def build_grain_assertion(
         dialect=read,
     ).from_(source, dialect=read)
     return _bounded(query, bind, read, start_date, end_date).sql(dialect=dialect, pretty=True)
+
+
+def build_filter_probe(
+    bind: BindingSpec,
+    *,
+    dialect: str = "",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> str:
+    """Kept-vs-total rows for a binding's `where`, over the probe window.
+
+    ```sql
+    SELECT COUNT(*)                                      AS "rows",
+           SUM(CASE WHEN <predicate> THEN 1 ELSE 0 END)  AS "kept"
+    FROM <relation> AS bd_fact
+    WHERE <window bounds>
+    ```
+
+    This is the honest half of the confidence story for filters, and it is
+    shaped like the grain claim for the same reason that made that one a
+    differentiator: **it checks the data instead of trusting the metadata.**
+    `0 < kept < rows` proves the predicate is live on *this* warehouse, in
+    *this* dialect, against *these* columns. `kept == 0` is the signature of a
+    dialect-hostile predicate — `= TRUE` against a VARCHAR, a date literal
+    parsed as an identifier, a boolean stored as `'Y'` — and would serve an
+    empty or all-zero series. `kept == rows` means the predicate excluded
+    nothing, which is either genuinely vacuous over a short window or a
+    constant-true expression, i.e. C15's original defect arriving through a new
+    door.
+
+    Deliberately *not* routed through `_bounded`: this query measures the
+    predicate, so applying it would make the answer `kept == rows` by
+    construction. Only the window bounds are applied, and `CASE WHEN` counts
+    what the `WHERE` would have kept — a NULL predicate falls to `ELSE 0`,
+    matching SQL's three-valued `WHERE` semantics exactly.
+
+    What it does not prove is that our row set is MetricFlow's; `kept/rows =
+    0.31` says the filter is doing something, not that it is doing the right
+    thing. That is roadmap 2.14.
+    """
+    if not bind.where:
+        raise UnsupportedBinding("binding declares no `where` to probe")
+    sqlglot = _require_sqlglot()
+    exp = sqlglot.expressions
+    read = _parse_dialect(dialect)
+    fact = "bd_fact"
+    source = f"({bind.sql}) AS {fact}" if bind.sql else f"{bind.relation} AS {fact}"
+
+    predicates = _where_predicates(bind, read, fact)
+    combined = predicates[0]
+    for extra in predicates[1:]:
+        combined = exp.and_(combined, extra)
+    kept = exp.case().when(combined, exp.Literal.number(1)).else_(exp.Literal.number(0))
+
+    query = sqlglot.select(
+        'COUNT(*) AS "rows"',
+        exp.alias_(exp.Sum(this=kept), "kept", quoted=True),
+        dialect=read,
+    ).from_(source, dialect=read)
+    return _windowed(query, bind, read, start_date, end_date, fact).sql(
+        dialect=dialect, pretty=True
+    )
 
 
 # dbt adapter type -> sqlglot dialect. Only the mappings that differ in name or

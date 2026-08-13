@@ -242,9 +242,9 @@ def test_readme_yaml_skip_list_is_exactly_what_we_expect():
 def test_readme_has_the_yaml_blocks_we_think_it_has():
     """A tripwire: if the extractor stops seeing blocks (a fence style change, a
     deleted section), every parametrized case above passes by not existing."""
-    assert len(YAML_BLOCKS) == 18, f"expected 18 ```yaml blocks, found {len(YAML_BLOCKS)}"
-    assert len(PARSABLE_BLOCKS) == 13, (
-        f"expected 13 parsable ```yaml blocks, found {len(PARSABLE_BLOCKS)} — "
+    assert len(YAML_BLOCKS) == 19, f"expected 19 ```yaml blocks, found {len(YAML_BLOCKS)}"
+    assert len(PARSABLE_BLOCKS) == 14, (
+        f"expected 14 parsable ```yaml blocks, found {len(PARSABLE_BLOCKS)} — "
         "a documented example stopped being one, or a new one appeared unchecked"
     )
 

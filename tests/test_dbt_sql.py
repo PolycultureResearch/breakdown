@@ -19,6 +19,8 @@ import pytest
 
 from breakdown.dbt_sql import (
     UnsupportedBinding,
+    build_entity_flow_query,
+    build_filter_probe,
     build_grain_assertion,
     build_multivalue_assertion,
     build_query,
@@ -708,3 +710,250 @@ def test_a_bounded_grain_assertion_still_detects_fan_out(events):
     ).fetchone()
     assert unbounded[0] == 5 and unbounded[1] == 5
     assert bounded[0] == 5 and bounded[1] == 5  # the fixture is inside the window
+
+
+# --- filters (roadmap 2.17) --------------------------------------------------
+#
+# The claim a filter makes is numeric — *fewer rows, smaller total* — so these
+# run. A predicate that compiles, executes, and quietly matches everything is
+# exactly the `kept == rows` case `build_filter_probe` exists to catch, and it
+# would pass every string assertion anyone could write.
+
+WHOLE_JANUARY = dict(start_date="2024-01-01", end_date="2024-01-31", dialect="duckdb")
+
+
+def _emea(**over):
+    return _bind(where=["region = 'EMEA'"], **over)
+
+
+def test_a_filter_actually_narrows_both_the_row_count_and_the_total(con):
+    # The fixture is 5 orders totalling 151.0; three of them are EMEA, totalling
+    # 31.0. Both numbers have to move, and in the right direction.
+    everything = _run(con, _bind(), grain="day")
+    filtered = _run(con, _emea(), grain="day")
+    assert (len(everything), everything["value"].sum()) == (5, 151.0)
+    assert (len(filtered), filtered["value"].sum()) == (3, 31.0)
+
+
+def test_several_predicates_are_anded_not_ored(con):
+    bind = _bind(where=["region = 'EMEA'", "amount > 5"])
+    assert _run(con, bind, grain="month")["value"].item() == 30.0  # drops the 1.0
+
+
+def test_a_filter_that_matches_nothing_returns_no_rows_rather_than_zero(con):
+    # `_align_to_spine` is what decides whether an absent period is a zero; the
+    # query must not decide it by emitting a row.
+    assert _run(con, _bind(where=["region = 'NOWHERE'"]), grain="day").empty
+
+
+def test_slices_of_a_filtered_metric_sum_to_the_filtered_total(con):
+    # A WHERE is a row-level test evaluated independently of the GROUP BY, so
+    # filtering and grouping commute and the partition still partitions. This is
+    # the invariant slice attribution rests on, and it is cheap to prove.
+    bind = _emea(dimensions={"plan": BindingDimension(column="customer_id")})
+    total = _run(con, bind, grain="month")["value"].item()
+    sliced = _run(con, bind, grain="month", dimension="plan")["value"].sum()
+    assert total == sliced == 31.0
+
+
+def test_the_filter_is_qualified_against_the_fact_relation_under_a_join(con):
+    # `build_query` LEFT JOINs a dimension table when a slice is requested, so
+    # an unqualified `region` in a filter is ambiguous against `bd_dim.region` —
+    # DuckDB refuses the query outright, and other warehouses resolve it
+    # differently. Textual prefixing cannot fix this, which is why the predicate
+    # is qualified by walking its columns.
+    con.execute(
+        "CREATE TABLE dim_regional AS SELECT customer_id, plan_tier, "
+        "'AMER' AS region FROM dim_customers"
+    )
+    bind = _emea(
+        dimensions={
+            "plan": BindingDimension(column="plan_tier", join="dim_regional", key="customer_id")
+        }
+    )
+    df = _run(con, bind, grain="month", dimension="plan").set_index("slice")["value"]
+    # Every row's *dimension-table* region is AMER, so a predicate resolved
+    # against the join would have kept nothing. 31.0 says it resolved against
+    # the fact.
+    assert df.sum() == 31.0
+
+
+def test_the_grain_claim_is_made_over_the_filtered_rows(con):
+    # Spec §3.4, and the reason pre-filter is the wrong kind of conservative: a
+    # line-level relation is one row per order *under* `line_number = 1` and
+    # multi-row without it. A pre-filter assertion would fail a binding whose
+    # every number is correct.
+    con.execute(
+        "CREATE TABLE fct_order_lines AS SELECT * FROM (VALUES "
+        "(1, 1, DATE '2024-01-01', 10.0), (1, 2, DATE '2024-01-01', 5.0), "
+        "(2, 1, DATE '2024-01-02', 20.0)) AS t(order_id, line_number, ordered_at, amount)"
+    )
+    unfiltered = _bind(relation="fct_order_lines")
+    filtered = _bind(relation="fct_order_lines", where=["line_number = 1"])
+    assert con.execute(build_grain_assertion(unfiltered, dialect="duckdb")).fetchone() == (3, 2)
+    assert con.execute(build_grain_assertion(filtered, dialect="duckdb")).fetchone() == (2, 2)
+
+
+def test_the_multivalue_assertion_sees_the_rows_the_node_reads(events):
+    # Otherwise it asserts multi-valuedness over rows the node never aggregates,
+    # and reports a resolution problem the series cannot have.
+    unfiltered = _dau("last")
+    filtered = _dau("last")
+    filtered = filtered.model_copy(update={"where": ["status = 'active'"]})
+    build = dict(dimension="status", grain="day", dialect="duckdb")
+    assert events.execute(build_multivalue_assertion(unfiltered, **build)).fetchone()[0] == 1
+    assert events.execute(build_multivalue_assertion(filtered, **build)).fetchone()[0] == 0
+
+
+def test_entity_flows_are_classified_against_the_filtered_population(events):
+    # A user leaving the filter's scope is a churn, which is only true if the
+    # window CTEs see the filtered rows.
+    bind = _dau("last").model_copy(update={"where": ["status = 'active'"]})
+    rows = events.execute(
+        build_entity_flow_query(
+            bind,
+            dimension="status",
+            reference_start="2024-01-01",
+            reference_end="2024-01-01",
+            analysis_start="2024-01-02",
+            analysis_end="2024-01-02",
+            dialect="duckdb",
+        )
+    ).fetchall()
+    # u1 is 'cancelled' on day 2, so under the filter it is absent there: a
+    # churn. u2 is active on both days: retained.
+    assert sorted(rows) == [("active", "__absent__", 1), ("active", "active", 1)]
+
+
+# --- the filter probe, and the two answers that are not "fine" ---------------
+
+
+def _probe(con, bind, **kw):
+    return con.execute(build_filter_probe(bind, dialect="duckdb", **kw)).fetchone()
+
+
+def test_the_probe_counts_kept_against_total(con):
+    assert _probe(con, _emea()) == (5, 3)
+
+
+def test_the_probe_catches_a_predicate_that_excludes_everything(con):
+    # The signature of a dialect-hostile predicate — `= TRUE` against a VARCHAR,
+    # a date literal parsed as an identifier, a boolean stored as 'Y'. The node
+    # would serve an empty or all-zero series.
+    assert _probe(con, _bind(where=["region = 'NOWHERE'"])) == (5, 0)
+
+
+def test_the_probe_catches_a_predicate_that_excludes_nothing(con):
+    # C15's original defect arriving through a new door: a filter that is there,
+    # compiles, runs, and changes no number.
+    assert _probe(con, _bind(where=["1 = 1"])) == (5, 5)
+
+
+def test_a_null_predicate_counts_as_dropped_like_a_where_clause_would(con):
+    # SQL's three-valued logic: `region <> 'EU'` excludes a NULL region, and so
+    # does dbt's own query. `CASE WHEN <null> THEN 1 ELSE 0 END` agrees.
+    con.execute(
+        "CREATE TABLE nullable AS SELECT * FROM (VALUES "
+        "(1, DATE '2024-01-01', 1.0, 'EMEA'), (2, DATE '2024-01-02', 1.0, NULL)) "
+        "AS t(order_id, ordered_at, amount, region)"
+    )
+    bind = _bind(relation="nullable", where=["region <> 'AMER'"])
+    assert _probe(con, bind) == (2, 1)
+    assert _run(con, bind, grain="month")["value"].item() == 1.0
+
+
+def test_the_probe_is_bounded_by_the_window_without_being_filtered_by_the_predicate(con):
+    # Both halves matter. The window keeps it a sample rather than a full scan;
+    # *not* applying the predicate is what lets it measure the predicate at all.
+    assert _probe(con, _emea(), start_date="2024-01-01", end_date="2024-01-07") == (3, 2)
+
+
+def test_the_probe_refuses_a_binding_with_nothing_to_probe():
+    with pytest.raises(UnsupportedBinding, match="no `where` to probe"):
+        build_filter_probe(_bind(), dialect="duckdb")
+
+
+def test_the_probe_does_not_apply_the_predicate_it_is_measuring():
+    # Asserted on the parse tree, because this is the one property no numeric
+    # test on a live predicate can distinguish from a correct one: a probe that
+    # filtered would report `kept == rows` for every binding, which reads as the
+    # constant-true warning rather than as a broken probe.
+    tree = sqlglot.parse_one(build_filter_probe(_emea(), dialect="duckdb"), dialect="duckdb")
+    where = tree.find(exp.Where)
+    assert where is None or "region" not in {c.name for c in where.find_all(exp.Column)}
+    assert any(c.name == "region" for c in tree.find(exp.Case).find_all(exp.Column))
+
+
+def test_that_assertion_would_catch_a_probe_that_filtered():
+    # The meta-test: the check above is only worth writing if it distinguishes a
+    # broken probe from a fixed one. A probe with the predicate in its WHERE has
+    # `region` in both places, and the assertion fails on the first clause.
+    broken = sqlglot.parse_one(
+        'SELECT COUNT(*) AS "rows", SUM(CASE WHEN region = \'EMEA\' THEN 1 ELSE 0 END) AS "kept" '
+        "FROM fct_orders AS bd_fact WHERE region = 'EMEA'",
+        dialect="duckdb",
+    )
+    assert "region" in {c.name for c in broken.find(exp.Where).find_all(exp.Column)}
+
+
+# --- the predicate is compiled per dialect, not pasted -----------------------
+
+
+def _filter_columns(sql: str, dialect: str):
+    """Every column the WHERE clause's non-window conjuncts reference, as the
+    dialect's own parser reads them — `(name, table)` pairs."""
+    where = sqlglot.parse_one(sql, dialect=dialect).find(exp.Where)
+    return {(c.name, c.table) for c in where.find_all(exp.Column) if c.name == "region"}
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "postgres", "databricks", "bigquery", "snowflake"])
+def test_every_dialect_qualifies_the_predicate_with_the_fact_alias(dialect):
+    sql = build_query(
+        _emea(), grain="day", start_date="2024-01-01", end_date="2024-01-31", dialect=dialect
+    )
+    assert _filter_columns(sql, dialect) == {("region", "bd_fact")}
+
+
+def test_that_assertion_would_catch_an_unqualified_predicate():
+    # The meta-test again: an unqualified column parses to an empty `.table`, so
+    # the assertion above genuinely separates the two forms rather than passing
+    # on anything that mentions `region`.
+    unqualified = "SELECT 1 FROM fct_orders AS bd_fact WHERE region = 'EMEA'"
+    assert _filter_columns(unqualified, "duckdb") == {("region", "")}
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda b: build_query(b, grain="day", **WHOLE_JANUARY),
+        lambda b: build_query(b, grain="day", dimension="plan", **WHOLE_JANUARY),
+        lambda b: build_grain_assertion(b, **WHOLE_JANUARY),
+    ],
+)
+def test_every_builder_applies_the_same_predicate(build):
+    # §6's invariant, and it is worth a structural test rather than trust: a
+    # filter applied to the total query but not to the sliced one produces
+    # slices that do not sum, which the slicing maths reads as an unexplained
+    # residual — a wrong *finding* rather than a wrong number, and harder to see.
+    bind = _emea(dimensions={"plan": BindingDimension(column="customer_id")})
+    assert _filter_columns(build(bind), "duckdb") == {("region", "bd_fact")}
+
+
+def test_a_predicate_that_cannot_be_parsed_is_refused_at_the_builder_too():
+    # The bridge refuses such a metric at import; this is the same discipline at
+    # the builder, for a binding that reached here some other way.
+    bind = _bind(where=["region = "])
+    with pytest.raises(UnsupportedBinding, match="does not parse"):
+        build_query(bind, grain="day", **WHOLE_JANUARY)
+
+
+def test_a_subquery_in_a_predicate_is_refused_at_the_builder_too():
+    bind = _bind(where=["region IN (SELECT code FROM regions)"])
+    with pytest.raises(UnsupportedBinding, match="subquery or set operation"):
+        build_query(bind, grain="day", **WHOLE_JANUARY)
+
+
+def test_a_second_statement_cannot_ride_in_on_a_predicate():
+    bind = _bind(where=["region = 'EMEA'; DROP TABLE fct_orders"])
+    with pytest.raises(UnsupportedBinding, match="2 statements, not"):
+        build_query(bind, grain="day", **WHOLE_JANUARY)

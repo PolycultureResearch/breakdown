@@ -33,6 +33,7 @@ from breakdown.data_fetch import (
 from breakdown.dbt_bridge import bridge_project
 from breakdown.dbt_sql import (
     build_entity_flow_query,
+    build_filter_probe,
     build_grain_assertion,
     build_query,
     build_resolved_slice_query,
@@ -612,6 +613,37 @@ class DbtDataFetcher(BaseDataFetcher):
         row = self._query(sql).iloc[0]
         return int(row["rows"]), int(row["distinct_keys"])
 
+    # -- the filter claim --
+
+    def check_filter(
+        self,
+        metric_name: str,
+        *,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> tuple[int, int]:
+        """`(rows, kept)` for a filtered binding over the probe window.
+
+        `0 < kept < rows` is the predicate doing something on this warehouse in
+        this dialect against these columns — which is a claim about the *data*,
+        not about the metadata, and neither MetricFlow nor Cube makes it. The
+        two degenerate answers are the ones worth catching: `kept == 0` is a
+        dialect-hostile predicate that would serve an empty series, and
+        `kept == rows` is a predicate that excluded nothing, which is C15's
+        original defect arriving through a new door.
+        """
+        bind = self.binding(metric_name)
+        sql = build_filter_probe(
+            bind, dialect=self.dialect, start_date=start_date, end_date=end_date
+        )
+        self.last_sql[f"{metric_name}::filter"] = sql
+        row = self._query(sql).iloc[0]
+        # A relation with no rows in the window makes `SUM(...)` NULL rather
+        # than 0; that is `rows == 0`, which the caller reports as "nothing to
+        # check over this window" rather than as an excluded-everything failure.
+        kept = row["kept"]
+        return int(row["rows"]), int(kept) if pd.notna(kept) else 0
+
 
 def fetcher_from_project(
     project_path: str,
@@ -627,11 +659,16 @@ def fetcher_from_project(
     without editing the dbt project.
     """
     out = resolve_profile(project_path, target=target, profiles_dir=profiles_dir)
-    bindings = dict(bridge_project(project_path).bindings)
+    # The profile is resolved first so the bridge knows which dialect a filter
+    # predicate has to parse in. A predicate that parses generically may mean
+    # something else where it will actually run, and this module's rule is
+    # generate in the target dialect, never translate into it.
+    dialect = dialect_for_adapter(out.get("type"))
+    bindings = dict(bridge_project(project_path, dialect).bindings)
     if overrides:
         bindings.update(overrides)
     return DbtDataFetcher(
         bindings,
         connect=lambda: connect_from_profile(out),
-        dialect=dialect_for_adapter(out.get("type")),
+        dialect=dialect,
     )

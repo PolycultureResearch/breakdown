@@ -220,15 +220,13 @@ per grain window, so it is query-grain-dependent), offset inputs, models with no
 primary entity (nothing to assert the grain against), and granularities coarser
 than `month`.
 
-**`filter`, `join_to_timespine` and `fill_nulls_with` are refused too, and that
-refusal is a fix rather than a limitation** (roadmap C15). Until 2026-08-12 the
-manifest models didn't declare these fields and `_Node` sets
+**`join_to_timespine` and `fill_nulls_with` are refused, and that refusal is a
+fix rather than a limitation** (roadmap C15). Until 2026-08-12 the manifest
+models didn't declare these fields — nor `filter` — and `_Node` sets
 `extra: "ignore"`, so a filtered dbt metric translated into a *filterless*
 `BindingSpec`, never appeared in `skipped`, and served the whole relation under
-the governed metric's name — with `doctor` green, because the grain assertion
-sees one row per grain key either way. `BindingSpec` cannot express a filter at
-all, so refusing by name is the only correct behaviour available; real `where:`
-support is [2.17](../../knowledge/roadmap.md).
+the governed metric's name, with `doctor` green because the grain assertion sees
+one row per grain key either way.
 
 Three things about the check are easy to get wrong and are pinned by tests:
 
@@ -242,6 +240,69 @@ Three things about the check are easy to get wrong and are pinned by tests:
   the manifest has been through dbt's flattening transform (which merges a
   measure input's filter up onto `metric.filter` while leaving the input
   carrying it). All four are checked; checking one is how the defect survived.
+
+### Filter resolution (roadmap 2.17)
+
+Filters are no longer refused wholesale. `_resolve_filters` turns a metric's
+`filter:` into `BindingSpec.where`, and the invariant that makes that safe is
+the whole design: **total resolution or skip.** Every predicate of every filter
+a metric carries resolves to a column on that metric's own relation, or the
+metric stays in `skipped` exactly where C15 left it. No partial translation, no
+best effort, no dropped conjunct — so this is a strict superset of the refusing
+behaviour, whose only failure mode is refusal.
+
+⚠️ **`where_sql_template` is Jinja, not SQL.** dbt writes
+`{{ Dimension('order__is_food_order') }} = true`, and `order__` is an *entity
+link*, not a table alias: MetricFlow resolves it through the semantic graph into
+either a column on the measure's own relation or a **join**, and which one it is
+cannot be read off the string. That is why this is a resolver rather than a
+field assignment, and why the field alone was the small part of the item.
+
+`_resolve_predicate` works by substitution-then-verification, which is stricter
+than it may look:
+
+1. Every `{{ … }}` must be a plain `Dimension('<ref>')` with one string
+   argument. A `TimeDimension`, `Entity`, `Metric`, or a `.grain('week')` call
+   is quoted back in the skip reason.
+2. `<ref>` resolves only through the model's **own primary entity**
+   (`order__region`) or unlinked (`region`), and only to a **categorical**
+   dimension. A foreign entity link is refused by name; so is a time dimension,
+   because MetricFlow renders those at a declared granularity and whether it
+   truncates here can only be *verified* ([2.14](../../knowledge/roadmap.md)),
+   not reasoned about.
+3. Each reference becomes a `bd_where_ref_N` placeholder, the text is parsed in
+   the **target dialect**, and then **every `exp.Column` in the tree must be one
+   of those placeholders**. This is what makes "total resolution" literal: a
+   legacy raw-SQL predicate (`amount > 0`) is refused rather than qualified
+   against the fact relation and hoped for, because the name a filter is written
+   with need not be the column MetricFlow resolves it to.
+4. A subquery, set operation or second statement refuses the metric.
+5. A dimension whose `expr` is an expression (`is_paid: paid_at IS NOT NULL`) is
+   spliced in **parenthesised**. sqlglot generates from the tree and adds no
+   parentheses of its own, so `<ref> = TRUE` would otherwise become
+   `NOT paid_at IS NULL = TRUE` — a different expression.
+
+`translate(manifest, dialect)` therefore takes a dialect, and
+`fetcher_from_project` resolves the profile *before* bridging so it has one.
+A filter on a `ratio` or `derived` metric stays refused, and not for want of
+machinery: those become formula edges over metrics referenced **by name**, and a
+name carries no scope, so the edge would be over the unfiltered metric. That is
+a modelling change, not a SQL change.
+
+**`where` is the first import-only field.** §4.1 of the connectivity design
+admits a new binding field only when `sql:` genuinely cannot express the thing;
+`bind.sql` expresses every hand-written filter, so a `where:` an author could
+write would be pure convenience. But the *importer* has no `sql:` escape hatch —
+composing a SELECT around a manifest predicate means rendering the Jinja anyway,
+and then the predicate is hidden inside a subquery where `doctor` cannot see it.
+So the line moved from *which fields exist* to *which fields an author may
+write*, under a rule with teeth: **an import-only field must be fully derivable
+from the source artifact with no information from the author.** The moment one
+needs a hint, an override or a disambiguation it is an authoring field again and
+faces the stop rule in full. `MetricDefinition.check_bind` enforces it — manifest
+bindings are constructed directly and never pass through YAML, so a `where`
+arriving on a `MetricDefinition` was written by hand and is a parse error naming
+`bind.sql`.
 
 Ships in the `dbt-bridge` extra (`metricflow`, `sqlglot`) — deliberately *not*
 the `dbt` extra, since it needs neither dbt-core, an adapter, nor the `mf`
@@ -314,6 +375,37 @@ Joins are many-to-one only and emitted as `LEFT JOIN`, so fan-out is
 definitionally impossible; `build_grain_assertion` proves the claim by comparing
 `COUNT(*)` against `COUNT(DISTINCT grain_key)`.
 
+**`bind.where` is applied by `_bounded`, and every builder routes through it**
+(roadmap 2.17). `_windowed` adds the window bounds, `_filtered` adds the
+predicates, `_bounded` is both — and `build_query`, `build_resolved_slice_query`,
+`build_entity_flow_query`, `build_multivalue_assertion` and
+`build_grain_assertion` all call it. That is deliberate structure rather than
+five remembered call sites: a filter applied to the total query but not to the
+sliced one produces slices that do not sum, which the slicing maths reads as an
+unexplained residual — a wrong *finding* rather than a wrong number, and harder
+to spot than either. If you add a builder, route it through `_bounded`.
+
+`_where_predicates` compiles the predicate through sqlglot's AST and never
+pastes it as text, for two independent reasons. **Qualification:** `build_query`
+LEFT JOINs a dimension table when a slice is requested, so an unqualified
+`region` is ambiguous against `bd_dim.region` and resolves differently — or
+errors — per warehouse; walking `exp.Column` and setting the fact alias is the
+only fix, which is the same reason `_qualified` refuses to prefix anything that
+is not a lone identifier. **Dialect:** the stored predicate is parsed in the
+*target* dialect, the same discipline that closed the Spark `trunc` and quoted
+`"date"` bugs. A predicate that does not parse, or that carries a subquery, set
+operation or second statement, raises `UnsupportedBinding` here too — the bridge
+already refused such a metric at import, and this is the same rule at the
+builder for a binding that arrived some other way.
+
+`build_filter_probe` is the one builder that deliberately **does not** apply the
+predicate: it emits `COUNT(*)` against
+`SUM(CASE WHEN <predicate> THEN 1 ELSE 0 END)` over the window, so `doctor` can
+measure it. `CASE WHEN` matches `WHERE`'s three-valued semantics exactly — a
+NULL predicate falls to `ELSE 0` — and `SUM` over an empty window is NULL rather
+than 0, which the provider reports as "no rows here" rather than as
+"everything dropped".
+
 ## `dbt_provider.py`
 
 The `dbt` provider. Joins the three preceding pieces — manifest → binding → SQL
@@ -380,8 +472,20 @@ each a **sample**: fan-out and multi-valuedness are properties of the data, and
 absence over seven days is not proof of absence, so the check result names the
 dates it looked at (`_over`). Do not drop the label to tidy the output.
 
-`check_grain(name)` runs the fan-out assertion; `last_sql` records the statement
-behind each number, which is the hook 2.11 reads.
+`check_grain(name)` runs the fan-out assertion; `check_filter(name)` returns
+`(rows, kept)` for a filtered binding; `last_sql` records the statement behind
+each number, which is the hook 2.11 reads.
+
+**The grain claim runs post-filter** (2.17 §3.4). Fan-out is a property of the
+relation, so filtering first is the *less* conservative check — and it is
+conservative in the wrong direction: a `fct_order_lines` relation is one row per
+order under `line_number = 1` and multi-row without it, so a pre-filter pass
+would fail a binding whose every number is correct. The assertion protects the
+aggregate this node computes, and that aggregate is the filtered one. What it
+gives up (warning the author that the relation is unsafe if the filter is ever
+widened) is covered by naming the predicate count in the check output; what it
+structurally cannot catch (a mis-translated predicate still leaves one row per
+grain key) is what `check_filter` is for.
 
 **Entity-grain resolution (3.8 §4).** A binding with `entity_grain` slices
 through `build_resolved_slice_query`, which collapses the relation to one row
@@ -430,12 +534,25 @@ window-mean gap and must never be rendered as though they do.
 
 `doctor`'s `check_dbt` walks the chain in the order failures actually cascade —
 semantic manifest → dbt profile → warehouse connection → tree metrics bind →
-declared dimensions exist → grain claims hold — skipping the rest rather than
-reporting the same root cause six times. Two of those are worth their place:
-**declared dimensions** turns a 500 on the first *slice by* click into a startup
-failure (the same too-late class as C12), and **grain claims** is the check no
-other semantic layer makes, since MetricFlow and Cube accept declared
-relationships on trust.
+declared dimensions exist → grain claims hold → filters narrow → entity grain
+resolves — skipping the rest rather than reporting the same root cause six
+times. Three of those are worth their place: **declared dimensions** turns a 500
+on the first *slice by* click into a startup failure (the same too-late class as
+C12); **grain claims** is the check no other semantic layer makes, since
+MetricFlow and Cube accept declared relationships on trust; and **filters
+narrow** (2.17 §8.2) is the same idea applied to an imported predicate —
+`0 < kept < rows` proves the filter is live on *this* warehouse in *this*
+dialect against *these* columns.
+
+`filters narrow` is the reason `CheckResult` grew a fourth status. `kept == 0`
+fails (an empty or all-zero series, the signature of a dialect-hostile
+predicate) and a query error fails with the predicate quoted, but `kept == rows`
+is genuinely ambiguous: either a vacuous filter over a seven-day probe window,
+which must not block a correct tree, or a constant-true predicate, which is
+C15's defect through a new door and must not read as clean. So it **warns** —
+printed `[WARN]`, counted separately, and *not* reflected in the exit code,
+which gates CI and deploys. Use `CheckResult.warn` only where both halves of
+that are true; a warning nobody can act on is how a real one gets scrolled past.
 
 `BaseDataFetcher.query_provenance(metric, dimension=None, *, grain, start_date,
 end_date)` is the 2.11 surface, served by `GET /metrics/{name}/query`. It takes

@@ -80,15 +80,35 @@ CLASSIC = {
             },
         },
         {"name": "wau", "type": "cumulative", "type_params": {"measure": {"name": "revenue"}}},
-        # Semantics-changing constructs the bridge refuses (roadmap C15). They
-        # are here because agreeing on the fields we *read for a value* is not
-        # enough: a field we never model reads as absent, and absent is exactly
-        # what makes a filtered metric translate into an unfiltered binding.
+        # Semantics-changing constructs (roadmap C15). They are here because
+        # agreeing on the fields we *read for a value* is not enough: a field we
+        # never model reads as absent, and absent is exactly what makes a
+        # filtered metric translate into an unfiltered binding.
+        #
+        # Since 2.17 a filter is *resolved* rather than refused wholesale, so
+        # the fixture carries one of each: a metric-level filter that resolves
+        # against this model's own primary entity, and one that cannot. Both
+        # matter to the oracle — the first because `BindingSpec.where` is now
+        # part of what `translate` emits and must agree across the two readings,
+        # the second because a refusal reason quoting the wrong reference is a
+        # divergence too.
         {
             "name": "paid_revenue",
             "type": "simple",
             "type_params": {"measure": {"name": "revenue"}},
-            "filter": {"where_filters": [{"where_sql_template": "{{ Dimension('order__paid') }}"}]},
+            "filter": {
+                "where_filters": [{"where_sql_template": "{{ Dimension('order__is_paid') }}"}]
+            },
+        },
+        {
+            "name": "us_revenue",
+            "type": "simple",
+            "type_params": {"measure": {"name": "revenue"}},
+            "filter": {
+                "where_filters": [
+                    {"where_sql_template": "{{ Dimension('customer__country') }} = 'US'"}
+                ]
+            },
         },
         {
             "name": "filled_orders",
@@ -189,6 +209,27 @@ NEW_SPEC = {
                     "agg_time_dimension": "day",
                     "non_additive_dimension": None,
                 },
+            },
+        },
+        {
+            # The new spec writes a filter on the metric, there being no
+            # measure input left to hang one on. This one resolves against the
+            # model's own primary entity, so it becomes a `where`.
+            "name": "active_balance",
+            "type": "simple",
+            "type_params": {
+                "expr": "amount",
+                "metric_aggregation_params": {
+                    "semantic_model": "mrr",
+                    "agg": "sum",
+                    "agg_time_dimension": "day",
+                    "non_additive_dimension": None,
+                },
+            },
+            "filter": {
+                "where_filters": [
+                    {"where_sql_template": "{{ Dimension('sub__status') }} = 'active'"}
+                ]
             },
         },
         {
@@ -343,6 +384,23 @@ def test_the_fixtures_actually_exercise_the_bridge(name):
     r = translate(parse_manifest(MANIFESTS[name]))
     assert r.bindings, "fixture produced no bindings"
     assert r.skipped or r.formulas, "fixture exercises neither skips nor formulas"
+    assert any(b.where for b in r.bindings.values()), (
+        "fixture produces no filtered binding, so the oracle above compares two "
+        "empty `where` lists and proves nothing about filter resolution"
+    )
+
+
+def test_both_shapes_carry_a_filter_that_resolves_and_one_that_does_not():
+    # The two halves of 2.17's invariant, in the fixtures the oracle reads.
+    classic = translate(parse_manifest(CLASSIC))
+    assert classic.bindings["paid_revenue"].where == ["(NOT paid_at IS NULL)"]
+    assert (
+        "through entity `customer`"
+        in dict((s.name, s.reason) for s in classic.skipped)["us_revenue"]
+    )
+    assert translate(parse_manifest(NEW_SPEC)).bindings["active_balance"].where == [
+        "status = 'active'"
+    ]
 
 
 @pytest.mark.parametrize(
