@@ -183,6 +183,18 @@ exclude = [
     "/CLAUDE.md",
     "/demo",
     "/dist",
+    # uv's lockfile pins the *development* environment — every extra plus the
+    # dev group, so pymc, arviz, duckdb, metricflow, databricks and bigquery.
+    # No installer reads it (pip builds an sdist through hatchling, which reads
+    # `dependencies` above), so shipping it changes nothing about an install and
+    # costs 212 KB of a 776 KB download. The real objection is what it implies:
+    # this package is deliberately thin at its base, provider SDKs are optional
+    # extras, and the `base-install` CI job exists to prove nothing
+    # provider-specific is imported at module scope. A lockfile inside the
+    # released artifact pinning all of it invites exactly the misreading that
+    # job is there to prevent. Contributors get the lockfile from the repo,
+    # where it is authoritative and current.
+    "/uv.lock",
     "/knowledge",
 ]
 
