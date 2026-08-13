@@ -515,7 +515,7 @@ metrics:
     parser = Parser(yaml_content)
     data = generate_mock_data(n_days=15)
 
-    with pytest.raises(ValueError, match="Not enough rows after applying lags"):
+    with pytest.raises(ValueError, match=r"Only 7 whole day periods to fit 'order_count'"):
         fit_metric(parser.dag, data, "order_count", draws=50, tune=50)
 
 
@@ -800,7 +800,7 @@ def test_fit_end_too_few_periods_message_is_grain_aware():
     parser = Parser(MIXED_GRAIN_YAML)
     data = _mixed_grain_data()
 
-    with pytest.raises(ValueError, match="whole week periods before fit_end"):
+    with pytest.raises(ValueError, match=r"whole week periods to fit 'weekly_total'"):
         fit_metric(
             parser.dag,
             data,
@@ -950,3 +950,159 @@ def test_supported_expected_sign_stays_quiet():
     result = fit_metric(parser.dag, data, "y", draws=300, inference_method="advi")
 
     assert "sign_warnings" not in result.diagnostics
+
+
+# --- The fit-length floor, on every path (M2) --------------------------------
+#
+# `MIN_FIT_PERIODS` used to be checked in exactly two places: behind
+# `fit_end is not None`, and behind a node declaring lags. Neither is true on
+# `POST /analyze`'s default path or `run_scenario`'s, so a three-observation
+# series fitted and reported `fit_quality: "ok"` while `breakdown doctor`
+# called the same metric "not fittable yet" and the README named 10 whole
+# periods as the floor. The engine and the doctor answered different questions
+# about the same tree, and the engine is the one that answers a user.
+
+THIN_YAML = """
+metrics:
+  - name: sessions
+    source: mock.sessions
+    kind: flow
+  - name: signups
+    source: mock.signups
+    kind: flow
+    parents: [sessions]
+"""
+
+
+def _thin_data(n):
+    rng = np.random.default_rng(3)
+    sessions = 100.0 + np.cumsum(rng.normal(0, 5.0, n))
+    return pd.DataFrame(
+        {
+            "date": pd.date_range("2024-01-01", periods=n),
+            "sessions": sessions,
+            "signups": 0.1 * sessions + rng.normal(0, 0.3, n),
+        }
+    )
+
+
+def test_default_path_refuses_a_series_below_the_floor():
+    """No fit_end, no lags — the path everything actually uses. This used to
+    sample happily and report `fit_quality: "ok"`."""
+    parser = Parser(THIN_YAML)
+
+    with pytest.raises(ValueError) as e:
+        fit_metric(
+            parser.dag, _thin_data(3), "signups", draws=200, inference_method="advi", random_seed=0
+        )
+
+    assert "Only 3 whole day periods to fit 'signups'" in str(e.value)
+    assert "need >= 10" in str(e.value)
+
+
+def test_default_path_accepts_exactly_the_floor():
+    """The floor is inclusive: 10 periods fit, 9 do not. Pinned so a later
+    off-by-one can't quietly move the line."""
+    parser = Parser(THIN_YAML)
+
+    result = fit_metric(
+        parser.dag, _thin_data(10), "signups", draws=200, inference_method="advi", random_seed=0
+    )
+    assert len(result.dates) == 10
+
+    with pytest.raises(ValueError, match="Only 9 whole day periods"):
+        fit_metric(
+            parser.dag, _thin_data(9), "signups", draws=200, inference_method="advi", random_seed=0
+        )
+
+
+def test_root_node_refuses_a_series_below_the_floor():
+    """A parentless node fits trend + seasonality only, and is subject to the
+    same floor — it is the trend state per observation that the floor is
+    about, and a root has one of those per period too."""
+    parser = Parser(THIN_YAML)
+
+    with pytest.raises(ValueError, match="Only 4 whole day periods to fit 'sessions'"):
+        fit_metric(
+            parser.dag, _thin_data(4), "sessions", draws=200, inference_method="advi", random_seed=0
+        )
+
+
+def test_floor_counts_periods_after_the_fit_end_cut():
+    """A long window still refuses when the fit_end cut leaves too little —
+    the message names the cut rather than the window."""
+    parser = Parser(THIN_YAML)
+    data = _thin_data(60)
+
+    with pytest.raises(ValueError) as e:
+        fit_metric(
+            parser.dag,
+            data,
+            "signups",
+            draws=200,
+            inference_method="advi",
+            fit_end="2024-01-06",
+            random_seed=0,
+        )
+
+    assert "Only 5 whole day periods to fit 'signups'" in str(e.value)
+    assert "60 whole day periods cover 'signups' and its parents" in str(e.value)
+    assert "fit_end=2024-01-06" in str(e.value)
+
+
+def test_floor_counts_periods_after_the_lag_trim():
+    """The lag trim comes out of the count too, and the message says by how
+    much."""
+    yaml_content = THIN_YAML + "    lags: { sessions: 4 }\n"
+    parser = Parser(yaml_content)
+
+    with pytest.raises(ValueError) as e:
+        fit_metric(
+            parser.dag, _thin_data(13), "signups", draws=200, inference_method="advi", random_seed=0
+        )
+
+    assert "Only 9 whole day periods to fit 'signups'" in str(e.value)
+    assert "the 4-period max lag trims 4 more" in str(e.value)
+
+
+def test_floor_counts_periods_after_the_parent_join():
+    """What the fit trains on, not what was handed in.
+
+    A weekly node with a daily parent is fitted on the *inner join* at week
+    grain. 63 daily rows is plenty of data by any row count, and nine whole
+    weeks is still below the floor.
+    """
+    parser = Parser(MIXED_GRAIN_YAML)
+    data = _mixed_grain_data(n_weeks=9)
+
+    with pytest.raises(ValueError, match="Only 9 whole week periods to fit 'weekly_total'"):
+        fit_metric(parser.dag, data, "weekly_total", draws=200, inference_method="advi")
+
+
+def test_doctor_and_engine_agree_about_a_thin_tree(tmp_path):
+    """The defect was a disagreement, so this is the test that closes it: over
+    one window, on one tree, `doctor` and `fit_metric` must reach the same
+    verdict — both refusing at 5 days, both accepting at 31."""
+    from breakdown.data_fetch import MockDataFetcher
+    from breakdown.doctor import run_doctor
+
+    tree = tmp_path / "tree.yml"
+    tree.write_text("provider:\n  type: mock\n" + THIN_YAML)
+    parser = Parser(tree.read_text())
+
+    def fit_over(start, end):
+        fetcher = MockDataFetcher(parser.dag)
+        frames = [fetcher.fetch_metric(m, start, end) for m in ("sessions", "signups")]
+        data = frames[0].merge(frames[1], on="date")
+        return fit_metric(
+            parser.dag, data, "signups", draws=200, inference_method="advi", random_seed=0
+        )
+
+    thin = {r.name: r for r in run_doctor(str(tree), "2024-01-01", "2024-01-05")}["fit readiness"]
+    assert thin.status == "fail" and "not fittable yet" in thin.detail
+    with pytest.raises(ValueError, match="need >= 10"):
+        fit_over("2024-01-01", "2024-01-05")
+
+    ample = {r.name: r for r in run_doctor(str(tree), "2024-01-01", "2024-01-31")}["fit readiness"]
+    assert ample.status == "pass" and "not fittable yet" not in ample.detail
+    assert len(fit_over("2024-01-01", "2024-01-31").dates) == 31

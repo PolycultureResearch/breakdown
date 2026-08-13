@@ -421,15 +421,39 @@ def run_scenario(
 
     for i, node in enumerate(to_fit, 1):
         _report(progress, stage="fitting", metric=node, current=i, total=len(to_fit))
-        traces[(node, fit_end_key)] = fit_metric(
-            dag,
-            data,
-            node,
-            draws=advi_draws,
-            inference_method="advi",
-            fit_end=fit_end_key,
-            random_seed=0,
-        )
+        try:
+            traces[(node, fit_end_key)] = fit_metric(
+                dag,
+                data,
+                node,
+                draws=advi_draws,
+                inference_method="advi",
+                fit_end=fit_end_key,
+                random_seed=0,
+            )
+        except ValueError as e:
+            # `run_rca` degrades this to a per-node `fit_failed` and answers for
+            # the rest of the tree. A scenario cannot: it *propagates* along the
+            # DAG, so a node with no estimable coefficient breaks the chain, and
+            # every node downstream of it would silently report a delta missing
+            # one of its parents' effects — a confident wrong number, which is
+            # worse than no answer. So this refuses, but it refuses in terms of
+            # the scenario the caller actually ran rather than leaking
+            # `_normalize`'s "Column 'x' has zero variance".
+            #
+            # (The better answer is to mark this node *and its descendants*
+            # un-simulated and simulate the rest, the way RCA degrades. That
+            # needs a per-node status the scenario payload does not have yet.)
+            reached = sorted(nx.descendants(dag, node) & set(order) | {node})
+            raise ValueError(
+                f"Cannot simulate this scenario: '{node}' lies on the path from "
+                f"the intervention to the target, and its coefficient cannot be "
+                f"estimated — {e} A constant series carries no information about "
+                f"how its parents move it, so every downstream node "
+                f"({', '.join(reached)}) would be simulated with that link "
+                "missing. Widen the window so the node varies, or intervene "
+                "somewhere that does not route through it."
+            ) from e
 
     _report(progress, stage="simulating", total=len(to_fit))
 

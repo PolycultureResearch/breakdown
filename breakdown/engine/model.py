@@ -43,6 +43,57 @@ logger = logging.getLogger(__name__)
 MIN_FIT_PERIODS = 10
 
 
+def _enforce_fit_length(
+    target: str,
+    grain: str,
+    n_joined: int,
+    n_windowed: int,
+    max_lag: int,
+    fit_end: Optional[str],
+) -> None:
+    """Refuse a fit that would train on fewer than `MIN_FIT_PERIODS` periods.
+
+    One check on the one path every fit takes, counting what the fit will
+    actually train on: whole periods at the node's own grain surviving the
+    inner join with its parents (`GrainedData.fit_frame`), then the `fit_end`
+    whole-period cut, then the lag trim. It used to be two checks — one behind
+    `fit_end is not None`, one behind `lags` — so neither `POST /analyze`'s
+    default nor `run_scenario`'s ever ran it, and a three-observation series
+    fitted and reported `fit_quality: "ok"` while `breakdown doctor` called the
+    same metric "not fittable yet" and the README named 10 periods as the floor.
+
+    Refusing rather than fitting-and-flagging, for three reasons. The model
+    carries one latent trend state per observation, so a series this short has
+    more latent parameters than data points and its intervals are not a
+    measurement of anything — `_advi_diagnostics` only checks that the ELBO
+    stopped moving, which such a fit does happily. `run_rca` already degrades a
+    raised fit to a per-node `fit_failed` status carrying this message, so one
+    thin node reports its own baseline/actual/gap (read off the data, not the
+    model) and the rest of the tree still answers: refusal here costs a demo
+    nothing and buys the operator the reason. And a flag on a number that is
+    still returned is an invitation to use it, which is the failure mode this
+    project exists to avoid.
+    """
+    n_fit = n_windowed - max_lag
+    if n_fit >= MIN_FIT_PERIODS:
+        return
+    how = [f"{n_joined} whole {grain} periods cover '{target}' and its parents"]
+    if fit_end is not None:
+        how.append(f"{n_windowed} of them end on or before fit_end={fit_end}")
+    if max_lag:
+        how.append(f"the {max_lag}-period max lag trims {max_lag} more")
+    raise ValueError(
+        f"Only {n_fit} whole {grain} periods to fit '{target}' on "
+        f"(need >= {MIN_FIT_PERIODS})."
+        + (" " + "; ".join(how) + "." if len(how) > 1 else "")
+        + " The model carries one latent trend state per period, so a series "
+        "this short has more latent parameters than observations and its "
+        "credible intervals would not mean anything. Widen the window, or wait "
+        "for history to accumulate — `breakdown doctor --tree … --start-date … "
+        "--end-date …` reports the same count per metric."
+    )
+
+
 @dataclass
 class FitResult:
     """Everything a caller needs from one node's fit, not just the trace.
@@ -346,12 +397,9 @@ def _prepare_series(
 
     lags = defn.lags
     max_lag = max(lags.values(), default=0)
-    if max_lag > 0 and len(data) - max_lag < MIN_FIT_PERIODS:
-        raise ValueError(
-            f"Not enough rows after applying lags to '{target}': "
-            f"{len(data)} rows minus max lag {max_lag} leaves "
-            f"{len(data) - max_lag} (need >= {MIN_FIT_PERIODS})."
-        )
+    # No length guard here: `fit_metric` enforces `MIN_FIT_PERIODS` once, on
+    # the same count this function trims to (see `_enforce_fit_length`). A
+    # second check here is what let the two paths drift apart in the first place.
 
     if defn.formula and parents:
         # With lags, the identity is cohort-aligned: A[t] = f(parents with
@@ -542,6 +590,13 @@ def fit_metric(
     this is exactly `date < fit_end`). Normalization and prior scaling then
     follow the filtered rows too. RCA passes `fit_end = analysis_start`.
 
+    Every path refuses a series shorter than `MIN_FIT_PERIODS` whole periods at
+    the node's grain, counted after the parent join, the `fit_end` cut and the
+    lag trim — the same floor `breakdown doctor` reports readiness against (see
+    `_enforce_fit_length`). `run_rca` turns that `ValueError` into a per-node
+    `fit_failed` status, so a thin node costs its own attribution and nothing
+    else.
+
     Inference: "nuts" (exact MCMC, use when accuracy matters) or "advi"
     (variational approximation, ~5-10x faster, use for triage). `tune` and
     `chains` apply to NUTS only. `random_seed` makes the fit reproducible on
@@ -564,6 +619,7 @@ def fit_metric(
     # flow/stock parents resampled up, aligned on whole periods.
     grain = fit_grain(dag, target)
     data = ensure_grained(data).fit_frame(target, parents, grain)
+    n_joined = len(data)
 
     if fit_end is not None:
         dates = pd.to_datetime(data["date"])
@@ -574,14 +630,20 @@ def fit_metric(
         # identical to the pre-grain behavior.
         ends = pd.DatetimeIndex([next_start(d, grain) for d in dates])
         data = data.loc[ends <= cutoff].reset_index(drop=True)
-        if len(data) < MIN_FIT_PERIODS:
-            raise ValueError(
-                f"Only {len(data)} whole {grain} periods before fit_end={fit_end} "
-                f"for '{target}' (need >= {MIN_FIT_PERIODS})."
-            )
 
     _validate_columns(data, [target] + parents)
     defn: MetricDefinition = dag.nodes[target]["definition"]
+
+    # The floor, enforced on every path — default, `fit_end`, and lagged alike
+    # — against the periods the fit will really train on.
+    _enforce_fit_length(
+        target,
+        grain,
+        n_joined=n_joined,
+        n_windowed=len(data),
+        max_lag=max(defn.lags.values(), default=0),
+        fit_end=fit_end,
+    )
 
     y, X, scale, y_mean, y_std, x_stds, dates = _prepare_series(defn, parents, data, target)
     t = np.arange(len(y))

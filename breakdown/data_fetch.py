@@ -118,20 +118,70 @@ def _to_naive_dates(df: pd.DataFrame, metric_name: str) -> pd.DataFrame:
     The zone is dropped rather than converted: a row labelled midnight
     `+09:00` means that calendar date to whoever wrote the query, and
     converting through UTC would move it to the day before.
+
+    A column can also carry a *different* offset per row — any daily window
+    crossing a DST boundary on psycopg2 or the Snowflake connector returns one,
+    so an ordinary March or November query hits it. pandas refuses to build a
+    single index from those rows and suggests `utc=True`, which is exactly the
+    conversion the policy above forbids: it would move some rows' calendar date
+    by a day, silently, on the rows either side of the boundary. So the
+    mixed-offset column is parsed row by row and each row's *own* wall-clock
+    label is kept, with its own warning — "your source returned mixed offsets"
+    is a different thing for an operator to go fix than "your source returned a
+    timezone".
+
+    The fall-back hour repeats one wall clock at two offsets, so two such rows
+    would collapse onto one date. That is not an ambiguity this engine has to
+    resolve: at day, week and month grain both repetitions genuinely belong to
+    the same calendar period, so the label is right either way. Two rows sharing
+    a period is a grain violation regardless of timezones (a result not grouped
+    to the grain it claims), and `_align_to_spine` already refuses to reindex a
+    duplicated date rather than summing or picking one.
     """
     df = df.copy()
-    idx = pd.DatetimeIndex(pd.to_datetime(df["date"]))
-    if idx.tz is not None:
-        logger.warning(
-            "Metric '%s': date column is timezone-aware (%s); dropping the zone "
-            "and keeping the labelled date. Return DATE rather than TIMESTAMP to "
-            "make this explicit.",
-            metric_name,
-            idx.tz,
-        )
-        idx = idx.tz_localize(None)
+    try:
+        idx = pd.DatetimeIndex(pd.to_datetime(df["date"]))
+    except ValueError as exc:
+        idx = _mixed_offset_dates(df["date"], metric_name, exc)
+    else:
+        if idx.tz is not None:
+            logger.warning(
+                "Metric '%s': date column is timezone-aware (%s); dropping the zone "
+                "and keeping the labelled date. Return DATE rather than TIMESTAMP to "
+                "make this explicit.",
+                metric_name,
+                idx.tz,
+            )
+            idx = idx.tz_localize(None)
     df["date"] = idx
     return df
+
+
+def _mixed_offset_dates(col: pd.Series, metric_name: str, exc: ValueError) -> pd.DatetimeIndex:
+    """Per-row wall-clock dates from a column whose rows carry different UTC
+    offsets. Re-raises `exc` if that is not what is wrong with the column."""
+    try:
+        parsed = [pd.Timestamp(v) for v in col]
+    except (ValueError, TypeError):
+        raise exc from None  # a parse failure, not a mixed-offset column
+    offsets = sorted({ts.strftime("%z") if ts.tzinfo is not None else "naive" for ts in parsed})
+    # Only a *timezone* mix is this function's business; anything else that
+    # pandas could not vectorize keeps its own error.
+    if len(offsets) < 2 or not any(ts.tzinfo is not None for ts in parsed):
+        raise exc from None
+    logger.warning(
+        "Metric '%s': the date column's rows carry mixed timezone offsets (%s) — "
+        "usually a TIMESTAMP window crossing a DST boundary. Dropping each row's "
+        "own zone and keeping the date it labels; the rows are NOT converted to a "
+        "common zone, which would move the dates either side of the boundary by a "
+        "day. Return DATE rather than TIMESTAMP (or a fixed-offset session zone) "
+        "to make this explicit.",
+        metric_name,
+        ", ".join(offsets),
+    )
+    return pd.DatetimeIndex(
+        [ts.tz_localize(None) if ts.tzinfo is not None else ts for ts in parsed]
+    )
 
 
 def _floor_labels(df: pd.DataFrame, metric_name: str, grain: str) -> pd.DataFrame:
