@@ -1,26 +1,36 @@
-"""The README is the PyPI landing page — it ships as the wheel's METADATA
-long_description — so a defect in it is a defect in the published artifact.
+"""The user-facing docs are executed, not proofread.
 
-Nothing executed the README before this module, and it drifted in several places
-at once: YAML examples that no longer parsed cleanly, a route documented nowhere,
-a deep link the MCP server stopped minting, and a transcript whose every figure
-had gone stale under the mock generator. Every one of them was the same failure —
-the examples were prose, and prose does not run.
+The README ships as the wheel's METADATA long_description — it *is* the PyPI
+landing page — and the two reference pages beside it are where anyone authoring
+a tree or calling the API actually lives. Nothing executed any of it before this
+module, and the README drifted in several places at once: YAML examples that no
+longer parsed cleanly, a route documented nowhere, a deep link the MCP server
+stopped minting, and a transcript whose every figure had gone stale under the
+mock generator. Every one of them was the same failure — the examples were
+prose, and prose does not run.
+
+The guard is parameterized over `DOCS` below, one entry per documentation file,
+because the reference material has been split out of the README once already
+(`docs/yaml-reference.md`, `docs/api-reference.md`) and will be again
+(`docs/deploying.md`). A move that carried the content out from under a
+README-only test would silently delete the guard, so the file list — not any
+single path — is what this module scans. Adding a page is one entry.
 
 Three parts, deliberately disciplined about what they skip:
 
 1. **Every ```yaml block is fed to the real parser.** Excerpts whose parents
-   live elsewhere in the README are *stubbed*, not "fixed" — the stubbing is
+   live elsewhere in the docs are *stubbed*, not "fixed" — the stubbing is
    named in the failure message so a future reader knows what was synthesized.
    Blocks that are not metric definitions at all are skipped, but the skipped
-   set is asserted exactly, so a block that quietly stops parsing cannot hide
-   as "just a fragment". Parser **warnings** fail too: a passing parse that
-   lints the reader's own tree is still a bad example.
+   set is asserted exactly **per file**, so a block that quietly stops parsing
+   cannot hide as "just a fragment". Parser **warnings** fail too: a passing
+   parse that lints the reader's own tree is still a bad example.
 2. **Every documented curl is issued against the real app.** Route template,
    query-parameter names and status are all checked; the not-replayed set is
-   asserted exactly, for the same reason.
+   asserted exactly, per file, for the same reason.
 3. **The MCP section's figures are re-run.** The transcript quoted numbers no
-   code had produced in months; this pins them.
+   code had produced in months; this pins them. That section stays in the
+   README, so those tests name the README rather than the file list.
 """
 
 import json
@@ -40,8 +50,6 @@ from breakdown.api.main import app  # noqa: E402
 from breakdown.parser import Parser  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
-README_PATH = REPO / "README.md"
-README = README_PATH.read_text()
 MAIN_PY = (REPO / "breakdown" / "api" / "main.py").read_text()
 DEMO_TREE = REPO / "breakdown" / "examples" / "jaffle_shop_tree.yml"
 
@@ -56,206 +64,42 @@ def _unquote_blockquotes(text: str) -> str:
     return "\n".join(re.sub(r"^\s{0,3}> ?", "", line) for line in text.splitlines())
 
 
-README_UNQUOTED = _unquote_blockquotes(README)
-
-
 def _path_matches(template: str, path: str) -> bool:
     """Does a concrete path fill a route template (`/rca/{name}`)?"""
     parts = re.split(r"\{[^}]*\}", template)
     return re.fullmatch("[^/]+".join(re.escape(p) for p in parts), path) is not None
 
 
-# --------------------------------------------------------------------------
-# (a) Every ```yaml block parses, cleanly
-# --------------------------------------------------------------------------
-
 _YAML_FENCE = re.compile(r"^```yaml[ \t]*\n(.*?)^```[ \t]*$", re.S | re.M)
 
-# Blocks that are not metric definitions and cannot be parsed as a tree, keyed
-# by their top-level YAML key. Asserted as a *sorted list*, so both identity and
-# count matter: an example that silently stopped looking like a metric
-# definition lands here and fails, rather than disappearing into a skip.
-EXPECTED_SKIPPED_YAML = sorted(
-    [
-        "bind",  # the count_distinct entity-grain binding excerpt
-        "priors",  # the shared-coefficient prior example
-        "priors",  # the per-parent prior override example
-        "seasonality",  # the seasonality component example
-        "tree",  # the `tree:` identity/goal block
-    ]
-)
-
 # `kind` is declared explicitly on synthesized parents so the parser's
-# ratio-shaped-name lint fires on the README's own metrics and never on our
+# ratio-shaped-name lint fires on the docs' own metrics and never on our
 # scaffolding — stubs like `cohort_rate` and `average_order_value` would
-# otherwise trip it and blame the README for something we wrote.
+# otherwise trip it and blame the docs for something we wrote.
 _STUB_KIND = "flow"
 
 
 class YamlBlock:
-    def __init__(self, index: int, line: int, body: str):
+    def __init__(self, doc: "DocFile", index: int, line: int, body: str):
+        self.doc = doc
         self.index = index
         self.line = line
         self.body = body
 
     @property
+    def id(self) -> str:
+        return f"{self.doc.name}:L{self.line}"
+
+    @property
     def where(self) -> str:
-        return f"README.md ```yaml block #{self.index} (line {self.line})"
-
-
-def _yaml_blocks() -> list:
-    blocks = []
-    for i, m in enumerate(_YAML_FENCE.finditer(README_UNQUOTED), start=1):
-        line = README_UNQUOTED[: m.start()].count("\n") + 1
-        blocks.append(YamlBlock(i, line, m.group(1)))
-    return blocks
-
-
-YAML_BLOCKS = _yaml_blocks()
-
-
-def _stub_for(name: str) -> dict:
-    return {"name": name, "source": f"readme_test.stubbed.{name}", "kind": _STUB_KIND}
-
-
-def _classify(data):
-    """-> 'tree' | 'provider-only' | 'metric-list' | 'fragment'."""
-    if isinstance(data, dict) and "metrics" in data:
-        return "tree"
-    if isinstance(data, dict) and "provider" in data:
-        return "provider-only"
-    if isinstance(data, list) and data and all(isinstance(d, dict) and "name" in d for d in data):
-        return "metric-list"
-    return "fragment"
-
-
-def _referenced_elsewhere(metrics: list) -> list:
-    """Names an excerpt leans on that it does not itself define — parents, and
-    the `weight` metric a rate dimension blends by."""
-    defined = {m["name"] for m in metrics}
-    referenced = set()
-    for m in metrics:
-        referenced.update(m.get("parents") or [])
-        for spec in (m.get("dimensions") or {}).values():
-            if isinstance(spec, dict) and spec.get("weight"):
-                referenced.add(spec["weight"])
-    return sorted(referenced - defined)
-
-
-def _as_parsable_document(data):
-    """-> (document, synthesized_names) or (None, None) for a fragment.
-
-    Excerpts legitimately reference metrics defined elsewhere in the README, so
-    the missing ones are synthesized rather than invented *into* the README.
-    Every other parser rule — required `source`, valid `kind`, formula
-    validation, prior keys, grain nesting, dimension weights — still applies.
-    """
-    kind = _classify(data)
-    if kind == "fragment":
-        return None, None
-    if kind == "provider-only":
-        # The provider reference blocks carry no metrics; one stub metric lets
-        # the provider block itself be validated (type enum, ${VAR} expansion).
-        return (
-            {"provider": data["provider"], "metrics": [_stub_for("readme_probe")]},
-            ["readme_probe (this block declares no metrics of its own)"],
-        )
-    if kind == "metric-list":
-        metrics, provider = list(data), None
-    else:
-        metrics, provider = list(data["metrics"]), data.get("provider")
-    missing = _referenced_elsewhere(metrics)
-    doc = {"metrics": [_stub_for(n) for n in missing] + metrics}
-    if provider is not None:
-        doc["provider"] = provider
-    return doc, missing
-
-
-def _stub_note(synthesized: list) -> str:
-    if not synthesized:
-        return ""
-    return (
-        f"\n\nNOTE: this block is an excerpt, so the test synthesized "
-        f"{len(synthesized)} metric(s) it references but does not define: "
-        f"{', '.join(synthesized)} "
-        f"(each as {{source: readme_test.stubbed.<name>, kind: {_STUB_KIND}}}). "
-        f"They are scaffolding, not README content — if the failure is about one "
-        f"of them, this test is wrong rather than the README."
-    )
-
-
-# Parametrized over the parsable blocks only, rather than skipping the
-# fragments at runtime: the sdist CI job audits every skip reason in the shipped
-# suite against a fixed allow-list, and "this block is a fragment" is not one of
-# the three shapes it accepts. The fragments are covered instead by the
-# skip-list test and the block-count tripwire below, which is where the
-# accounting belongs anyway.
-PARSABLE_BLOCKS = [b for b in YAML_BLOCKS if _classify(yaml.safe_load(b.body)) != "fragment"]
-
-
-@pytest.mark.parametrize("block", PARSABLE_BLOCKS, ids=lambda b: f"L{b.line}")
-def test_readme_yaml_block_parses_without_warnings(block, caplog):
-    """Fail on the parser's warnings as well as its exceptions: the flagship
-    example used to parse successfully while emitting the `kind: rate` lint —
-    a passing parse that told the reader their own tree was wrong."""
-    doc, synthesized = _as_parsable_document(yaml.safe_load(block.body))
-    note = _stub_note(synthesized)
-
-    caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="breakdown"):
-        try:
-            Parser(yaml.safe_dump(doc, sort_keys=False))
-        except Exception as exc:  # noqa: BLE001 — the README's own error is the message
-            pytest.fail(f"{block.where} does not parse: {exc}{note}\n\n{block.body}")
-    warnings = [
-        r.getMessage()
-        for r in caplog.records
-        if r.levelno >= logging.WARNING and r.name.startswith("breakdown")
-    ]
-    assert not warnings, (
-        f"{block.where} parses, but the parser warns about it — a documented "
-        "example must not lint. Warnings:\n  - "
-        + "\n  - ".join(warnings)
-        + f"{note}\n\n{block.body}"
-    )
-
-
-def test_readme_yaml_skip_list_is_exactly_what_we_expect():
-    """A block that silently stops being a metric definition must fail here
-    rather than vanish into "it's just a fragment"."""
-    skipped = []
-    for block in YAML_BLOCKS:
-        data = yaml.safe_load(block.body)
-        if _classify(data) == "fragment":
-            key = ",".join(data) if isinstance(data, dict) else type(data).__name__
-            skipped.append((key, block.line))
-
-    assert sorted(k for k, _ in skipped) == EXPECTED_SKIPPED_YAML, (
-        "The set of README YAML blocks skipped as non-metric fragments changed.\n"
-        f"  found (key, line): {sorted(skipped)}\n"
-        f"  expected keys:     {EXPECTED_SKIPPED_YAML}\n"
-        "If a real example moved into this list it stopped looking like a metric "
-        "definition — fix the README, not this list."
-    )
-
-
-def test_readme_has_the_yaml_blocks_we_think_it_has():
-    """A tripwire: if the extractor stops seeing blocks (a fence style change, a
-    deleted section), every parametrized case above passes by not existing."""
-    assert len(YAML_BLOCKS) == 19, f"expected 19 ```yaml blocks, found {len(YAML_BLOCKS)}"
-    assert len(PARSABLE_BLOCKS) == 14, (
-        f"expected 14 parsable ```yaml blocks, found {len(PARSABLE_BLOCKS)} — "
-        "a documented example stopped being one, or a new one appeared unchecked"
-    )
-
-
-# --------------------------------------------------------------------------
-# (b) Every documented HTTP example actually works
-# --------------------------------------------------------------------------
+        return f"{self.doc.name} ```yaml block #{self.index} (line {self.line})"
 
 
 class CurlExample:
-    def __init__(self, line: int, method: str, path: str, query: str, body, headers: dict):
+    def __init__(
+        self, doc: "DocFile", line: int, method: str, path: str, query: str, body, headers: dict
+    ):
+        self.doc = doc
         self.line = line
         self.method = method
         self.path = path
@@ -268,11 +112,16 @@ class CurlExample:
         return f"{self.method} {self.path}" + (f"?{self.query}" if self.query else "")
 
     @property
+    def key(self) -> tuple:
+        """Unique across files: the same route may be documented in two of them."""
+        return (self.doc.name, self.name)
+
+    @property
     def where(self) -> str:
-        return f"{self.name}  (README.md line {self.line})"
+        return f"{self.name}  ({self.doc.name} line {self.line})"
 
 
-def _parse_curl(command: str, line: int) -> CurlExample:
+def _parse_curl(doc: "DocFile", command: str, line: int) -> CurlExample:
     tokens = shlex.split(command, comments=True)
     method = url = body = None
     headers = {}
@@ -294,9 +143,10 @@ def _parse_curl(command: str, line: int) -> CurlExample:
         elif url is None:
             url = tok
         idx += 1
-    assert url is not None, f"no URL in the curl on README line {line}: {command}"
+    assert url is not None, f"no URL in the curl on {doc.name} line {line}: {command}"
     parsed = urlparse(url if "://" in url else "http://" + url)
     return CurlExample(
+        doc=doc,
         line=line,
         method=(method or "GET").upper(),
         path=parsed.path,
@@ -304,25 +154,6 @@ def _parse_curl(command: str, line: int) -> CurlExample:
         body=body,
         headers=headers,
     )
-
-
-def _curl_examples() -> list:
-    """Extract each `curl` invocation, joining shell continuations *and* any
-    lines needed to close an open quote (the `/simulate` body spans five)."""
-    lines = README_UNQUOTED.splitlines()
-    examples = []
-    i = 0
-    while i < len(lines):
-        if not re.match(r"^\s*curl(\s|$)", lines[i]):
-            i += 1
-            continue
-        start, raw, j = i + 1, lines[i], i
-        while j + 1 < len(lines) and _needs_more(raw):
-            j += 1
-            raw = raw.rstrip().removesuffix("\\") + "\n" + lines[j]
-        examples.append(_parse_curl(raw, start))
-        i = j + 1
-    return examples
 
 
 def _needs_more(raw: str) -> bool:
@@ -335,30 +166,164 @@ def _needs_more(raw: str) -> bool:
     return False
 
 
-CURL_EXAMPLES = _curl_examples()
+def _classify(data):
+    """-> 'tree' | 'provider-only' | 'metric-list' | 'fragment'."""
+    if isinstance(data, dict) and "metrics" in data:
+        return "tree"
+    if isinstance(data, dict) and "provider" in data:
+        return "provider-only"
+    if isinstance(data, list) and data and all(isinstance(d, dict) and "name" in d for d in data):
+        return "metric-list"
+    return "fragment"
 
-# Examples NOT issued against the app, each with its reason. Asserted exactly:
-# a route quietly falling out of the replayable set is a failure, not a silent
-# skip. Everything here still has its route template and its query-parameter
-# names checked below — only the request itself is not made.
-NOT_REPLAYED = {
-    "POST /analyze/order_count": (
-        "the bare form runs the NUTS default (4 chains x 500 draws after 500 tune) "
-        "and takes minutes; the documented ADVI form on the same route is replayed"
-    ),
-    "POST /analyze/order_count?inference_method=nuts&draws=1000": (
-        "NUTS with 1000 draws x 4 chains — same cost, same route as the replayed ADVI example"
-    ),
-    "POST /trees/marketing/rca/paid_signups?analysis_start=2026-08-01&analysis_end=2026-08-07": (
-        "names the `marketing` tree and its `paid_signups` metric from the "
-        "several-trees illustration; no such tree ships with the package"
-    ),
-}
 
-# Examples replayed on a synthesized single-metric tree rather than the bundled
-# one, because they name `signups` and a declared `region` dimension and the
-# bundled jaffle tree declares no dimensions. Route, parameter names and status
-# are all still genuinely exercised.
+class DocFile:
+    """One documentation file, with the exact accounting we expect of it.
+
+    Every count and every skip list is stated per file rather than in aggregate,
+    so moving a section from one page to another has to move its expectations
+    too — which is the whole point of the list: content that migrates cannot
+    slip out of the guard on the way.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        *,
+        yaml_blocks: int,
+        parsable_yaml_blocks: int,
+        skipped_yaml: list,
+        curl_examples: int,
+        not_replayed: dict | None = None,
+        on_slice_fixture: set | None = None,
+        has_route_table: bool = False,
+    ):
+        self.path = REPO / path
+        self.name = self.path.name
+        self.text = self.path.read_text()
+        self.unquoted = _unquote_blockquotes(self.text)
+        self.expected_yaml_blocks = yaml_blocks
+        self.expected_parsable_yaml_blocks = parsable_yaml_blocks
+        # Asserted as a *sorted list*, so both identity and count matter: an
+        # example that silently stopped looking like a metric definition lands
+        # here and fails, rather than disappearing into a skip.
+        self.expected_skipped_yaml = sorted(skipped_yaml)
+        self.expected_curl_examples = curl_examples
+        # Examples NOT issued against the app, each with its reason. Asserted
+        # exactly: a route quietly falling out of the replayable set is a
+        # failure, not a silent skip. Everything here still has its route
+        # template and its query-parameter names checked — only the request
+        # itself is not made.
+        self.not_replayed = not_replayed or {}
+        self.on_slice_fixture = on_slice_fixture or set()
+        self.has_route_table = has_route_table
+
+        self.yaml_blocks = [
+            YamlBlock(self, i, self.unquoted[: m.start()].count("\n") + 1, m.group(1))
+            for i, m in enumerate(_YAML_FENCE.finditer(self.unquoted), start=1)
+        ]
+        self.curls = self._curl_examples()
+
+    def _curl_examples(self) -> list:
+        """Extract each `curl` invocation, joining shell continuations *and* any
+        lines needed to close an open quote (the `/simulate` body spans five)."""
+        lines = self.unquoted.splitlines()
+        examples = []
+        i = 0
+        while i < len(lines):
+            if not re.match(r"^\s*curl(\s|$)", lines[i]):
+                i += 1
+                continue
+            start, raw, j = i + 1, lines[i], i
+            while j + 1 < len(lines) and _needs_more(raw):
+                j += 1
+                raw = raw.rstrip().removesuffix("\\") + "\n" + lines[j]
+            examples.append(_parse_curl(self, raw, start))
+            i = j + 1
+        return examples
+
+    @property
+    def parsable_blocks(self) -> list:
+        return [b for b in self.yaml_blocks if _classify(yaml.safe_load(b.body)) != "fragment"]
+
+    def __repr__(self) -> str:
+        return self.name
+
+
+# --------------------------------------------------------------------------
+# The documentation files this module executes. One entry per file.
+# --------------------------------------------------------------------------
+
+DOCS = [
+    DocFile(
+        "README.md",
+        yaml_blocks=2,
+        parsable_yaml_blocks=2,
+        skipped_yaml=[],
+        curl_examples=5,
+        not_replayed={
+            "POST /analyze/order_count": (
+                "the bare form runs the NUTS default (4 chains x 500 draws after 500 tune) "
+                "and takes minutes; the documented ADVI form on the same route is replayed "
+                "from docs/api-reference.md"
+            ),
+            "POST /trees/marketing/rca/paid_signups"
+            "?analysis_start=2026-08-01&analysis_end=2026-08-07": (
+                "names the `marketing` tree and its `paid_signups` metric from the "
+                "several-trees illustration; no such tree ships with the package"
+            ),
+        },
+    ),
+    DocFile(
+        "docs/yaml-reference.md",
+        yaml_blocks=18,
+        parsable_yaml_blocks=13,
+        skipped_yaml=[
+            "bind",  # the count_distinct entity-grain binding excerpt
+            "priors",  # the shared-coefficient prior example
+            "priors",  # the per-parent prior override example
+            "seasonality",  # the seasonality component example
+            "tree",  # the `tree:` identity/goal block
+        ],
+        curl_examples=0,
+    ),
+    DocFile(
+        "docs/api-reference.md",
+        yaml_blocks=0,
+        parsable_yaml_blocks=0,
+        skipped_yaml=[],
+        curl_examples=10,
+        not_replayed={
+            "POST /analyze/order_count?inference_method=nuts&draws=1000": (
+                "NUTS with 1000 draws x 4 chains — same cost, same route as the "
+                "replayed ADVI example"
+            ),
+        },
+        # Replayed on a synthesized single-metric tree rather than the bundled
+        # one, because they name `signups` and a declared `region` dimension and
+        # the bundled jaffle tree declares no dimensions. Route, parameter names
+        # and status are all still genuinely exercised.
+        on_slice_fixture={
+            "GET /metrics/signups/query?dimension=region",
+            "POST /rca/signups/slices?dimension=region&reference_start=2024-02-05"
+            "&reference_end=2024-03-03&analysis_start=2024-03-04&analysis_end=2024-03-10",
+        },
+        has_route_table=True,
+    ),
+]
+
+BY_NAME = {doc.name: doc for doc in DOCS}
+README = BY_NAME["README.md"]
+
+# Parametrized over the parsable blocks only, rather than skipping the
+# fragments at runtime: the sdist CI job audits every skip reason in the shipped
+# suite against a fixed allow-list, and "this block is a fragment" is not one of
+# the three shapes it accepts. The fragments are covered instead by the
+# skip-list test and the block-count tripwire below, which is where the
+# accounting belongs anyway.
+ALL_PARSABLE_BLOCKS = [b for doc in DOCS for b in doc.parsable_blocks]
+ALL_CURLS = [ex for doc in DOCS for ex in doc.curls]
+
 SLICE_FIXTURE_TREE = """
 provider:
   type: mock
@@ -368,15 +333,142 @@ metrics:
     dimensions:
       region: customer__region
 """
-ON_SLICE_FIXTURE = {
-    "GET /metrics/signups/query?dimension=region",
-    "POST /rca/signups/slices?dimension=region&reference_start=2024-02-05"
-    "&reference_end=2024-03-03&analysis_start=2024-03-04&analysis_end=2024-03-10",
-}
 
 # Replayed examples are expected to succeed; stated as a table so a deliberate
-# 4xx example could be documented as one.
+# 4xx example could be documented as one. Keyed by `CurlExample.key`.
 EXPECTED_STATUS: dict = {}
+
+
+# --------------------------------------------------------------------------
+# (a) Every ```yaml block parses, cleanly
+# --------------------------------------------------------------------------
+
+
+def _stub_for(name: str) -> dict:
+    return {"name": name, "source": f"docs_test.stubbed.{name}", "kind": _STUB_KIND}
+
+
+def _referenced_elsewhere(metrics: list) -> list:
+    """Names an excerpt leans on that it does not itself define — parents, and
+    the `weight` metric a rate dimension blends by."""
+    defined = {m["name"] for m in metrics}
+    referenced = set()
+    for m in metrics:
+        referenced.update(m.get("parents") or [])
+        for spec in (m.get("dimensions") or {}).values():
+            if isinstance(spec, dict) and spec.get("weight"):
+                referenced.add(spec["weight"])
+    return sorted(referenced - defined)
+
+
+def _as_parsable_document(data):
+    """-> (document, synthesized_names) or (None, None) for a fragment.
+
+    Excerpts legitimately reference metrics defined elsewhere in the docs, so
+    the missing ones are synthesized rather than invented *into* the page.
+    Every other parser rule — required `source`, valid `kind`, formula
+    validation, prior keys, grain nesting, dimension weights — still applies.
+    """
+    kind = _classify(data)
+    if kind == "fragment":
+        return None, None
+    if kind == "provider-only":
+        # The provider reference blocks carry no metrics; one stub metric lets
+        # the provider block itself be validated (type enum, ${VAR} expansion).
+        return (
+            {"provider": data["provider"], "metrics": [_stub_for("docs_probe")]},
+            ["docs_probe (this block declares no metrics of its own)"],
+        )
+    if kind == "metric-list":
+        metrics, provider = list(data), None
+    else:
+        metrics, provider = list(data["metrics"]), data.get("provider")
+    missing = _referenced_elsewhere(metrics)
+    doc = {"metrics": [_stub_for(n) for n in missing] + metrics}
+    if provider is not None:
+        doc["provider"] = provider
+    return doc, missing
+
+
+def _stub_note(synthesized: list) -> str:
+    if not synthesized:
+        return ""
+    return (
+        f"\n\nNOTE: this block is an excerpt, so the test synthesized "
+        f"{len(synthesized)} metric(s) it references but does not define: "
+        f"{', '.join(synthesized)} "
+        f"(each as {{source: docs_test.stubbed.<name>, kind: {_STUB_KIND}}}). "
+        f"They are scaffolding, not documentation content — if the failure is about "
+        f"one of them, this test is wrong rather than the docs."
+    )
+
+
+@pytest.mark.parametrize("block", ALL_PARSABLE_BLOCKS, ids=lambda b: b.id)
+def test_documented_yaml_block_parses_without_warnings(block, caplog):
+    """Fail on the parser's warnings as well as its exceptions: the flagship
+    example used to parse successfully while emitting the `kind: rate` lint —
+    a passing parse that told the reader their own tree was wrong."""
+    doc, synthesized = _as_parsable_document(yaml.safe_load(block.body))
+    note = _stub_note(synthesized)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="breakdown"):
+        try:
+            Parser(yaml.safe_dump(doc, sort_keys=False))
+        except Exception as exc:  # noqa: BLE001 — the doc's own error is the message
+            pytest.fail(f"{block.where} does not parse: {exc}{note}\n\n{block.body}")
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and r.name.startswith("breakdown")
+    ]
+    assert not warnings, (
+        f"{block.where} parses, but the parser warns about it — a documented "
+        "example must not lint. Warnings:\n  - "
+        + "\n  - ".join(warnings)
+        + f"{note}\n\n{block.body}"
+    )
+
+
+@pytest.mark.parametrize("doc", DOCS, ids=lambda d: d.name)
+def test_yaml_skip_list_is_exactly_what_we_expect(doc):
+    """A block that silently stops being a metric definition must fail here
+    rather than vanish into "it's just a fragment"."""
+    skipped = []
+    for block in doc.yaml_blocks:
+        data = yaml.safe_load(block.body)
+        if _classify(data) == "fragment":
+            key = ",".join(data) if isinstance(data, dict) else type(data).__name__
+            skipped.append((key, block.line))
+
+    assert sorted(k for k, _ in skipped) == doc.expected_skipped_yaml, (
+        f"The set of {doc.name} YAML blocks skipped as non-metric fragments changed.\n"
+        f"  found (key, line): {sorted(skipped)}\n"
+        f"  expected keys:     {doc.expected_skipped_yaml}\n"
+        "If a real example moved into this list it stopped looking like a metric "
+        f"definition — fix {doc.name}, not this list."
+    )
+
+
+@pytest.mark.parametrize("doc", DOCS, ids=lambda d: d.name)
+def test_doc_has_the_yaml_blocks_we_think_it_has(doc):
+    """A tripwire: if the extractor stops seeing blocks (a fence style change, a
+    deleted section, a page that moved its content elsewhere), every
+    parametrized case above passes by not existing."""
+    assert len(doc.yaml_blocks) == doc.expected_yaml_blocks, (
+        f"expected {doc.expected_yaml_blocks} ```yaml blocks in {doc.name}, "
+        f"found {len(doc.yaml_blocks)}"
+    )
+    assert len(doc.parsable_blocks) == doc.expected_parsable_yaml_blocks, (
+        f"expected {doc.expected_parsable_yaml_blocks} parsable ```yaml blocks in "
+        f"{doc.name}, found {len(doc.parsable_blocks)} — a documented example "
+        "stopped being one, or a new one appeared unchecked"
+    )
+
+
+# --------------------------------------------------------------------------
+# (b) Every documented HTTP example actually works
+# --------------------------------------------------------------------------
 
 # The windows the MCP section's exchange quotes.
 TRANSCRIPT_WINDOWS = {
@@ -402,8 +494,8 @@ FOUR_WEEK_WINDOWS = {
 @pytest.fixture(scope="module")
 def replayed(tmp_path_factory):
     """One pass over the app: boot the bundled tree, issue every replayable
-    curl against it, run the MCP section's two RCAs, then boot the slice
-    fixture.
+    curl from every documentation file against it, run the MCP section's two
+    RCAs, then boot the slice fixture.
 
     Module-scoped and single-pass because `app` is a process-wide singleton (two
     TestClient lifespans must not overlap) and because on-demand ADVI fits are
@@ -420,10 +512,10 @@ def replayed(tmp_path_factory):
 
     demo = [
         ex
-        for ex in CURL_EXAMPLES
-        if ex.name not in NOT_REPLAYED and ex.name not in ON_SLICE_FIXTURE
+        for ex in ALL_CURLS
+        if ex.name not in ex.doc.not_replayed and ex.name not in ex.doc.on_slice_fixture
     ]
-    fixture = [ex for ex in CURL_EXAMPLES if ex.name in ON_SLICE_FIXTURE]
+    fixture = [ex for ex in ALL_CURLS if ex.name in ex.doc.on_slice_fixture]
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("BREAKDOWN_TREE", str(DEMO_TREE))
@@ -433,7 +525,7 @@ def replayed(tmp_path_factory):
         mp.delenv("BREAKDOWN_REQUIRE_AUTH", raising=False)
         with TestClient(app) as client:
             for ex in demo:
-                results[ex.name] = issue(client, ex)
+                results[ex.key] = issue(client, ex)
             resp = client.post("/rca/revenue", params=TRANSCRIPT_WINDOWS)
             assert resp.status_code == 200, resp.text
             transcript = resp.json()
@@ -441,7 +533,7 @@ def replayed(tmp_path_factory):
             assert resp.status_code == 200, resp.text
             four_week = resp.json()
 
-    tree_file = tmp_path_factory.mktemp("readme") / "slice_fixture.yml"
+    tree_file = tmp_path_factory.mktemp("docs") / "slice_fixture.yml"
     tree_file.write_text(SLICE_FIXTURE_TREE)
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("BREAKDOWN_TREE", str(tree_file))
@@ -449,15 +541,16 @@ def replayed(tmp_path_factory):
         mp.setenv("BREAKDOWN_END_DATE", "2024-04-09")
         with TestClient(app) as client:
             for ex in fixture:
-                results[ex.name] = issue(client, ex)
+                results[ex.key] = issue(client, ex)
 
     return results, transcript, four_week
 
 
-def test_readme_has_the_curl_examples_we_think_it_has():
-    assert len(CURL_EXAMPLES) == 15, (
-        f"expected 15 curl examples in README.md, found {len(CURL_EXAMPLES)}: "
-        f"{[e.where for e in CURL_EXAMPLES]}"
+@pytest.mark.parametrize("doc", DOCS, ids=lambda d: d.name)
+def test_doc_has_the_curl_examples_we_think_it_has(doc):
+    assert len(doc.curls) == doc.expected_curl_examples, (
+        f"expected {doc.expected_curl_examples} curl examples in {doc.name}, "
+        f"found {len(doc.curls)}: {[e.where for e in doc.curls]}"
     )
 
 
@@ -481,7 +574,7 @@ def test_every_documented_curl_hits_a_real_route():
         for template, ops in app.openapi()["paths"].items()
         for method in ops
     }
-    for ex in CURL_EXAMPLES:
+    for ex in ALL_CURLS:
         assert any(
             method == ex.method and _path_matches(path, ex.path) for path, method in templates
         ), (
@@ -501,7 +594,7 @@ def test_every_documented_query_parameter_is_accepted():
     """Catches a renamed required parameter and a documented parameter the
     endpoint rejects, for every example including the unreplayed ones."""
     spec = app.openapi()
-    for ex in CURL_EXAMPLES:
+    for ex in ALL_CURLS:
         op = _operation_for(spec, ex)
         assert op is not None, f"{ex.where}: no OpenAPI operation for this path"
         params = op.get("parameters", [])
@@ -514,18 +607,18 @@ def test_every_documented_query_parameter_is_accepted():
         )
         assert not required - documented, (
             f"{ex.where} omits required query parameter(s) {sorted(required - documented)} — "
-            "either the README is stale or the parameter was renamed."
+            "either the documentation is stale or the parameter was renamed."
         )
 
 
 def test_replayed_curl_examples_return_the_documented_status(replayed):
     results, _, _ = replayed
     failures = []
-    for ex in CURL_EXAMPLES:
-        if ex.name in NOT_REPLAYED:
+    for ex in ALL_CURLS:
+        if ex.name in ex.doc.not_replayed:
             continue
-        resp = results[ex.name]
-        expected = EXPECTED_STATUS.get(ex.name, 200)
+        resp = results[ex.key]
+        expected = EXPECTED_STATUS.get(ex.key, 200)
         if resp.status_code != expected:
             failures.append(
                 f"{ex.where}: expected {expected}, got {resp.status_code} — {resp.text[:400]}"
@@ -533,20 +626,22 @@ def test_replayed_curl_examples_return_the_documented_status(replayed):
     assert not failures, "Documented curl examples that no longer work:\n" + "\n".join(failures)
 
 
-def test_curl_skip_list_is_exactly_what_we_expect():
-    names = {ex.name for ex in CURL_EXAMPLES}
-    assert not set(NOT_REPLAYED) - names, (
-        "NOT_REPLAYED names curl examples the README no longer contains: "
-        f"{sorted(set(NOT_REPLAYED) - names)}. Drop them, or the skip list protects nothing."
+@pytest.mark.parametrize("doc", DOCS, ids=lambda d: d.name)
+def test_curl_skip_list_is_exactly_what_we_expect(doc):
+    names = {ex.name for ex in doc.curls}
+    assert not set(doc.not_replayed) - names, (
+        f"{doc.name}'s not-replayed list names curl examples it no longer contains: "
+        f"{sorted(set(doc.not_replayed) - names)}. Drop them, or the skip list "
+        "protects nothing."
     )
-    assert not ON_SLICE_FIXTURE - names, (
-        "ON_SLICE_FIXTURE names curl examples the README no longer contains: "
-        f"{sorted(ON_SLICE_FIXTURE - names)}"
+    assert not doc.on_slice_fixture - names, (
+        f"{doc.name}'s slice-fixture list names curl examples it no longer contains: "
+        f"{sorted(doc.on_slice_fixture - names)}"
     )
 
 
 # --------------------------------------------------------------------------
-# The API reference table documents every route
+# The route table documents every route
 # --------------------------------------------------------------------------
 
 _ROUTE_DECORATOR = re.compile(
@@ -555,23 +650,38 @@ _ROUTE_DECORATOR = re.compile(
 
 
 def _normalize(path: str) -> str:
-    """`/trees/{tree_id}/load` and the README's `/trees/{id}/load` are the same
+    """`/trees/{tree_id}/load` and the docs' `/trees/{id}/load` are the same
     route; the placeholder's spelling is not part of the contract."""
     return re.sub(r"\{[^}]*\}", "{}", path)
 
 
-def _api_reference_paths() -> set:
-    """Paths named in a table *cell* of the API reference section.
+def _route_table_doc() -> DocFile:
+    """Whichever documentation file carries the route table, from `DOCS`.
+
+    Read off the file list rather than hard-coded, because the table has
+    already moved once (README -> docs/api-reference.md) and the assertion has
+    to survive it moving again: retag the entry, and this follows.
+    """
+    carriers = [d for d in DOCS if d.has_route_table]
+    assert len(carriers) == 1, (
+        "Exactly one documentation file must carry the route table; "
+        f"{[d.name for d in carriers]} claim to."
+    )
+    return carriers[0]
+
+
+def _documented_paths(doc: DocFile) -> set:
+    """Paths named in a table *cell* anywhere in the file.
 
     A whole cell, not a substring: scanning for backticked runs anywhere in the
     line makes prose like ``grains`/`kinds`` yield a phantom ``/`` entry, and
     this assertion then passes by accident — which is how it read on its first
-    run.
+    run. Scanning the whole file rather than one named section is what lets the
+    table move within its page without silently emptying this set; the
+    whole-cell rule is what keeps the scan honest while it does.
     """
-    start = README.index("\n## API reference")
-    end = README.index("\n## ", start + 1)
     found = set()
-    for line in README[start:end].splitlines():
+    for line in doc.text.splitlines():
         if not line.lstrip().startswith("|"):
             continue
         for cell in line.strip().strip("|").split("|"):
@@ -581,14 +691,16 @@ def _api_reference_paths() -> set:
     return found
 
 
-def test_api_reference_table_documents_every_route():
+def test_route_table_documents_every_route():
     """The assertion that would have caught `GET /metrics/{name}/query` being
     documented nowhere."""
+    doc = _route_table_doc()
     declared = {_normalize(p) for _, p in _ROUTE_DECORATOR.findall(MAIN_PY)}
-    missing = sorted(declared - _api_reference_paths())
+    missing = sorted(declared - _documented_paths(doc))
     assert not missing, (
-        "Routes defined in breakdown/api/main.py but absent from the README's API "
-        f"reference tables: {missing}. A route nobody documents is a route nobody uses."
+        "Routes defined in breakdown/api/main.py but absent from the route "
+        f"tables in {doc.name}: {missing}. A route nobody documents is a route "
+        "nobody uses."
     )
 
 
@@ -596,6 +708,10 @@ def test_api_reference_table_documents_every_route():
 # (c) The MCP section's figures come from a run we actually performed
 # --------------------------------------------------------------------------
 
+# These stay pinned to the README because the transcript stays there: it is the
+# section that shows what breakdown *feels* like, which is landing-page content
+# rather than reference material.
+#
 # Tolerances, and why:
 #
 #   tight (<=1e-3)  Everything read off the data — window means, gaps, relative
@@ -692,7 +808,7 @@ def test_mcp_section_figures_still_match_a_real_run(replayed):
     )
     assert sessions["prob_same_direction"] < aov["prob_same_direction"]
 
-    # The README says a node declaring no `seasonality` carries no `seasonal`
+    # The docs say a node declaring no `seasonality` carries no `seasonal`
     # key rather than a 0.0 with a zero-width interval. `order_count` declares
     # none; `revenue` does, but is a formula node with no `components` at all.
     assert set(q("order_count", "components")) == {"trend"}
@@ -761,7 +877,7 @@ def test_readme_report_url_is_the_link_the_mcp_server_actually_mints(monkeypatch
         TRANSCRIPT_WINDOWS["analysis_end"],
         tree=DEMO_TREE.stem,
     )
-    assert expected in README, (
+    assert expected in README.text, (
         "The MCP section's `report_url` is not what the server would mint for "
         f"this analysis. Expected to find:\n  {expected}"
     )
@@ -771,7 +887,7 @@ def test_readme_does_not_call_the_mcp_example_an_unedited_transcript():
     """Its figures are regenerated by the test above and its narration is
     written prose, so the label cannot claim a captured model response.
     Relabelling was the whole point of touching that section."""
-    section = README[README.index("### What it looks like") :]
+    section = README.text[README.text.index("### What it looks like") :]
     section = section[: section.index("\n### ")].lower()
     for forbidden in ("unedited", "verbatim"):
         assert forbidden not in section, (

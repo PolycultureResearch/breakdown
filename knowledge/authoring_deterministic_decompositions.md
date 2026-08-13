@@ -3,7 +3,8 @@
 Hard-won, generalizable guidance for adding **deterministic identity edges**
 (`formula` nodes — sums and products) to a metric tree, distilled from building a
 `new_mrr = new_members × new_member_arpu → …` sub-tree against a warehouse
-provider. The canonical field reference is [`../README.md`](../README.md); this
+provider. The canonical field reference is
+[`../docs/yaml-reference.md`](../docs/yaml-reference.md); this
 doc is the *how to not get it subtly wrong* companion. Most of it generalizes to
 any provider; a few notes are warehouse-SQL specific.
 

@@ -30,7 +30,9 @@ between them. The stance is **probabilistic and causal**, never frequentist:
 
 **Using breakdown** — author trees, run analyses, interpret output:
 
-- [`README.md`](README.md) — quickstart, the canonical YAML/tree-authoring reference, API reference, UI walkthrough
+- [`README.md`](README.md) — what breakdown is, quickstart, UI walkthrough, serving several trees, deploying, MCP
+- [`docs/yaml-reference.md`](docs/yaml-reference.md) — **the canonical tree-authoring reference**: every field the parser accepts and the rules on each
+- [`docs/api-reference.md`](docs/api-reference.md) — every route the server answers, its parameters, and its response shape
 - [`docs/model.md`](docs/model.md) — statistical assumptions and how to read results; **read this before trusting output**
 - [`breakdown/examples/`](breakdown/examples/), [`knowledge/b2b_mrr_tree.yml`](knowledge/b2b_mrr_tree.yml) — the bundled runnable example and a full worked-reference tree
 
@@ -90,9 +92,13 @@ is covered in the [README](README.md#deploying).
   `breakdown/static/{index.html,app.js,style.css}`, dependencies from CDN. Keep it
   vanilla until the UI genuinely outgrows one file. (The files live inside the
   package so the wheel ships them.)
-- **Docs travel with the code.** When you change the API surface, the YAML schema,
-  or UI behavior, update the [README](README.md) (user-facing) and the relevant
-  `docs/ai-context/` doc (architecture) in the same change.
+- **Docs travel with the code.** When you change the API surface, update
+  [`docs/api-reference.md`](docs/api-reference.md); the YAML schema,
+  [`docs/yaml-reference.md`](docs/yaml-reference.md); UI behavior or anything a
+  newcomer meets first, the [README](README.md). Update the relevant
+  `docs/ai-context/` doc (architecture) in the same change. All three
+  user-facing docs are executed by `tests/test_docs_examples.py`, so a stale
+  example there is a test failure rather than a reader's problem.
 - **The statistics white paper is a living document.** When you ship a
   [Statistical rigor (S)](knowledge/roadmap.md#statistical-rigor-s--a-standing-workstream)
   or [Horizon 0 correctness (C)](knowledge/roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend)

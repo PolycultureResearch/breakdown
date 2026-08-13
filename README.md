@@ -189,6 +189,138 @@ uv run pytest tests/ -v
 
 ---
 
+## Authoring a tree
+
+A tree is one YAML file: a `provider` block saying where the numbers come from,
+and a list of `metrics`. Every metric needs a `name` and a `source`; `parents`
+are what make it a tree, and whether an edge is **learned** or **exact** is
+decided by whether the child carries a `formula`.
+
+```yaml
+metrics:
+  - name: daily_sessions
+    source: jaffle_shop.metrics.sessions          # required on every metric
+
+  - name: order_count
+    source: jaffle_shop.metrics.order_count
+    grain: day                                    # day (default) | week | month
+    kind: flow                                    # flow (default) | stock | rate
+    parents: [daily_sessions]                     # a learned edge — BSTS fits the coefficient
+
+  - name: revenue
+    source: jaffle_shop.metrics.revenue
+    formula: "order_count * average_order_value"  # an identity — exact Shapley attribution
+    parents: [order_count, average_order_value]
+```
+
+That shape carries a first tree a long way. Everything else the parser accepts —
+priors and declared signs, seasonality, lags, mixed grains and kinds, the
+dimensions a gap can be sliced by, display format, cold-start beliefs, and the
+full `provider` and `tree` blocks — is in the **[YAML
+reference](https://github.com/PolycultureResearch/breakdown/blob/main/docs/yaml-reference.md)**,
+which is the single source of truth for every field and the rules each is
+checked against. Read it when you start authoring rather than driving the
+bundled example, and read [the model and its
+assumptions](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md)
+before trusting what a tree tells you.
+
+---
+
+## Driving the UI
+
+Start the server and open `http://localhost:9090/ui`. Breakdown fetches every metric's series from the provider at startup, so the first load takes a few seconds. The steps below use the bundled default `breakdown/examples/jaffle_shop_tree.yml` and its `2024-01-01`–`2024-04-09` window; substitute your own target and dates. The header date pickers are bounded to the loaded `--start-date`/`--end-date` window.
+
+**1. Inspect a metric — and fit its model.** Click any node in the graph to open the **Metric** tab (right sidebar) with its time series. Nodes that have a probabilistic parent (e.g. `order_count`) show an **Analyze** section: pick **ADVI — fast, approximate** or **NUTS — slow, exact** and click **Run** to fit the BSTS. Both controls are labelled, a line under the draws box says what the current setting actually costs, and the `ⓘ` beside each expands a short explanation (with a link into [docs/model.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md) where it goes deeper). The posterior — trend, seasonality, and the `beta` / `beta_raw` coefficient on each parent — fills in, and the node picks up the "fitted" tint. Leaf and formula nodes just show their series.
+
+**2. Run a root-cause analysis.** Choose a **Target** in the header bar, then open the **Root cause** tab and pick the **Analysis** window — the period you want explained — from a preset (Last 7 days, Last 14 days, Last full week) or the date pair. The **Reference** fills itself with the matched adjacent block (marked **auto**) and stays editable: touch it and it becomes custom; the auto chip restores it. The model doesn't train on the reference — it trains on *all* loaded history before the analysis window (each node's result says exactly what it was fitted on) — so the reference is only the baseline the gap is measured against. Click **Run RCA**: breakdown auto-fits any upstream probabilistic models it needs and paints the result on the graph — nodes tinted by direction of change, edges weighted by each parent's share of the explained gap, and a ranked cause list with credible intervals. **Copy link** yields a shareable `#rca=…` URL carrying the resolved windows; **Clear** resets.
+
+**3. Localize a cause with a slice (optional).** Any ranked cause whose metric declares [`dimensions`](https://github.com/PolycultureResearch/breakdown/blob/main/docs/yaml-reference.md#dimensions-slicing) shows a **slice by** row — click a dimension to attribute that metric's gap across its values. Slices are ranked by excess concentration (how much more of the gap a value carries than its baseline share predicts), with the leader highlighted, `noise` badges where the bootstrap can't separate concentration from zero, and an explicit "not localized" verdict when nothing stands out. Across a lagged edge the slice automatically uses the parent's lag-shifted windows, so it compares the periods the contribution was actually measured over.
+
+**4. Simulate a what-if (optional).** Open the **What-if** tab, click nodes to adjust them (interventions), optionally add assumption links for effects the tree doesn't encode, and click **Run simulation** for a steady-state projection with credible intervals rendered on the graph and in the sidebar.
+
+RCA runs and metric views are deep-linkable (`#rca=…`, `#metric=…`), so any analysis can be shared or bookmarked as a URL.
+
+---
+
+## Serving several trees
+
+One breakdown process can serve several metric trees. They are **peers**, not a
+hierarchy: a company typically keeps one wide tree with revenue at the top (the
+net-MRR tree), and alongside it trees that go deep on one part of the business —
+
+- a **marketing** tree whose leaves are channels and campaigns,
+- a **product** tree about feature adoption and what it does to retention,
+- a tree standing behind a **specific goal**, whether that is a quarter, a
+  year, or five years.
+
+Any tree may be long-lived or short-lived, and any may declare a goal or not.
+breakdown takes no position on either: a focused tree can be as durable and as
+useful as the revenue tree, and most trees have no target attached at all.
+
+Point `--tree` at a directory and every `*.yml` in it (non-recursively) is one
+tree, its **id the filename stem**:
+
+```
+acme-dbt-project/
+  breakdown/
+    net_mrr.yml           -> id "net_mrr"
+    marketing.yml         -> id "marketing"
+    activation.yml        -> id "activation"
+```
+
+```bash
+breakdown serve --tree ./breakdown --default-tree net_mrr
+```
+
+`/ui` then opens an **index** of the trees — title, owner, and, where one is
+declared, period and current-vs-target — and a **Tree** switcher appears in the
+header. A single `--tree <file>` behaves exactly as it always has: no index, no
+switcher, one tree.
+
+**Trees load lazily.** Boot parses every tree's YAML — cheap, no provider
+involved — and fetches none, so the index is instant on a cold process and
+nobody pays for the trees they didn't open. A tree's data is fetched on the
+first request that needs it (or from the index's **Load** button); until then
+its card says *not loaded* rather than showing a zero. A single-file `--tree`
+still loads at startup, where lazy buys nothing; `--eager` asks for the same
+from a directory, loading the default tree up front.
+
+**Failures are per tree.** One malformed YAML shows as a broken card carrying
+its own parse error, and the other trees serve normally.
+
+Every data route is available at `/trees/{tree_id}/…` as well as bare, and the
+bare paths mean the default tree — so existing links, scripts and MCP clients
+keep working unchanged:
+
+```bash
+curl -X POST "localhost:9090/trees/marketing/rca/paid_signups?analysis_start=2026-08-01&analysis_end=2026-08-07"
+curl localhost:9090/trees            # the index: every tree and its state
+```
+
+| Flag | Default |
+|------|---------|
+| `--tree` | A tree file **or a directory of them** |
+| `--default-tree <id>` | The only tree if there is one, else the alphabetically first |
+| `--eager` | Off — a directory of trees loads on demand |
+
+---
+
+## The HTTP API
+
+Everything the UI does is an HTTP call you can make yourself, and the MCP server
+is the same surface again with an assistant in front of it. `GET /meta` and
+`GET /dag` read the tree; `POST /analyze/{name}` fits a model;
+`GET /shapley/{name}` and `POST /rca/{name}` attribute a change;
+`POST /rca/{name}/slices` localizes it inside a dimension; `POST /simulate`
+runs a what-if. Interactive OpenAPI docs are served at `/docs` alongside them.
+
+The route table — every endpoint, its query parameters, an annotated response
+for each analysis route, and the per-node `status` and `ci_status` values a
+response can carry — now lives in the **[API
+reference](https://github.com/PolycultureResearch/breakdown/blob/main/docs/api-reference.md)**.
+
+---
+
 ## Deploying
 
 ### Authentication
@@ -273,8 +405,8 @@ token, "the graph is public" should not also mean "our warehouse layout and
 filter logic are public". They are redacted to `null` rather than dropped, so a
 client reading `def.sql` sees an absent query instead of a missing key. With no
 token set (the laptop default) nothing is redacted. The UI's *show query* panel
-reads [`GET /metrics/{name}/query`](#get-metricsnamequery), which is gated
-normally, so it loses nothing.
+reads [`GET /metrics/{name}/query`](https://github.com/PolycultureResearch/breakdown/blob/main/docs/api-reference.md#get-metricsnamequery),
+which is gated normally, so it loses nothing.
 
 **What this is not.** One shared secret, no per-user identity, no audit trail,
 and no revocation short of rotating the value and restarting. It is a down
@@ -316,7 +448,7 @@ The [`compose.yaml`](https://github.com/PolycultureResearch/breakdown/blob/main/
 
 Three things differ from a laptop run:
 
-- **Credentials must be headless.** The Databricks CLI OAuth `profile:` flow opens a browser, which a container can't. Use `token: ${DATABRICKS_TOKEN}` in the tree's provider block instead (see [`provider`](#provider) for `${VAR}` interpolation). If you must reuse a profile, mount both `~/.databrickscfg` and `~/.databricks/token-cache.json` read-only into the container.
+- **Credentials must be headless.** The Databricks CLI OAuth `profile:` flow opens a browser, which a container can't. Use `token: ${DATABRICKS_TOKEN}` in the tree's provider block instead (see [`provider`](https://github.com/PolycultureResearch/breakdown/blob/main/docs/yaml-reference.md#provider) for `${VAR}` interpolation). If you must reuse a profile, mount both `~/.databrickscfg` and `~/.databricks/token-cache.json` read-only into the container.
 - **Startup failures degrade, not crash.** If the provider can't be reached (bad token, warehouse down), the server still starts: `GET /health` returns `{"status": "degraded", "error": …}`, data endpoints return 503, and the UI shows the error with a pointer to `breakdown doctor`. Fix the config and restart — no crash-loop to debug through.
 - **The port is published, so the API is exposed.** The compose file passes the access-control variables through, but it cannot set them — if you export nothing, nothing is gated. See [Authentication](#authentication) above.
 
@@ -330,7 +462,7 @@ uv run breakdown doctor --tree path/to/my_tree.yml
 
 It walks the provider's auth chain step by step (tree parses → env vars set → CLI/profile/token valid → connection opens → every metric's query actually runs) and prints `[PASS]`/`[FAIL]` per step with copy-paste remediation for each failure. Exit code is non-zero if anything failed — a `[WARN]` is a result worth reading, not a failure, and does not change the exit code. Probes run over the last 7 days by default; override with `--start-date`/`--end-date`.
 
-Two mode-specific checks ride along: a cold-start tree (`provider: none`) gets its declarations validated instead of a connection probe, and when you pass an explicit `--start-date`/`--end-date` window the doctor adds a **fit readiness** report — each metric's whole-period count against the 10-period fit minimum, the graduation check for a tree [moving from cold start to fitted mode](#cold-start-mode-what-if-with-no-data) — plus a **history headroom** report: whether the provider has history before your `--start-date`. Breakdown trains on everything you load, so an earlier start date strengthens every fit (and the default RCA reference windows) at no cost beyond fetch time.
+Two mode-specific checks ride along: a cold-start tree (`provider: none`) gets its declarations validated instead of a connection probe, and when you pass an explicit `--start-date`/`--end-date` window the doctor adds a **fit readiness** report — each metric's whole-period count against the 10-period fit minimum, the graduation check for a tree [moving from cold start to fitted mode](https://github.com/PolycultureResearch/breakdown/blob/main/docs/yaml-reference.md#cold-start-mode-what-if-with-no-data) — plus a **history headroom** report: whether the provider has history before your `--start-date`. Breakdown trains on everything you load, so an earlier start date strengthens every fit (and the default RCA reference windows) at no cost beyond fetch time.
 
 For the **`dbt` provider**, `doctor` walks manifest → profile → connection →
 bindings → dimensions → grain claims → filters, in the order a failure cascades.
@@ -418,1078 +550,6 @@ of magnitude smaller than a trace.
 
 ---
 
-## Driving the UI
-
-Start the server and open `http://localhost:9090/ui`. Breakdown fetches every metric's series from the provider at startup, so the first load takes a few seconds. The steps below use the bundled default `breakdown/examples/jaffle_shop_tree.yml` and its `2024-01-01`–`2024-04-09` window; substitute your own target and dates. The header date pickers are bounded to the loaded `--start-date`/`--end-date` window.
-
-**1. Inspect a metric — and fit its model.** Click any node in the graph to open the **Metric** tab (right sidebar) with its time series. Nodes that have a probabilistic parent (e.g. `order_count`) show an **Analyze** section: pick **ADVI — fast, approximate** or **NUTS — slow, exact** and click **Run** to fit the BSTS. Both controls are labelled, a line under the draws box says what the current setting actually costs, and the `ⓘ` beside each expands a short explanation (with a link into [docs/model.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md) where it goes deeper). The posterior — trend, seasonality, and the `beta` / `beta_raw` coefficient on each parent — fills in, and the node picks up the "fitted" tint. Leaf and formula nodes just show their series.
-
-**2. Run a root-cause analysis.** Choose a **Target** in the header bar, then open the **Root cause** tab and pick the **Analysis** window — the period you want explained — from a preset (Last 7 days, Last 14 days, Last full week) or the date pair. The **Reference** fills itself with the matched adjacent block (marked **auto**) and stays editable: touch it and it becomes custom; the auto chip restores it. The model doesn't train on the reference — it trains on *all* loaded history before the analysis window (each node's result says exactly what it was fitted on) — so the reference is only the baseline the gap is measured against. Click **Run RCA**: breakdown auto-fits any upstream probabilistic models it needs and paints the result on the graph — nodes tinted by direction of change, edges weighted by each parent's share of the explained gap, and a ranked cause list with credible intervals. **Copy link** yields a shareable `#rca=…` URL carrying the resolved windows; **Clear** resets.
-
-**3. Localize a cause with a slice (optional).** Any ranked cause whose metric declares [`dimensions`](#dimensions-slicing) shows a **slice by** row — click a dimension to attribute that metric's gap across its values. Slices are ranked by excess concentration (how much more of the gap a value carries than its baseline share predicts), with the leader highlighted, `noise` badges where the bootstrap can't separate concentration from zero, and an explicit "not localized" verdict when nothing stands out. Across a lagged edge the slice automatically uses the parent's lag-shifted windows, so it compares the periods the contribution was actually measured over.
-
-**4. Simulate a what-if (optional).** Open the **What-if** tab, click nodes to adjust them (interventions), optionally add assumption links for effects the tree doesn't encode, and click **Run simulation** for a steady-state projection with credible intervals rendered on the graph and in the sidebar.
-
-RCA runs and metric views are deep-linkable (`#rca=…`, `#metric=…`), so any analysis can be shared or bookmarked as a URL.
-
----
-
-## Serving several trees
-
-One breakdown process can serve several metric trees. They are **peers**, not a
-hierarchy: a company typically keeps one wide tree with revenue at the top (the
-net-MRR tree), and alongside it trees that go deep on one part of the business —
-
-- a **marketing** tree whose leaves are channels and campaigns,
-- a **product** tree about feature adoption and what it does to retention,
-- a tree standing behind a **specific goal**, whether that is a quarter, a
-  year, or five years.
-
-Any tree may be long-lived or short-lived, and any may declare a goal or not.
-breakdown takes no position on either: a focused tree can be as durable and as
-useful as the revenue tree, and most trees have no target attached at all.
-
-Point `--tree` at a directory and every `*.yml` in it (non-recursively) is one
-tree, its **id the filename stem**:
-
-```
-acme-dbt-project/
-  breakdown/
-    net_mrr.yml           -> id "net_mrr"
-    marketing.yml         -> id "marketing"
-    activation.yml        -> id "activation"
-```
-
-```bash
-breakdown serve --tree ./breakdown --default-tree net_mrr
-```
-
-`/ui` then opens an **index** of the trees — title, owner, and, where one is
-declared, period and current-vs-target — and a **Tree** switcher appears in the
-header. A single `--tree <file>` behaves exactly as it always has: no index, no
-switcher, one tree.
-
-**Trees load lazily.** Boot parses every tree's YAML — cheap, no provider
-involved — and fetches none, so the index is instant on a cold process and
-nobody pays for the trees they didn't open. A tree's data is fetched on the
-first request that needs it (or from the index's **Load** button); until then
-its card says *not loaded* rather than showing a zero. A single-file `--tree`
-still loads at startup, where lazy buys nothing; `--eager` asks for the same
-from a directory, loading the default tree up front.
-
-**Failures are per tree.** One malformed YAML shows as a broken card carrying
-its own parse error, and the other trees serve normally.
-
-Every data route is available at `/trees/{tree_id}/…` as well as bare, and the
-bare paths mean the default tree — so existing links, scripts and MCP clients
-keep working unchanged:
-
-```bash
-curl -X POST "localhost:9090/trees/marketing/rca/paid_signups?analysis_start=2026-08-01&analysis_end=2026-08-07"
-curl localhost:9090/trees            # the index: every tree and its state
-```
-
-| Flag | Default |
-|------|---------|
-| `--tree` | A tree file **or a directory of them** |
-| `--default-tree <id>` | The only tree if there is one, else the alphabetically first |
-| `--eager` | Off — a directory of trees loads on demand |
-
----
-
-## YAML reference
-
-### `tree` (optional)
-
-A tree's identity as a document: what it is called, who owns it, and —
-optionally — a target it is being held to. **Every field is optional,
-including the block itself**, so a tree can declare only a title, or nothing at
-all and take its name from its filename. Most trees have no `goal`.
-
-```yaml
-tree:
-  title: "Marketing"
-  description: "Paid, organic and lifecycle, down to the campaign"
-  owner: "growth@acme.com"
-  period: "FY27"               # free-form label, shown on the index card
-  goal:                        # optional — a tree of any lifetime may have one
-    metric: paid_signups
-    target: 200
-    direction: up              # up | down — which way is winning
-    deadline: "2026-09-30"     # YYYY-MM-DD, optional
-```
-
-- **`goal.metric` must resolve to a metric in this tree.** A goal naming a
-  metric that doesn't exist is a parse error, not a silently blank card.
-- **`goal.direction` defaults from the named metric's own `direction`** (see
-  [`metrics`](#metrics)) when that metric declares one. Declaring both and
-  disagreeing is an error; a goal on a `neutral` metric must state its own.
-- **`period` is a label, not a parsed date range** — `"2026-Q3"`, `"FY27"`,
-  `"2026-2031"` are all fine, and it is shown rather than interpreted.
-  `deadline` is the machine-readable date, and is optional too.
-- **`title` is display-only.** The id is always the filename stem, which is
-  what `#tree=` deep links and `/trees/{id}/…` routes use.
-
-The block is ignored by builds that predate it, so trees can be annotated
-before upgrading, and a tree with no `tree:` block loads on every build. There
-is no migration.
-
-### `provider`
-
-Controls how metric time-series data is fetched.
-
-```yaml
-provider:
-  type: mock           # mock | local | cloud | dbt | warehouse | none
-  project_path: "..."  # required for type: local and type: dbt
-  target: "..."        # optional for type: dbt (defaults to the profile's target)
-  profiles_dir: "..."  # optional for type: dbt (defaults to $DBT_PROFILES_DIR, then ~/.dbt)
-  environment_id: "..."  # required for type: cloud
-  host: "..."            # required for type: cloud; optional for warehouse (read from profile)
-  token: "..."           # required for type: cloud; warehouse: use this OR profile
-  http_path: "..."       # required for type: warehouse
-  profile: "..."         # warehouse: Databricks CLI OAuth profile (alternative to token)
-  catalog: "..."         # optional for type: warehouse
-  schema: "..."          # optional for type: warehouse
-```
-
-| Type | Description |
-|------|-------------|
-| `mock` | Deterministic synthetic data that respects the tree structure (formula nodes satisfy their formulas, probabilistic children co-move with parents). No config needed. Use for development and testing. |
-| `local` | Queries a dbt project on disk via the MetricFlow CLI (`mf query`). Requires `project_path`. **Superseded by `dbt` for most trees** — see below. |
-| `cloud` | Queries the dbt Semantic Layer API via the `dbt-sl-sdk`. Requires `environment_id`, `host`, and `token`. |
-| `dbt` | Reads your dbt project's own `target/semantic_manifest.json` (written by plain `dbt parse` on **dbt Core**) and generates the SQL for each metric, running it over the connection in the project's `profiles.yml`. **No dbt Cloud, no Semantic Layer credential, no service token, and no new credentials of any kind.** Requires `project_path`. A node may override what dbt declares with its own `bind:` block. Executes on **BigQuery, Databricks, DuckDB, Postgres or Snowflake** — whichever your project's own target already uses. |
-| `warehouse` | Runs each metric's own `sql` directly against a warehouse (currently Databricks SQL). Use when the semantic layer isn't queryable — the analyst mirrors governed definitions in SQL. Requires `http_path` plus **one of**: a PAT `token` (with `host`), or a Databricks CLI OAuth `profile` created by `databricks auth login --profile <name>` (host is read from the profile). |
-| `none` | No data is ever fetched — a **cold-start tree** of declared beliefs (`assumed` is an accepted alias). Only what-if simulation is available; every non-formula node needs a `baseline` and every probabilistic edge an explicit prior. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
-
-**Your dbt filters come across.** Most real dbt metrics narrow their measure
-with `filter:` — regional revenue, paid signups, orders excluding test accounts
-— and breakdown imports the predicate along with everything else. There is
-nothing to write: the binding's filter is derived from your `semantic_manifest.json`
-and it is **not a field you can author**. If you want a hand-written filter, put
-it in `bind.sql`, which already expresses every one of them:
-
-```yaml
-- name: food_revenue
-  source: dbt.metrics.food_revenue
-  bind:
-    sql: SELECT * FROM analytics.fct_orders WHERE is_food_order
-    grain_key: order_id
-    time_column: ordered_at
-    agg: sum
-    measure: amount
-```
-
-What imports is deliberately narrower than what dbt can express, and everything
-outside it is **refused by name** rather than approximated — a metric breakdown
-cannot translate exactly is listed as skipped, never served as a different
-number under your governed metric's name. Today a predicate imports when every
-reference in it is a *categorical dimension on the metric's own semantic model*:
-
-```
-{{ Dimension('order__is_food_order') }} = true          ✅  imported
-{{ Dimension('order__region') }} IN ('US', 'CA')        ✅  imported
-{{ Dimension('customer__country') }} = 'US'             ⏭️  skipped — a join
-{{ TimeDimension('metric_time', 'week') }} >= '2024-01-01'  ⏭️  skipped — time grain
-{{ Metric('revenue', group_by=['customer']) }} > 1000   ⏭️  skipped — a subquery
-```
-
-A filter on a `ratio` or `derived` metric is also skipped: those become formula
-edges over metrics referenced *by name*, and a name carries no scope, so the
-edge would silently be over the unfiltered metric. Express the scoped side as
-its own dbt metric and the edge picks it up.
-
-The rule is all-or-nothing per metric. If one conjunct of one filter does not
-resolve, the whole metric is skipped — there is no partial filter, because a
-dropped conjunct is a larger number wearing the right name. `breakdown doctor`
-lists what was skipped and why, counts the metrics that did import a filter, and
-[proves each one actually narrows](#checking-connectivity-breakdown-doctor)
-against your warehouse.
-
-> **A filtered node is smaller than the dashboard tile of the same name**, by
-> design — that is what the dbt metric says. *Show query* on the node card
-> displays the predicate in the generated SQL, which is where to check when a
-> number looks low.
-
-**Distinct counts and slicing.** A `count_distinct` metric's slices overstate
-it whenever one entity holds several values of a dimension inside a period — a
-subscription `active` in the morning and `cancelled` by evening is counted once
-in the metric and once in each status. Declare how to resolve it and the slices
-sum exactly:
-
-```yaml
-bind:
-  agg: count_distinct
-  measure: user_id
-  entity_key: user_id
-  entity_grain:
-    resolve: last        # last | first | error
-```
-
-`resolve` has no default: `first` and `last` answer different questions (*what
-state did they arrive in* vs *what state did they end in*), and `error` asserts
-the data is already single-valued — which `breakdown doctor` then verifies.
-Without it the slices are reported as overlapping, the overlap is quantified,
-and contribution shares are withheld rather than computed against a total the
-slices do not sum to.
-
-**Bind entity flows to a state table, not an event table.** With `entity_grain`
-declared, a slice panel also reports *movement between windows* — how many
-entities are new, churned, retained, or **migrated** from one slice to another.
-That is what tells you a platform switch (`−1` on iOS, `+1` on web, total
-unchanged) is one user moving rather than two offsetting causes.
-
-Those labels assume the relation has **one row per entity per period** — a daily
-state table. On an *event* table, where a row means "something changed", an
-entity only appears in windows where it changed, so `new` means *its first event
-in this window*, not a new entity. The counts are still arithmetically correct
-and migration still nets to zero, but they answer a different question than
-their names suggest.
-
-breakdown cannot tell the two apart from the schema, so it reports
-`retention_share` — the fraction of reference-window entities that reappear —
-and raises a caveat below 5%, which is the signature of an event table. Treat
-that caveat as a prompt to check what the relation records, not as a verdict on
-your data. If you want membership semantics, bind to a relation with one row
-per entity per period.
-
-**Moving from `local` to `dbt`.** Both read a dbt project on disk with no dbt
-Cloud, but `local` shells out to `mf query` once per metric *and once per
-slice*, behind a 120-second timeout, and needs the `mf` binary — which is why
-the `dbt` extra does not work on Python 3.14. The `dbt` provider runs in
-process, groups multiple dimensions in one query, and can show you the SQL
-behind every number.
-
-```yaml
-provider:
-  type: dbt                     # was: local
-  project_path: /path/to/dbt    # unchanged
-```
-
-Credentials, target and warehouse all come from the project's own
-`profiles.yml`, so there is nothing else to configure. You do need the driver
-for your adapter — the same one your dbt adapter already depends on, which is
-why it is not bundled: `bigquery` (`metric-breakdown[bigquery]`), `databricks`
-(`metric-breakdown[databricks]`), `duckdb`, `psycopg2-binary` for Postgres, or
-`snowflake-connector-python`. On BigQuery the profile's `method` is honoured —
-`oauth` (Application Default Credentials), `service-account`, and
-`service-account-json`.
-
-**It is not a drop-in for every tree.** `local` hands a metric name to
-MetricFlow, which plans the SQL, so it serves things the `dbt` provider refuses
-rather than approximates: cumulative metrics, derived metrics that offset an
-input in time, aggregations with no additive decomposition (`min`, `max`,
-`median`, `percentile`), conversion metrics, `non_additive_dimension`, and
-filters that reach across a join or into a time dimension. On two real dbt
-projects that was 2 of 24 and 8 of 86 metrics.
-
-Rather than guess, ask about *your* tree:
-
-```bash
-dbt parse                       # in the dbt project
-breakdown doctor --tree tree.yml
-```
-
-The `dbt provider migration` check either says every metric translates, or
-names the ones that need MetricFlow. A tree can also mix the two: keep `local`
-for the metrics that need it, or give a node its own `bind:` block with the SQL
-you want and move the rest.
-
-For `local`, `cloud` and `dbt`, the metric queried from the semantic layer is the last segment of `source` (e.g., `source: jaffle_shop.metrics.revenue` queries the metric `revenue`); the result is exposed in the tree under `name`. For `warehouse`, each metric carries its own `sql` (see the `metrics` table) and is keyed by `name`. The data window defaults to `2024-01-01`–`2024-04-09` and is set with `--start-date` / `--end-date` (or the `BREAKDOWN_START_DATE` / `BREAKDOWN_END_DATE` / `BREAKDOWN_TREE` environment variables).
-
-**Secrets in config.** Any provider string field may reference an environment variable with `${VAR}` syntax (e.g. `token: ${DATABRICKS_TOKEN}`), so a tree can be committed without embedding credentials. A referenced variable that isn't set raises a clear error at load time. The `warehouse` provider's `profile` avoids secrets entirely — credentials come from the Databricks CLI's OAuth token cache, so nothing sensitive lives in the tree or the environment.
-
-### `metrics`
-
-Each metric entry supports the following fields:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Unique identifier used throughout the tree |
-| `source` | string | dbt Semantic Layer metric path (e.g., `jaffle_shop.metrics.revenue`) |
-| `grain` | string | The metric's natural grain: `day` (default), `week`, or `month`. It is fetched, fitted, and attributed at this grain, never below it. See [Grains](#grains). |
-| `kind` | string | Temporal aggregation kind: `flow` (default — sums over time), `stock` (point-in-time level — takes the last value), or `rate` (a ratio — can never be auto-aggregated). See [Grains](#grains). |
-| `sql` | string | For the `warehouse` provider: a SQL query returning columns `date` and `value`, with `:start_date` / `:end_date` named parameters — one row per period at the metric's `grain`. Ignored by other providers. |
-| `description` | string | Optional human-readable description |
-| `parents` | list | Names of metrics that causally influence this one |
-| `formula` | string | Arithmetic expression over parent names (e.g., `"order_count * average_order_value"`). Enables Shapley attribution. |
-| `priors` | dict | Bayesian priors for the causal coefficients (see below) |
-| `lags` | dict | Per-parent time lag in grain steps **at the node's grain** (days for a daily node, weeks for a weekly one). On a probabilistic node, regresses the child on each parent's value `N` steps earlier; combined with `formula`, declares a cohort-aligned lagged identity. See [Lagged regressors](#lagged-regressors). |
-| `expected_signs` | dict | Per-parent declared coefficient direction (`positive` \| `negative`) on a probabilistic node. **Not a prior** — the fit is unconstrained, but a posterior that contradicts the declaration raises a `sign_warnings` diagnostic (surfaced in `/analyze`, `/metrics`, RCA responses, and the UI). |
-| `dimensions` | dict | Declared slicing dimensions, `name: provider_dimension` shorthand (`region: customer__region`) or a mapping with `source`, `top_k`, `values`, `weight`. Enables `POST /rca/{name}/slices` and the MCP `slice_metric` tool — localizing a gap within the metric (which geo, plan, app version). Analysis-time only: never affects fetching at startup, fitting, or tree attribution. See [Dimensions (slicing)](#dimensions-slicing). |
-| `seasonality` | list | Periodic components to include in the BSTS model. Periods are in grain steps at the node's grain. |
-| `trend` | string or dict | Local-level (random-walk) trend. `trend: linear` uses the default step-size prior HalfNormal(0.05); `trend: {type: linear, sigma: 0.1}` widens it so the trend may absorb faster drift. Only `type: linear` is supported. |
-| `baseline` | number or dict | **Cold-start mode only.** Asserted operating point for a tree with no data: `baseline: 1200` (point) or `baseline: {low: 800, high: 1600}` (central 90% interval of a Normal), in mean-per-period units at the node's grain. Rejected on formula nodes — theirs derive from parents so the identity holds. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
-| `plausible` | dict | **Cold-start mode only.** Declared honesty band `{min, max}` (either bound may be omitted, at least one required) standing in for historical min/max in the what-if extrapolation flags; `min: 0` recovers the "can't go negative" check. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
-| `format` | string or dict | UI display hint for the node card's big number — presentation only, no effect on modeling. See [Display format](#display-format). |
-| `direction` | string | Which way is good news, for UI coloring only: `up_is_good` (default), `down_is_good` (costs, tickets, time-to-X), or `neutral` (gray, no judgment). Arrows stay directional; only the green/red coloring follows the declaration. Note: a stored-negative flow like churn MRR is `up_is_good` — moving toward zero means less churn. |
-
-### Priors
-
-Priors apply when the relationship with a parent is probabilistic (no formula). They are stated in **business units** — e.g., `mu: 0.1` below means "each additional session is worth ~0.1 orders". Internally the model fits on z-scored data, and breakdown translates the prior into normalized space automatically. The posterior reports both `beta` (normalized) and `beta_raw` (business units).
-
-```yaml
-priors:
-  coefficient:
-    distribution: "Normal"
-    params: { mu: 0.1, sigma: 0.02 }
-```
-
-Supported distributions and their parameters:
-
-| Distribution | Params | Use when |
-|--------------|--------|----------|
-| `Normal` | `mu`, `sigma` | You have a point estimate and uncertainty |
-| `HalfNormal` | `sigma` | The effect must be positive |
-| `Exponential` | `lam` | Positive effect, most mass near zero |
-| `LogNormal` | `mu`, `sigma` | Positive, right-skewed effect |
-
-**Per-parent priors.** `coefficient` sets the default prior for every parent. To override a specific parent, add its name as a key alongside `coefficient` — the named prior wins for that parent, and the rest fall back to `coefficient` (or `Normal(0, 1)` if `coefficient` is absent):
-
-```yaml
-priors:
-  coefficient:                          # default for all parents
-    distribution: "Normal"
-    params: { mu: 0.1, sigma: 0.05 }
-  marketing_spend:                      # override for one parent (must be a parent name)
-    distribution: "HalfNormal"
-    params: { sigma: 0.2 }
-```
-
-Every key under `priors` must be either `coefficient` or the name of a parent; any other key is rejected at parse time. Each parent's prior is scaled into normalized space using that parent's own units.
-
-**Declared signs (`expected_signs`).** When you *know* which direction an effect should run ("more engagement → less churn"), declare it instead of forcing it:
-
-```yaml
-- name: churn_mrr
-  source: my.metrics.churn_mrr
-  parents: [paid_cmau]
-  expected_signs: { paid_cmau: positive }   # churn_mrr is stored negative: more actives should mean less-negative churn
-```
-
-Unlike a `HalfNormal` prior, this never constrains the fit. After fitting, the engine checks the `beta_raw` posterior: if less than 10% of its mass lies on the declared side, the fit carries a `sign_warnings` diagnostic naming the parent, the posterior probability, and the mean. A contradicted sign is usually not a bug in the fit — it means the edge as defined answers a different question than you meant. The classic case is **scale confounding**: regressing a dollar flow on a user count when both grow with the business — the learned sign reflects "bigger base → more of both," swamping the per-user effect you intended. The fix is to redefine the edge as **rates on rates** (e.g. churn *rate* on active *share*), not to constrain the sign.
-
-### Seasonality
-
-```yaml
-seasonality:
-  - period: 7      # in grain steps: 7 on a daily metric is weekly
-    name: weekly
-```
-
-Each seasonality component is modeled with up to 2 Fourier harmonics (4 parameters: sin/cos × 2 harmonics). `period` is expressed in the node's own grain steps, so `period: 7` means weekly on a daily metric and is meaningless on a monthly one.
-
-**Declare only seasonality your fit window can see.** Two constraints, both enforced:
-
-- **Period vs. grain.** A harmonic needs more than two steps per cycle to be distinguishable from the level (Nyquist), so `period` must be ≥ 3, and the second harmonic is dropped below `period: 5`. Dropped harmonics are reported in the fit's `seasonality_warnings` diagnostic.
-- **Period vs. data.** Identifying a component takes at least two full periods *inside the fit window* — and RCA fits stop at `analysis_start`, so the window is shorter than your data. A `period: 365` component on a few months of history is unidentifiable and will soak up degrees of freedom the parents need; it too lands in `seasonality_warnings`. RCA responses surface these warnings per node (with the fitted window under `fit_window`), so an unidentifiable component is flagged in the result, not just the server log — the fix is more history (an earlier `--start-date`), not a different reference window.
-
-### Formula
-
-Formulas express exact arithmetic relationships between a metric and its parents. The expression is a restricted Python arithmetic expression — only the operators `+`, `-`, `*`, `/`, `**` and named parent metrics are allowed. Function calls and attribute access are rejected at parse time.
-
-```yaml
-- name: net_revenue
-  source: my.metrics.net_revenue
-  formula: "gross_revenue - cost_of_goods_sold"
-  parents: [gross_revenue, cost_of_goods_sold]
-
-- name: revenue
-  source: my.metrics.revenue
-  formula: "order_count * average_order_value"
-  parents: [order_count, average_order_value]
-
-- name: conversion_rate
-  source: my.metrics.conversion_rate
-  kind: rate
-  formula: "order_count / daily_sessions"
-  parents: [order_count, daily_sessions]
-```
-
-Every metric needs a `source`, formula nodes included — see the note under
-[Grains](#grains) on why a formula node is still fetched.
-
-When a formula is defined, the BSTS model fits the **residual** (`y - formula(parents)`) rather than using parent regressors. This correctly captures the structural relationship and surfaces unexplained variance in the residual.
-
-**At most 10 parents on a formula node.** Exact Shapley attribution enumerates
-every coalition, so the work doubles with each parent — end to end through an
-RCA, 10 parents is ~3.5s, 12 is ~20s, 14 is ~80s, all of it holding the tree's
-lock. An 11th parent is **refused by name** rather than quietly approximated: a
-sampled or truncated Shapley value is a different number from the one you asked
-for, and breakdown does not substitute one for the other.
-
-The remedy is to **split the node into intermediate sums** — group some parents
-under their own formula node and make that node the parent here:
-
-```yaml
-- name: other_revenue          # the intermediate sum
-  source: my.metrics.other_revenue
-  formula: "services_revenue + partner_revenue + marketplace_revenue"
-  parents: [services_revenue, partner_revenue, marketplace_revenue]
-
-- name: total_revenue          # now 2 parents instead of 4
-  source: my.metrics.total_revenue
-  formula: "product_revenue + other_revenue"
-  parents: [product_revenue, other_revenue]
-```
-
-That preserves the identity exactly, so every attribution stays exact — and it
-usually reads better, since the intermediate node is a number someone in the
-business already talks about. (The same cap applies to what-if scenario sources,
-which enumerate the same coalitions.)
-
-### Lagged regressors
-
-Some causal effects show up with a delay — the README's motivating example is support tickets driving churn *weeks later*. A `lags` dict regresses the child on each parent's value `N` grain steps earlier, at the **child's** grain (days for a daily child, weeks for a weekly one):
-
-```yaml
-- name: churn_rate
-  source: my.metrics.churn_rate
-  kind: rate
-  parents: [support_tickets]
-  lags: { support_tickets: 21 }   # churn responds to tickets from 3 weeks earlier (daily node)
-```
-
-Rules:
-- Every `lags` key must be a parent; every value must be an integer ≥ 1 (grain steps at the node's grain).
-- The engine shifts each parent by its lag and trims the leading `max(lags)` rows so all series align with no NaNs. It raises if fewer than 10 rows remain.
-
-**Cohort-aligned lagged identities.** `lags` combines with `formula` to declare an *exact* identity over time-shifted parents: `A[t] = f(each parent shifted back by its lag)`. This is how cohort conversion gets a deterministic form instead of a blended same-period ratio or a fully probabilistic edge:
-
-```yaml
-- name: conversions
-  source: my.metrics.conversions
-  formula: "trial_starts * cohort_rate"
-  parents: [trial_starts, cohort_rate]
-  lags: { trial_starts: 14 }   # today's conversions come from the cohort that started 14 days ago
-```
-
-Shapley attribution and the residual fit both read each lagged parent from windows shifted back by its lag, so the identity — and its exact attribution — holds cohort-by-cohort.
-
-### Grains
-
-Metrics have different natural time grains: signups are daily events, a cohort conversion rate is only meaningful per week, MRR is a monthly snapshot. Forcing everything onto a daily spine manufactures fake sample size (a monthly value repeated 30 times is still one observation) and makes per-day ratios degenerate on low-volume days. Instead, each node declares its natural `grain` and is **fetched, fitted, and attributed at that grain, never below it**:
-
-```yaml
-- name: trial_starts            # daily flow (defaults: grain day, kind flow)
-  source: my.metrics.trial_starts
-
-- name: trial_conversion_rate   # weekly cohort rate
-  source: my.metrics.trial_conversion_rate
-  grain: week
-  kind: rate
-
-- name: conversions             # weekly identity over a daily flow and a weekly rate
-  source: my.metrics.conversions
-  grain: week
-  formula: "trial_starts * trial_conversion_rate"
-  parents: [trial_starts, trial_conversion_rate]
-```
-
-**Kinds determine aggregation.** Resampling a series upward is only well-defined once you know how it aggregates: `flow` metrics **sum** (orders, new MRR), `stock` metrics take the **last value** (total MRR, account balances), and `rate` metrics can never be auto-aggregated — the average of daily ratios is not the coarser ratio, so a rate must be *declared* at the grain it's consumed at, recomputed from its components.
-
-`rate` covers more than the metrics whose names end in `_rate`. Averages (`average_order_value`), per-unit intensities (`emails_per_subscriber`) and durations (`time_to_first_response`, `page_speed`) are all ratios: the mean of a month of daily averages is not that month's average. Since `kind` defaults to `flow` and a missing declaration is indistinguishable from a deliberate one, the parser **warns** when a metric with a ratio-shaped name never declared a `kind` — it would otherwise be silently summed. It is a naming heuristic, so it never rejects the tree, and declaring `kind: flow` explicitly silences it for the cases where the name misleads.
-
-**Mixed-grain rules** (enforced at parse time):
-- A parent may never be **coarser** than its child — downward disaggregation is undefined.
-- A **finer flow/stock** parent is automatically resampled up to the child's grain (sum / last). In the example above, `conversions` at week grain sees the *weekly sum* of `trial_starts`.
-- A **finer rate** parent is an error — declare the rate at the child's grain.
-- The finer grain must nest in the coarser: days tile weeks and months, but weeks straddle month boundaries, so a weekly parent under a monthly child is an error.
-
-**Period labels are period starts** everywhere: days at midnight, weeks on Monday (ISO), months on the 1st. Partial edge periods are dropped, never zero-filled — a coarse metric's series may therefore end a few days before the raw data window does.
-
-**Windows snap per node.** RCA windows stay day-resolution dates in the API; each node interprets them as the whole periods fully inside. A node whose window holds no whole period reports `"status": "window_shorter_than_grain"` instead of failing the RCA, and every node reports its `grain` and `effective_windows`. Windows that snap to a single period suppress the bootstrap CI (`ci_status: "degenerate_single_period"`) rather than reporting a falsely-precise interval. `window_shorter_than_grain` is one of several per-node statuses — see [Per-node `status`](#per-node-status--one-bad-node-does-not-end-the-analysis) for the full set and what each means.
-
-**Gaps, and what happens to them.** Every provider aligns its result onto the
-spine of whole periods inside the loaded window, and what happens to a missing
-period depends on **which edge of the series it is on** and on the metric's
-`kind`. Partial edge periods are always dropped. For the `warehouse` provider the
-SQL owns the aggregation, so return one row per period at the declared grain,
-labeled by period start.
-
-| Where the gap is | `flow` | `stock` | `rate` |
-|---|---|---|---|
-| **Leading** — before the source's first row | filled with `0`, **with a warning naming the invented periods** | error (nothing to forward-fill from) | error |
-| **Interior** — a hole in the middle | filled with `0`, with a warning | forward-fill, with a warning | error |
-| **Trailing** — after the source's last row | **trimmed**, not filled | trimmed | trimmed |
-
-- **Trailing gaps are trimmed rather than filled** because periods after the last
-  row are *not yet loaded*, not zero: a lagging mart should end the series early
-  rather than manufacture a collapse at the tail. This is what `data_through`
-  reports per metric.
-- **Interior gaps are warned about** because a three-day ETL outage becomes three
-  zero days, which is indistinguishable from a real collapse — and RCA will
-  happily name it as the root cause.
-- **A query returning no rows at all** keeps the full zero spine for flows and
-  draws no leading warning: an all-quiet window is a legitimate flow series, and
-  the provider that knows the result was empty says so itself.
-
-**A metric that started partway into the loaded window is zero-filled before its
-first row.** A product launched in March, a channel switched on in week 3, a
-metric the warehouse only began recording last quarter — with `kind: flow` all of
-these get a run of fabricated zeros back to your `--start-date`. That is not
-harmless padding: the fit sees a manufactured level shift and a manufactured
-trend on a node RCA can then rank as a cause. breakdown now **warns and names the
-fabricated periods**, so check your startup logs for it.
-
-The honest fix is a **later `--start-date` for that tree** — start the window
-where the metric actually starts, and fit only observed periods. (Trimming the
-leading run automatically is not available, and deliberately: per-grain frames are
-assembled by inner join, so dropping one node's leading periods would delete them
-for *every* metric at that grain — a whole tree losing January because one node
-launched in March.) If the late-starting metric matters less than the history the
-rest of the tree needs, the alternative is to split it into its own tree with its
-own window.
-
-**Rates over true-zero periods.** A seasonal business has stretches where the
-denominator is genuinely zero — nothing on sale, no sessions, no sends — and a
-rate is undefined there rather than low. Because a missing rate period is an
-error and a rate can never be invented, do not fetch such a metric as a rate.
-Declare the numerator and denominator as their own `flow` nodes, which fill to
-zero honestly, and make the rate a `formula` node over them:
-
-```yaml
-- name: orders            # flow: 0 in the dark window is a fact
-  source: my.metrics.orders
-- name: sessions          # flow
-  source: my.metrics.sessions
-- name: conversion_rate   # the rate is now an exact identity over the two flows
-  source: my.metrics.conversion_rate
-  kind: rate
-  formula: "orders / sessions"
-  parents: [orders, sessions]
-```
-
-This also buys exact Shapley attribution on the rate, and it keeps the dark
-window visible as what it was — no traffic — instead of an error or an invented
-number. Coarsening the grain until every period has a denominator is the other
-option, and the worse one: it throws away resolution everywhere to fix a
-problem that exists in a few windows.
-
-**A `formula:` node is still fetched.** `source` is required on every metric,
-formula nodes included, and startup asks the provider for each one exactly like
-any other — the formula says how the node *decomposes*, not where its number
-comes from. That is deliberate: fetching the node independently is what makes
-`unexplained` meaningful (it is the measured series' own departure from the
-identity), and it is what lets breakdown tell you your identity has drifted from
-what the warehouse reports. So point `source` at the governed metric even when
-you could compute it, and keep `kind: rate` on a ratio-shaped one.
-
-**Data freshness.** Each metric's true data edge is tracked as it is fetched and exposed as `data_through` in `GET /meta` — the inclusive last date its last observed period covers. When sources disagree (one mart lags the others), the UI anchors every card's headline number, delta, and sparkline at the tree-wide edge via the **As of** selector (toolbar), which defaults to the oldest `data_through` across metrics and counts only periods *fully completed* by that date — so a calendar week the data edge cuts in half never becomes a headline number. The one case this cannot catch is a partially loaded most-recent period (the mart wrote *some* rows for it): detecting that needs load-completeness metadata on the mart side.
-
-**Data-length guidance.** Fits need at least 10 whole periods at the node's grain — coarser grains need proportionally longer windows (a monthly node wants roughly a year of history). Seasonality periods and lags are in grain steps: `period: 7` means weekly on a daily node and seven *months* on a monthly one (the parser warns about that).
-
-### Dimensions (slicing)
-
-Tree RCA says *which upstream metric* moved; slicing says *where inside it* —
-which geo, plan tier, or app version. Declare the dimensions worth slicing a
-metric by, and the slice endpoint/MCP tool can attribute its
-window-over-window gap across the dimension's values:
-
-```yaml
-- name: signups
-  source: my.metrics.signups
-  dimensions:
-    region: customer__region            # shorthand: name -> provider dimension id
-    plan:
-      source: subscription__plan_tier
-      top_k: 6                          # slices kept individually (default 8); rest fold into __other__
-      values: [pro, team, enterprise]   # optional pin-list, overrides top_k
-
-- name: trial_conversion_rate
-  source: my.metrics.trial_conversion_rate
-  kind: rate
-  formula: "conversions / trial_starts"
-  parents: [conversions, trial_starts]
-  dimensions:
-    region: customer__region            # rate: weight defaults to the formula denominator
-```
-
-For the semantic-layer providers, `source` is the MetricFlow dimension
-identifier (added to the query's `group_by`); the mock provider synthesizes
-deterministic slices for any source; the warehouse provider does not support
-slicing yet. A `rate` metric needs a `weight` — the tree metric whose sliced
-shares blend the per-slice rates — which defaults from a simple `num / den`
-formula's denominator and otherwise must be declared:
-`region: {source: customer__region, weight: trial_starts}`.
-
-Slicing runs **at analysis time**: sliced series are fetched on demand for the
-requested windows only, and never enter the startup data, the fits, or tree
-attribution. Attribution is exact — a flow/stock decomposes as a sum over
-slices; a rate splits per slice into `within` (its own rate moved) and `mix`
-(traffic shifted between slices) — and slices are ranked by **excess
-concentration** (`excess`): how much more of the gap a slice carries than its
-baseline share predicts, with bootstrap credible intervals. Slices that don't
-sum back to the metric are reported in a `reconciliation` block, never
-silently rescaled. See `knowledge/dimensional_slicing_design.md` for the full
-design.
-
-### Display format
-
-`format` controls how a metric's **big number** is displayed on its node card in the UI. It is presentation only — it never affects modeling, attribution, or the API's numeric values. Use the string shorthand for the common case, or a mapping for finer control:
-
-```yaml
-- name: revenue
-  source: my.metrics.revenue
-  format: currency          # shorthand for {style: currency}
-
-- name: daily_sessions
-  source: my.metrics.daily_sessions
-  format:
-    style: number           # currency | percent | number  (default number)
-    unit: sessions          # small caption under the value; grows the card one line
-    decimals: 0             # fixed fraction digits (default: automatic)
-    compact: true           # k / M / B notation (default: auto — currency compacts large values)
-    symbol: "$"             # currency symbol, when style is currency
-```
-
-Delta values (period-over-period change) always render as a percent; `format` applies to the big number only.
-
-**Display defaults.** When a metric declares no `format`, the UI guesses one from naming conventions — names containing tokens like `mrr`, `arr`, `revenue`, `arpu`, `aov`, `usd`, `cost`, `spend` render as currency; `rate`, `pct`, `percent`, `share`, `ratio` render as percent; everything else as a plain number. This is presentation-only and an explicit `format` always wins — declare one whenever the guess would be wrong.
-
-### Cold-start mode (what-if with no data)
-
-A tree with **no data provider** can still run what-if scenarios — on declared beliefs alone. The what-if engine's propagation core consumes operating points, edge slopes, and assumption effects; in cold-start mode all three are stated rather than fitted, so a pre-revenue company can simulate its business before the first row of data exists. The output quantifies the consequences of your assumptions — honestly wide intervals, never evidence.
-
-A cold-start tree declares beliefs everywhere:
-
-- **`baseline` on every non-formula node** — the asserted operating point, as a point (`baseline: 1200`) or a central-90% interval (`baseline: {low: 800, high: 1600}`), in mean-per-period units at the node's grain. Formula nodes derive theirs per-draw from their parents so the arithmetic identity holds by construction — declaring one there is a parse error.
-- **An explicit prior on every probabilistic edge** (parent-specific or shared `coefficient`). Priors are already stated in business units, and with nothing to fit the prior *is* the coefficient distribution — coefficient draws are sampled from it directly. The fitted-mode fallback `Normal(0, 1)` is meaningless without data to set the scale, so it is not allowed here.
-- **`plausible: {min, max}`** (optional; either bound alone is fine) — the declared honesty band standing in for historical min/max: a simulated value outside it raises the same extrapolation warning fitted mode derives from history. `min: 0` recovers the "this can't go negative" check.
-
-```yaml
-- name: site_sessions
-  source: assumed                       # provenance label; no provider is queried
-  baseline: { low: 800, high: 1600 }
-  plausible: { min: 0 }
-
-- name: signups
-  source: assumed
-  parents: [site_sessions]
-  baseline: { low: 10, high: 60 }
-  priors:
-    site_sessions:
-      distribution: "Normal"
-      params: { mu: 0.02, sigma: 0.01 } # ~2 signups per 100 sessions, stated as a belief
-```
-
-Propagation, do-operator semantics, draw alignment, and the Shapley source decomposition are identical to fitted mode. The response is labeled `mode: "cold_start"`, adds a per-node `baseline_ci_95` where the asserted baseline is a range, and carries cold-start caveats so the output can't be mistaken for estimates from data. When data arrives, the same YAML priors feed the fit — posteriors replace priors with zero config changes.
-
-**Serving a cold-start tree.** Declare `provider: type: none` and `breakdown serve` boots without fetching anything — not a degraded start; the tree simply has no data. Startup validates the declarations and fails loudly with the full list of blockers if any are missing (`breakdown doctor` runs the same check). `GET /meta` reports `"mode": "cold_start"`; endpoints that consume history (`/series`, `/analyze`, `/shapley`, `/rca`) return 422 pointing at `POST /simulate`, which runs scenarios with **no baseline window** — operating points come from the tree, so a scenario passing `baseline_start`/`baseline_end` is rejected. The MCP `run_whatif` tool works the same way (omit the baseline dates).
-
-**The UI boots what-if-first** on a cold-start tree: node cards show each metric's asserted operating point with its 90% belief range (formula nodes derive theirs), probabilistic edges are labeled with their stated priors (`β ~ 0.03 [0.01, 0.05] · belief`), the adjust panel's range strip renders from the declared `plausible` bounds, and results are labeled as consequences of beliefs — the Root cause tab is inert, since there is no history to explain. Try it with the bundled example:
-
-```bash
-uv run breakdown serve --tree breakdown/examples/cold_start_tree.yml
-```
-
-See [`docs/model.md`](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md) ("Reading cold-start output") before presenting results, and `knowledge/cold_start_design.md` for the full design.
-
-**Graduating from cold start.** The tree you build pre-data *is* the tree you fit once data exists — the Bayesian promise is literal. When real numbers start flowing:
-
-1. Swap the provider block (`type: none` → `local` / `cloud` / `warehouse`) and give each metric a real `source` (or `sql`). Nothing else in the tree changes.
-2. Your `priors` carry over untouched — the same declarations that were sampled directly in cold start become the Bayesian priors of the BSTS fit, and the data updates them into posteriors. What-if flips from prior draws to posterior draws automatically; RCA becomes available.
-3. `baseline` and `plausible` are ignored by fitted mode and stay in the YAML as a record of what you believed before the data arrived — worth keeping.
-
-Two things to plan for. Each node needs at least **10 whole periods at its grain** before it can be fitted — a monthly tree waits most of a year for its first fit, so author cold-start trees at the finest grain you'll actually measure (weekly for most funnels; edge priors are per-parent-unit and carry over, but per-period `baseline` values would need rescaling). And check where you stand at any point with the doctor's **fit readiness** report:
-
-```bash
-uv run breakdown doctor --tree my_tree.yml --start-date 2026-01-01 --end-date 2026-08-01
-```
-
-It reports every metric's whole-period count against the fit minimum (`signups: 30/10 whole day periods` … `churn_rate: 4/10 — not fittable yet`), so you can watch the tree graduate metric by metric.
-
----
-
-## API reference
-
-The **tree-scoped** routes below also answer at **`/trees/{tree_id}/…`** when the
-process serves [several trees](#serving-several-trees); the bare paths are
-aliases for the default tree. The process-wide routes have one form only — a
-`run_id` is already unique, and the index and the health probe are about the
-whole process rather than one tree.
-
-**Tree-scoped** (each also at `/trees/{tree_id}/…`):
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), per-metric `grains`/`kinds`/`data_through`, fitted models, per-metric `earliest_available` history discovery (UI bootstrap) |
-| `GET` | `/dag` | Full metric DAG (nodes + edges), each node carrying its whole definition. `sql` and `bind` come back `null` to a caller that presents no token when one is configured — see [Authentication](#authentication) |
-| `GET` | `/series` | Every metric's series at its native grain, `{name: {grain, dates, values}}` — one call, hydrates the UI's node cards. Mixed-grain trees have no shared date axis, so dates are per metric |
-| `GET` | `/metrics/{name}` | Metric definition, time series, posterior summary and fit diagnostics |
-| `GET` | `/metrics/{name}/query` | **The query behind a metric's numbers**, when the provider knows it — the provenance surface. Optional `dimension` for the sliced form |
-| `POST` | `/analyze/{name}` | Run Bayesian sampling for a metric |
-| `GET` | `/shapley/{name}` | Shapley attribution for a formula metric |
-| `POST` | `/rca/{name}` | Root cause analysis over the metric's ancestors |
-| `POST` | `/rca/{name}/slices` | Attribute one metric's gap across a declared dimension's values — the traverse-then-slice follow-up |
-| `POST` | `/simulate` | Do-operator what-if scenario (fitted posteriors, or declared beliefs on a cold-start tree) |
-
-**Process-wide:**
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/` | A one-line "the API is running" banner carrying no tree data. Open even under `BREAKDOWN_REQUIRE_AUTH` |
-| `GET` | `/health` | Always 200. `{"status": "ok", provider, metrics}`, or `{"status": "degraded", "error": …}` when the default tree can't serve. Liveness for orchestrators — the body, not the status code, carries degraded-ness. Open even under `BREAKDOWN_REQUIRE_AUTH` |
-| `GET` | `/trees` | Every tree: title, owner, metric count, `state` (`loaded` \| `not_loaded` \| `loading` \| `error`), plus `period`/`goal` where declared and `progress` for a loaded tree that has a goal. Reads parsed YAML only — never triggers a data load |
-| `POST` | `/trees/{id}/load` | Fetch one tree's data now, and return its updated index card |
-| `GET` | `/progress/{run_id}` | Live stage of an in-flight RCA or simulation started with that `run_id` |
-| `GET` | `/ui` | Interactive DAG visualization |
-| — | `/mcp` | [MCP server](#mcp-server-ai-assistants) for AI assistants (streamable HTTP). Gated by `BREAKDOWN_API_TOKEN` whenever one is set |
-
-### `GET /metrics/{name}/query`
-
-**Never ship a number the engine can't defend.** For most providers a reader
-could not see what was actually asked of the warehouse, which left every number
-unfalsifiable by exactly the person being asked to trust it. This route closes
-that hole: it returns the query behind a metric, so an analyst can check the
-number against the definition they think they have.
-
-| Param | Description |
-|-------|-------------|
-| `dimension` | *(optional)* Show the **sliced** query for one of the metric's declared `dimensions` instead of the plain one |
-
-```bash
-curl "http://localhost:9090/metrics/revenue/query"
-curl "http://localhost:9090/metrics/signups/query?dimension=region"
-```
-
-```json
-{
-  "metric": "revenue",
-  "dimension": null,
-  "provider": "dbt",
-  "sql": "SELECT DATE_TRUNC('day', ordered_at) AS date, SUM(order_total) AS value ...",
-  "dialect": "duckdb",
-  "executed": true,
-  "note": null
-}
-```
-
-- **`sql: null` is a real answer, not an error.** The `mock` provider synthesizes
-  its data, and the `local`/`cloud` semantic-layer providers hand a metric name
-  to someone else's planner and never see SQL. `note` says which case it is —
-  "we never see the query" and "no query is run" are different facts about how
-  much a reader can verify, and the response keeps them apart rather than
-  flattening both to *unavailable*.
-- **`executed`** distinguishes the statement that *ran* from the statement that
-  *would* run for the loaded window. A snapshot hit serves the number without
-  executing anything; the binding still determines it exactly, so the query is
-  real provenance either way — but you are told which, rather than left to
-  assume. `note` repeats it in words.
-- `warehouse` returns the author's own `sql`; `dbt` returns what it generated;
-  `SnapshotFetcher` delegates to whichever provider it wraps.
-- 404 for an unknown metric, or a `dimension` the metric doesn't declare.
-
-### `POST /analyze/{name}`
-
-Query parameters:
-
-| Param | Default | Description |
-|-------|---------|-------------|
-| `inference_method` | `nuts` | `nuts` (full MCMC) or `advi` (variational inference — faster, less accurate) |
-| `draws` | `500` | Posterior draws — but it buys different things per method. Under `nuts` it is draws **per chain** after `tune` discarded steps, so 500 × 4 chains = 2,000 draws, and more of them tighten the Monte-Carlo error. Under `advi` the optimization is a fixed 20,000 steps regardless, and this only sets how many samples are drawn **from the already-fitted approximation** — more is nearly free and does not make the answer more accurate. |
-| `tune` | `500` | Tuning steps (NUTS only) |
-| `chains` | `4` | Number of NUTS chains (NUTS only) |
-| `fit_end` | none | Exclusive date cutoff (`YYYY-MM-DD`): fit only on rows before it. Defaults to the full window; pass the analysis-window start to reproduce what RCA fits. |
-
-```bash
-# Full MCMC (use for post-mortem analysis)
-curl -X POST "http://localhost:9090/analyze/order_count?inference_method=nuts&draws=1000"
-
-# Fast variational inference (use for live incident triage)
-curl -X POST "http://localhost:9090/analyze/order_count?inference_method=advi"
-```
-
-### `GET /shapley/{name}`
-
-Returns how much of the target metric's gap between two time windows is attributable to each parent. Requires a `formula` on the metric definition.
-
-Query parameters:
-
-| Param | Description |
-|-------|-------------|
-| `analysis_start` | Start of the analysis window (`YYYY-MM-DD`) |
-| `analysis_end` | End of the analysis window (`YYYY-MM-DD`) |
-| `reference_start` | *(optional)* Start of the baseline window (`YYYY-MM-DD`) |
-| `reference_end` | *(optional)* End of the baseline window (`YYYY-MM-DD`) |
-
-Omit **both** reference dates (passing exactly one is a 422) and the engine
-defaults to the **matched adjacent block**: the window ending the day before
-`analysis_start`, 4× the analysis length (min 28 days, whole weeks when
-seasonality is in the target's scope), clamped to the loaded data. The
-response echoes the resolved `reference_window`/`analysis_window` and sets
-`reference_defaulted`. The reference is only the comparison baseline — the
-model always fits on all loaded history before `analysis_start` — see
-[docs/model.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md).
-
-Example response:
-
-```json
-{
-  "target": "revenue",
-  "formula": "order_count * average_order_value",
-  "grain": "day",
-  "effective_windows": {
-    "reference": {"start": "2024-01-01", "end": "2024-02-15", "n_periods": 46},
-    "analysis": {"start": "2024-02-16", "end": "2024-04-09", "n_periods": 54}
-  },
-  "baseline": 50000.0,
-  "actual": 42000.0,
-  "gap": -8000.0,
-  "attribution": {
-    "order_count": -6200.0,
-    "average_order_value": -1800.0
-  },
-  "decomposition": {
-    "order_count": {"means": -6100.0, "covariance_analysis": -80.0, "covariance_reference": 20.0},
-    "average_order_value": {"means": -1700.0, "covariance_analysis": -80.0, "covariance_reference": 20.0}
-  }
-}
-```
-
-`baseline` and `actual` are each the **mean of the formula evaluated period by period** (at the target's grain) over the reference and analysis windows respectively (so both windows' within-window co-movement of the parents is included); `gap = actual − baseline`. Each `attribution` value is the sum of three exact Shapley games, reported per parent in `decomposition`: `attribution = means + covariance_analysis − covariance_reference` (the window-means bridge plus the parent's share of each window's within-window co-movement term). The attributions are guaranteed to sum to `gap`. Windows are snapped to whole periods at the target's grain (`effective_windows`); a window with no whole period is a 422.
-
-### `POST /rca/{name}`
-
-Walks the ancestor DAG of `name` and attributes the change between a reference window and an analysis window to upstream metrics. Any probabilistic node in scope that hasn't been fit yet is fit on demand with ADVI and its trace is cached (a second call is much faster).
-
-Query parameters (`YYYY-MM-DD`): `analysis_start`, `analysis_end` (required),
-`reference_start`, `reference_end` (optional — omitting both uses the matched
-adjacent block, exactly as on `GET /shapley/{name}` above; the response carries
-`reference_defaulted`).
-
-```bash
-# explicit reference
-curl -X POST "http://localhost:9090/rca/revenue?reference_start=2024-01-01&reference_end=2024-02-15&analysis_start=2024-02-16&analysis_end=2024-04-09"
-# defaulted reference
-curl -X POST "http://localhost:9090/rca/revenue?analysis_start=2024-02-16&analysis_end=2024-04-09"
-```
-
-Trimmed response:
-
-```json
-{
-  "target": "revenue",
-  "reference_window": {"start": "2024-01-01", "end": "2024-02-15"},
-  "analysis_window": {"start": "2024-02-16", "end": "2024-04-09"},
-  "nodes": {
-    "revenue": {
-      "status": "ok", "status_reason": null, "grain": "day",
-      "effective_windows": {
-        "reference": {"start": "2024-01-01", "end": "2024-02-15", "n_periods": 46},
-        "analysis": {"start": "2024-02-16", "end": "2024-04-09", "n_periods": 54}
-      },
-      "baseline": 25000.0, "actual": 27000.0, "gap": 2000.0, "relative_change": 0.08,
-      "attribution_method": "shapley",
-      "ci_status": "ok",
-      "unexplained": 12.0,
-      "components": null,
-      "contributions": [
-        {"parent": "order_count", "estimate": 1600.0, "share_of_gap": 0.8,
-         "ci_95": [1450.0, 1740.0], "prob_same_direction": 1.0},
-        {"parent": "average_order_value", "estimate": 388.0, "share_of_gap": 0.19,
-         "ci_95": [210.0, 560.0], "prob_same_direction": 0.99}
-      ]
-    },
-    "order_count": {
-      "status": "ok", "grain": "day",
-      "effective_windows": {
-        "reference": {"start": "2024-01-01", "end": "2024-02-15", "n_periods": 46},
-        "analysis": {"start": "2024-02-16", "end": "2024-04-09", "n_periods": 54}
-      },
-      "baseline": 500.0, "actual": 540.0, "gap": 40.0, "relative_change": 0.08,
-      "attribution_method": "posterior",
-      "ci_status": "ok",
-      "unexplained": 1.4,
-      "components": {
-        "trend": {"estimate": 0.5, "ci_95": [-1.1, 2.2]},
-        "seasonal": {"estimate": 0.1, "ci_95": [-0.6, 0.8]}
-      },
-      "contributions": [
-        {"parent": "daily_sessions", "estimate": 38.0, "share_of_gap": 0.95,
-         "ci_95": [30.0, 46.0], "prob_same_direction": 0.99}
-      ]
-    }
-  },
-  "ranked_causes": [
-    {"metric": "order_count", "score": 0.8, "via": "revenue"},
-    {"metric": "daily_sessions", "score": 0.76, "via": "order_count"}
-  ]
-}
-```
-
-Per-node fields added by grain support: `grain` (the grain the node was analyzed at) and `effective_windows` (the whole periods the requested windows snapped to at that grain). Gaps are mean-per-period at each node's own grain, so compare nodes via `share_of_gap` and `ranked_causes` scores, not raw gaps, in mixed-grain trees.
-
-#### Per-node `status` — one bad node does not end the analysis
-
-Every node in scope carries a `status`. Anything other than `"ok"` means the
-node is reported **without attribution** while the rest of the tree comes back
-normally, with the reason in `status_reason` (`null` when the status is `"ok"`).
-Read `status` first and branch on it; every other key is always present, so a
-skipped node has the same shape as an attributed one.
-
-| `status` | What it means to you |
-|---|---|
-| `ok` | Attributed normally. |
-| `window_shorter_than_grain` | Your windows hold no whole period at this node's grain — e.g. a 3-day window on a monthly node. Nothing is wrong with the data; widen the window, or accept that this node can't speak to a change this short. |
-| `fit_failed` | The node's own model could not be fitted. Overwhelmingly this is **a series with no variance across the fit window** — a parent held at zero the whole time, which for a seasonal business is simply its off-season. A constant series cannot be normalized, so there is no coefficient to attribute with. |
-| `attribution_failed` | A formula node whose exact decomposition is not a finite number over these windows — in practice **a zero denominator** somewhere in the window. Note what survives: the node's own `baseline`, `actual` and `gap` are read off the data, not the model, so they are real and are still reported. Only the split across parents is missing. |
-
-`fit_failed` and `attribution_failed` exist because the alternative was worse:
-one unfittable node used to abort the entire tree analysis and return nothing at
-all. `status_reason` carries the engine's own diagnostic — for
-`attribution_failed` it names the offending parent series, the window, and the
-dates that are zero, so you can narrow the window past them or fix the series at
-the source.
-
-The **RCA target itself is the exception**: the whole response is about that
-node, so a failure there is raised as a 422 carrying the same diagnostic rather
-than buried in a status nobody would find useful.
-
-#### `ci_status`
-
-`ci_status` reports the health of a node's credible intervals, independently of
-`status`:
-
-| `ci_status` | Meaning |
-|---|---|
-| `ok` | Intervals computed normally. |
-| `degenerate_single_period` | A formula node whose windows snapped to one period. The block bootstrap would return identical replicates, so intervals are **withheld** rather than reported at a falsely-zero width. |
-| `posterior_only_single_period` | The same for a posterior node — coefficient uncertainty remains, but the window-sampling component is absent, so the interval is narrower than the truth. |
-| `nonfinite_bootstrap_replicates` | At least one interval on this node was computed from a **subset** of the bootstrap replicates, or withheld because too few survived. A resampled denominator can land on ~0 even when no single period is zero. **The point estimates are unaffected** — they are the exact Shapley values, never bootstrap means; only the intervals lost resolution. |
-
-**Two-level attribution (formula nodes).** Each formula-node contribution also carries a `decomposition` — `{"means": {estimate, ci_95}, "comovement": {estimate, ci_95}}` with `means + comovement = estimate` exactly per bootstrap replicate — and the node carries an `interaction` summary (the summed co-movement shift across parents, with its own CI). The UI's default **Headline** view is the classic price/volume/mix bridge built from these: one row per parent showing its means-bridge contribution, plus one explicit *co-movement shift* row, plus unexplained — rows total to the gap. The **Detailed** toggle expands each parent to its full split. The interaction is shown as its own labeled row rather than silently folded into the factors; for products it is exactly the parents' covariance delta, for other formulas the full within-window co-movement/Jensen shift.
-
-### Root cause analysis
-
-`POST /rca/{name}` combines the two attribution methods across a metric tree:
-
-- **Formula nodes** get `attribution_method: "shapley"` — exact symmetric per-day Shapley values (a window-means bridge plus each parent's share of the within-window co-movement term of each window, analysis added and reference subtracted), so shifts in the parents' within-window co-movement are attributed to parents. `unexplained` is only the target's own measurement noise around the formula — for an exact identity it is zero.
-- **Probabilistic nodes** get `attribution_method: "posterior"` — each contribution is the posterior over the parent's raw-scale coefficient (`beta_raw`) times the parent's window-over-window change. Lagged parents are compared over windows shifted back by the lag, and each lagged contribution reports `lag` and `parent_windows` — the parent's own shifted `{reference, analysis}` windows — so you can see (and reuse, e.g. for `POST /rca/{parent}/slices`) exactly which parent periods were examined. These nodes also report a `components` block: the fitted model's own trend and seasonal terms as window-over-window deltas with CIs, so they no longer hide inside `unexplained`. `components` carries only the terms the model actually contains — every fit has a local level, so `trend` is always there, but a node that declares no [`seasonality`](#seasonality) has no `seasonal` key at all rather than a 0.0 with a zero-width interval.
-
-Every contribution is reported as an `estimate` (mean), a 95% interval (`ci_95`), and `prob_same_direction` (mass on the dominant side of zero). The intervals combine coefficient uncertainty (probabilistic nodes) with **window-sampling uncertainty** — the window means themselves are resampled with a circular moving-block bootstrap (≤7-day blocks, jointly across metrics, seeded so responses are deterministic). This is what keeps a 3-day analysis window honest: its CIs are visibly wider than a 4-week window's.
-
-Unfitted probabilistic nodes in scope are fit with ADVI on demand — on data strictly before the analysis window — and cached, so the endpoint works without a prior `/analyze` call.
-
-`ranked_causes` is a documented heuristic: it propagates an influence score from the target up the ancestor tree, weighting each hop by the parent's `|share_of_gap|` (capped at 1) divided by the child's total gross parent movement — the sum of every parent's `|share_of_gap|`, floored at 1 so a decomposition that sums tidily is never penalized. That divisor is what stops a parent scoring full marks on a gap its siblings cancelled: two parents at +165% and −62% both rank *below* a lone parent cleanly explaining 80%. Each row carries `via`, the child it was reached through, so a score can be traced back to the hop that produced it; a node no hop ever reached is omitted rather than listed at zero (`nodes` remains the full inventory of what was in scope). Use it as a triage ordering, not as a probability.
-
-See [docs/model.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md) for how to read `components`, `unexplained`, and the bootstrap's assumptions.
-
-### `GET /progress/{run_id}` — live progress
-
-RCA and simulation can spend a minute or more fitting ancestor models. Pass any
-opaque `run_id` you like to `POST /rca/{name}` or `POST /simulate` and poll this
-endpoint while the request is in flight to see what the engine is actually doing:
-
-```bash
-curl -X POST "http://localhost:9090/rca/revenue?analysis_start=2024-04-03&analysis_end=2024-04-09&run_id=abc123" &
-curl -s "http://localhost:9090/progress/abc123"
-# {"stage":"fitting","metric":"order_count","current":1,"total":3}
-```
-
-Stages are `waiting` (queued behind another analysis), `resolving`, `fitting`
-(with `metric`, `current`, `total`), then `attributing` or `simulating`. An
-unknown or finished id returns `{"stage": null}` with a 200 — to a poller a
-finished run and a never-started one are the same answer.
-
-Progress is entirely optional: **omit `run_id` and nothing is tracked**, which is
-the default for every non-UI caller. It never affects the analysis or its result.
-
-### `POST /rca/{name}/slices`
-
-The traverse-then-slice follow-up: attribute one metric's window-over-window gap across a declared dimension's values. The reference dates are optional here too (same defaulting rule; the response carries `reference_defaulted`) — but when slicing a **lagged parent** surfaced by an RCA, pass its `parent_windows` explicitly: the default matches the metric's own timeline, not a lag-shifted one.
-
-```bash
-curl -X POST "http://localhost:9090/rca/signups/slices?dimension=region&reference_start=2024-02-05&reference_end=2024-03-03&analysis_start=2024-03-04&analysis_end=2024-03-10"
-```
-
-```json
-{
-  "metric": "signups", "dimension": "region", "grain": "day", "kind": "flow",
-  "effective_windows": {
-    "reference": {"start": "2024-02-05", "end": "2024-03-03", "n_periods": 28},
-    "analysis": {"start": "2024-03-04", "end": "2024-03-10", "n_periods": 7}
-  },
-  "baseline": 1240.0, "actual": 1130.0, "gap": -110.0,
-  "attribution_method": "slice_sum",
-  "slices": [
-    {"value": "emea", "baseline": 273.0, "actual": 178.0,
-     "contribution": -95.0, "share_of_gap": 0.86, "baseline_share": 0.22,
-     "excess": -70.8, "ci_95": [-84.1, -57.9], "prob_concentrated": 0.99,
-     "noise_level": false},
-    {"value": "__other__", "n_values": 2, "contribution": -9.0, "...": "..."}
-  ],
-  "reconciliation": {"mean_residual": 0.0, "max_abs_residual": 0.0,
-                     "residual_share_of_baseline": 0.0, "status": "ok"},
-  "ci_status": "ok", "caveats": []
-}
-```
-
-- `contribution` is the slice's own window-mean change; contributions sum exactly to the sliced gap (flows/stocks are sum identities over slices).
-- `excess = contribution − baseline_share × gap` is the **localization signal**: how much more of the gap the slice carries than its size predicts. Excesses sum to zero — concentration is a reallocation of the gap. `prob_concentrated` is the bootstrap probability the excess direction is real; `noise_level: true` rows should not be narrated as localized.
-- Rate metrics return `attribution_method: "slice_blend"`: each slice splits into `within` (its own rate moved) and `mix` (traffic shifted between slices), summing exactly to the blended gap, with the total composition effect in `mix_total`.
-- `reconciliation` compares the slices' sum (or weighted blend) against the metric's own series; `"discrepant"` means the dimension doesn't cleanly partition the metric — attributions are then approximate, and say so.
-- When slicing a **lagged parent** surfaced by an RCA, pass the parent's lag-shifted windows — its RCA contribution carries them as `parent_windows`; those are the periods that influenced the child.
-
-Sliced series are fetched from the provider on demand for just these windows and cached per (metric, dimension, window); nothing about slicing touches the startup data or the fits.
-
-**Both windows must lie inside the loaded data window.** Because slicing reads
-from the provider for whatever window you ask for, an out-of-range request is a
-422 naming the loaded window, checked **before any provider call**. Previously
-nothing bounded these dates beyond "they parse", so a typo could ask a warehouse
-for a 200-year scan — holding the tree's lock for the duration — and only then
-fail for having no data in it. If you need a window outside what is loaded,
-restart with a wider `--start-date`/`--end-date` for that tree.
-
-### `POST /simulate`
-
-Do-operator what-if: intervene on one or more metrics, propagate the change
-through the downstream subgraph per posterior draw, and report the steady-state
-effect with credible intervals. The scenario is a **JSON body**; the only query
-parameter is the optional `run_id`.
-
-| Body field | Type | Description |
-|---|---|---|
-| `baseline_start` | date | Start of the window defining "current normal". **Required** on a tree with data; **rejected** on a [cold-start tree](#cold-start-mode-what-if-with-no-data), where operating points come from each node's declared `baseline` instead |
-| `baseline_end` | date | End of that window. Same rule |
-| `interventions` | list | `{metric, mode, value}` — `mode` is `set` (absolute level), `delta` (absolute change), or `pct` (fractional change, `0.1` = +10%). One intervention per metric |
-| `assumptions` | list | `{source, target, effect: {kind, low, high}, id?, note?}` — a user-asserted effect on an edge the tree doesn't encode. `kind` is `relative` (scaled by the target's baseline) or `absolute` (the target's business units); `low`/`high` are read as the **central 90% interval** of a Normal |
-| `levers` | list | `{name, value?, unit?}` — display metadata only; levers have no dynamics of their own in v1 |
-
-A scenario needs **at least one** intervention or assumption, and at most **10**
-of the two combined — the source decomposition enumerates coalitions exactly as
-[formula attribution](#formula) does, and is capped for the same reason.
-
-`baseline_start`/`baseline_end` are the window the simulation measures *from*:
-each node's operating point is its mean over that window, at the node's own
-grain. It is not a fit window — coefficients come from posteriors fitted on all
-loaded history, or from declared priors on a cold-start tree.
-
-```bash
-curl -X POST "http://localhost:9090/simulate" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "baseline_start": "2024-03-13",
-    "baseline_end": "2024-04-09",
-    "interventions": [{"metric": "daily_sessions", "mode": "pct", "value": 0.10}]
-  }'
-```
-
-The response carries `mode` (`fitted` | `cold_start`), the resolved
-`baseline_window` (null in cold start), `n_draws`, `seed`, a `sources`
-decomposition (each intervention's and assumption's signed share, summing
-exactly to the point delta by Shapley efficiency), per-node results
-(`status` — `baseline` | `affected` | `intervened` — `baseline`, `simulated`,
-`delta` with `ci_95`, `relative_delta`, `prob_direction`, `fit_quality`,
-`extrapolation`, `contributions`), plus `warnings` and always-on `caveats`. The
-run is seeded, so identical calls are byte-identical.
-
-Pass an optional `run_id` query parameter to follow a long simulation with
-[`GET /progress/{run_id}`](#get-progressrun_id--live-progress), exactly as for
-RCA.
-
----
-
 ## MCP server (AI assistants)
 
 The server exposes the engine to AI assistants over [MCP](https://modelcontextprotocol.io) at `http://127.0.0.1:9090/mcp` (streamable HTTP; started automatically by `serve`). A chat assistant connected to it can answer "why was revenue down last week?" by running a real RCA — Shapley attributions, credible intervals, the honest `unexplained` remainder — instead of guessing, and "what if we raise marketing spend 10%?" with a posterior from the what-if engine.
@@ -1536,7 +596,7 @@ or from Claude Desktop via `claude_desktop_config.json` (stdio bridge):
 An exchange of this shape, against the bundled demo tree. **The figures are
 executed, not remembered:** every number below comes from a real `run_rca` on
 `breakdown/examples/jaffle_shop_tree.yml` over the windows named in it, and
-[`tests/test_readme.py`](https://github.com/PolycultureResearch/breakdown/blob/main/tests/test_readme.py)
+[`tests/test_docs_examples.py`](https://github.com/PolycultureResearch/breakdown/blob/main/tests/test_docs_examples.py)
 re-runs that analysis on every CI run and fails if any of them drifts. The
 narration is written to show how the `how_to_read` block is meant to be *used* —
 it illustrates a good answer rather than reproducing a captured one.
@@ -1653,6 +713,8 @@ breakdown/
     jaffle_shop_tree.yml   # The bundled default (mock) tree
 docs/
   model.md           # Model assumptions & how to interpret results — start here
+  yaml-reference.md  # Every field a tree may declare, and the rules on each
+  api-reference.md   # Every route the server answers, and what comes back
   ai-context/        # Architecture deep-dives (backend, frontend) for contributors
 knowledge/           # Product & design specs, roadmap, reference trees
 tests/
