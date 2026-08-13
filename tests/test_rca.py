@@ -1,8 +1,16 @@
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from breakdown.engine.rca import _block_bootstrap_indices, run_rca, shapley_attribution
+from breakdown.engine.rca import (
+    NonFiniteAttribution,
+    _block_bootstrap_indices,
+    _rank_causes,
+    run_rca,
+    shapley_attribution,
+)
 from breakdown.parser import Parser
 from tests.synthetic import generate_mock_data, win
 
@@ -249,9 +257,14 @@ metrics:
     data = generate_mock_data(n_days=100)  # starts 2024-01-01
 
     with pytest.raises(ValueError) as excinfo:
-        run_rca(parser.dag, data, {}, "order_count",
-                **win(("2024-01-01", "2024-02-15"), ("2024-02-16", "2024-03-14")),
-                advi_draws=100)
+        run_rca(
+            parser.dag,
+            data,
+            {},
+            "order_count",
+            **win(("2024-01-01", "2024-02-15"), ("2024-02-16", "2024-03-14")),
+            advi_draws=100,
+        )
     message = str(excinfo.value)
     assert "daily_sessions" in message
     assert "lag 5" in message
@@ -310,8 +323,13 @@ def test_reference_window_starting_before_data_raises():
     data = generate_mock_data(n_days=100)  # starts 2024-01-01
 
     with pytest.raises(ValueError, match="not fully covered by its data"):
-        run_rca(parser.dag, data, {}, "revenue",
-                **win(("2023-12-01", "2024-01-31"), ("2024-02-01", "2024-02-28")))
+        run_rca(
+            parser.dag,
+            data,
+            {},
+            "revenue",
+            **win(("2023-12-01", "2024-01-31"), ("2024-02-01", "2024-02-28")),
+        )
 
 
 def test_analysis_window_running_past_data_raises():
@@ -319,8 +337,13 @@ def test_analysis_window_running_past_data_raises():
     data = generate_mock_data(n_days=100)  # ends 2024-04-09
 
     with pytest.raises(ValueError, match="not fully covered by its data"):
-        run_rca(parser.dag, data, {}, "revenue",
-                **win(("2024-01-01", "2024-01-31"), ("2024-02-01", "2024-05-31")))
+        run_rca(
+            parser.dag,
+            data,
+            {},
+            "revenue",
+            **win(("2024-01-01", "2024-01-31"), ("2024-02-01", "2024-05-31")),
+        )
 
 
 def test_windows_fully_inside_the_data_are_accepted():
@@ -328,8 +351,13 @@ def test_windows_fully_inside_the_data_are_accepted():
     parser = Parser(_WINDOW_TREE)
     data = generate_mock_data(n_days=100)
 
-    result = run_rca(parser.dag, data, {}, "revenue",
-                     **win(("2024-01-01", "2024-01-31"), ("2024-02-01", "2024-02-28")))
+    result = run_rca(
+        parser.dag,
+        data,
+        {},
+        "revenue",
+        **win(("2024-01-01", "2024-01-31"), ("2024-02-01", "2024-02-28")),
+    )
     assert result["nodes"]["revenue"]["gap"] is not None
 
 
@@ -369,7 +397,9 @@ metrics:
     parser = Parser(yaml_content)
 
     result = shapley_attribution(
-        parser.dag, data, "revenue",
+        parser.dag,
+        data,
+        "revenue",
         **win(("2024-01-01", "2024-01-30"), ("2024-01-31", "2024-02-29")),
     )
 
@@ -430,10 +460,12 @@ metrics:
     ref = ("2024-01-01", "2024-02-29")
     # Both analyses start 2024-03-01 -> same fit_end -> the same cached fit,
     # so the only difference is window-sampling uncertainty.
-    r3 = run_rca(parser.dag, data, traces, "y",
-                 **win(ref, ("2024-03-01", "2024-03-03")), advi_draws=300)
-    r28 = run_rca(parser.dag, data, traces, "y",
-                  **win(ref, ("2024-03-01", "2024-03-28")), advi_draws=300)
+    r3 = run_rca(
+        parser.dag, data, traces, "y", **win(ref, ("2024-03-01", "2024-03-03")), advi_draws=300
+    )
+    r28 = run_rca(
+        parser.dag, data, traces, "y", **win(ref, ("2024-03-01", "2024-03-28")), advi_draws=300
+    )
 
     def ci_width(result):
         ci = result["nodes"]["y"]["contributions"][0]["ci_95"]
@@ -497,14 +529,16 @@ def test_rca_day_grain_golden_pinned():
 
 # --- Default reference window (the matched adjacent block) ---
 
+
 def test_rca_defaults_reference_to_matched_adjacent_block():
     """Omitting both reference dates uses the matched adjacent block; the
     response echoes the resolved window and flags it as defaulted. The 54-day
     analysis wants a 216-day reference, so it clamps to the loaded data."""
     dag, data = make_tree()
 
-    result = run_rca(dag, data, {}, "revenue",
-                     analysis_start=AN[0], analysis_end=AN[1], advi_draws=300)
+    result = run_rca(
+        dag, data, {}, "revenue", analysis_start=AN[0], analysis_end=AN[1], advi_draws=300
+    )
 
     assert result["reference_defaulted"] is True
     # Adjacent (ends the day before the analysis window), clamped to the
@@ -516,11 +550,17 @@ def test_rca_defaults_reference_to_matched_adjacent_block():
 def test_rca_explicit_reference_is_unchanged_and_not_flagged():
     dag, data = make_tree()
 
-    defaulted = run_rca(dag, data, {}, "revenue",
-                        analysis_start=AN[0], analysis_end=AN[1], advi_draws=300)
-    explicit = run_rca(dag, data, {}, "revenue", **win(
-        (defaulted["reference_window"]["start"], defaulted["reference_window"]["end"]),
-        AN), advi_draws=300)
+    defaulted = run_rca(
+        dag, data, {}, "revenue", analysis_start=AN[0], analysis_end=AN[1], advi_draws=300
+    )
+    explicit = run_rca(
+        dag,
+        data,
+        {},
+        "revenue",
+        **win((defaulted["reference_window"]["start"], defaulted["reference_window"]["end"]), AN),
+        advi_draws=300,
+    )
 
     assert explicit["reference_defaulted"] is False
     assert explicit["reference_window"] == defaulted["reference_window"]
@@ -530,22 +570,27 @@ def test_rca_explicit_reference_is_unchanged_and_not_flagged():
 def test_rca_single_reference_date_raises():
     dag, data = make_tree()
     with pytest.raises(ValueError, match="both reference_start and reference_end"):
-        run_rca(dag, data, {}, "revenue",
-                analysis_start=AN[0], analysis_end=AN[1], reference_start=REF[0])
+        run_rca(
+            dag,
+            data,
+            {},
+            "revenue",
+            analysis_start=AN[0],
+            analysis_end=AN[1],
+            reference_start=REF[0],
+        )
 
 
 def test_rca_analysis_at_data_start_raises():
     dag, data = make_tree()
     with pytest.raises(ValueError, match="beginning of the loaded data"):
-        run_rca(dag, data, {}, "revenue",
-                analysis_start="2024-01-01", analysis_end="2024-01-14")
+        run_rca(dag, data, {}, "revenue", analysis_start="2024-01-01", analysis_end="2024-01-14")
 
 
 def test_shapley_defaults_reference_and_echoes_windows():
     dag, data = make_tree()
 
-    result = shapley_attribution(dag, data, "revenue",
-                                 analysis_start=AN[0], analysis_end=AN[1])
+    result = shapley_attribution(dag, data, "revenue", analysis_start=AN[0], analysis_end=AN[1])
 
     assert result["reference_defaulted"] is True
     assert result["reference_window"]["end"] == "2024-02-15"
@@ -554,6 +599,7 @@ def test_shapley_defaults_reference_and_echoes_windows():
 
 
 # --- Fit-window provenance and seasonality warnings (1.10) ---
+
 
 def test_rca_surfaces_fit_window_and_seasonality_warnings():
     """Posterior nodes report what the model actually trained on (all loaded
@@ -585,7 +631,9 @@ metrics:
     # Fit = whole days from data start to the day before the analysis window,
     # regardless of the reference dates.
     assert oc["fit_window"] == {
-        "start": "2024-01-01", "end": "2024-02-15", "n_periods": 46,
+        "start": "2024-01-01",
+        "end": "2024-02-15",
+        "n_periods": 46,
     }
     # 46 fitted days < 2 x 60: the declared seasonality is unidentifiable
     # and the warning must reach the RCA response, not just the log.
@@ -595,3 +643,207 @@ metrics:
     assert result["nodes"]["revenue"]["fit_window"] is None
     assert result["nodes"]["daily_sessions"]["fit_window"] is None
     assert result["nodes"]["revenue"]["seasonality_warnings"] is None
+
+
+# --- Degrading instead of dying: zero denominators, unfittable nodes,
+# --- out-of-range windows (H1, M3, M7)
+
+_ZERO_DENOMINATOR_YAML = """
+metrics:
+  - name: sessions
+    source: dbt.metric.sessions
+  - name: order_count
+    source: dbt.metric.order_count
+  - name: revenue
+    source: dbt.metric.revenue
+  - name: aov
+    source: dbt.metric.aov
+    formula: "revenue / order_count"
+    parents: [revenue, order_count]
+  - name: revenue_per_session
+    source: dbt.metric.revenue_per_session
+    formula: "aov * sessions"
+    parents: [aov, sessions]
+"""
+
+_ZD_REF = ("2024-01-01", "2024-02-15")
+_ZD_AN = ("2024-02-16", "2024-03-14")
+_ZD_ZERO_DAY = "2024-02-20"  # inside the analysis window
+
+
+def _zero_denominator_data(n_days: int = 100) -> pd.DataFrame:
+    """One structural zero in a flow denominator, exactly as `_align_to_spine`
+    manufactures it when the source has an interior gap."""
+    rng = np.random.default_rng(7)
+    dates = pd.date_range("2024-01-01", periods=n_days)
+    order_count = 100.0 + rng.normal(0, 5.0, n_days)
+    revenue = 50.0 * order_count + rng.normal(0, 50.0, n_days)
+    sessions = 1000.0 + rng.normal(0, 20.0, n_days)
+    df = pd.DataFrame(
+        {
+            "date": dates,
+            "sessions": sessions,
+            "order_count": order_count,
+            "revenue": revenue,
+        }
+    )
+    i = df.index[df["date"] == pd.Timestamp(_ZD_ZERO_DAY)][0]
+    df.loc[i, "order_count"] = 0.0
+    df["aov"] = np.where(
+        df["order_count"] == 0.0, 0.0, df["revenue"] / df["order_count"].replace(0.0, 1.0)
+    )
+    df["revenue_per_session"] = df["aov"] * df["sessions"]
+    return df
+
+
+def test_zero_denominator_does_not_crash_and_names_the_parent():
+    """A zero denominator used to raise `KeyError: '__import__'` out of the
+    restricted `eval` — an unhandled 500. It now evaluates to inf, and the
+    decomposition refuses the non-finite result with a diagnostic naming the
+    parent series and the dates (a 422 at the API), rather than emitting NaNs
+    that Starlette's `allow_nan=False` encoder cannot serialize."""
+    parser = Parser(_ZERO_DENOMINATOR_YAML)
+    data = _zero_denominator_data()
+
+    with pytest.raises(NonFiniteAttribution) as excinfo:
+        shapley_attribution(parser.dag, data, "aov", **win(_ZD_REF, _ZD_AN))
+
+    message = str(excinfo.value)
+    assert isinstance(excinfo.value, ValueError)  # the API turns this into a 422
+    assert "order_count" in message
+    assert _ZD_ZERO_DAY in message
+    assert "analysis-window" in message
+
+
+def test_zero_denominator_node_degrades_and_the_rest_of_the_tree_reports():
+    """The failing node carries a status and its own numbers; every other node
+    is still attributed, and no score anywhere is non-finite."""
+    parser = Parser(_ZERO_DENOMINATOR_YAML)
+    data = _zero_denominator_data()
+
+    result = run_rca(parser.dag, data, {}, "revenue_per_session", **win(_ZD_REF, _ZD_AN))
+
+    aov = result["nodes"]["aov"]
+    assert aov["status"] == "attribution_failed"
+    assert "order_count" in aov["status_reason"] and _ZD_ZERO_DAY in aov["status_reason"]
+    # Its own movement is read off the data, not the model, so it still reports.
+    assert aov["baseline"] is not None and aov["gap"] is not None
+    assert aov["contributions"] == []
+
+    rps = result["nodes"]["revenue_per_session"]
+    assert rps["status"] == "ok"
+    assert {c["parent"] for c in rps["contributions"]} == {"aov", "sessions"}
+    assert all(result["nodes"][n]["status"] == "ok" for n in ("sessions", "revenue", "order_count"))
+
+    assert all(np.isfinite(r["score"]) for r in result["ranked_causes"])
+    # The property the encoder cares about: nothing non-finite anywhere.
+    json.dumps(result, allow_nan=False)
+
+
+def test_zero_denominator_on_the_target_itself_raises():
+    """The target's decomposition is the whole point of the request — an empty
+    status there is no answer, so it raises (422) with the diagnostic."""
+    parser = Parser(_ZERO_DENOMINATOR_YAML)
+    data = _zero_denominator_data()
+
+    with pytest.raises(NonFiniteAttribution, match="order_count"):
+        run_rca(parser.dag, data, {}, "aov", **win(_ZD_REF, _ZD_AN))
+
+
+def test_rank_causes_ignores_a_non_finite_share():
+    """`min(abs(nan), 1.0)` is nan — every comparison against nan is false, so
+    the clamp let it through and one node's NaN share poisoned the score of
+    every ancestor above it. An undefined share weighs nothing."""
+    parser = Parser(JAFFLE_YAML)
+    scope = {"revenue", "order_count", "average_order_value", "daily_sessions"}
+    nodes_out = {
+        "revenue": {
+            "contributions": [
+                {"parent": "order_count", "share_of_gap": float("nan")},
+                {"parent": "average_order_value", "share_of_gap": 0.4},
+            ]
+        },
+        "order_count": {"contributions": [{"parent": "daily_sessions", "share_of_gap": 0.5}]},
+        "average_order_value": {"contributions": []},
+        "daily_sessions": {"contributions": []},
+    }
+
+    ranked = _rank_causes(parser.dag, "revenue", scope, nodes_out)
+
+    assert all(np.isfinite(r["score"]) for r in ranked)
+    scores = {r["metric"]: r["score"] for r in ranked}
+    assert scores["order_count"] == 0.0  # nan share -> no evidence -> no weight
+    assert scores["daily_sessions"] == 0.0  # and nothing propagates above it
+    assert scores["average_order_value"] == pytest.approx(0.4)
+
+
+_ZERO_VARIANCE_YAML = """
+metrics:
+  - name: leads
+    source: dbt.metric.leads
+  - name: signups
+    source: dbt.metric.signups
+    parents: [leads]
+  - name: price
+    source: dbt.metric.price
+  - name: revenue
+    source: dbt.metric.revenue
+    formula: "signups * price"
+    parents: [signups, price]
+"""
+
+
+def test_zero_variance_parent_leaves_the_rest_of_the_tree_intact():
+    """A parent held at zero for the whole fit window cannot be normalized, so
+    `fit_metric` raises. That used to abort the entire RCA and return nothing;
+    the node is now reported with a `fit_failed` status and everything else is
+    still attributed."""
+    rng = np.random.default_rng(5)
+    n = 100
+    dates = pd.date_range("2024-01-01", periods=n)
+    data = pd.DataFrame(
+        {
+            "date": dates,
+            "leads": np.zeros(n),  # the seasonal business's default state
+            "signups": 40.0 + rng.normal(0, 3.0, n),
+            "price": 20.0 + rng.normal(0, 1.0, n),
+        }
+    )
+    data["revenue"] = data["signups"] * data["price"]
+    parser = Parser(_ZERO_VARIANCE_YAML)
+    traces = {}
+
+    result = run_rca(parser.dag, data, traces, "revenue", **win(REF, AN), advi_draws=300)
+
+    signups = result["nodes"]["signups"]
+    assert signups["status"] == "fit_failed"
+    assert "zero variance" in signups["status_reason"]
+    assert signups["gap"] is not None and signups["contributions"] == []
+    assert ("signups", AN[0]) not in traces
+
+    assert result["nodes"]["revenue"]["status"] == "ok"
+    assert len(result["nodes"]["revenue"]["contributions"]) == 2
+    assert result["nodes"]["leads"]["status"] == "ok"
+    assert result["nodes"]["price"]["status"] == "ok"
+    json.dumps(result, allow_nan=False)
+
+
+def test_out_of_range_window_is_refused_before_any_fit():
+    """Coverage is validated for the whole scope before the fit loop: an
+    out-of-range window used to pay for an ADVI fit of every ancestor —
+    minutes, holding the caller's lock, leaving a cached trace each — and only
+    then 422. The empty trace cache is the observable property."""
+    dag, data = make_tree()  # data ends 2024-04-09
+    traces = {}
+
+    with pytest.raises(ValueError, match="not fully covered by its data"):
+        run_rca(
+            dag,
+            data,
+            traces,
+            "revenue",
+            **win(("2024-01-01", "2024-01-31"), ("2024-02-01", "2024-05-31")),
+            advi_draws=300,
+        )
+
+    assert traces == {}

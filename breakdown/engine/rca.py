@@ -31,6 +31,19 @@ The `ranked_causes` list is a documented **heuristic**: it propagates an
 influence score from the target up the ancestor tree, weighting each hop by the
 parent's share of its child's gap (clamped to [0, 1]). It is meant as a triage
 ordering, not a rigorous multi-hop uncertainty propagation.
+
+**One bad node does not end the analysis.** Every node in scope carries a
+`status`; anything other than `"ok"` reports the node without attribution and
+lets the rest of the tree through, with the reason in `status_reason`:
+
+- `"window_shorter_than_grain"` — the windows hold no whole period at the
+  node's grain;
+- `"fit_failed"` — the node's own BSTS fit raised (a parent held flat for the
+  whole fit window has zero variance and cannot be normalized);
+- `"attribution_failed"` — the node's formula does not produce a finite value
+  over these windows (a zero denominator). The exception is the RCA *target*:
+  the whole response is about that node, so its failure is raised rather than
+  buried in a status.
 """
 
 from typing import Any, Dict, Optional, Tuple
@@ -58,6 +71,24 @@ from breakdown.grains import (
 # Bootstrap replicates per window; fixed so contribution CIs are comparable
 # across nodes and runs.
 _N_BOOT = 500
+
+# Surviving replicates required before a bootstrap interval is reported at all
+# (same threshold and posture as `slices._excess_fields`).
+_MIN_CI_REPLICATES = 100
+
+# Dates named in a diagnostic before it truncates, as `_align_to_spine` does.
+_MAX_SHOWN_DATES = 5
+
+
+class NonFiniteAttribution(ValueError):
+    """A formula node's decomposition is not a finite number over these windows.
+
+    Its own subclass rather than a bare `ValueError` so `run_rca` can degrade
+    *this* condition to a per-node status without also swallowing the unrelated
+    `ValueError`s the same call can raise (an over-wide parent set, a window
+    that misses the data). A `ValueError` still, so the API keeps turning it
+    into a 422 carrying the message.
+    """
 
 
 def _reference_alignment(dag: nx.DiGraph, target: str) -> Tuple[bool, str]:
@@ -288,6 +319,105 @@ def _lagged_windows(snapped_ref, snapped_an, lag: int, grain: str) -> Dict[str, 
     return {"reference": shifted(snapped_ref), "analysis": shifted(snapped_an)}
 
 
+def _node_out(**fields) -> Dict[str, Any]:
+    """One node's RCA record with every key present.
+
+    Callers override what they know; everything else stays null. A node that
+    was skipped or failed answers the same shape as one that was attributed —
+    consumers (the UI, the MCP compaction) branch on `status`, never on which
+    keys happen to exist.
+    """
+    record: Dict[str, Any] = {
+        "status": "ok",
+        "status_reason": None,
+        "grain": None,
+        "effective_windows": None,
+        "baseline": None,
+        "actual": None,
+        "gap": None,
+        "relative_change": None,
+        "attribution_method": None,
+        "inference_method": None,
+        "fit_quality": None,
+        "sign_warnings": None,
+        "fit_window": None,
+        "seasonality_warnings": None,
+        "ci_status": None,
+        "unexplained": None,
+        "components": None,
+        "interaction": None,
+        "contributions": [],
+    }
+    record.update(fields)
+    return record
+
+
+def _nonfinite_diagnosis(
+    frame: pd.DataFrame,
+    target: str,
+    formula: str,
+    grain: str,
+    parents,
+    lags: Dict[str, int],
+    windows,
+    baseline: float,
+    actual: float,
+    attribution: Dict[str, float],
+) -> str:
+    """Say *why* a formula decomposition came out non-finite, in the terms the
+    analyst can act on: which parent series holds zeros (or non-finite values),
+    in which window, and on which dates.
+
+    The alternative — emitting the NaN — reaches Starlette's `allow_nan=False`
+    encoder as an unhandled 500 with no diagnostic at all, and over MCP turns
+    every number in the node into `null` (the same failure `slices.py` refuses
+    for its excess replicates). A zero is only fatal as a denominator, and
+    deciding which parent *is* the denominator would mean interpreting the
+    formula, so every zero-or-non-finite parent series is named and the reader
+    picks; that is still far more than the caller gets today.
+
+    `windows` is `(label, first_start, last_start)` per window, at `grain`.
+    """
+    clauses = []
+    for p in parents:
+        lag = lags.get(p, 0)
+        for label, first_start, last_start in windows:
+            mask = (frame["date"] >= shift_periods(first_start, -lag, grain)) & (
+                frame["date"] <= shift_periods(last_start, -lag, grain)
+            )
+            sub = frame.loc[mask, ["date", p]]
+            vals = sub[p].to_numpy(dtype=float)
+            bad = (vals == 0.0) | ~np.isfinite(vals)
+            if not bad.any():
+                continue
+            dates = [str(d.date()) for d in sub.loc[bad, "date"]]
+            shown = ", ".join(dates[:_MAX_SHOWN_DATES])
+            if len(dates) > _MAX_SHOWN_DATES:
+                shown += ", …"
+            via = f" (read at lag {lag})" if lag else ""
+            clauses.append(
+                f"parent '{p}'{via} is zero or non-finite on {len(dates)} of "
+                f"{len(vals)} {label}-window {grain}(s) ({shown})"
+            )
+
+    detail = (
+        "; ".join(clauses)
+        if clauses
+        else (
+            "no parent series holds a zero or a non-finite value, so the formula "
+            "itself overflows or cancels to a non-finite value over these windows"
+        )
+    )
+    bad_parents = sorted(p for p, v in attribution.items() if not np.isfinite(v))
+    bad_note = f", non-finite attribution for {bad_parents}" if bad_parents else ""
+    return (
+        f"Formula attribution for '{target}' ('{formula}') is not a finite number "
+        f"(baseline={baseline}, actual={actual}{bad_note}): {detail}. A period "
+        "whose denominator is zero has no finite decomposition — narrow the "
+        "window to exclude those periods, or fix the series at the source."
+    )
+
+
 def shapley_attribution(
     dag: nx.DiGraph,
     data: pd.DataFrame,
@@ -384,9 +514,9 @@ def shapley_attribution(
     # bridge, plus each parent's share of the within-window co-movement term
     # (mean_w f(daily) - f(window means)) of each window. Windows may have
     # different lengths — no per-day pairing is ever needed.
-    phi_means = compute_shapley(defn.formula, parents, ref_means, an_means)
-    phi_cov_an = compute_shapley(defn.formula, parents, an_means, an_daily)
-    phi_cov_ref = compute_shapley(defn.formula, parents, ref_means, ref_daily)
+    phi_means = compute_shapley(defn.formula, parents, ref_means, an_means, node=target)
+    phi_cov_an = compute_shapley(defn.formula, parents, an_means, an_daily, node=target)
+    phi_cov_ref = compute_shapley(defn.formula, parents, ref_means, ref_daily, node=target)
 
     attribution: Dict[str, float] = {}
     decomposition: Dict[str, Dict[str, float]] = {}
@@ -400,6 +530,30 @@ def shapley_attribution(
             "covariance_analysis": cov_an_part,
             "covariance_reference": cov_ref_part,
         }
+
+    # A non-finite number here is not an answer, and every field downstream
+    # (gap, shares, CIs, unexplained, every ranked-cause score) inherits it.
+    # Refuse it with a diagnostic instead — the API turns this into a 422
+    # carrying the message.
+    if not (
+        np.isfinite(baseline)
+        and np.isfinite(actual)
+        and all(np.isfinite(v) for v in attribution.values())
+    ):
+        raise NonFiniteAttribution(
+            _nonfinite_diagnosis(
+                frame,
+                target,
+                defn.formula,
+                grain,
+                parents,
+                defn.lags,
+                (("reference", ref_start, ref_end), ("analysis", an_start, an_end)),
+                baseline,
+                actual,
+                attribution,
+            )
+        )
 
     result = {
         "target": target,
@@ -472,6 +626,27 @@ def run_rca(
 
     nodes_in_scope = nx.ancestors(dag, target) | {target}
 
+    # Resolve every node's grain frame and snapped windows once, and validate
+    # coverage here — *before* any fitting. Coverage used to be checked per
+    # node in the attribution loop below, which runs after the fits: a window
+    # outside the loaded data therefore paid for an ADVI fit of every ancestor
+    # (minutes, holding the caller's lock, leaving a cached trace each) and
+    # only then 422'd. A window that holds no whole period at a node's grain is
+    # *not* a coverage failure — that node is skipped here and reported with a
+    # status below, exactly as before.
+    scoped: Dict[str, Tuple[str, pd.DataFrame, Any, Any]] = {}
+    for node in sorted(nodes_in_scope):
+        defn = dag.nodes[node]["definition"]
+        grain = fit_grain(dag, node)
+        frame = data.fit_frame(node, list(dag.predecessors(node)), grain)
+        snapped_ref = snap_window(reference_start, reference_end, grain)
+        snapped_an = snap_window(analysis_start, analysis_end, grain)
+        if snapped_ref is None or snapped_an is None:
+            scoped[node] = (grain, frame, None, None)
+            continue
+        _validate_coverage(frame, node, grain, snapped_ref, snapped_an, defn.lags)
+        scoped[node] = (grain, frame, snapped_ref, snapped_an)
+
     # Fit any probabilistic (non-formula, non-root) node in scope that lacks a
     # cached trace for this analysis window. Formula nodes and roots need no
     # fit; nodes whose windows hold no whole period at their grain are skipped
@@ -487,25 +662,31 @@ def run_rca(
         defn = dag.nodes[node]["definition"]
         parents = list(dag.predecessors(node))
         if parents and not defn.formula and (node, analysis_start) not in traces:
-            g = fit_grain(dag, node)
-            if (
-                snap_window(reference_start, reference_end, g) is None
-                or snap_window(analysis_start, analysis_end, g) is None
-            ):
+            if scoped[node][2] is None:
                 continue
             to_fit.append(node)
 
+    # A node whose own fit raises is recorded and skipped, not propagated: one
+    # unfittable node (a parent held flat all fit window has zero variance and
+    # cannot be normalized — the seasonal business whose default state is zero)
+    # used to abort the whole tree analysis and return nothing. The `try` wraps
+    # the single `fit_metric` call and nothing else, so unrelated failures
+    # elsewhere in the loop still surface.
+    fit_failures: Dict[str, str] = {}
     for i, node in enumerate(to_fit, 1):
         _report(progress, stage="fitting", metric=node, current=i, total=len(to_fit))
-        traces[(node, analysis_start)] = fit_metric(
-            dag,
-            data,
-            node,
-            draws=advi_draws,
-            inference_method="advi",
-            fit_end=analysis_start,
-            random_seed=0,
-        )
+        try:
+            traces[(node, analysis_start)] = fit_metric(
+                dag,
+                data,
+                node,
+                draws=advi_draws,
+                inference_method="advi",
+                fit_end=analysis_start,
+                random_seed=0,
+            )
+        except ValueError as e:
+            fit_failures[node] = str(e)
 
     _report(progress, stage="attributing", total=len(to_fit))
 
@@ -515,46 +696,44 @@ def run_rca(
     for node in sorted(nodes_in_scope):
         defn = dag.nodes[node]["definition"]
         parents = list(dag.predecessors(node))
-        grain = fit_grain(dag, node)
-        frame = data.fit_frame(node, parents, grain)
+        # Grain frame, snapped windows and coverage were all resolved above.
+        grain, frame, snapped_ref, snapped_an = scoped[node]
 
         # Windows are interpreted per node at its grain: only whole periods
         # fully inside the requested [start, end] count. A window too short
         # for the grain reports a status instead of failing the whole RCA.
-        snapped_ref = snap_window(reference_start, reference_end, grain)
-        snapped_an = snap_window(analysis_start, analysis_end, grain)
         if snapped_ref is None or snapped_an is None:
-            nodes_out[node] = {
-                "status": "window_shorter_than_grain",
-                "grain": grain,
-                "effective_windows": None,
-                "baseline": None,
-                "actual": None,
-                "gap": None,
-                "relative_change": None,
-                "attribution_method": None,
-                "inference_method": None,
-                "fit_quality": None,
-                "sign_warnings": None,
-                "fit_window": None,
-                "seasonality_warnings": None,
-                "ci_status": None,
-                "unexplained": None,
-                "components": None,
-                "interaction": None,
-                "contributions": [],
-            }
+            nodes_out[node] = _node_out(status="window_shorter_than_grain", grain=grain)
             continue
-        _validate_coverage(frame, node, grain, snapped_ref, snapped_an, defn.lags)
         ref_start, ref_end = snapped_ref.first_start, snapped_ref.last_start
         an_start, an_end = snapped_an.first_start, snapped_an.last_start
         single_period = snapped_ref.n_periods == 1 or snapped_an.n_periods == 1
         block = BOOT_BLOCK[grain]
 
+        effective_windows = {
+            "reference": _window_info(snapped_ref),
+            "analysis": _window_info(snapped_an),
+        }
         baseline = window_mean(frame, node, ref_start, ref_end)
         actual = window_mean(frame, node, an_start, an_end)
         gap = actual - baseline
         relative_change = gap / baseline if abs(baseline) >= 1e-12 else None
+
+        # An unfittable node still reports its own movement — baseline, actual
+        # and gap are read off the data, not the model. Only the attribution is
+        # missing, and only for this node.
+        if node in fit_failures:
+            nodes_out[node] = _node_out(
+                status="fit_failed",
+                status_reason=fit_failures[node],
+                grain=grain,
+                effective_windows=effective_windows,
+                baseline=baseline,
+                actual=actual,
+                gap=gap,
+                relative_change=relative_change,
+            )
+            continue
 
         contributions = []
         components = None
@@ -570,15 +749,36 @@ def run_rca(
             ci_status = None
         elif defn.formula:
             attribution_method = "shapley"
-            sh = shapley_attribution(
-                dag,
-                data,
-                node,
-                analysis_start=analysis_start,
-                analysis_end=analysis_end,
-                reference_start=reference_start,
-                reference_end=reference_end,
-            )
+            try:
+                sh = shapley_attribution(
+                    dag,
+                    data,
+                    node,
+                    analysis_start=analysis_start,
+                    analysis_end=analysis_end,
+                    reference_start=reference_start,
+                    reference_end=reference_end,
+                )
+            except NonFiniteAttribution as e:
+                # One node's zero denominator is not the tree's problem — every
+                # other node still reports, with this one carrying the reason.
+                # The target is the exception: the whole response is about that
+                # node, so an empty answer for it is no answer at all; raise and
+                # let the caller (422 over HTTP) show the diagnostic.
+                if node == target:
+                    raise
+                nodes_out[node] = _node_out(
+                    status="attribution_failed",
+                    status_reason=str(e),
+                    grain=grain,
+                    effective_windows=effective_windows,
+                    baseline=baseline,
+                    actual=actual,
+                    gap=gap,
+                    relative_change=relative_change,
+                    attribution_method=attribution_method,
+                )
+                continue
 
             # Bootstrap the windows jointly across parents (one set of day
             # indices per replicate) to preserve cross-metric correlation, then
@@ -612,18 +812,22 @@ def run_rca(
             boot_ref_means = {p: ref_vals[p][ref_idx].mean(axis=1) for p in parents}
             boot_an_means = {p: an_vals[p][an_idx].mean(axis=1) for p in parents}
 
-            phi_means = compute_shapley(defn.formula, parents, boot_ref_means, boot_an_means)
+            phi_means = compute_shapley(
+                defn.formula, parents, boot_ref_means, boot_an_means, node=node
+            )
             phi_cov_an = compute_shapley(
                 defn.formula,
                 parents,
                 {p: np.repeat(boot_an_means[p], n_an) for p in parents},
                 {p: an_vals[p][an_idx].reshape(-1) for p in parents},
+                node=node,
             )
             phi_cov_ref = compute_shapley(
                 defn.formula,
                 parents,
                 {p: np.repeat(boot_ref_means[p], n_ref) for p in parents},
                 {p: ref_vals[p][ref_idx].reshape(-1) for p in parents},
+                node=node,
             )
 
             # The published point is the **exact** Shapley value; the bootstrap
@@ -642,16 +846,40 @@ def run_rca(
             # A single-period window degenerates the block bootstrap to
             # identical replicates; report no interval rather than a
             # falsely-zero-width one.
+            #
+            # Individual replicates can also come out non-finite where the
+            # exact decomposition did not — a resampled denominator mean can
+            # land on ~0 even when no single period is zero. NaN propagates
+            # through `np.percentile` into Starlette's `allow_nan=False`
+            # encoder as an unhandled 500 (and into `null`s over MCP), so drop
+            # those replicates and report on what survives, withholding the
+            # interval entirely if too few do — the same posture as
+            # `slices._excess_fields` and as `single_period`.
+            withheld_nonfinite = False
+
+            def _finite(samples: np.ndarray) -> Optional[np.ndarray]:
+                nonlocal withheld_nonfinite
+                finite = samples[np.isfinite(samples)]
+                if finite.size < _MIN_CI_REPLICATES:
+                    withheld_nonfinite = True
+                    return None
+                if finite.size < samples.size:
+                    withheld_nonfinite = True
+                return finite
+
+            def _ci(samples: np.ndarray) -> Optional[list]:
+                if single_period:
+                    return None
+                finite = _finite(samples)
+                if finite is None:
+                    return None
+                return [
+                    float(np.percentile(finite, 2.5)),
+                    float(np.percentile(finite, 97.5)),
+                ]
+
             def _summary(point: float, samples: np.ndarray) -> Dict[str, Any]:
-                return {
-                    "estimate": float(point),
-                    "ci_95": None
-                    if single_period
-                    else [
-                        float(np.percentile(samples, 2.5)),
-                        float(np.percentile(samples, 97.5)),
-                    ],
-                }
+                return {"estimate": float(point), "ci_95": _ci(samples)}
 
             interaction_b = np.zeros(_N_BOOT)
             interaction_exact = 0.0
@@ -672,19 +900,15 @@ def run_rca(
                 estimate = float(sh["attribution"][p])
                 interaction_exact += comovement_exact
 
+                phi_b_finite = None if single_period else _finite(phi_b)
                 contribution = {
                     "parent": p,
                     "estimate": estimate,
                     "share_of_gap": (estimate / gap) if abs(gap) >= 1e-12 else None,
-                    "ci_95": None
-                    if single_period
-                    else [
-                        float(np.percentile(phi_b, 2.5)),
-                        float(np.percentile(phi_b, 97.5)),
-                    ],
+                    "ci_95": _ci(phi_b),
                     "prob_same_direction": None
-                    if single_period
-                    else float(max((phi_b > 0).mean(), (phi_b < 0).mean())),
+                    if phi_b_finite is None
+                    else float(max((phi_b_finite > 0).mean(), (phi_b_finite < 0).mean())),
                     # Two-level view: the window-means bridge part and the
                     # co-movement (covariance/Jensen) shift part. They sum to
                     # `estimate` exactly — as exact values, not just in
@@ -708,7 +932,15 @@ def run_rca(
             # already *inside* each contribution's `estimate` — it is a
             # readout of the same quantity, never a term to add on top.
             interaction = _summary(interaction_exact, interaction_b)
-            ci_status = "degenerate_single_period" if single_period else "ok"
+            # `nonfinite_bootstrap_replicates`: at least one interval on this
+            # node was computed from a subset of the replicates, or withheld
+            # because too few survived. The point estimates are unaffected —
+            # they are the exact Shapley values, never bootstrap means.
+            ci_status = (
+                "degenerate_single_period"
+                if single_period
+                else ("nonfinite_bootstrap_replicates" if withheld_nonfinite else "ok")
+            )
             unexplained = gap - sh["gap"]
         else:
             attribution_method = "posterior"
@@ -830,29 +1062,26 @@ def run_rca(
             # component of the CI is absent.
             ci_status = "posterior_only_single_period" if single_period else "ok"
 
-        nodes_out[node] = {
-            "status": "ok",
-            "grain": grain,
-            "effective_windows": {
-                "reference": _window_info(snapped_ref),
-                "analysis": _window_info(snapped_an),
-            },
-            "baseline": baseline,
-            "actual": actual,
-            "gap": gap,
-            "relative_change": relative_change,
-            "attribution_method": attribution_method,
-            "inference_method": inference_method,
-            "fit_quality": fit_quality,
-            "sign_warnings": sign_warnings,
-            "fit_window": fit_window,
-            "seasonality_warnings": seasonality_warnings,
-            "ci_status": ci_status,
-            "unexplained": unexplained,
-            "components": components,
-            "interaction": interaction,
-            "contributions": contributions,
-        }
+        nodes_out[node] = _node_out(
+            status="ok",
+            grain=grain,
+            effective_windows=effective_windows,
+            baseline=baseline,
+            actual=actual,
+            gap=gap,
+            relative_change=relative_change,
+            attribution_method=attribution_method,
+            inference_method=inference_method,
+            fit_quality=fit_quality,
+            sign_warnings=sign_warnings,
+            fit_window=fit_window,
+            seasonality_warnings=seasonality_warnings,
+            ci_status=ci_status,
+            unexplained=unexplained,
+            components=components,
+            interaction=interaction,
+            contributions=contributions,
+        )
 
     return {
         "target": target,
@@ -883,7 +1112,12 @@ def _rank_causes(dag, target, nodes_in_scope, nodes_out):
             if parent not in score:
                 continue
             share = contrib["share_of_gap"]
-            weight = 0.0 if share is None else min(abs(share), 1.0)
+            # A non-finite share slips straight through `min(abs(share), 1.0)`
+            # (NaN compares false against everything), and one NaN term poisons
+            # the score of every ancestor above it — the whole ranking, from one
+            # node. An undefined share carries no evidence about influence, so
+            # it weighs nothing, exactly like the `None` case.
+            weight = 0.0 if share is None or not np.isfinite(share) else min(abs(share), 1.0)
             term = score[child] * weight
             score[parent] += term
             if term > best_term[parent]:

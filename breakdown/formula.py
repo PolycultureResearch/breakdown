@@ -46,5 +46,23 @@ def referenced_names(formula: str) -> Set[str]:
 
 
 def eval_formula(formula: str, values: Dict[str, np.ndarray]) -> np.ndarray:
+    """Evaluate a validated formula over per-metric arrays.
+
+    A zero denominator yields numpy's own `inf`/`nan`; callers decide what a
+    non-finite value means for them (`shapley_attribution` refuses to attribute
+    one, naming the offending series).
+
+    The `errstate` block is load-bearing, not cosmetic. numpy reports
+    divide-by-zero and invalid-value conditions through Python's *warnings*
+    machinery, which resolves `__import__` from the **calling frame's globals**
+    — and those globals are deliberately `{"__builtins__": {}}` here, which is
+    what makes `eval` safe alongside the AST allow-list above. So the very
+    first zero denominator used to die with `KeyError: '__import__'` instead of
+    producing `inf`. Silencing the conditions means that path is never entered.
+    Do **not** "fix" a future recurrence by putting `__import__` (or any other
+    builtin) back into the eval globals — that reopens the sandbox. Keep the
+    allow-list and the empty builtins exactly as they are.
+    """
     validate_formula(formula)
-    return eval(formula, {"__builtins__": {}}, values)  # noqa: S307
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore", under="ignore"):
+        return eval(formula, {"__builtins__": {}}, values)  # noqa: S307

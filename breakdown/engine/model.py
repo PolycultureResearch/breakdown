@@ -66,6 +66,13 @@ class FitResult:
     fit_end: Optional[str] = None  # exclusive upper date bound of the fit; None = full window
     grain: str = "day"  # the grain the fit ran at (the node's own)
     diagnostics: Dict[str, Any] = field(default_factory=dict)  # populated by T8
+    # Memoized JSON-safe `az.summary` of `trace`, filled in on first request by
+    # the API's `_fit_summary`. The trace is immutable once fitted, so its
+    # summary is too. Declared here rather than attached ad hoc from outside:
+    # summarizing an 830-day trace costs ~1.1s, so a `slots=True` added here
+    # later would silently turn the memo off and put that second back on every
+    # `GET /metrics/{name}` — a defect no test would name.
+    summary_json: Optional[Dict[str, Any]] = None
 
 
 def scale_prior_params(distribution: str, params: Dict[str, Any], scale: float) -> Dict[str, Any]:
@@ -100,11 +107,27 @@ def scale_prior_params(distribution: str, params: Dict[str, Any], scale: float) 
 _PRIOR_DISTRIBUTIONS = frozenset({"Normal", "HalfNormal", "Exponential", "LogNormal"})
 
 
+#: Most parents a formula node may have and still be attributed exactly.
+#:
+#: The enumeration below is O(2^n) and RCA runs it six times per formula node
+#: (three exact games, three over the bootstrap replicates), all while holding
+#: the caller's per-tree lock — so the cost doubles per parent and serializes
+#: every other request behind it. End to end through `run_rca` on a developer
+#: laptop: 10 parents ~3.5s, 12 ~20s, 14 ~80s.
+#:
+#: 10 matches `_MAX_SOURCES` in `breakdown.engine.simulate`, which caps the
+#: identical enumeration over scenario sources. Refusing is deliberate: a
+#: sampled or truncated Shapley value is a *different number*, and this project
+#: does not substitute one quietly for the one the author asked for.
+_MAX_SHAPLEY_PARENTS = 10
+
+
 def compute_shapley(
     formula: str,
     parent_names: List[str],
     baselines: Dict[str, Any],
     actuals: Dict[str, Any],
+    node: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Distribute the gap between formula(actuals) and formula(baselines) across
@@ -118,10 +141,25 @@ def compute_shapley(
 
     By Shapley efficiency the values sum (per position) to
     formula(actuals) - formula(baselines).
+
+    Refuses more than `_MAX_SHAPLEY_PARENTS` parents — see that constant.
+    `node` is the metric being attributed; it only names the node in that
+    refusal, so callers that have it should pass it.
     """
     n = len(parent_names)
     if n == 0:
         return {}
+    if n > _MAX_SHAPLEY_PARENTS:
+        who = f"'{node}'" if node else f"with formula '{formula}'"
+        raise ValueError(
+            f"Formula node {who} has too many parents for exact Shapley "
+            f"attribution: {n} parents, at most {_MAX_SHAPLEY_PARENTS} are "
+            "supported (the coalition enumeration is O(2^n), so each extra "
+            "parent doubles the work). Split the node into intermediate sums — "
+            "group some parents under their own formula node and make that node "
+            "the parent here — which preserves the identity and keeps every "
+            "attribution exact."
+        )
 
     array_input = any(
         isinstance(v, np.ndarray) and v.ndim > 0 for v in [*baselines.values(), *actuals.values()]
@@ -154,9 +192,17 @@ def compute_shapley(
                 vals_without = {
                     p: a_arr[p] if p in coalition_set else b_arr[p] for p in parent_names
                 }
-                phi = phi + weight * (
-                    eval_formula(formula, vals_with) - eval_formula(formula, vals_without)
-                )
+                # `eval_formula` already silences numpy's warnings internally
+                # (they are fatal under its restricted globals), but a formula
+                # that produced an `inf` there makes this subtraction `inf-inf`
+                # and warns here instead. Silence it: a non-finite result is
+                # caught and reported by name in `shapley_attribution`, so the
+                # warning adds nothing to the error and only lands in an
+                # operator's log beside a 422 that already explains itself.
+                with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
+                    phi = phi + weight * (
+                        eval_formula(formula, vals_with) - eval_formula(formula, vals_without)
+                    )
 
         shapley[player] = phi if array_input else float(phi[0])
 

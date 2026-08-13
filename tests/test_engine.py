@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from breakdown.engine.model import (
+    _MAX_SHAPLEY_PARENTS,
     FitResult,
     compute_shapley,
     fit_metric,
@@ -212,6 +213,85 @@ def test_compute_shapley_mismatched_lengths_raise():
             ["a", "b"],
             {"a": np.zeros(3), "b": np.zeros(2)},
             {"a": np.zeros(3), "b": np.zeros(3)},
+        )
+
+
+def test_compute_shapley_at_cap_still_works():
+    """Exactly `_MAX_SHAPLEY_PARENTS` parents is supported, and exact."""
+    parents = [f"p{i}" for i in range(_MAX_SHAPLEY_PARENTS)]
+    baselines = {p: 100.0 + i for i, p in enumerate(parents)}
+    actuals = {p: 110.0 + 2 * i for i, p in enumerate(parents)}
+    formula = " + ".join(parents)
+
+    sv = compute_shapley(formula, parents, baselines, actuals, node="total")
+
+    gap = sum(actuals.values()) - sum(baselines.values())
+    assert abs(sum(sv.values()) - gap) < 1e-6
+
+
+def test_compute_shapley_over_cap_refuses_by_name():
+    """Past the cap the O(2^n) enumeration is refused, not approximated —
+    naming the node, its parent count, the cap, and the remedy."""
+    n = _MAX_SHAPLEY_PARENTS + 1
+    parents = [f"p{i}" for i in range(n)]
+    vals = {p: 1.0 for p in parents}
+
+    with pytest.raises(ValueError) as exc:
+        compute_shapley(" + ".join(parents), parents, vals, vals, node="total_revenue")
+
+    msg = str(exc.value)
+    assert "total_revenue" in msg
+    assert f"{n} parents" in msg
+    assert f"at most {_MAX_SHAPLEY_PARENTS}" in msg
+    assert "Split" in msg
+
+
+def test_compute_shapley_over_cap_refuses_without_node_name():
+    """Callers that don't have the node name still get an identifiable refusal."""
+    parents = [f"p{i}" for i in range(_MAX_SHAPLEY_PARENTS + 1)]
+    vals = {p: 1.0 for p in parents}
+    formula = " + ".join(parents)
+
+    with pytest.raises(ValueError, match="too many parents"):
+        compute_shapley(formula, parents, vals, vals)
+
+
+def test_run_rca_refuses_wide_formula_node():
+    """The cap covers the path that actually pays the cost: RCA's six
+    enumerations per formula node cannot bypass it."""
+    from breakdown.engine.rca import run_rca
+
+    n = _MAX_SHAPLEY_PARENTS + 1
+    parents = [f"p{i}" for i in range(n)]
+    yaml = "metrics:\n"
+    for p in parents:
+        yaml += f"  - name: {p}\n    source: mock.{p}\n    kind: flow\n"
+    yaml += (
+        "  - name: total\n    source: mock.total\n    kind: flow\n"
+        f'    formula: "{" + ".join(parents)}"\n'
+        f"    parents: [{', '.join(parents)}]\n"
+    )
+
+    n_days = 60
+    rng = np.random.default_rng(0)
+    cols = {"date": pd.date_range("2024-01-01", periods=n_days)}
+    total = np.zeros(n_days)
+    for p in parents:
+        v = 100 + np.cumsum(rng.normal(0, 3, n_days))
+        cols[p] = v
+        total = total + v
+    cols["total"] = total
+
+    with pytest.raises(ValueError, match=f"at most {_MAX_SHAPLEY_PARENTS}"):
+        run_rca(
+            Parser(yaml).dag,
+            pd.DataFrame(cols),
+            {},
+            "total",
+            reference_start="2024-01-01",
+            reference_end="2024-02-10",
+            analysis_start="2024-02-11",
+            analysis_end="2024-02-29",
         )
 
 
