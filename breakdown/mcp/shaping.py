@@ -10,7 +10,7 @@ the model writes its story, not in a resource it may never fetch.
 import json
 import math
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from urllib.parse import quote
 
 _SIG_FIGS = 4
@@ -133,23 +133,36 @@ def _base_url() -> str:
     return url.rstrip("/")
 
 
-def rca_link(target, reference_start, reference_end, analysis_start, analysis_end) -> str:
+def _hash_prefix(tree: Optional[str]) -> str:
+    """`#tree=<id>&` when a tree is named, else `#`.
+
+    The UI parses `#tree=` first and gates everything else on it, since
+    `#metric=`/`#rca=` are meaningless without knowing whose metric names they
+    refer to. Omitting it means the default tree, so links minted before this
+    existed still resolve."""
+    return f"#tree={quote(tree)}&" if tree else "#"
+
+
+def rca_link(
+    target, reference_start, reference_end, analysis_start, analysis_end, tree=None
+) -> str:
     """UI deep link replaying this exact RCA (the engine is seeded, so the
     link reproduces the numbers). Param names match applyDeepLink() in
     static/app.js."""
     return (
-        f"{_base_url()}/ui/#rca={quote(target)}"
+        f"{_base_url()}/ui/{_hash_prefix(tree)}rca={quote(target)}"
         f"&reference_start={reference_start}&reference_end={reference_end}"
         f"&analysis_start={analysis_start}&analysis_end={analysis_end}"
     )
 
 
-def whatif_link(scenario: Dict[str, Any]) -> str:
-    return f"{_base_url()}/ui/#whatif={quote(json.dumps(scenario, separators=(',', ':')))}"
+def whatif_link(scenario: Dict[str, Any], tree=None) -> str:
+    payload = quote(json.dumps(scenario, separators=(",", ":")))
+    return f"{_base_url()}/ui/{_hash_prefix(tree)}whatif={payload}"
 
 
-def metric_link(name: str) -> str:
-    return f"{_base_url()}/ui/#metric={quote(name)}"
+def metric_link(name: str, tree=None) -> str:
+    return f"{_base_url()}/ui/{_hash_prefix(tree)}metric={quote(name)}"
 
 
 def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:

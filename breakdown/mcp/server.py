@@ -34,7 +34,13 @@ mcp = MCPServer(
     "breakdown",
     instructions=(
         "breakdown is a Bayesian metric-tree engine for root-cause analysis and "
-        "what-if simulation over a business's metric DAG. Call get_tree first to "
+        "what-if simulation over a business's metric DAG. A server may hold "
+        "several trees, each a different lens on the same business — a wide one "
+        "with revenue at the top, a team's (marketing channels and campaigns), a "
+        "product area's (feature adoption and retention), one standing behind a "
+        "specific goal — so call list_trees first when the question is about a "
+        "particular area, and pass the tree id to every other tool. "
+        "Call get_tree first to "
         "learn the metrics, their grains, and the loaded data window; then run_rca "
         "to explain why a metric moved, slice_metric to localize a gap within a "
         "metric's declared dimensions (geo, plan, …), or run_whatif to simulate "
@@ -46,17 +52,41 @@ mcp = MCPServer(
 )
 
 
-def _state():
+async def _state(tree: Optional[str] = None):
+    """The `TreeState` a tool addresses: the named tree, else the default.
+
+    Every tool takes an optional `tree`, so an analyst asking "why did paid
+    signups stall" can call `list_trees`, find the tree that models paid
+    acquisition, and stay in it. Omitting it is the default tree, which is what
+    keeps every existing client working. Loads the tree's data if this is the
+    first call that needs it — the tools are the one caller with no page to
+    show a `loading` state to.
+    """
     # Imported lazily: breakdown.api.main imports this module to mount the
     # MCP app, so a module-level import back would be a cycle.
-    from breakdown.api.main import app
+    from breakdown.api.main import _ensure_loaded, app
 
-    if app.state.startup_error is not None:
+    state = app.state
+    trees = state.trees
+    if not trees:
         raise RuntimeError(
-            f"breakdown started without data: {app.state.startup_error}. "
-            "Run `breakdown doctor --tree <tree.yml>` to diagnose."
+            f"breakdown started without a metric tree: {state.startup_error}. "
+            "Check the --tree path and restart."
         )
-    return app.state
+    tree_id = tree or state.default_tree
+    tree_state = trees.get(tree_id)
+    if tree_state is None:
+        raise ValueError(
+            f"No tree '{tree_id}'. Known trees: {', '.join(sorted(trees))}. "
+            "Call list_trees for their titles and goals."
+        )
+    await _ensure_loaded(tree_state)
+    if tree_state.load_error is not None:
+        raise RuntimeError(
+            f"Tree '{tree_state.id}' started without data: {tree_state.load_error}. "
+            f"Run `breakdown doctor --tree {tree_state.path}` to diagnose."
+        )
+    return tree_state
 
 
 def _known_metric(state, name: str) -> None:
@@ -77,7 +107,39 @@ def _require_data(state) -> None:
 
 
 @mcp.tool()
-async def get_tree() -> Dict[str, Any]:
+async def list_trees() -> Dict[str, Any]:
+    """List every metric tree this server holds: id, title, owner, and (when
+    it declares them) a period and a goal. Trees are different lenses on the
+    same business — a wide revenue tree, a marketing tree detailing channels, a
+    product tree about feature adoption, a tree standing behind a target — and
+    any of them may be long-lived or short-lived. Call this first whenever the
+    question points at a particular area or target rather than the business as
+    a whole, then pass the `id` as the `tree` argument to get_tree, run_rca,
+    slice_metric or run_whatif.
+
+    Answers from parsed YAML alone and never loads data, so it is instant.
+    `state` is `loaded` | `not_loaded` | `loading` | `error`: `not_loaded`
+    means nobody has opened that tree in this process yet, which is why its
+    `progress` is null — it is "we haven't looked", not zero. A tree with no
+    declared goal has no `progress` at all, which is normal rather than a gap.
+    Any tool call naming the tree loads it."""
+    from breakdown.api.main import _tree_card, app
+
+    state = app.state
+    if not state.trees:
+        raise RuntimeError(
+            f"breakdown started without a metric tree: {state.startup_error}."
+        )
+    return round_floats(
+        {
+            "default": state.default_tree,
+            "trees": [_tree_card(t) for t in state.trees.values()],
+        }
+    )
+
+
+@mcp.tool()
+async def get_tree(tree: Optional[str] = None) -> Dict[str, Any]:
     """Get the metric tree: every metric with its grain, kind, parents, and
     formula, plus the DAG edges and the loaded data window. Call this first,
     before run_rca or run_whatif, to learn valid metric names and dates.
@@ -87,8 +149,11 @@ async def get_tree() -> Dict[str, Any]:
     Kinds: 'flow' metrics sum over time, 'stock' metrics take the last value,
     'rate' metrics are recomputed from components. Formula metrics decompose
     exactly (Shapley); metrics with parents but no formula are learned
-    probabilistic relationships (Bayesian time-series regression)."""
-    state = _state()
+    probabilistic relationships (Bayesian time-series regression).
+
+    `tree` names which metric tree to read when the server holds more than one
+    (see list_trees); omit it for the default tree."""
+    state = await _state(tree)
     parser, data = state.parser, state.data
     metrics: List[Dict[str, Any]] = []
     for m in parser.config.metrics:
@@ -112,6 +177,8 @@ async def get_tree() -> Dict[str, Any]:
         metrics.append(entry)
     return {
         "mode": "cold_start" if data is None else "fitted",
+        "tree": state.id,
+        "title": state.title,
         "provider": parser.config.provider.type,
         "date_start": None if data is None else str(data.date_start.date()),
         "date_end": None if data is None else str(data.date_end.date()),
@@ -121,12 +188,14 @@ async def get_tree() -> Dict[str, Any]:
 
 
 @mcp.tool()
-async def explain_metric(name: str) -> Dict[str, Any]:
+async def explain_metric(name: str, tree: Optional[str] = None) -> Dict[str, Any]:
     """Explain one metric: its definition, place in the tree (parents and
     children), a summary of its recent series, and whether a Bayesian fit is
     cached for it. Use this to ground a narrative about a specific metric or
-    to sanity-check names and date coverage before an analysis."""
-    state = _state()
+    to sanity-check names and date coverage before an analysis. `tree` names
+    which metric tree the metric belongs to (see list_trees); omit it for the
+    default tree."""
+    state = await _state(tree)
     _known_metric(state, name)
     parser, data = state.parser, state.data
     metric = parser.dag.nodes[name]["definition"]
@@ -186,7 +255,7 @@ async def explain_metric(name: str) -> Dict[str, Any]:
             "children": list(parser.dag.successors(name)),
             "series_summary": series_summary,
             "fit": fit_info,
-            "report_url": metric_link(name),
+            "report_url": metric_link(name, tree=state.id),
         }
     )
 
@@ -198,6 +267,7 @@ async def run_rca(
     analysis_end: str,
     reference_start: Optional[str] = None,
     reference_end: Optional[str] = None,
+    tree: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Root-cause analysis: explain why `target` moved between a reference
     (baseline) window and an analysis window. Returns per-node gaps with
@@ -233,8 +303,12 @@ async def run_rca(
     Follow-up: when a top cause declares dimensions (see get_tree), call
     slice_metric on it to localize the gap within the metric — reuse the
     resolved windows from this response. For a lagged edge, the
-    contribution's `parent_windows` are the windows to reuse."""
-    state = _state()
+    contribution's `parent_windows` are the windows to reuse.
+
+    `tree` names which metric tree to analyse when the server holds more than
+    one (see list_trees); omit it for the default tree. Metric names are
+    per-tree — two trees naming the same metric are two independent nodes."""
+    state = await _state(tree)
     _require_data(state)
     _known_metric(state, target)
     async with state.lock:
@@ -259,6 +333,7 @@ async def run_rca(
         result["reference_window"]["end"],
         analysis_start,
         analysis_end,
+        tree=state.id,
     )
     return out
 
@@ -271,6 +346,7 @@ async def slice_metric(
     reference_end: str,
     analysis_start: str,
     analysis_end: str,
+    tree: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Localize a metric's window-over-window gap within one of its declared
     dimensions (geo, plan tier, app version, …): the traverse-then-slice
@@ -288,8 +364,10 @@ async def slice_metric(
     (its `reference_window`/`analysis_window`), and for a lagged parent use
     the `parent_windows` its run_rca contribution carries. Slices are
     fetched on demand from the provider; the first call for a (metric,
-    dimension, window) queries the data source, repeats are cached."""
-    state = _state()
+    dimension, window) queries the data source, repeats are cached. `tree`
+    names which metric tree the metric belongs to (see list_trees); omit it
+    for the default tree."""
+    state = await _state(tree)
     _require_data(state)
     _known_metric(state, name)
     defn = state.parser.dag.nodes[name]["definition"]
@@ -325,6 +403,7 @@ async def run_whatif(
     baseline_end: Optional[str] = None,
     interventions: Optional[List[Intervention]] = None,
     assumptions: Optional[List[Assumption]] = None,
+    tree: Optional[str] = None,
 ) -> Dict[str, Any]:
     """What-if simulation: pin one or more metrics to hypothetical values
     (do-operator: the metric's own drivers are severed) and propagate the
@@ -343,8 +422,10 @@ async def run_whatif(
     and must be OMITTED on a cold-start tree (get_tree says `mode:
     "cold_start"`), where operating points come from the tree's declared
     baselines. The first call may fit models on demand and take a minute;
-    repeat calls are fast (fits are cached)."""
-    state = _state()
+    repeat calls are fast (fits are cached). `tree` names which metric tree to
+    simulate over when the server holds more than one (see list_trees); omit
+    it for the default tree."""
+    state = await _state(tree)
     scenario = ScenarioRequest(
         baseline_start=baseline_start,
         baseline_end=baseline_end,
@@ -357,5 +438,7 @@ async def run_whatif(
         )
     out = round_floats(compact_scenario(result))
     out["how_to_read"] = whatif_how_to_read(result["mode"])
-    out["report_url"] = whatif_link(scenario.model_dump(exclude_defaults=True))
+    out["report_url"] = whatif_link(
+        scenario.model_dump(exclude_defaults=True), tree=state.id
+    )
     return out

@@ -256,7 +256,105 @@ RCA runs and metric views are deep-linkable (`#rca=…`, `#metric=…`), so any 
 
 ---
 
+## Serving several trees
+
+One breakdown process can serve several metric trees. They are **peers**, not a
+hierarchy: a company typically keeps one wide tree with revenue at the top (the
+net-MRR tree), and alongside it trees that go deep on one part of the business —
+
+- a **marketing** tree whose leaves are channels and campaigns,
+- a **product** tree about feature adoption and what it does to retention,
+- a tree standing behind a **specific goal**, whether that is a quarter, a
+  year, or five years.
+
+Any tree may be long-lived or short-lived, and any may declare a goal or not.
+breakdown takes no position on either: a focused tree can be as durable and as
+useful as the revenue tree, and most trees have no target attached at all.
+
+Point `--tree` at a directory and every `*.yml` in it (non-recursively) is one
+tree, its **id the filename stem**:
+
+```
+acme-dbt-project/
+  breakdown/
+    net_mrr.yml           -> id "net_mrr"
+    marketing.yml         -> id "marketing"
+    activation.yml        -> id "activation"
+```
+
+```bash
+breakdown serve --tree ./breakdown --default-tree net_mrr
+```
+
+`/ui` then opens an **index** of the trees — title, owner, and, where one is
+declared, period and current-vs-target — and a **Tree** switcher appears in the
+header. A single `--tree <file>` behaves exactly as it always has: no index, no
+switcher, one tree.
+
+**Trees load lazily.** Boot parses every tree's YAML — cheap, no provider
+involved — and fetches none, so the index is instant on a cold process and
+nobody pays for the trees they didn't open. A tree's data is fetched on the
+first request that needs it (or from the index's **Load** button); until then
+its card says *not loaded* rather than showing a zero. A single-file `--tree`
+still loads at startup, where lazy buys nothing; `--eager` asks for the same
+from a directory, loading the default tree up front.
+
+**Failures are per tree.** One malformed YAML shows as a broken card carrying
+its own parse error, and the other trees serve normally.
+
+Every data route is available at `/trees/{tree_id}/…` as well as bare, and the
+bare paths mean the default tree — so existing links, scripts and MCP clients
+keep working unchanged:
+
+```bash
+curl -X POST "localhost:9090/trees/marketing/rca/paid_signups?analysis_start=2026-08-01&analysis_end=2026-08-07"
+curl localhost:9090/trees            # the index: every tree and its state
+```
+
+| Flag | Default |
+|------|---------|
+| `--tree` | A tree file **or a directory of them** |
+| `--default-tree <id>` | The only tree if there is one, else the alphabetically first |
+| `--eager` | Off — a directory of trees loads on demand |
+
+---
+
 ## YAML reference
+
+### `tree` (optional)
+
+A tree's identity as a document: what it is called, who owns it, and —
+optionally — a target it is being held to. **Every field is optional,
+including the block itself**, so a tree can declare only a title, or nothing at
+all and take its name from its filename. Most trees have no `goal`.
+
+```yaml
+tree:
+  title: "Marketing"
+  description: "Paid, organic and lifecycle, down to the campaign"
+  owner: "growth@acme.com"
+  period: "FY27"               # free-form label, shown on the index card
+  goal:                        # optional — a tree of any lifetime may have one
+    metric: paid_signups
+    target: 200
+    direction: up              # up | down — which way is winning
+    deadline: "2026-09-30"     # YYYY-MM-DD, optional
+```
+
+- **`goal.metric` must resolve to a metric in this tree.** A goal naming a
+  metric that doesn't exist is a parse error, not a silently blank card.
+- **`goal.direction` defaults from the named metric's own `direction`** (see
+  [`metrics`](#metrics)) when that metric declares one. Declaring both and
+  disagreeing is an error; a goal on a `neutral` metric must state its own.
+- **`period` is a label, not a parsed date range** — `"2026-Q3"`, `"FY27"`,
+  `"2026-2031"` are all fine, and it is shown rather than interpreted.
+  `deadline` is the machine-readable date, and is optional too.
+- **`title` is display-only.** The id is always the filename stem, which is
+  what `#tree=` deep links and `/trees/{id}/…` routes use.
+
+The block is ignored by builds that predate it, so trees can be annotated
+before upgrading, and a tree with no `tree:` block loads on every build. There
+is no migration.
 
 ### `provider`
 
@@ -689,8 +787,14 @@ It reports every metric's whole-period count against the fit minimum (`signups: 
 
 ## API reference
 
+Every data route below also answers at **`/trees/{tree_id}/…`** when the process
+serves [several trees](#serving-several-trees); the bare paths shown here are
+aliases for the default tree.
+
 | Method | Path | Description |
 |--------|------|-------------|
+| `GET` | `/trees` | Every tree: title, owner, metric count, `state` (`loaded` \| `not_loaded` \| `loading` \| `error`), plus `period`/`goal` where declared and `progress` for a loaded tree that has a goal. Reads parsed YAML only — never triggers a data load |
+| `POST` | `/trees/{id}/load` | Fetch one tree's data now, and return its updated index card |
 | `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), fitted models, per-metric `earliest_available` history discovery (UI bootstrap) |
 | `GET` | `/dag` | Full metric DAG (nodes + edges) |
 | `GET` | `/metrics/{name}` | Metric definition, time series, and posterior summary |
@@ -919,15 +1023,21 @@ Sliced series are fetched from the provider on demand for just these windows and
 
 The server exposes the engine to AI assistants over [MCP](https://modelcontextprotocol.io) at `http://127.0.0.1:9090/mcp` (streamable HTTP; started automatically by `serve`). A chat assistant connected to it can answer "why was revenue down last week?" by running a real RCA — Shapley attributions, credible intervals, the honest `unexplained` remainder — instead of guessing, and "what if we raise marketing spend 10%?" with a posterior from the what-if engine.
 
-Five tools:
+Six tools:
 
 | Tool | Backed by | Description |
 |------|-----------|-------------|
+| `list_trees` | `/trees` | Every tree this server holds, with its load state (and goal, where one is declared) — for a question aimed at one part of the business rather than the whole |
 | `get_tree` | `/meta` + `/dag` | Metric DAG, grains, kinds, declared dimensions, and the loaded data window — assistants call this first |
 | `explain_metric` | `/metrics/{name}` | One metric's definition, neighbors, recent series, and fit status |
 | `run_rca` | `/rca/{name}` | Full root-cause analysis between two windows |
 | `slice_metric` | `/rca/{name}/slices` | Localize a metric's gap within a declared dimension (geo, plan, app version) — the traverse-then-slice follow-up to `run_rca` |
 | `run_whatif` | `/simulate` | Do-operator what-if scenario with posterior deltas |
+
+Every tool takes an optional `tree` argument naming which tree to work in
+(omit it for the default tree), so an assistant can call `list_trees`, find the
+tree that models the area in question, and stay in it. `report_url` carries
+`#tree=` so the link keeps naming that tree.
 
 Analysis responses are compacted for token economy (rounded floats, decompositions dropped) and carry two extra fields: `how_to_read` — the interpretation rules from [docs/model.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md) (what `unexplained` means, why `share_of_gap` can exceed 100%, ADVI vs NUTS), so the narrating model states caveats instead of flattening them — and `report_url`, a deep link that replays the exact analysis in the UI (the engine is seeded, so the link reproduces the numbers).
 
@@ -1033,8 +1143,9 @@ breakdown/
     slices.py        # slice_attribution() — dimensional slicing of a metric's gap
   api/
     main.py          # FastAPI app
+    trees.py         # TreeState — one per metric tree served by the process
   mcp/
-    server.py        # MCP tools for AI assistants (get_tree, explain_metric, run_rca, slice_metric, run_whatif)
+    server.py        # MCP tools for AI assistants (list_trees, get_tree, explain_metric, run_rca, slice_metric, run_whatif)
     shaping.py       # MCP response compaction + how_to_read caveats + UI deep links
   cli.py             # `breakdown serve` / `breakdown doctor` console entry point
   doctor.py          # Provider connectivity checks with copy-paste remediation

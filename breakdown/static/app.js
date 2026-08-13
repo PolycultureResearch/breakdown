@@ -3,6 +3,9 @@
    Design doc: docs/ai-context/frontend-ui.md */
 
 const state = {
+  tree: null,          // open tree id — every data request is scoped to it
+  trees: [],           // GET /trees -> the index (parsed YAML only, never a load)
+  defaultTree: null,   // which tree the unprefixed routes and a bare /ui mean
   meta: null,          // GET /meta
   dag: null,           // GET /dag
   series: null,        // GET /series -> {metrics:{name:{grain, dates:[], values:[]}}}
@@ -87,7 +90,7 @@ async function toggleQueryProvenance(btn) {
   panel.hidden = false;
   panel.innerHTML = '<p class="muted">Loading…</p>';
   try {
-    const p = await api(`/metrics/${encodeURIComponent(btn.dataset.query)}/query`);
+    const p = await api(treePath(`/metrics/${encodeURIComponent(btn.dataset.query)}/query`));
     if (!p.sql) {
       panel.innerHTML = `<p class="muted">${esc(p.note || "No query available.")}</p>`;
       return;
@@ -104,6 +107,34 @@ async function toggleQueryProvenance(btn) {
   } catch (e) {
     panel.innerHTML = `<p class="muted">Could not load the query: ${esc(e.message)}</p>`;
   }
+}
+
+/* Every data request names its tree. `/trees/<id>/meta` and `/meta` are the
+   same endpoint — the bare path aliases the default tree — but naming it means
+   two tabs open on two trees never race each other through one alias, and a
+   URL in a server log says which tree it was. `/progress/{run_id}` and
+   `/trees` are deliberately *not* scoped: run ids are already unique, and the
+   index is about all of them. */
+function treePath(path) {
+  return state.tree ? `/trees/${encodeURIComponent(state.tree)}${path}` : path;
+}
+
+/* `#tree=<id>` leads every hash once there is more than one tree, because
+   `#metric=`/`#rca=`/`#whatif=` are meaningless without knowing whose metric
+   names they refer to. With one tree it is omitted, so links minted by a
+   single-tree instance stay exactly as short as they were. */
+function hashPrefix() {
+  return state.trees.length > 1 && state.tree
+    ? `tree=${encodeURIComponent(state.tree)}&`
+    : "";
+}
+
+function setHash(rest) {
+  history.replaceState(null, "", `#${hashPrefix()}${rest}`);
+}
+
+function hashParams() {
+  return new URLSearchParams(location.hash.slice(1));
 }
 
 async function api(path, opts) {
@@ -1226,11 +1257,19 @@ function runLayout(fit = false) {
     .run();
 }
 
+/* Both stores key on the tree id: overrides and saved views are keyed by
+   *metric name*, and two trees in one process can name the same metric while
+   meaning different things — a view saved against one tree would otherwise
+   replay against another. */
 const CARD_CFG_KEY = "breakdown.cardConfig";
+
+function storeKey(base) {
+  return state.tree ? `${base}:${state.tree}` : base;
+}
 
 function loadCardConfig() {
   try {
-    const saved = JSON.parse(localStorage.getItem(CARD_CFG_KEY) || "{}");
+    const saved = JSON.parse(localStorage.getItem(storeKey(CARD_CFG_KEY)) || "{}");
     const c = state.cardConfig;
     if (["num", "delta", "spark", "full"].includes(saved.variant)) c.variant = saved.variant;
     if (Number.isFinite(saved.deltaLen)) c.deltaLen = saved.deltaLen;
@@ -1241,7 +1280,7 @@ function loadCardConfig() {
 
 function saveCardConfig() {
   try {
-    localStorage.setItem(CARD_CFG_KEY, JSON.stringify(state.cardConfig));
+    localStorage.setItem(storeKey(CARD_CFG_KEY), JSON.stringify(state.cardConfig));
   } catch { /* storage disabled: config just won't persist */ }
 }
 
@@ -1260,7 +1299,7 @@ const MAX_SAVED_VIEWS = 30;
 
 function loadSavedViews() {
   try {
-    const saved = JSON.parse(localStorage.getItem(VIEWS_KEY) || "[]");
+    const saved = JSON.parse(localStorage.getItem(storeKey(VIEWS_KEY)) || "[]");
     return Array.isArray(saved) ? saved.filter((v) => v && v.hash && v.name) : [];
   } catch {
     return [];
@@ -1269,7 +1308,7 @@ function loadSavedViews() {
 
 function writeSavedViews(views) {
   try {
-    localStorage.setItem(VIEWS_KEY, JSON.stringify(views.slice(0, MAX_SAVED_VIEWS)));
+    localStorage.setItem(storeKey(VIEWS_KEY), JSON.stringify(views.slice(0, MAX_SAVED_VIEWS)));
   } catch { /* storage disabled or full: saving just won't persist */ }
 }
 
@@ -1746,7 +1785,7 @@ function labelBetaEdges(name, metricData) {
 
 async function selectMetric(name) {
   state.selected = name;
-  history.replaceState(null, "", `#metric=${encodeURIComponent(name)}`);
+  setHash(`metric=${encodeURIComponent(name)}`);
   updateShareMenu();
   state.cy.$("node:selected").unselect();
   state.cy.getElementById(name).select();
@@ -1754,7 +1793,7 @@ async function selectMetric(name) {
   const container = $("tab-metric");
   container.innerHTML = `<p class="placeholder">Loading ${esc(name)}…</p>`;
   try {
-    const data = state.metricCache[name] || (await api(`/metrics/${encodeURIComponent(name)}`));
+    const data = state.metricCache[name] || (await api(treePath(`/metrics/${encodeURIComponent(name)}`)));
     state.metricCache[name] = data;
     renderMetricTab(name, data);
     labelBetaEdges(name, data);
@@ -2076,9 +2115,12 @@ async function runAnalyze(name) {
   status.className = "inline-status";
   status.textContent = method === "nuts" ? "Sampling with NUTS — this can take a minute…" : "Fitting with ADVI…";
   try {
-    await api(`/analyze/${encodeURIComponent(name)}?inference_method=${method}&draws=${draws}`, { method: "POST" });
+    await api(
+      treePath(`/analyze/${encodeURIComponent(name)}?inference_method=${method}&draws=${draws}`),
+      { method: "POST" }
+    );
     delete state.metricCache[name];
-    state.meta = await api("/meta");
+    state.meta = await api(treePath("/meta"));
     markFitted();
     status.textContent = "Done.";
     await selectMetric(name);
@@ -2123,7 +2165,7 @@ async function runRCA() {
   try {
     const qs = new URLSearchParams({ ...win, run_id: runId }).toString();
     state.slices = {}; // a new analysis invalidates any slice of the old one
-    state.rca = await api(`/rca/${encodeURIComponent(target)}?${qs}`, { method: "POST" });
+    state.rca = await api(treePath(`/rca/${encodeURIComponent(target)}?${qs}`), { method: "POST" });
     // The resolved reference comes back either way; reflect it in the inputs
     // and build the deep link from resolved dates so a defaulted run replays
     // identically even if the server later boots with a different range.
@@ -2135,9 +2177,9 @@ async function runRCA() {
       analysis_start: state.rca.analysis_window.start,
       analysis_end: state.rca.analysis_window.end,
     }).toString();
-    history.replaceState(null, "", `#rca=${encodeURIComponent(target)}&${resolvedQs}`);
+    setHash(`rca=${encodeURIComponent(target)}&${resolvedQs}`);
     updateShareMenu();
-    state.meta = await api("/meta"); // on-demand fits may have been cached
+    state.meta = await api(treePath("/meta")); // on-demand fits may have been cached
     state.metricCache = {};
     markFitted();
     applyRcaOverlay();
@@ -2254,7 +2296,7 @@ async function clearRCA() {
   for (const name of state.meta.fitted) {
     if (state.metricCache[name]) continue;
     try {
-      const data = await api(`/metrics/${encodeURIComponent(name)}`);
+      const data = await api(treePath(`/metrics/${encodeURIComponent(name)}`));
       state.metricCache[name] = data;
       labelBetaEdges(name, data);
     } catch { /* skip metrics that fail to load */ }
@@ -2507,7 +2549,9 @@ async function toggleSlice(metric, dimension) {
     analysis_end: win.windows.analysis.end,
   }).toString();
   try {
-    const result = await api(`/rca/${encodeURIComponent(metric)}/slices?${qs}`, { method: "POST" });
+    const result = await api(treePath(`/rca/${encodeURIComponent(metric)}/slices?${qs}`), {
+      method: "POST",
+    });
     state.slices[metric] = { dimension, result, lag: win.lag };
   } catch (err) {
     state.slices[metric] = { dimension, error: err.message, lag: win.lag };
@@ -2731,7 +2775,7 @@ async function renderRcaStrip(res) {
   const name = res.target;
   let data;
   try {
-    data = state.metricCache[name] || (await api(`/metrics/${encodeURIComponent(name)}`));
+    data = state.metricCache[name] || (await api(treePath(`/metrics/${encodeURIComponent(name)}`)));
     state.metricCache[name] = data;
   } catch {
     const el = $("rca-strip");
@@ -2969,7 +3013,7 @@ async function renderAdjustPanel(name) {
     box.innerHTML = `<div class="wf-adjust-card"><p class="placeholder">Loading ${esc(name)}…</p></div>`;
     let data;
     try {
-      data = state.metricCache[name] || (await api(`/metrics/${encodeURIComponent(name)}`));
+      data = state.metricCache[name] || (await api(treePath(`/metrics/${encodeURIComponent(name)}`)));
       state.metricCache[name] = data;
     } catch (err) {
       const el = $("wf-adjust");
@@ -3163,14 +3207,14 @@ async function runWhatif() {
   if (btn) btn.disabled = true;
   const runId = startRunProgress("resolving");
   try {
-    state.whatif.result = await api(`/simulate?run_id=${encodeURIComponent(runId)}`, {
+    state.whatif.result = await api(treePath(`/simulate?run_id=${encodeURIComponent(runId)}`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(scenario),
     });
-    history.replaceState(null, "", `#whatif=${encodeURIComponent(JSON.stringify(scenario))}`);
+    setHash(`whatif=${encodeURIComponent(JSON.stringify(scenario))}`);
     updateShareMenu();
-    state.meta = await api("/meta"); // on-demand fits may have been cached
+    state.meta = await api(treePath("/meta")); // on-demand fits may have been cached
     markFitted();
     renderWhatifTab();
     switchTab("whatif");
@@ -3202,8 +3246,15 @@ function clearWhatifResult() {
   clearOverlays();
   // restore β edge labels from cached metric data (same as clearRCA's fast path)
   Object.entries(state.metricCache).forEach(([name, data]) => labelBetaEdges(name, data));
-  if (location.hash.startsWith("#whatif=")) {
-    history.replaceState(null, "", location.pathname + location.search);
+  if (hashParams().has("whatif")) {
+    // Keep `#tree=`: dropping it would silently move the reader to the
+    // default tree on the next reload.
+    const prefix = hashPrefix().replace(/&$/, "");
+    history.replaceState(
+      null,
+      "",
+      prefix ? `#${prefix}` : location.pathname + location.search
+    );
   }
   updateShareMenu();
   renderWhatifTab();
@@ -3585,7 +3636,7 @@ function initShareMenu() {
    (RCA query params) restores a shareable RCA run; #whatif=<json scenario>
    replays a what-if scenario in reader mode (results first, builder collapsed). */
 function applyDeepLink() {
-  const params = new URLSearchParams(location.hash.slice(1));
+  const params = hashParams();
   const whatifJson = params.get("whatif");
   if (whatifJson) {
     try {
@@ -3628,7 +3679,7 @@ function renderHistoryNudge(attempt = 0) {
     if (attempt < 3) {
       setTimeout(async () => {
         try {
-          state.meta = await api("/meta");
+          state.meta = await api(treePath("/meta"));
         } catch { return; }
         renderHistoryNudge(attempt + 1);
       }, 2500);
@@ -3648,11 +3699,196 @@ function renderHistoryNudge(attempt = 0) {
 function showDegradedBanner(error) {
   const banner = document.createElement("div");
   banner.id = "degraded-banner";
+  const back = state.trees.length > 1 ? ` <a href="#" id="degraded-back">All trees</a>.` : "";
   banner.innerHTML =
     `<strong>breakdown started without data.</strong> ${esc(error)}<br>` +
     `Fix the tree or provider config, then restart. ` +
-    `Diagnose with <code>breakdown doctor --tree &lt;tree.yml&gt;</code>.`;
+    `Diagnose with <code>breakdown doctor --tree &lt;tree.yml&gt;</code>.${back}`;
   document.body.prepend(banner);
+  const link = $("degraded-back");
+  if (link) link.addEventListener("click", () => navigateToTree(null));
+}
+
+/* ---------- The tree index (roadmap 2.16) ----------
+   One process can serve several trees, and they are peers. A company might
+   keep one wide tree with revenue at the top, a marketing tree that goes deep
+   on channels and campaigns, a product tree about feature adoption and its
+   effect on retention, and a tree standing behind a specific goal. Any of them
+   may be durable or disposable, and any may carry a goal or not — the index
+   makes no claim about which kind a tree is.
+
+   So the cards sit in **one flat grid** rather than grouped by `period`:
+   grouping by time would file every tree that isn't time-bound under "other",
+   which is the opposite of the point. `period` is one optional label on a
+   card, beside the owner.
+
+   It renders `GET /trees`, which reads parsed YAML only and never triggers a
+   load. That is what makes a `not loaded` card honest rather than lazy: the
+   alternative (fetch everything to fill the index) is the exact cost lazy
+   loading exists to avoid. */
+
+/* The derived, uncertain half of a card that declares a goal. Deliberately two
+   facts and no verdict: `period` is a free-form label rather than a parsed
+   range, so the *start* of the window is not in the tree at all and "on track"
+   / "behind" would be a forecast the engine never made. Share of target and
+   days left are both checkable; the reader does the arithmetic the data
+   supports. A tree with a target and no deadline simply shows the first. */
+function goalPace(card) {
+  const bits = [];
+  const goal = card.goal || {};
+  const prog = card.progress;
+  if (prog && goal.target) {
+    const share = goal.target === 0 ? null : prog.current / goal.target;
+    if (share !== null) bits.push(`${Math.round(share * 100)}% of target`);
+  }
+  if (goal.deadline) {
+    const days = Math.round(
+      (new Date(`${goal.deadline}T00:00:00Z`) - new Date(isoUTC(new Date()) + "T00:00:00Z")) /
+        DAY_MS
+    );
+    bits.push(days >= 0 ? `${days} days left` : `deadline passed ${goal.deadline}`);
+  }
+  return bits.join(" · ");
+}
+
+function goalBarHtml(card) {
+  const goal = card.goal || {};
+  const prog = card.progress;
+  const target =
+    goal.target === null || goal.target === undefined
+      ? ""
+      : `<span class="goal-target"> / ${esc(fmt(goal.target))}</span>`;
+  if (!prog) {
+    // §2.3: never a blank that reads as zero, and never a stale number
+    // presented as live. A dash, the reason, and a way to fix it.
+    const why =
+      card.state === "error"
+        ? "this tree failed to load"
+        : "not loaded — nobody has opened this tree in this process yet";
+    return (
+      `<div class="goal-row"><span class="goal-dash">—</span>${target}</div>` +
+      `<p class="goal-pace muted">${esc(why)}</p>`
+    );
+  }
+  const share = goal.target ? prog.current / goal.target : null;
+  const bar =
+    share === null
+      ? ""
+      : `<div class="goal-bar"><span class="goal-fill ${goal.direction === "down" ? "down" : "up"}"` +
+        ` style="width:${(Math.max(0, Math.min(1, share)) * 100).toFixed(1)}%"></span></div>`;
+  return (
+    bar +
+    `<div class="goal-row"><strong>${esc(fmt(prog.current))}</strong>${target}` +
+    `<span class="goal-asof muted"> · as of ${esc(prog.as_of)}</span></div>` +
+    `<p class="goal-pace muted">${esc(goalPace(card))}</p>`
+  );
+}
+
+function treeCardHtml(card) {
+  const meta = [card.owner, card.period].filter(Boolean).map(esc).join(" · ");
+  let body;
+  if (card.state === "error") {
+    body =
+      `<p class="tree-error">${esc(card.load_error || "This tree failed to load.")}</p>` +
+      `<p class="muted">Diagnose with <code>breakdown doctor --tree &lt;tree.yml&gt;</code>.</p>`;
+  } else if (card.goal) {
+    body = goalBarHtml(card);
+  } else {
+    // A tree without a goal is not a failed goal card. The wide revenue tree,
+    // a marketing tree detailing channels, a product tree about feature
+    // adoption — none of them owes anyone a target.
+    body = `<p class="tree-plain">${card.metric_count} metrics · ${esc(card.provider || "—")}</p>`;
+  }
+  const load =
+    card.state === "not_loaded"
+      ? `<button class="tree-load" data-load="${esc(card.id)}">Load</button>`
+      : "";
+  return (
+    `<article class="tree-card${card.state === "error" ? " errored" : ""}">` +
+    `<h3><button class="tree-open" data-open="${esc(card.id)}"${card.state === "error" ? " disabled" : ""}>${esc(card.title)}</button></h3>` +
+    (card.description ? `<p class="tree-desc">${esc(card.description)}</p>` : "") +
+    (meta ? `<p class="tree-meta muted">${meta}</p>` : "") +
+    body +
+    `<div class="tree-actions"><span class="tree-state ${esc(card.state)}">${esc(card.state.replace("_", " "))}</span>${load}</div>` +
+    `</article>`
+  );
+}
+
+function renderIndex() {
+  const host = $("index");
+  host.innerHTML =
+    `<div class="index-head"><h1>Metric trees</h1>` +
+    `<p class="muted">${state.trees.length} tree${state.trees.length === 1 ? "" : "s"}` +
+    ` · data loads when you open one</p></div>` +
+    `<div class="tree-cards">${state.trees.map(treeCardHtml).join("")}</div>`;
+  host.querySelectorAll("[data-open]").forEach((btn) =>
+    btn.addEventListener("click", () => navigateToTree(btn.dataset.open))
+  );
+  host.querySelectorAll("[data-load]").forEach((btn) =>
+    btn.addEventListener("click", () => loadTreeFromIndex(btn))
+  );
+  $("index").style.display = "";
+  $("main").style.display = "none";
+  document.body.classList.add("index-view");
+  setContext([{ text: `${state.trees.length} trees` }]);
+  setStatus("");
+}
+
+/* The Load affordance: fetch this one tree's data and repaint its card. The
+   index stays where it is — someone comparing several trees should not be
+   thrown into one of them just for asking what its number is. */
+async function loadTreeFromIndex(btn) {
+  const id = btn.dataset.load;
+  btn.disabled = true;
+  btn.textContent = "Loading…";
+  try {
+    const card = await api(`/trees/${encodeURIComponent(id)}/load`, { method: "POST" });
+    state.trees = state.trees.map((t) => (t.id === id ? card : t));
+  } catch (err) {
+    setStatus(`Could not load ${id}: ${err.message}`, "error");
+  }
+  renderIndex();
+}
+
+/* Switching trees reloads the page rather than resetting state in place.
+   Everything keyed on metric names — the DAG, series, metric cache, RCA,
+   what-if, card overrides, the RCA window inputs — belongs to one tree, and
+   the boot path already binds its listeners once. A reload is the version of
+   "re-run init()" with no way to leave a stale listener or half-cleared canvas
+   behind, and the whole view is in the URL, so nothing is lost. */
+function navigateToTree(id) {
+  location.hash = id ? `tree=${encodeURIComponent(id)}` : "";
+  location.reload();
+}
+
+/* A `#tree=` that arrives *after* load — pasted into the address bar, or the
+   back button — changes which tree every cache below belongs to, so it reloads
+   for the same reason switching does. Our own hash writes go through
+   `history.replaceState`, which fires no hashchange, so this only ever sees a
+   real navigation. */
+window.addEventListener("hashchange", () => {
+  if (state.trees.length < 2) return;
+  const wanted = hashParams().get("tree") || null;
+  if (wanted !== (state.tree || null)) location.reload();
+});
+
+function initTreeSwitcher() {
+  const wrap = $("tree-switch");
+  if (state.trees.length < 2) return;
+  wrap.style.display = "";
+  const select = $("tree-select");
+  select.innerHTML = state.trees
+    .map(
+      (t) =>
+        `<option value="${esc(t.id)}"${t.id === state.tree ? " selected" : ""}${t.state === "error" ? " disabled" : ""}>${esc(t.title)}</option>`
+    )
+    .join("");
+  select.addEventListener("change", () => navigateToTree(select.value));
+  // The brand doubles as the way back to the index once there is one.
+  const brand = $("brand");
+  brand.classList.add("clickable");
+  brand.title = "All trees";
+  brand.addEventListener("click", () => navigateToTree(null));
 }
 
 async function init() {
@@ -3671,18 +3907,62 @@ async function init() {
           ? setStatus("Loading…", "busy")
           : setStatus("Waking the server up… (this takes a few seconds on first visit)", "busy"),
     });
-    if (health.status !== "ok") {
+    // `/trees` is the one call made before a tree is chosen. It is also
+    // cheap by contract (parsed YAML, no provider), so it costs a cold boot
+    // nothing. /health reports the *default* tree, so a degraded default must
+    // not hide an index full of healthy siblings.
+    try {
+      const index = await api("/trees");
+      state.trees = index.trees;
+      state.defaultTree = index.default;
+    } catch {
+      state.trees = [];
+    }
+    if (!state.trees.length) {
+      showDegradedBanner(health.error || "No metric tree was discovered.");
+      setStatus("No data loaded", "error");
+      return;
+    }
+
+    // `#tree=` is read first and gates everything else: #metric=/#rca=/#whatif=
+    // are meaningless without knowing whose metric names they refer to. No
+    // `#tree=` means the index — except with a single tree, where an index of
+    // one card is a toll booth and `/ui` opens the tree exactly as it always
+    // did.
+    const wanted = hashParams().get("tree");
+    if (wanted && !state.trees.some((t) => t.id === wanted)) {
+      renderIndex();
+      setStatus(`No tree '${wanted}' on this server.`, "error");
+      return;
+    }
+    state.tree = wanted || (state.trees.length === 1 ? state.trees[0].id : null);
+    if (!state.tree) {
+      renderIndex();
+      return;
+    }
+    initTreeSwitcher();
+    const card = state.trees.find((t) => t.id === state.tree);
+    if (card.state === "error") {
+      showDegradedBanner(card.load_error);
+      setStatus("No data loaded", "error");
+      return;
+    }
+    if (state.trees.length === 1 && health.status !== "ok") {
       showDegradedBanner(health.error);
       setStatus("No data loaded", "error");
       return;
     }
-    [state.meta, state.dag] = await Promise.all([api("/meta"), api("/dag")]);
+    setStatus(card.state === "loaded" ? "Loading…" : `Loading ${card.title}…`, "busy");
+    [state.meta, state.dag] = await Promise.all([
+      api(treePath("/meta")),
+      api(treePath("/dag")),
+    ]);
     // Series hydrates every node card in one request; degrade to name-only
     // nodes if it fails rather than blocking the whole graph. A cold-start
     // tree has no series at all — cards render from declared baselines.
     if (!coldStart()) {
       try {
-        state.series = await api("/series");
+        state.series = await api(treePath("/series"));
       } catch (err) {
         state.series = null;
         console.warn("card series unavailable:", err.message);
@@ -3739,7 +4019,13 @@ async function init() {
   } catch (err) {
     // Distinguish "could not reach the server" from "the server answered with
     // a problem": the first is worth another click, the second is not.
-    if (isTransient(err)) {
+    if (err.status === 503) {
+      // A lazily-loaded tree that failed on *this* request — its provider is
+      // unreachable, its credentials are wrong. Same banner as a degraded
+      // startup, because it is the same condition arriving later.
+      showDegradedBanner(err.message);
+      setStatus("No data loaded", "error");
+    } else if (isTransient(err)) {
       setStatus("Could not reach the server — it may still be starting.", "error");
       showRetryBanner();
     } else {

@@ -11,7 +11,15 @@
 </head>
 <body>
     <header>
-        <div class="brand">break<span>down</span></div>
+        <div class="brand" id="brand">break<span>down</span></div>
+
+        <!-- Tree is the outermost scope, so it sits leftmost: the header reads
+             left-to-right by narrowing scope (tree, then target, then as-of).
+             Hidden entirely when the process serves one tree. -->
+        <div class="control-group" id="tree-switch" style="display:none">
+            <label for="tree-select">Tree</label>
+            <select id="tree-select"></select>
+        </div>
 
         <div class="control-group">
             <label for="target-select">Target</label>
@@ -52,6 +60,11 @@
             <div id="context"></div>
         </div>
     </header>
+
+    <!-- The tree index: the landing view when this process serves more than
+         one tree. Rendered from GET /trees, which answers from parsed YAML
+         alone and never loads data. -->
+    <div id="index" style="display:none"></div>
 
     <div id="main">
         <div id="canvas-wrap">

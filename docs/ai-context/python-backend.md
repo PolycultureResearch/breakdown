@@ -26,7 +26,8 @@ breakdown/
     slices.py      # slice_attribution() — dimensional slicing of one metric's gap (pure, no I/O)
     simulate.py    # run_scenario() — do-operator what-if; fitted (posterior draws) or cold start (data=None)
   api/
-    main.py        # FastAPI app — routes, lifespan, state (owns the trace + slice caches)
+    main.py        # FastAPI app — routes, lifespan, per-tree state wiring
+    trees.py       # TreeState (one per tree) + the process-wide TraceStore, discovery
   mcp/
     server.py      # MCP server — 5 tools over the same engine/state (mounted at /mcp)
     shaping.py     # MCP response compaction, how_to_read caveats, UI deep links
@@ -510,36 +511,62 @@ Response contract: `{"mode": "fitted"|"cold_start", "baseline_window" (null in c
 | Env var | CLI flag | Default |
 |---------|----------|---------|
 | `BREAKDOWN_TREE` | `--tree` | bundled `breakdown/examples/jaffle_shop_tree.yml` |
+| `BREAKDOWN_DEFAULT_TREE` | `--default-tree` | the only tree, else the alphabetically first |
+| `BREAKDOWN_EAGER` | `--eager` | unset (a directory of trees loads lazily) |
 | `BREAKDOWN_START_DATE` | `--start-date` | `2024-01-01` |
 | `BREAKDOWN_END_DATE` | `--end-date` | `2024-04-09` |
 
-Dates are validated (ISO format, start ≤ end) both at the CLI and in `lifespan`. `lifespan` builds the fetcher from the tree's `provider` config and fetches every metric for the window **at its declared grain/kind**, assembling per-grain frames via `build_grained` (inner join on `date` within each grain only — a monthly metric no longer drops daily rows tree-wide). For `local`/`cloud` the queried metric name is the last segment of `source`, renamed to the tree `name`; mock generates by tree name directly.
+Dates are validated (ISO format, start ≤ end) both at the CLI and in `lifespan`. `load_tree(tree)` builds the fetcher from the tree's `provider` config and fetches every metric for the window **at its declared grain/kind**, assembling per-grain frames via `build_grained` (inner join on `date` within each grain only — a monthly metric no longer drops daily rows tree-wide). For `local`/`cloud` the queried metric name is the last segment of `source`, renamed to the tree `name`; mock generates by tree name directly.
 
 `build_grained` then requires each grain frame to be a **gap-free run of periods** (`_check_contiguous`, grain-aware via `_FREQ`), raising with up to 10 named missing dates plus a count. This is not tidiness: everything downstream indexes by position — the model's `t = arange(len(y))` dates the rows, lags shift by *rows*, and the bootstrap resamples contiguous runs — so a hole compresses the calendar and silently shifts every date rather than failing. Periods dropped by the inner join (present for only some metrics) are logged as a warning even when the survivors stay contiguous.
 
-**Cold-start startup (`provider: none`):** `lifespan` fetches nothing — `app.state.data` stays `None` with no `startup_error`; a stated mode, not degraded. Readiness is checked up front (`validate_cold_start`); missing declarations raise into the degraded path with the full blocker list. Time-series routes (`/series`, `/analyze`, `/shapley`, `/rca`) reject via `_require_data` (422 pointing at `/simulate`); `/meta` reports `mode: "cold_start"` with null window; `/metrics/{name}` serves the definition with an empty series; `/simulate` passes `data=None` through to the engine's cold-start branch unchanged.
+**Cold-start startup (`provider: none`):** `load_tree` fetches nothing — the tree's `data` stays `None` with no `startup_error`; a stated mode, not degraded. Readiness is checked up front (`validate_cold_start`); missing declarations raise into the degraded path with the full blocker list. Time-series routes (`/series`, `/analyze`, `/shapley`, `/rca`) reject via `_require_data` (422 pointing at `/simulate`); `/meta` reports `mode: "cold_start"` with null window; `/metrics/{name}` serves the definition with an empty series; `/simulate` passes `data=None` through to the engine's cold-start branch unchanged.
 
 **Startup cost and the deferred inference stack.** `pymc`/`arviz`/`pytensor` are imported *inside* the five functions in `engine/model.py` that use them, never at module scope, because `engine.model` sits on `api.main`'s import path and those three are ~80% of the process's import time (2.2s of 2.5s locally). Uvicorn cannot bind the port until module import finishes, so on a shared-CPU VM that was a ~43s boot — past the point where Fly's proxy gives up and returns **503**, which is how the public demo greeted the first visitor after every idle period. Deferring them takes local `import breakdown.api.main` to ~1.0s. `lifespan` then starts a daemon thread running `warm_inference_imports()` *after* the data load, so the cost lands between the page rendering and the first analysis rather than on the first *Run analysis* click — moving it there would have been worse than the slow boot. Three tests pin the arrangement (`test_api_import_does_not_load_pymc`, `test_warm_inference_imports_actually_loads_the_stack`, `test_lifespan_warms_the_inference_stack_in_the_background`); one convenient top-level `import pymc` silently undoes it. `_PRIOR_DISTRIBUTIONS` is a frozenset of *names* rather than PyMC classes for the same reason, resolved via `getattr(pm, ...)` at its one call site.
 
-**Degraded startup:** the whole parse/build/fetch is wrapped in one try/except. On failure the app still serves — `app.state.startup_error` holds `"ExcType: message"`, `parser`/`fetcher`/`data` stay `None`, data routes reject via `_require_ready` (503 with the error + a `breakdown doctor` hint), MCP tools reject the same way in `_state()`, and the UI shows a banner. `/ui`, `/`, and `/health` keep working; a container never crash-loops on a bad token. Per-metric diagnosis is deliberately not here — that's `doctor.py`'s job.
+**Degraded startup:** the parse and the load are each wrapped in a try/except, and the failure is recorded **per tree** on `TreeState.load_error`. The app still serves — that tree's data routes reject via `_require_ready` (503 with the error + a `breakdown doctor` hint), MCP tools reject the same way in `_state()`, the UI shows a banner, and *the other trees are unaffected*. `/ui`, `/`, `/trees` and `/health` keep working; a container never crash-loops on a bad token. A failure with no tree to hang it on — `--tree` naming nothing loadable — is the one global case (`app.state.discovery_error`), and then `_tree()` 503s rather than 404ing, since "there is no tree" is not "you asked for the wrong one". Per-metric diagnosis is deliberately not here — that's `doctor.py`'s job.
 
 Static files and the default tree resolve via `importlib.resources` (`files("breakdown")`), not repo-relative paths, so an installed wheel behaves like a checkout.
 
-### State (set in `lifespan`)
+### State: one `TreeState` per tree (roadmap 2.16)
 
-| `app.state` key | Type | Description |
+A process serves **several** trees, and they are peers: a wide tree with revenue at the top, a marketing tree detailing channels and campaigns, a product tree about feature adoption and retention, a tree standing behind a target — any of them durable or disposable, any with a goal or without. So everything that used to sit directly on `app.state` is per-tree and lives on a `TreeState` in `app.state.trees[id]` (`api/trees.py`). Design spec: [`multi_tree_design.md`](../../knowledge/multi_tree_design.md).
+
+| `TreeState` field | Type | Description |
 |-----------------|------|-------------|
-| `parser` | `Parser \| None` | Parsed metric tree (`None` while degraded) |
+| `id` / `path` | `str` | The filename stem and the file. The id is never declared in YAML: two files could then claim one, and a filename collision is impossible |
+| `meta` | `TreeMeta \| None` | The parsed `tree:` block (title/description/owner/period/goal) |
+| `parser` | `Parser \| None` | Parsed metric tree (`None` if its YAML failed to parse) |
 | `fetcher` | `BaseDataFetcher \| None` | Fetcher matching the provider type |
 | `data` | `GrainedData \| None` | Per-grain frames + `grain_of`/`kind_of`/`last_observed` maps (`last_observed` is captured per metric before the within-grain join; `data_through(m)` converts it to the inclusive last covered date) |
-| `startup_error` | `str \| None` | Set when the startup data load failed; gates every data route |
-| `traces` | `Dict[Tuple[str, Optional[str]], FitResult]` | **The** trace cache, keyed `(name, fit_end)` (single source of truth) |
+| `load_error` | `str \| None` | This tree's parse or load failure; gates its data routes only |
+| `loaded` / `loading` | `bool` | Drive `state` (`loaded` \| `loading` \| `not_loaded` \| `error`) on the index |
+| `traces` | `TraceView` | This tree's view of the shared trace cache, keyed `(name, fit_end)` — the engine's own key |
 | `slice_cache` | `Dict[Tuple[str, str, str, str, str], pd.DataFrame]` | On-demand sliced frames, keyed `(metric, dimension_source, grain, start, end)` — deliberately separate from `GrainedData` |
-| `lock` | `asyncio.Lock` | Serializes sampling (analyze + RCA fits) |
+| `flow_cache` | `Dict[...]` | Entity-flow transition matrices, keyed by a *pair* of windows |
+| `lock` | `asyncio.Lock` | Serializes sampling (analyze + RCA fits) **on this tree** |
+| `earliest` / `earliest_task` | `Dict[str, str \| None]` / `Task` | Background history discovery |
+
+App-wide state is what genuinely isn't a tree's: `trees`, `default_tree`, `trace_store`, `discovery_error`, and `progress`.
+
+Four things about this shape are load-bearing:
+
+- **The lock is per-tree.** One global lock is right when there is one tree and one trace cache; with eight it would make an RCA on the revenue tree wait behind a simulation on an unrelated marketing tree, for no reason — the caches they mutate are disjoint. (The `waiting` progress stage stays meaningful: it now means "queued behind another run *on this tree*".)
+- **The trace cap is global.** `MAX_CACHED_TRACES = 256` *per tree* would be 256 × N `InferenceData` objects, each holding every posterior draw. One `TraceStore` keyed `(tree_id, metric, fit_end)` is shared, and each tree gets a `TraceView` — a `MutableMapping` speaking the engine's `(metric, fit_end)` key — so `fit_metric` stays a pure function and nothing in `engine/` learns that more than one tree exists. `TraceView.__iter__` snapshots with `list(...)` before filtering, for the same reason `/meta` does (C8): a lazy generator over a dict a worker thread is inserting into raises "dictionary changed size during iteration".
+- **`progress` is not tree state.** Run ids are already unique, and a poller shouldn't need to know which tree it is watching — which is why `GET /progress/{run_id}` is the one data route with no tree-scoped form.
+- **`app.state.<attr>` still reads and writes the *default* tree's.** `BreakdownState` (a `starlette` `State` subclass) aliases every field above onto `app.state`, which is what keeps the MCP server, the README's examples and the whole test suite addressing the same attributes they always have. `app.state.startup_error` is the one composite: `discovery_error or default.load_error`.
+
+**Lazy loading (§5.1).** Boot parses **every** tree's YAML (cheap, no I/O beyond the file) and fetches **none**, so `GET /trees` is a complete, instant index without touching a warehouse. A tree's data loads on the first request that needs it, in `_ensure_loaded` — under that tree's lock, off the event loop, with the double check inside the lock so two viewers opening the same cold tree don't both fetch. A tree that failed to load keeps its `load_error` rather than being retried on every request, which would hammer a down warehouse once per click. The exception is a **single-file** `--tree`, which loads eagerly: lazy buys nothing with one tree, and the port being up should mean the data is too (`_eager_trees`; `--eager` asks for the same from a directory).
 
 ### Routes
 
-**`GET /health`** — always 200: `{status: "ok", provider, metrics}` or `{status: "degraded", error}`. Liveness for orchestrators (the body, not the code, carries degraded-ness) and the UI's first request.
+**`GET /health`** — always 200: `{status: "ok", provider, metrics}` or `{status: "degraded", error}`. Liveness for orchestrators (the body, not the code, carries degraded-ness) and the UI's first request. Reports on the **default** tree, like every unprefixed route; the per-tree view is `/trees`.
+
+**`GET /trees`** — the index's data source: `{default, trees: [{id, title, description, owner, period, goal, provider, metric_count, state, load_error, progress}]}` (`period` and `goal` are null on the trees that declare none). Answers from parsed YAML alone and **never triggers a load** — the lazy loading above is worthless if the index pays for it. `progress` is `{current, target, as_of}` for a loaded tree that declares a goal and `null` otherwise — including for the many trees that declare none, which is normal rather than a gap. The pairing with `state` is what keeps it honest: `progress: null` + `not_loaded` means *we haven't looked* and must not render as a zero. `current` is read at the tree's own data edge (the anchor the node cards use, only periods fully completed by it), so the index agrees with what the tree itself shows.
+
+**`POST /trees/{id}/load`** — explicit load behind the index's *Load* button; returns the updated card. A second caller arriving mid-fetch waits on the same lock rather than starting a second one.
+
+**Tree-scoped routes.** Every data route below is registered **twice** from one `APIRouter`: bare, and under `/trees/{tree_id}`. Handlers never see the id — `_tree(request)` reads it off `request.path_params` — so there is exactly one implementation of each endpoint and the aliases cannot drift from the routes they alias. The bare paths mean the default tree, which is what keeps existing deep links, the README's curl examples, the MCP tools and the test suite working unchanged. A path prefix beats `?tree=` or a header: cache-friendly, unambiguous in logs, and a shared URL is self-describing.
 
 **`GET /meta`** — `mode` (`"fitted"` | `"cold_start"` — which surface the UI should boot), metrics, data window (null in cold start), provider, per-metric `grains`/`kinds`/`data_through` maps (`data_through` = each metric's honest data edge, which may lag the requested window), `earliest_available` (per-metric earliest provider date from the background discovery task — `{}` until it fills, null per metric when the provider can't say; drives the UI's "history exists before --start-date" nudge), fitted list (UI bootstrap).
 
@@ -573,7 +600,7 @@ Static files and the default tree resolve via `importlib.resources` (`files("bre
 
 ## `mcp/` — MCP server for AI assistants
 
-`mcp/server.py` defines an `MCPServer` ("breakdown") with five async tools — `get_tree` (compact `/meta` + `/dag`; carries `mode`, each metric's declared `dimensions`, and, cold start, asserted baselines instead of a data window), `explain_metric` (definition + neighbors + series summary + fit status; series summary is null on a cold-start tree, with `baseline`/`plausible` declarations in the definition), `run_rca`, `slice_metric` (the traverse-then-slice follow-up: localizes a metric's gap within one declared dimension via the same `_run_slice` path as the endpoint, lag-shifted windows per its docstring), and `run_whatif` (`/simulate`'s engine with `Intervention`/`Assumption` as typed params; `baseline_start`/`baseline_end` are Optional — required on a fitted tree, omitted on a cold-start one). Tools own no state: they read the FastAPI `app.state` (lazy import to avoid the cycle — `api/main.py` imports `server.mcp` to mount it) and run engine calls exactly like the endpoints do: `async with state.lock: await asyncio.to_thread(...)`. Engine `ValueError`s propagate as MCP tool errors so the calling model can self-correct windows. `run_rca` guards cold start via `_require_data` — a tool error naming `run_whatif` as the tool that does work.
+`mcp/server.py` defines an `MCPServer` ("breakdown") with six async tools — `list_trees` (the `/trees` index, so an assistant asked "why did paid signups stall" can *find* the tree that models paid acquisition before analysing it; a sibling tool rather than a second return shape on `get_tree`), `get_tree` (compact `/meta` + `/dag`; carries `mode`, each metric's declared `dimensions`, and, cold start, asserted baselines instead of a data window), `explain_metric` (definition + neighbors + series summary + fit status; series summary is null on a cold-start tree, with `baseline`/`plausible` declarations in the definition), `run_rca`, `slice_metric` (the traverse-then-slice follow-up: localizes a metric's gap within one declared dimension via the same `_run_slice` path as the endpoint, lag-shifted windows per its docstring), and `run_whatif` (`/simulate`'s engine with `Intervention`/`Assumption` as typed params; `baseline_start`/`baseline_end` are Optional — required on a fitted tree, omitted on a cold-start one). Tools own no state: they read the FastAPI `app.state` (lazy import to avoid the cycle — `api/main.py` imports `server.mcp` to mount it) and run engine calls exactly like the endpoints do: `async with state.lock: await asyncio.to_thread(...)`. Every tool takes an optional `tree`; `await _state(tree)` resolves it to a `TreeState` (default tree when omitted) and loads it on the way, since the tools are the one caller with no page to show a `loading` state to. `report_url` carries `#tree=`, so a link an assistant hands over keeps naming that tree even if the server's default changes. Engine `ValueError`s propagate as MCP tool errors so the calling model can self-correct windows. `run_rca` guards cold start via `_require_data` — a tool error naming `run_whatif` as the tool that does work.
 
 `mcp/shaping.py` shapes engine results for LLM consumption: `round_floats` (4 significant figures, non-finite → null), `compact_rca` (drops per-contribution `decomposition` and window detail, collapses `components` to point estimates and `fit_window` to `fit_periods`, passes `seasonality_warnings` and top-level `reference_defaulted` through, shrinks skipped nodes, omits null node fields — but keeps a null `ci_95` inside contributions: withheld-interval semantics — and passes `lag`/`parent_windows` through on lagged contributions), `compact_slice` (window detail → period counts, per-slice nulls and empty caveats trimmed, reconciliation collapsed to status + residual share) with `SLICE_HOW_TO_READ` (excess-vs-contribution, zero-sum excess, `noise_level`, `__other__`, mix-is-composition, reconciliation, and the lag-shifted-window rule), `compact_scenario` (baseline nodes shrink to `{status, baseline}`, extrapolation stats collapse to the flag; `mode` and any non-null `baseline_ci_95` belief intervals pass through), `RCA_HOW_TO_READ`/`whatif_how_to_read(mode)` (docs/model.md caveats attached to every analysis response; cold-start results append `COLD_START_HOW_TO_READ`, which reframes every number as a stated belief), and `rca_link`/`whatif_link`/`metric_link` (UI deep links matching `applyDeepLink()`'s hash params in `static/app.js`; base URL from `BREAKDOWN_PUBLIC_URL`, default `http://127.0.0.1:$BREAKDOWN_PORT`).
 
@@ -584,9 +611,10 @@ Transport: streamable HTTP mounted at `/mcp`, stateless with plain-JSON response
 ## Data flow
 
 ```
-YAML file
+YAML file(s)            (--tree may be a directory: one tree per *.yml, id = filename stem)
   → Parser (Pydantic + NetworkX DAG; nodes carry MetricDefinition incl. grain/kind)
-    → lifespan: fetch_metric(name, window, grain, kind) per metric
+    → lifespan: parse every tree, load none  →  app.state.trees[id] (TreeState)
+    → load_tree(tree), on first use: fetch_metric(name, window, grain, kind) per metric
         → build_grained() → app.state.data (GrainedData: per-grain frames)
         → POST /analyze/{name} → fit_metric() at the node's grain → FitResult → app.state.traces
         → POST /rca/{name}     → run_rca(dag, data, app.state.traces, ...)

@@ -1,3 +1,4 @@
+import datetime
 import logging
 import os
 import re
@@ -142,6 +143,66 @@ class DataProviderConfig(BaseModel):
     @classmethod
     def expand_env_vars(cls, v: Optional[str]) -> Optional[str]:
         return _expand_env(v)
+
+
+class GoalSpec(BaseModel):
+    """A target a tree is being held to. Optional, like everything in `tree:`.
+
+    Any tree may declare one — a five-year platform tree as readily as a
+    quarterly push — and most trees won't. `metric` names a metric in this tree
+    and is the one field here that can be wrong in a way the author cannot see,
+    so `Parser._validate_goal` rejects a dangling name rather than leaving a
+    silently dead card on the index. `direction` says which way is winning and
+    defaults from the named metric's own `direction` (the tree already has the
+    concept); `deadline` is optional too — a target with no date is a perfectly
+    ordinary thing to be held to.
+    """
+
+    metric: str
+    target: Optional[float] = None
+    direction: Optional[str] = None
+    deadline: Optional[str] = None
+
+    @field_validator("direction")
+    @classmethod
+    def check_direction(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ("up", "down"):
+            raise ValueError(f"goal direction must be 'up' or 'down', got '{v}'")
+        return v
+
+    @field_validator("deadline")
+    @classmethod
+    def check_deadline(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        try:
+            datetime.date.fromisoformat(v)
+        except (ValueError, TypeError):
+            raise ValueError(f"goal deadline must be a YYYY-MM-DD date, got '{v}'")
+        return v
+
+
+class TreeMeta(BaseModel):
+    """The optional `tree:` block — a tree's identity as a document.
+
+    **Every field is optional, including the block itself.** A process serves
+    several trees and they are peers: a wide tree with revenue at the top, a
+    marketing tree detailing channels and campaigns, a product tree about
+    feature adoption, a tree standing behind a target. Nothing here says how
+    long a tree should live or that it owes anyone a goal — a tree can declare
+    only `title`, or nothing at all and take its identity from its filename.
+    `id` is never declared here: it is always the filename stem, so two files
+    can't claim one id.
+
+    `period` is a free-form label the card shows ("2026-Q3", "FY27",
+    "2026-2031"), deliberately unparsed; `goal.deadline` is the parsed date.
+    """
+
+    title: Optional[str] = None
+    description: Optional[str] = None
+    owner: Optional[str] = None
+    period: Optional[str] = None
+    goal: Optional[GoalSpec] = None
 
 
 class Seasonality(BaseModel):
@@ -828,6 +889,11 @@ class MetricDefinition(BaseModel):
 
 
 class MetricTreeConfig(BaseModel):
+    # The tree's identity as a document (title/owner/period/goal). Optional in
+    # both directions: a tree with no `tree:` block is exactly as valid as it
+    # was before the block existed, and because this model ignores extra keys,
+    # a tree carrying one already loads on builds that predate it.
+    tree: Optional[TreeMeta] = None
     provider: DataProviderConfig = Field(default_factory=DataProviderConfig)
     metrics: List[MetricDefinition]
 
@@ -863,7 +929,53 @@ class Parser:
 
         self._validate_grains(G)
         self._validate_dimension_weights(G)
+        self._validate_goal(G)
         return G
+
+    def _validate_goal(self, G: nx.DiGraph) -> None:
+        """Resolve `tree.goal` against the tree (needs the full node set).
+
+        Two rules, both about a claim the author cannot check by eye:
+
+        - `goal.metric` must name a metric here. A goal pointing at a metric
+          that doesn't exist would show as a permanently blank card on the
+          index, which reads as "no progress yet" rather than "typo".
+        - `goal.direction` defaults from the named metric's own `direction`
+          when the metric *declares* one (`model_fields_set`, so the field's
+          own default never masquerades as a declaration). Declaring both and
+          disagreeing is an error: one of the two is telling the reader the
+          wrong thing about which way is winning, and guessing which would be
+          worse than stopping.
+        """
+        meta = self.config.tree
+        goal = meta.goal if meta else None
+        if goal is None:
+            return
+        if goal.metric not in G:
+            raise ValueError(
+                f"tree.goal.metric '{goal.metric}' is not a metric in this tree "
+                f"(known: {', '.join(sorted(G.nodes))})."
+            )
+        defn = G.nodes[goal.metric]["definition"]
+        declared = "direction" in defn.model_fields_set
+        implied = {"up_is_good": "up", "down_is_good": "down"}.get(defn.direction)
+        if goal.direction is None:
+            # `neutral` implies nothing, so a goal on a neutral metric must say
+            # which way it is trying to move — there is no sane default.
+            if declared and implied is None:
+                raise ValueError(
+                    f"tree.goal names metric '{goal.metric}', which declares "
+                    "`direction: neutral`, so no goal direction can be inferred. "
+                    "Declare `tree.goal.direction: up` or `down`."
+                )
+            goal.direction = implied if declared else "up"
+        elif declared and implied is not None and goal.direction != implied:
+            raise ValueError(
+                f"tree.goal.direction is '{goal.direction}' but metric "
+                f"'{goal.metric}' declares `direction: {defn.direction}`. "
+                "They disagree about which way is winning; declare one or make "
+                "them agree."
+            )
 
     @staticmethod
     def _validate_dimension_weights(G: nx.DiGraph) -> None:
