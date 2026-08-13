@@ -15,6 +15,20 @@ wheels/
 # agent worktrees
 .claude/worktrees/
 
+# The operator's own tree and data. `compose.yaml` mounts `./tree.yml` and
+# `./snapshots`, and the README's deploy recipe builds from a clone — so these
+# are the paths a real deployment creates *inside this repo*, and `git add -A`
+# would commit a warehouse host, catalog, inline `sql:` business logic, possibly
+# a literal token, and the client's data as parquet. Root-anchored on purpose:
+# `breakdown/examples/*.yml` and `demo/white_cube_tree.yml` are ours and stay
+# tracked. The same paths are excluded from the Docker build context.
+/tree.yml
+/*_tree.yml
+/snapshots/
+/.breakdown/
+/.env
+/.env.*
+
 # Review reports (`grill`): internal critique that names clients and describes
 # undisclosed defects. This repo is public, so these are ignored by default and
 # published only by explicit decision, never by `git add -A`. Archived on their
