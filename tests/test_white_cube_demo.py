@@ -1,4 +1,5 @@
-"""The White Cube demo instance still tells the stories it was built to tell.
+"""The White Cube demo instance still tells the stories it was built to tell,
+*with the numbers `knowledge/demo_guided_tour.md` says it does.*
 
 This is the demo's real guarantee. Each planted anomaly in
 `fake_companies/configs/white_cube_b2c_app.yaml` has a chain a metric-tree RCA
@@ -15,6 +16,44 @@ same stories checked one layer down, in the warehouse).
 Skipped when the snapshots are absent, so neither a clone that has not run
 `demo/Makefile` nor an unpacked sdist (which excludes `demo/` entirely) is a
 red suite.
+
+Why the quoted values are pinned here, and how
+----------------------------------------------
+The tour is read aloud on a client call, and it told its reader that every
+number in it was asserted here. That was false: this module pinned *properties*
+— gap sign, which node ranks first, `lag == 1`, a share inequality — and no
+percentage the tour actually quoted. Several drifted (C3 and C5 both changed
+attribution after the tour was written) and nothing went red: one share was
+wrong by 28 points and one had an inverted sign. So the values are pinned now,
+**beside** the properties, never instead of them — the lesson recorded on
+roadmap C3 is that a golden test pinning values without asserting the property
+those values exist to protect will happily lock in a bug. Every `approx` below
+sits next to the inequality or sign test it is the numeric witness for.
+
+`TOUR` is `abs=0.001` — a tenth of a percentage point — for anything the UI
+renders as a percentage, and `rel=1e-3` for money and counts. That is a
+deliberate choice at both ends:
+
+* **Not looser**, because the drift this suite failed to catch was 28 points,
+  4.3 points on `new_arpu`, and a 1.6-point swing that inverted a sign. A
+  tolerance anywhere near those is worth nothing. 0.001 is ~280x tighter than
+  the worst of them, and tighter than the last digit the tour prints.
+* **Not tighter**, because every pinned figure is deterministic arithmetic over
+  committed parquet — Shapley on an identity, or a ratio of window means — with
+  no sampler in the path. Measured across separate processes these agree
+  bit-for-bit, so the real noise floor is ~1e-13 and 0.001 is ten orders of
+  magnitude of headroom for a different BLAS or a summation reorder.
+
+Nothing sampler-derived is pinned as a value. Where the tour would have had to
+quote one (the `marketing_spend` what-if lever, which runs through a learned
+edge), it quotes the *contrast* instead — a wide interval against a degenerate
+one — and that contrast is what is asserted, with a band rather than a point.
+
+Two claims the tour makes are **product defects, not stale numbers**, and are
+pinned here as such: `churn_arpu` has no declared `direction` so the UI colours
+it green, and the RCA table renders no `lag`. Those tests exist to go red when
+the defect is *fixed*, at which point the matching `⚠ known gap` note in the
+tour should be deleted.
 """
 
 import os
@@ -30,6 +69,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEMO = os.path.join(REPO, "demo")
 TREE = os.path.join(DEMO, "white_cube_tree.yml")
 SNAPSHOTS = os.path.join(DEMO, ".breakdown", "snapshots")
+
+# Tolerance for a figure the tour prints. See the module docstring.
+TOUR = dict(abs=0.001)
 
 pytestmark = pytest.mark.skipif(
     not os.path.isdir(SNAPSHOTS) or not os.listdir(SNAPSHOTS),
@@ -108,6 +150,65 @@ def slices(client, metric, dimension, ref, ana):
     return r.json()
 
 
+# --------------------------------------------------------------- the UI surface
+#
+# The tour is read off the screen, not off the payload, and the two differ on
+# purpose: the RCA tab's *Headline* view (the default, `state.rcaView`) puts the
+# co-movement term in its own row, so a driver's share there is its window-means
+# part over the gap, while the payload's `share_of_gap` folds each parent's
+# slice of co-movement back in. `new_subscriptions` in story A is 130.0% on
+# screen and 1.2899 in the payload; both decompositions are complete.
+#
+# These three helpers are ports of `breakdown/static/app.js` — `shareOf` (~3062)
+# over `decomposition.means` (~3130), and the `localized` rule (~2856). There is
+# no JS test runner here (MVP-first, deliberately), so this is the seam: if that
+# rendering changes, change these with it, and re-measure the tour.
+
+
+def ui_share(node, parent):
+    """A driver's share as the Headline table prints it: means over gap."""
+    (c,) = [c for c in node["contributions"] if c["parent"] == parent]
+    return c["decomposition"]["means"]["estimate"] / node["gap"]
+
+
+def ui_comovement(node):
+    """The `co-movement shift` row's share, as the Headline table prints it."""
+    return node["interaction"]["estimate"] / node["gap"]
+
+
+def ui_localized(s):
+    """Whether the slice panel prints the "<x> carries N% of the gap" verdict
+    rather than "Not localized by <dimension>". Ranking always produces a first
+    row, so this concentration floor is the whole difference between a slicer
+    worth believing and one that names whatever sorted first."""
+    top = s["slices"][0] if s["slices"] else None
+    gap = s.get("gap")
+    concentration = (
+        abs(top["excess"] / gap)
+        if top and top.get("excess") is not None and gap and abs(gap) > 1e-12
+        else 0.0
+    )
+    return bool(
+        top
+        and not top.get("noise_level")
+        and top.get("baseline_share") is not None
+        and top.get("share_of_gap") is not None
+        and concentration >= 0.25
+    )
+
+
+def test_the_tree_is_the_size_the_script_says():
+    """Section 0 of the tour is read aloud: "18 metrics in 273 lines, of which
+    209 are actual configuration". Pinned exactly rather than as a band — if you
+    edit the tree, the sentence a presenter says about it needs editing too, and
+    that is precisely the drift this module exists to catch."""
+    with open(TREE) as f:
+        lines = f.read().splitlines()
+    assert len(lines) == 273
+    assert len([ln for ln in lines if ln.strip() and not ln.strip().startswith("#")]) == 209
+    assert len([ln for ln in lines if ln.startswith("  - name:")]) == 18
+
+
 def test_boots_hermetically(client):
     """No provider reachable, yet every metric has data."""
     health = client.get("/health").json()
@@ -144,7 +245,20 @@ def test_story_a_signup_regression_traverses_and_localizes(client):
     ref, ana = ("2026-01-05", "2026-02-01"), ("2026-02-09", "2026-03-08")
     d = rca(client, "new_mrr", ref, ana)
 
-    assert d["nodes"]["new_mrr"]["gap"] < 0
+    top = d["nodes"]["new_mrr"]
+    assert top["gap"] < 0
+    # "New MRR is down −14.8% (−$252/week)."
+    assert top["relative_change"] == pytest.approx(-0.148, **TOUR)
+    assert top["gap"] == pytest.approx(-251.83, rel=1e-3)
+
+    # "...walks it back through new_subscriptions (−18.7%) and trial_conversions
+    # (−12.3%) to signups (−10.2%)."
+    for metric, quoted in (
+        ("new_subscriptions", -0.187),
+        ("trial_conversions", -0.123),
+        ("signups", -0.102),
+    ):
+        assert d["nodes"][metric]["relative_change"] == pytest.approx(quoted, **TOUR), metric
 
     # The volume chain saturates the influence score, so which of its members
     # sorts first is a tie — what must hold is that the whole chain outranks
@@ -156,26 +270,81 @@ def test_story_a_signup_regression_traverses_and_localizes(client):
     for alternative in ("new_arpu", "trial_conversion_rate"):
         assert max(ranked.index(m) for m in chain) < ranked.index(alternative)
 
+    # "new_subscriptions carries 130.0% of the gap while new_arpu carries
+    # −27.9%, with a −2.1% co-movement row under them." The property those
+    # values protect: the offsetting contribution is *reported*, not clamped to
+    # [0, 1] and not netted away — so volume overshoots 100% and price is
+    # negative. The tour also quotes the payload's 1.2899 for the same driver,
+    # to explain why the API and the screen differ; pinned so that claim cannot
+    # drift either.
+    assert ui_share(top, "new_subscriptions") > 1.0
+    assert ui_share(top, "new_arpu") < 0.0
+    assert ui_share(top, "new_subscriptions") == pytest.approx(1.3003, **TOUR)
+    assert ui_share(top, "new_arpu") == pytest.approx(-0.2795, **TOUR)
+    assert ui_comovement(top) == pytest.approx(-0.0208, **TOUR)
+    payload = {c["parent"]: c["share_of_gap"] for c in top["contributions"]}
+    assert payload["new_subscriptions"] == pytest.approx(1.2899, **TOUR)
+
+    # "unexplained on new_mrr reads −2.27e-13. The identity is exact." The
+    # digits are float noise, so the tour says so and this pins the magnitude.
+    assert abs(top["unexplained"]) < 1e-9
+
     # The trial is modelled as a one-week lag, and the shifted parent window
-    # must land on the anomaly, not on the calendar window.
+    # must land on the anomaly, not on the calendar window. The tour quotes the
+    # full shifted pair, because that is what the slice panel's footer prints —
+    # see test_known_gap_the_rca_table_cannot_show_the_lag.
     (contribution,) = d["nodes"]["new_subscriptions"]["contributions"]
     assert contribution["parent"] == "trial_conversions"
     assert contribution["lag"] == 1
-    assert contribution["parent_windows"]["analysis"]["start"] == "2026-02-02"
-
-    # The CTA broke volume, not conversion quality.
-    conv = {
-        c["parent"]: c["share_of_gap"] for c in d["nodes"]["trial_conversions"]["contributions"]
+    assert contribution["parent_windows"]["reference"] == {
+        "start": "2025-12-29",
+        "end": "2026-01-25",
     }
-    assert conv["trials_started"] > conv["trial_conversion_rate"]
+    assert contribution["parent_windows"]["analysis"] == {
+        "start": "2026-02-02",
+        "end": "2026-03-01",
+    }
 
-    s = slices(
-        client, "signups", "device", ("2025-12-29", "2026-01-25"), ("2026-02-02", "2026-03-01")
-    )
+    # The CTA broke volume, not conversion quality. The tour used to say
+    # trial_conversion_rate carried "~2%"; it is a hair *below* zero — quality
+    # ticked up and very slightly offset the volume loss — so the sign is
+    # asserted next to the value it inverted.
+    tc = d["nodes"]["trial_conversions"]
+    conv = {c["parent"]: c["share_of_gap"] for c in tc["contributions"]}
+    assert conv["trials_started"] > conv["trial_conversion_rate"]
+    assert ui_share(tc, "trial_conversion_rate") < 0
+    assert ui_share(tc, "trials_started") == pytest.approx(1.0160, **TOUR)
+    assert ui_share(tc, "trial_conversion_rate") == pytest.approx(-0.0057, **TOUR)
+    assert ui_comovement(tc) == pytest.approx(-0.0103, **TOUR)
+
+    # The slice the tour scripts. `signups` sits below the lagged edge and is
+    # not itself a lagged parent, so `sliceWindowsFor` (app.js ~2743) finds no
+    # `parent_windows` for it and the UI slices over its own effective windows
+    # — the calendar block. These are the numbers on the presenter's screen.
+    s = slices(client, "signups", "device", ref, ana)
     assert s["slices"][0]["value"] == "mobile"
     assert s["slices"][0]["baseline_share"] < abs(s["slices"][0]["share_of_gap"])
     assert s["reconciliation"]["status"] == "ok"
     assert not s["slices"][0]["noise_level"]
+    assert ui_localized(s)
+    # "mobile carries 90.1% of the gap on a 51.9% baseline share."
+    assert s["slices"][0]["share_of_gap"] == pytest.approx(0.901, **TOUR)
+    assert s["slices"][0]["baseline_share"] == pytest.approx(0.519, **TOUR)
+
+    # "Not localized by country" — the contrast that is the point of the demo.
+    # It is a verdict, not a number, so the rule behind it is what gets pinned.
+    c = slices(client, "signups", "country", ref, ana)
+    assert not ui_localized(c)
+    assert abs(c["slices"][0]["excess"] / c["gap"]) < 0.25
+
+    # Still asserted over the lag-shifted pair too: a prospect who slices from
+    # the trial_conversions cause gets those windows, and they must also name
+    # mobile rather than falling through to a provider.
+    shifted = slices(
+        client, "signups", "device", ("2025-12-29", "2026-01-25"), ("2026-02-02", "2026-03-01")
+    )
+    assert shifted["slices"][0]["value"] == "mobile"
+    assert shifted["reconciliation"]["status"] == "ok"
 
 
 def test_story_b_churn_spike_is_offset_and_plan_localized(client):
@@ -188,10 +357,118 @@ def test_story_b_churn_spike_is_offset_and_plan_localized(client):
     assert d["ranked_causes"][0]["metric"] == "churned_mrr"
     assert d["nodes"]["churned_mrr"]["gap"] > 0  # stored positive: more churn
 
+    # The two branches move in opposite directions — the property the story is
+    # built on — and these are the levels the presenter reads out. The
+    # acquisition pair is where the tour drifted worst: +50.3% for
+    # new_subscriptions was 28 points off.
+    for metric, quoted in (
+        ("net_new_mrr", -0.321),
+        ("churned_mrr", 0.874),
+        ("churned_subscriptions", 0.593),
+        ("customer_churn_rate", 0.452),
+        ("new_mrr", 0.117),
+        ("new_subscriptions", 0.223),
+    ):
+        assert d["nodes"][metric]["relative_change"] == pytest.approx(quoted, **TOUR), metric
+    assert d["nodes"]["churned_mrr"]["relative_change"] > 0
+    assert d["nodes"]["new_mrr"]["relative_change"] > 0
+
+    # "Inside churned_mrr, the split is 73.5% / 27.3% (co-movement −0.8%)."
+    cm = d["nodes"]["churned_mrr"]
+    assert ui_share(cm, "churned_subscriptions") > ui_share(cm, "churn_arpu") > 0
+    assert ui_share(cm, "churned_subscriptions") == pytest.approx(0.735, **TOUR)
+    assert ui_share(cm, "churn_arpu") == pytest.approx(0.273, **TOUR)
+    assert ui_comovement(cm) == pytest.approx(-0.008, **TOUR)
+
     s = slices(client, "churned_mrr", "plan", ref, ana)
     assert s["slices"][0]["value"] == "professional"
     assert s["slices"][0]["excess"] > 0
     assert s["reconciliation"]["status"] == "ok"
+    assert ui_localized(s)
+    # "professional carries 79.9% of the gap on a 39.6% baseline share."
+    assert s["slices"][0]["share_of_gap"] == pytest.approx(0.799, **TOUR)
+    assert s["slices"][0]["baseline_share"] == pytest.approx(0.396, **TOUR)
+
+    # The contrast: a tier, not a geography. The tour used to say "every row
+    # flagged noise" — one of the nine is not, so the count is pinned with the
+    # verdict rather than an "every" that was never true.
+    c = slices(client, "customer_churn_rate", "country", ref, ana)
+    assert not ui_localized(c)
+    assert len(c["slices"]) == 9
+    assert sum(1 for row in c["slices"] if row["noise_level"]) == 8
+
+
+def test_known_gap_churn_arpu_is_undeclared_and_the_ui_colours_it_green(client):
+    """A product defect the tour must not paper over, filed separately.
+
+    Story B says the churn branch is red. `churn_arpu` rises here and carries
+    27.3% of the damage, and it renders **green, with an up arrow**, on the
+    presenter's screen. `demo/white_cube_tree.yml` declares no `direction` on it;
+    `MetricDefinition.direction` defaults to `up_is_good` (parser.py ~648) and
+    `/dag` serializes with `model_dump()`, so the default arrives at the UI
+    indistinguishable from a declared value. The UI is not free to do better
+    here — by the time it has the payload, silence and an explicit `up_is_good`
+    look identical — which is why this is filed as a defect rather than fixed by
+    editing the tree in passing.
+
+    This pins the defect, not the fix. It goes red when someone declares a
+    direction on `churn_arpu`, which is the moment the `⚠ known gap` note in
+    `knowledge/demo_guided_tour.md` must be deleted."""
+    d = rca(client, "net_new_mrr", ("2026-03-16", "2026-04-12"), ("2026-05-11", "2026-06-07"))
+    node = d["nodes"]["churn_arpu"]
+    assert node["gap"] > 0  # up, and up is bad for a churn ARPU
+    assert node["relative_change"] == pytest.approx(0.185, **TOUR)
+
+    yaml = pytest.importorskip("yaml")
+    with open(TREE) as f:
+        declared = {m["name"]: m.get("direction") for m in yaml.safe_load(f)["metrics"]}
+    assert declared["churn_arpu"] is None, (
+        "churn_arpu now declares a direction — the UI will colour it correctly, "
+        "so delete the '⚠ known gap' note in knowledge/demo_guided_tour.md"
+    )
+    # The neighbours that *are* declared, so this reads as one metric missed
+    # rather than a tree-wide omission.
+    for correct in ("churned_mrr", "churned_subscriptions", "customer_churn_rate"):
+        assert declared[correct] == "down_is_good"
+
+    # ...and the silence really does reach the UI as green. `state.defs` is
+    # exactly this payload (app.js ~1945), and `directionOf` (~1272) reads
+    # `up_is_good` from it — not from its own `||` fallback, which never fires.
+    defs = dict(client.get("/dag").json()["nodes"])
+    assert defs["churn_arpu"]["direction"] == "up_is_good"
+
+
+def test_known_gap_the_rca_table_cannot_show_the_lag(client):
+    """The other product defect, also filed separately.
+
+    The tour used to script the presenter to point at a `lag 1` tag and a parent
+    window in the RCA attribution table. That table renders neither (app.js
+    ~3126-3183 has no lag column and no parent_windows); the lag reaches the
+    screen only via the Metric tab's declared-lag chip and the slice panel's
+    window footer.
+
+    So: the payload carries both, which is where the tour's date comes from, and
+    the slice panel really does print the shifted pair for the lagged parent.
+    That second assertion is what makes the rewritten script runnable."""
+    ref, ana = ("2026-01-05", "2026-02-01"), ("2026-02-09", "2026-03-08")
+    d = rca(client, "new_mrr", ref, ana)
+    (c,) = d["nodes"]["new_subscriptions"]["contributions"]
+    assert c["lag"] == 1 and c["parent_windows"] is not None
+
+    # `sliceWindowsFor("trial_conversions")` (app.js ~2743) finds this
+    # contribution and slices over its `parent_windows`, so the panel footer
+    # reads "2025-12-29 → 2026-01-25 vs 2026-02-02 → 2026-03-01 · windows
+    # shifted back 1 week for the lag" — the one place the shift is on screen.
+    s = slices(
+        client,
+        "trial_conversions",
+        "device",
+        (c["parent_windows"]["reference"]["start"], c["parent_windows"]["reference"]["end"]),
+        (c["parent_windows"]["analysis"]["start"], c["parent_windows"]["analysis"]["end"]),
+    )
+    assert s["effective_windows"]["reference"]["start"] == "2025-12-29"
+    assert s["effective_windows"]["analysis"]["start"] == "2026-02-02"
+    assert s["effective_windows"]["analysis"]["end"] == "2026-03-01"
 
 
 def test_story_c_campaign_splits_volume_from_quality(client):
@@ -206,11 +483,29 @@ def test_story_c_campaign_splits_volume_from_quality(client):
     # both halves contribute — the identity separates traffic from conversion
     assert shares["sessions"] > 0 and shares["visit_signup_rate"] > 0
 
+    # "Signups up +8.1% ... sessions carries 61.4%, visit_signup_rate 30.9% ...
+    # sessions themselves are only +4.9%." Both halves positive is the property;
+    # the levels are what says it is not just volume.
+    assert node["relative_change"] == pytest.approx(0.081, **TOUR)
+    assert d["nodes"]["sessions"]["relative_change"] == pytest.approx(0.049, **TOUR)
+    assert ui_share(node, "sessions") == pytest.approx(0.614, **TOUR)
+    assert ui_share(node, "visit_signup_rate") == pytest.approx(0.309, **TOUR)
+    # The largest co-movement row in the tour, and the only one it reads out:
+    # traffic and conversion rose together within the window. Positive, and
+    # big enough to be worth a sentence — both are asserted, because the
+    # sentence is wrong if it is small and wrong if it flips sign.
+    assert ui_comovement(node) > 0.02
+    assert ui_comovement(node) == pytest.approx(0.078, **TOUR)
+
     s = slices(client, "signups", "country", ref, ana)
     top = s["slices"][0]
     assert top["value"] == "BR"
     # Brazil is ~9% of traffic but carries a multiple of that share of the gap
     assert top["share_of_gap"] > 3 * top["baseline_share"]
+    assert ui_localized(s)
+    # "BR carries 64.5% of the gap on an 8.7% baseline share."
+    assert top["share_of_gap"] == pytest.approx(0.645, **TOUR)
+    assert top["baseline_share"] == pytest.approx(0.087, **TOUR)
 
 
 def test_story_d_onboarding_lift_beats_the_trend(client):
@@ -224,6 +519,33 @@ def test_story_d_onboarding_lift_beats_the_trend(client):
         c["parent"]: c["share_of_gap"] for c in d["nodes"]["trial_conversions"]["contributions"]
     }
     assert conv["trial_conversion_rate"] > conv["trials_started"]
+
+    # "New MRR up +46.8% ... trial_conversion_rate carries 70.4% against
+    # trials_started's 31.8% (co-movement −2.2%)."
+    tc = d["nodes"]["trial_conversions"]
+    assert d["nodes"]["new_mrr"]["relative_change"] == pytest.approx(0.468, **TOUR)
+    assert ui_share(tc, "trial_conversion_rate") == pytest.approx(0.704, **TOUR)
+    assert ui_share(tc, "trials_started") == pytest.approx(0.318, **TOUR)
+    assert ui_comovement(tc) == pytest.approx(-0.022, **TOUR)
+
+
+def test_story_d_a_non_adjacent_reference_would_credit_the_trend(client):
+    """The tour's "worth saying" aside is a quantitative claim, so it is run.
+
+    It used to assert an eight-week gap would carry "~25% underlying growth in
+    trial volume", which is not what the data does. Measured: pushing the
+    reference back eight weeks moves `trials_started` from +10.8% to +15.9% —
+    five points of trend the tree would then credit to the onboarding revamp.
+    The property is the inequality; the levels are what the tour prints."""
+    ana = ("2025-08-11", "2025-09-07")
+    adjacent = rca(client, "trials_started", ("2025-07-07", "2025-08-03"), ana)
+    stale = rca(client, "trials_started", ("2025-05-12", "2025-06-08"), ana)
+
+    a = adjacent["nodes"]["trials_started"]["relative_change"]
+    s = stale["nodes"]["trials_started"]["relative_change"]
+    assert s > a, "a further-back reference must inflate the apparent lift, or the aside is wrong"
+    assert a == pytest.approx(0.108, **TOUR)
+    assert s == pytest.approx(0.159, **TOUR)
 
 
 def test_arbitrary_slice_window_is_served_without_a_provider(client):
@@ -268,6 +590,49 @@ def test_what_if_cutting_churn_lifts_net_new_mrr(client):
     assert net["delta"]["estimate"] == pytest.approx(0.2 * churn["baseline"], rel=0.02)
     assert net["prob_direction"] > 0.9
 
+    # "churned_mrr falls from $885/week to $706/week (−20.2%), and net_new_mrr
+    # rises by exactly that amount — +$179/week, +15.5% — with P(direction) 1.0
+    # and a zero-width 95% interval."
+    assert churn["baseline"] == pytest.approx(885.46, rel=1e-3)
+    assert churn["simulated"] == pytest.approx(706.24, rel=1e-3)
+    assert churn["relative_delta"] == pytest.approx(-0.202, **TOUR)
+    assert net["delta"]["estimate"] == pytest.approx(179.21, rel=1e-3)
+    assert net["relative_delta"] == pytest.approx(0.155, **TOUR)
+    assert net["prob_direction"] == 1.0
+    # The zero width is the claim the tour defends out loud ("not false
+    # confidence — the churn edge is an identity"), so it is asserted, not
+    # merely implied by the point estimate.
+    lo, hi = net["delta"]["ci_95"]
+    assert hi - lo < 1e-6
+
+
+def test_what_if_the_spend_lever_is_the_uncertain_one(client):
+    """The tour's second scenario points at a contrast, not a dollar figure.
+
+    `marketing_spend` reaches `net_new_mrr` through learned edges, so its
+    interval is wide where the churn lever's is degenerate. That contrast is the
+    whole point being made on the call, and it is what gets asserted — a point
+    estimate here would be sampler-derived, and pinning one would either flake
+    or be so loose it asserted nothing. The band is deliberately generous: the
+    claim is "tens of dollars wide against zero", and anything inside it
+    supports that sentence while a collapse to zero or a blow-up to hundreds
+    does not."""
+    spend = whatif(client, [{"metric": "marketing_spend", "mode": "pct", "value": 0.3}])
+    churn = whatif(client, [{"metric": "customer_churn_rate", "mode": "pct", "value": -0.2}])
+
+    net = spend["nodes"]["net_new_mrr"]
+    assert net["status"] == "affected"
+    lo, hi = net["delta"]["ci_95"]
+    churn_lo, churn_hi = churn["nodes"]["net_new_mrr"]["delta"]["ci_95"]
+
+    assert hi - lo > churn_hi - churn_lo
+    assert 20 < hi - lo < 400
+    assert churn_hi - churn_lo < 1e-6
+    # ...and it still arrives through the funnel: the acquisition side moves,
+    # the churn side does not.
+    assert spend["nodes"]["new_mrr"]["status"] == "affected"
+    assert spend["nodes"]["churned_mrr"]["status"] == "baseline"
+
 
 def test_what_if_undefined_history_does_not_break_the_response(client):
     """churn_arpu is undefined in the weeks before anyone had churned. NaN is
@@ -284,3 +649,9 @@ def test_what_if_flags_a_physically_impossible_scenario(client):
     out = whatif(client, [{"metric": "customer_churn_rate", "mode": "pct", "value": -3.0}])
     kinds = {(w["kind"], w["metric"]) for w in out["warnings"]}
     assert ("non_physical", "customer_churn_rate") in kinds
+    # The tour names all three metrics the flag lands on, so all three are here.
+    assert {m for k, m in kinds if k == "non_physical"} == {
+        "customer_churn_rate",
+        "churned_subscriptions",
+        "churned_mrr",
+    }
