@@ -117,6 +117,61 @@ is covered in the [README](README.md#deploying).
   refers to the provider-boundary defects without naming them, so re-read it when
   **C1/C2** land.
 
+## The four rules, and why they are rules
+
+Two hostile reviews (2026-08-05, 2026-08-12) found the same *meta*-defect each
+time: **a policy chosen carefully in one file, and not propagated to its
+neighbour.** Not the wrong policy — the right one, reasoned about in a comment,
+sitting next to an identical situation handled the other way. Five separate
+findings across the two reviews were each a defect the author had already fixed
+one file over.
+
+So these are written down, and each has a test in
+[`tests/test_project_invariants.py`](tests/test_project_invariants.py) that fails
+when a *new* violation is added. The tests are structural — they enumerate the
+code and check the property — because a test that pins today's four call sites
+would not have caught any of the five.
+
+1. **The provider boundary refuses rather than approximates.** A source that
+   cannot answer must produce an error or a warning that names what was
+   invented, never a silent substitute. `dbt_sql.py` gets this right and refuses
+   `agg: last`, joined dimensions and entity flows by name; `dbt_manifest.py`
+   did the opposite for `filter` (C15), and `_align_to_spine` did it for a
+   leading gap (C18) — same layer, same class, opposite policy, no stated
+   reason. If you add a fill, a default or a coercion at this boundary, it logs.
+
+2. **Every cache on `TreeState` is bounded.** `traces` was bounded with a
+   paragraph of justification (C8); `slice_cache` and `flow_cache` sat beside it
+   unbounded and undiscussed until 2.18. A cap by entry *count* is not
+   automatically enough — a cached fit scales with the loaded window, so 256
+   entries reached ~3.4 GB against a 2 GB box. Bound by the thing that actually
+   grows.
+
+3. **No engine result reaches an encoder unsanitized.** Starlette's
+   `allow_nan=False` turns one NaN into an unhandled 500, and
+   `mcp/shaping.round_floats` turns it into `null` — a decomposition of nothing,
+   handed to an agent. `slices.py` filtered non-finite values with a comment
+   explaining exactly this; `rca.py` did not, for one release (C17). A
+   non-finite result is withheld with a named `ci_status`/`status`, never
+   emitted and never quietly zeroed.
+
+4. **Every coalition enumeration is capped.** `compute_shapley` and
+   `simulate.py` both enumerate subsets, O(2ⁿ), and both hold the tree's lock
+   while doing it. `simulate.py` capped at `_MAX_SOURCES = 10` and said why;
+   `compute_shapley` had no cap and no documented limit until 2.18 — 12 parents
+   measured 20s, 14 would be 80s. Refuse above the cap with a remedy; do not
+   silently sample, because an approximate Shapley value is a *different number*.
+
+**A fifth rule has no test, and the gap is the point.** *A correct payload
+rendered dishonestly is indistinguishable, to the reader, from a dishonest
+payload.* Both reviews swept the engine, providers, API, packaging and docs, and
+both stopped at the payload — so `applyRcaOverlay` tinting on `node.gap >= 0`
+went unnoticed, and since `null >= 0` is `true` in JavaScript, every node the
+engine had explicitly declined to analyze rendered **green, with an upward
+arrow**. There is no JS test runner here (deliberately — MVP-first), so this one
+is enforced by review: when you change what the engine emits, open the UI and
+look at it.
+
 ## Conventions
 
 - **Python:** ruff-formatted (config in `pyproject.toml`); type hints throughout;
