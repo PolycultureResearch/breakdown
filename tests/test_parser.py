@@ -700,6 +700,49 @@ def test_binding_needs_a_relation_or_sql():
         Parser(_bound_tree(bind))
 
 
+def test_a_hand_written_where_is_a_parse_error_naming_the_escape_hatch():
+    # `where` is the first import-only field (roadmap 2.17). It passes §4.1's
+    # first test easily — a predicate is fetch-shaped, not org-wide semantics —
+    # and fails the stop rule outright for a hand author, because `bind.sql`
+    # already expresses every filter anyone could write. A shorter spelling of
+    # something already expressible is the definition of convenience, which is
+    # what the stop rule forbids.
+    bind = SUM_BIND + '      where: ["is_food_order = TRUE"]\n'
+    with pytest.raises(ValueError, match="populated by the dbt importer"):
+        Parser(_bound_tree(bind))
+
+
+def test_the_where_refusal_points_at_bind_sql():
+    bind = SUM_BIND + '      where: ["is_food_order = TRUE"]\n'
+    with pytest.raises(ValueError, match=r"sql: SELECT \* FROM analytics.fct_orders WHERE"):
+        Parser(_bound_tree(bind))
+
+
+def test_an_empty_where_is_indistinguishable_from_no_where():
+    # Absent and empty mean the same thing, so an author writing `where: []`
+    # has written nothing and is refused nothing.
+    assert (
+        Parser(_bound_tree(SUM_BIND + "      where: []\n")).get_metric("revenue").bind.where == []
+    )
+
+
+def test_the_importer_may_populate_where_even_though_an_author_may_not():
+    # The discriminator is structural and needs no cleverness: manifest bindings
+    # are constructed directly and never pass through YAML, so the check lives
+    # on `MetricDefinition` rather than on `BindingSpec`.
+    from breakdown.parser import BindingSpec
+
+    b = BindingSpec(
+        relation="t",
+        grain_key="k",
+        time_column="d",
+        agg="sum",
+        measure="v",
+        where=["region = 'US'"],
+    )
+    assert b.where == ["region = 'US'"]
+
+
 def test_sql_in_the_relation_field_is_rejected():
     bind = SUM_BIND.replace("relation: analytics.fct_orders", "relation: select * from t")
     with pytest.raises(ValueError, match="looks like SQL rather than a table"):

@@ -328,17 +328,34 @@ Before the first `serve` against real data — or whenever startup reports `degr
 uv run breakdown doctor --tree path/to/my_tree.yml
 ```
 
-It walks the provider's auth chain step by step (tree parses → env vars set → CLI/profile/token valid → connection opens → every metric's query actually runs) and prints `[PASS]`/`[FAIL]` per step with copy-paste remediation for each failure. Exit code is non-zero if anything failed. Probes run over the last 7 days by default; override with `--start-date`/`--end-date`.
+It walks the provider's auth chain step by step (tree parses → env vars set → CLI/profile/token valid → connection opens → every metric's query actually runs) and prints `[PASS]`/`[FAIL]` per step with copy-paste remediation for each failure. Exit code is non-zero if anything failed — a `[WARN]` is a result worth reading, not a failure, and does not change the exit code. Probes run over the last 7 days by default; override with `--start-date`/`--end-date`.
 
 Two mode-specific checks ride along: a cold-start tree (`provider: none`) gets its declarations validated instead of a connection probe, and when you pass an explicit `--start-date`/`--end-date` window the doctor adds a **fit readiness** report — each metric's whole-period count against the 10-period fit minimum, the graduation check for a tree [moving from cold start to fitted mode](#cold-start-mode-what-if-with-no-data) — plus a **history headroom** report: whether the provider has history before your `--start-date`. Breakdown trains on everything you load, so an earlier start date strengthens every fit (and the default RCA reference windows) at no cost beyond fetch time.
 
 For the **`dbt` provider**, `doctor` walks manifest → profile → connection →
-bindings → dimensions → grain claims, in the order a failure cascades. The last
-two are the ones that pay for themselves: a declared dimension that does not
-exist becomes a startup failure rather than a 500 on the first *slice by* click,
-and the **grain claim** (`count(*)` vs `count(distinct grain_key)`) catches a
-relation that is not one row per grain — silent fan-out that multiplies every
-aggregate over it, which neither MetricFlow nor Cube checks.
+bindings → dimensions → grain claims → filters, in the order a failure cascades.
+The last three are the ones that pay for themselves: a declared dimension that
+does not exist becomes a startup failure rather than a 500 on the first *slice
+by* click; the **grain claim** (`count(*)` vs `count(distinct grain_key)`)
+catches a relation that is not one row per grain — silent fan-out that
+multiplies every aggregate over it, which neither MetricFlow nor Cube checks;
+and **`filters narrow`** counts kept-vs-total rows for every metric whose dbt
+`filter:` was imported.
+
+```
+[PASS] grain claims hold  — 12 relation(s) one row per grain, 3 under a filter
+[WARN] filters narrow     — 1 filter(s) excluded nothing: everything (6 of 6 rows)
+```
+
+Both of the degenerate answers are worth a check of their own. A filter that
+keeps **no** rows fails: the node would serve an empty or all-zero series, and
+that is the signature of a predicate the warehouse accepts but reads
+differently — `= TRUE` against a `VARCHAR`, a boolean stored as `'Y'`. A filter
+that excludes **nothing** warns: either it is genuinely vacuous over the probe
+window (widen it and re-run) or it is evaluating constant-true, which is the
+silently-dropped filter this check exists to prevent. As with the grain claim,
+this is a question about your **data**, not your metadata, and no semantic layer
+answers it.
 
 ### Snapshots: fetch once, refit forever
 
@@ -545,6 +562,55 @@ provider:
 | `warehouse` | Runs each metric's own `sql` directly against a warehouse (currently Databricks SQL). Use when the semantic layer isn't queryable — the analyst mirrors governed definitions in SQL. Requires `http_path` plus **one of**: a PAT `token` (with `host`), or a Databricks CLI OAuth `profile` created by `databricks auth login --profile <name>` (host is read from the profile). |
 | `none` | No data is ever fetched — a **cold-start tree** of declared beliefs (`assumed` is an accepted alias). Only what-if simulation is available; every non-formula node needs a `baseline` and every probabilistic edge an explicit prior. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
 
+**Your dbt filters come across.** Most real dbt metrics narrow their measure
+with `filter:` — regional revenue, paid signups, orders excluding test accounts
+— and breakdown imports the predicate along with everything else. There is
+nothing to write: the binding's filter is derived from your `semantic_manifest.json`
+and it is **not a field you can author**. If you want a hand-written filter, put
+it in `bind.sql`, which already expresses every one of them:
+
+```yaml
+- name: food_revenue
+  source: dbt.metrics.food_revenue
+  bind:
+    sql: SELECT * FROM analytics.fct_orders WHERE is_food_order
+    grain_key: order_id
+    time_column: ordered_at
+    agg: sum
+    measure: amount
+```
+
+What imports is deliberately narrower than what dbt can express, and everything
+outside it is **refused by name** rather than approximated — a metric breakdown
+cannot translate exactly is listed as skipped, never served as a different
+number under your governed metric's name. Today a predicate imports when every
+reference in it is a *categorical dimension on the metric's own semantic model*:
+
+```
+{{ Dimension('order__is_food_order') }} = true          ✅  imported
+{{ Dimension('order__region') }} IN ('US', 'CA')        ✅  imported
+{{ Dimension('customer__country') }} = 'US'             ⏭️  skipped — a join
+{{ TimeDimension('metric_time', 'week') }} >= '2024-01-01'  ⏭️  skipped — time grain
+{{ Metric('revenue', group_by=['customer']) }} > 1000   ⏭️  skipped — a subquery
+```
+
+A filter on a `ratio` or `derived` metric is also skipped: those become formula
+edges over metrics referenced *by name*, and a name carries no scope, so the
+edge would silently be over the unfiltered metric. Express the scoped side as
+its own dbt metric and the edge picks it up.
+
+The rule is all-or-nothing per metric. If one conjunct of one filter does not
+resolve, the whole metric is skipped — there is no partial filter, because a
+dropped conjunct is a larger number wearing the right name. `breakdown doctor`
+lists what was skipped and why, counts the metrics that did import a filter, and
+[proves each one actually narrows](#checking-connectivity-breakdown-doctor)
+against your warehouse.
+
+> **A filtered node is smaller than the dashboard tile of the same name**, by
+> design — that is what the dbt metric says. *Show query* on the node card
+> displays the predicate in the generated SQL, which is where to check when a
+> number looks low.
+
 **Distinct counts and slicing.** A `count_distinct` metric's slices overstate
 it whenever one entity holds several values of a dimension inside a period — a
 subscription `active` in the morning and `cancelled` by evening is counted once
@@ -613,8 +679,9 @@ why it is not bundled: `bigquery` (`metric-breakdown[bigquery]`), `databricks`
 MetricFlow, which plans the SQL, so it serves things the `dbt` provider refuses
 rather than approximates: cumulative metrics, derived metrics that offset an
 input in time, aggregations with no additive decomposition (`min`, `max`,
-`median`, `percentile`), conversion metrics, and `non_additive_dimension`. On
-two real dbt projects that was 2 of 24 and 8 of 86 metrics.
+`median`, `percentile`), conversion metrics, `non_additive_dimension`, and
+filters that reach across a join or into a time dimension. On two real dbt
+projects that was 2 of 24 and 8 of 86 metrics.
 
 Rather than guess, ask about *your* tree:
 

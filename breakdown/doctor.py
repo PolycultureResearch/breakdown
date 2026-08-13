@@ -23,7 +23,7 @@ from breakdown.parser import _ENV_REF, MetricTreeConfig, Parser
 @dataclass
 class CheckResult:
     name: str
-    status: Literal["pass", "fail", "skip"]
+    status: Literal["pass", "fail", "skip", "warn"]
     detail: str = ""
     remediation: str = ""  # copy-paste command(s), possibly multiline
 
@@ -38,6 +38,21 @@ class CheckResult:
     @classmethod
     def skip(cls, name: str, detail: str = "") -> "CheckResult":
         return cls(name, "skip", detail)
+
+    @classmethod
+    def warn(cls, name: str, detail: str, remediation: str = "") -> "CheckResult":
+        """Ran, did not fail, and is not clean.
+
+        Added for `filters narrow`, which has a genuinely ambiguous middle
+        answer: a predicate that excluded nothing over a seven-day probe window
+        is either constant-true (C15's defect through a new door) or a real
+        filter that happens to be vacuous this week. Failing would block a
+        correct tree; passing silently is the "green `doctor` beside a wrong
+        number" pattern this codebase keeps deciding against. Use it only where
+        both of those are true — a warn nobody can act on is noise, and noise is
+        how a real one gets scrolled past.
+        """
+        return cls(name, "warn", detail, remediation)
 
 
 @dataclass
@@ -112,6 +127,7 @@ _DBT_CHECKS = [
     "tree metrics bind",
     "declared dimensions exist",
     "grain claims hold",
+    "filters narrow",
     "entity grain resolves",
 ]
 
@@ -433,6 +449,11 @@ def _check_local_migration(config: MetricTreeConfig) -> CheckResult:
             "whether this tree can move to the `dbt` provider",
         )
     try:
+        # Generic dialect deliberately: this runs for the `local` provider,
+        # whose project need not have a resolvable warehouse profile, and the
+        # question is whether these metrics *translate* at all. Filter
+        # resolution is dialect-independent except for the final parse, so a
+        # generic read is the conservative answer to that question.
         bridged = bridge_project(project)
     except Exception as e:
         return CheckResult.skip(name, f"could not read the semantic manifest: {e}")
@@ -592,7 +613,17 @@ def check_dbt(
             ),
             "unbound metrics",
         )
-    results.append(CheckResult.ok("tree metrics bind", f"{len(wanted)} metric(s) resolved"))
+    # A filtered node is deliberately smaller than the metric a reader may have
+    # in a dashboard under the same name, so the count belongs where a reader
+    # looks rather than only in the generated SQL.
+    filtered = sorted(q for q in wanted if bridged.bindings[q].where)
+    results.append(
+        CheckResult.ok(
+            "tree metrics bind",
+            f"{len(wanted)} metric(s) resolved"
+            + (f", {len(filtered)} carry a filter" if filtered else ""),
+        )
+    )
 
     # 4. declared dimensions exist — otherwise the first slice click 500s
     missing = []
@@ -641,16 +672,95 @@ def check_dbt(
     elif errors:
         results.append(CheckResult.fail("grain claims hold", f"could not check: {errors[:4]}"))
     else:
+        # The assertion runs over the rows the node actually aggregates, so a
+        # filtered relation is asserted *under its filter* (2.17 §3.4). Saying
+        # so is what keeps the pass honest: it reads as "one row per grain over
+        # these filtered rows", not "checked".
         results.append(
             CheckResult.ok(
                 "grain claims hold",
-                f"{len(wanted)} relation(s) one row per grain{_over(start_date, end_date)}",
+                f"{len(wanted)} relation(s) one row per grain"
+                + (f", {len(filtered)} under a filter" if filtered else "")
+                + _over(start_date, end_date),
             )
         )
 
+    results.append(_check_filters(bridged, wanted, filtered, start_date, end_date))
     results.append(_check_entity_grain(config, bridged, wanted, start_date, end_date))
     bridged.close()
     return results
+
+
+def _check_filters(fetcher, wanted, filtered, start_date=None, end_date=None) -> CheckResult:
+    """Whether each imported filter actually excludes some rows and not all.
+
+    Deliberately shaped like the grain claim, and a differentiator for the same
+    reason: **it checks the data instead of trusting the metadata.** MetricFlow
+    does not do this either. It converts the whole class of silently-no-op and
+    silently-everything-drops predicates from a wrong number into a startup
+    result — the class C15 punished.
+
+    What it cannot do is prove our row set is MetricFlow's. `kept/rows = 0.31`
+    says the filter is doing something; it does not say it is doing the right
+    thing. That is roadmap 2.14, and this check raises its priority rather than
+    substituting for it.
+    """
+    if not filtered:
+        return CheckResult.skip("filters narrow", "no imported filters on this tree")
+
+    empty, vacuous, errors, live = [], [], [], []
+    for query_name in filtered:
+        tree_name = wanted[query_name]
+        try:
+            rows, kept = fetcher.check_filter(query_name, start_date=start_date, end_date=end_date)
+        except Exception as e:
+            predicate = "; ".join(fetcher.bindings[query_name].where)
+            errors.append(f"{tree_name} ({type(e).__name__}: `{predicate}`)")
+            continue
+        if rows == 0:
+            # Nothing in the window at all says nothing about the predicate.
+            continue
+        if kept == 0:
+            empty.append(f"{tree_name} (0 of {rows:,} rows)")
+        elif kept == rows:
+            vacuous.append(f"{tree_name} ({rows:,} of {rows:,} rows)")
+        else:
+            live.append(f"{tree_name} ({kept:,}/{rows:,})")
+
+    if empty or errors:
+        detail = ", ".join(empty + errors)
+        return CheckResult.fail(
+            "filters narrow",
+            f"{len(empty) + len(errors)} filter(s) exclude every row or cannot run: "
+            f"{detail[:200]}" + (" …" if len(detail) > 200 else ""),
+            "This node would serve an empty or all-zero series. It is the "
+            "signature of a dialect-hostile predicate — `= TRUE` against a "
+            "VARCHAR column, a date literal parsed as an identifier, a boolean "
+            "stored as 'Y'. Check the predicate in the generated SQL (`show "
+            "query` in the UI, or GET /metrics/{name}/query).",
+        )
+    if vacuous:
+        return CheckResult.warn(
+            "filters narrow",
+            f"{len(vacuous)} filter(s) excluded nothing: {', '.join(vacuous[:4])}"
+            + (" …" if len(vacuous) > 4 else "")
+            + _over(start_date, end_date),
+            "Either genuinely vacuous over this window — widen it with "
+            "--start-date/--end-date and re-run — or the predicate evaluates "
+            "constant-true, which is the dropped-filter defect (C15) arriving "
+            "through a new door.",
+        )
+    if not live:
+        return CheckResult.skip(
+            "filters narrow",
+            f"no rows in the probe window to check {len(filtered)} filter(s) against"
+            + _over(start_date, end_date),
+        )
+    return CheckResult.ok(
+        "filters narrow",
+        f"{len(live)} filter(s) keep some rows and drop others: "
+        f"{', '.join(live[:4])}" + (" …" if len(live) > 4 else "") + _over(start_date, end_date),
+    )
 
 
 def _check_entity_grain(config, fetcher, wanted, start_date=None, end_date=None) -> CheckResult:
@@ -894,7 +1004,7 @@ def _probe_window(start_date: Optional[str], end_date: Optional[str]) -> Tuple[s
     )
 
 
-_TAGS = {"pass": "[PASS]", "fail": "[FAIL]", "skip": "[SKIP]"}
+_TAGS = {"pass": "[PASS]", "fail": "[FAIL]", "skip": "[SKIP]", "warn": "[WARN]"}
 
 
 def print_report(results: List[CheckResult]) -> int:
@@ -906,6 +1016,11 @@ def print_report(results: List[CheckResult]) -> int:
         if r.remediation:
             for rem_line in r.remediation.splitlines():
                 print(f"       {rem_line}")
-    counts = {s: sum(1 for r in results if r.status == s) for s in ("pass", "fail", "skip")}
-    print(f"\n{counts['pass']} passed, {counts['fail']} failed, {counts['skip']} skipped")
+    counts = {s: sum(1 for r in results if r.status == s) for s in _TAGS}
+    summary = f"\n{counts['pass']} passed, {counts['fail']} failed, {counts['skip']} skipped"
+    if counts["warn"]:
+        summary += f", {counts['warn']} warned"
+    print(summary)
+    # A warning is not a failure: the exit code gates CI and a deploy, and a
+    # filter that is vacuous over a seven-day probe window must not stop either.
     return 1 if counts["fail"] else 0

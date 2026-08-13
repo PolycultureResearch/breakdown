@@ -24,15 +24,26 @@ dev-only differential oracle.
 What this module deliberately does not do is guess. Every metric it cannot
 translate exactly comes back in `BridgeResult.skipped` with a reason naming the
 construct, because a metric breakdown cannot express correctly must fail with
-its name attached rather than produce a plausible number. The sharpest case is
-`filter`: a binding has no filter clause, so a filtered metric that translated
-would fetch the *unfiltered* measure under the governed metric's name — larger,
-plausible, and green in `doctor`. See `_unsupported_semantics`.
+its name attached rather than produce a plausible number. See
+`_unsupported_semantics`.
+
+The sharpest case is `filter`, which until 2026-08-12 was dropped silently: the
+binding had no filter clause, so a filtered metric translated into one over the
+*whole* relation, served under the governed metric's name — larger, plausible,
+and green in `doctor`, because the grain assertion sees one row per grain key
+either way (roadmap C15). Filters are now **resolved** rather than refused
+wholesale (roadmap 2.17), under one invariant that is the entire safety
+argument: **total resolution or skip.** Every predicate of every filter a metric
+carries must resolve to a column on that metric's own relation, or the metric
+stays in `skipped` exactly where C15 left it. There is no partial translation,
+no best effort, no dropped conjunct — so this is a strict superset of the
+refusing behaviour, whose only failure mode is refusal. See `_resolve_predicate`.
 """
 
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -120,16 +131,23 @@ class BridgeResult:
         self.skipped.append(SkippedMetric(name=name, reason=reason))
 
 
-def _require_sqlglot_only() -> None:
-    """The bridge itself needs no third-party parser — see `dbt_manifest`.
+def _require_sqlglot() -> Any:
+    """The bridge's only third-party parser is sqlglot — see `dbt_manifest`.
 
-    This used to import `metricflow_semantic_interfaces`, which ships inside the
-    `metricflow` wheel: twelve transitive packages and a `<3.15` Python ceiling
-    for one `parse_obj` call. The models moved in-tree; `metricflow` stays in
-    the dev group as a differential oracle, so schema drift fails a test rather
-    than reaching a user.
+    Reading the manifest needs nothing from dbt Labs: this used to import
+    `metricflow_semantic_interfaces`, which ships inside the `metricflow` wheel
+    (twelve transitive packages and a `<3.15` Python ceiling for one `parse_obj`
+    call), and the models moved in-tree. `metricflow` stays in the dev group as
+    a differential oracle, so schema drift fails a test rather than reaching a
+    user.
+
+    sqlglot arrives with 2.17: resolving a filter means parsing the predicate,
+    and it is already the `dbt-bridge` extra's other dependency. Borrowed from
+    `dbt_sql` so the "install the extra" message has one wording.
     """
-    return None
+    from breakdown.dbt_sql import _require_sqlglot as _from_dbt_sql
+
+    return _from_dbt_sql()
 
 
 def manifest_path(project_path: str) -> str:
@@ -259,40 +277,67 @@ def _filter_sql(intersection: Any) -> Optional[str]:
     return " AND ".join(predicates) if predicates else None
 
 
-def _filter_reason(where: str, sql: str) -> str:
+def _formula_filter_reason(where: str, sql: str) -> str:
+    """A filter on a metric that becomes a **formula edge** rather than a
+    binding. Still refused after 2.17, and for a reason filter support does not
+    weaken: a ratio and a derived metric reference their inputs *by name*, and
+    a name carries no scope, so the edge would silently be over the unfiltered
+    metric. Scoping one side of a ratio is a modelling change — a different
+    node with its own binding — not a SQL change."""
     return (
-        f"{where}declares a `filter` ({sql}), which narrows it to a subset of "
-        "the relation; neither a breakdown binding nor a formula edge can carry "
-        "a filter, so translating it would aggregate the unfiltered measure and "
-        "serve a larger number under this metric's governed name"
+        f"{where}declares a `filter` ({sql}), and this metric becomes a formula "
+        "edge over metrics referenced by name; a name carries no scope, so the "
+        "edge would be over the unfiltered metric. Scoping one side of a ratio "
+        "or derived metric is a modelling change, not a filter breakdown can "
+        "compile — declare the scoped input as its own dbt metric and reference "
+        "that"
+    )
+
+
+def _predicate_reason(where: str, predicate: str, problem: str) -> str:
+    """A filter breakdown *can* carry a predicate for, but not this predicate.
+
+    Every reason names the blocking construct and quotes the predicate, because
+    the invariant that makes filter support safe is **total resolution or
+    skip**: one unresolvable conjunct refuses the whole metric, so the author
+    needs to know which one.
+    """
+    return (
+        f"{where}declares a `filter` whose predicate `{predicate}` {problem}. "
+        "A metric is translated only when every predicate of every filter it "
+        "carries resolves — there is no partial filter, because a dropped "
+        "conjunct is a larger number under the governed metric's name"
     )
 
 
 def _unsupported_semantics(metric: Any) -> Optional[str]:
     """Why `metric` must be refused outright, or None if nothing forbids it.
 
-    Three MetricFlow constructs change *which rows* or *which periods* a metric
-    covers, and `BindingSpec` can express none of them:
+    Two MetricFlow constructs change *which periods* a metric covers, and
+    `BindingSpec` can express neither:
 
-    - `filter` — the single most common way a real dbt metric narrows a
-      measure. Dropping it is not a degraded translation but a different
-      number, served under the governed metric's name, with `doctor` still
-      green because the grain assertion sees one row per grain key either way.
     - `join_to_timespine` / `fill_nulls_with` — what the metric reports for
       periods its measure has no rows in. breakdown fills gaps from the node's
       `kind`, which is its own rule and agrees with dbt's only by coincidence.
 
-    dbt writes them in four places (metric, `type_params`, the measure input,
+    Filters are the third such construct and are no longer refused wholesale
+    (roadmap 2.17): on a `simple` metric they are resolved against the measure's
+    own semantic model by `_translate_simple`, which refuses by name whatever it
+    cannot resolve totally. What stays refused *here* is a filter on a metric
+    that becomes a formula edge, where there is no single relation to resolve
+    against, and a per-input filter on a ratio or derived metric.
+
+    dbt writes these in four places (metric, `type_params`, the measure input,
     and each metric input) depending on spec version and whether the manifest
-    has been through dbt's flattening transform, so all four are checked. Real
-    `where:` support on `BindingSpec` is a separate, much larger item; until it
-    exists, refusing by name is the only correct behaviour available.
+    has been through dbt's flattening transform, so all four are checked.
     """
     tp = metric.type_params
 
-    sql = _filter_sql(getattr(metric, "filter", None))
-    if sql is not None:
-        return _filter_reason("", sql)
+    if metric.type != "simple":
+        for where, holder in (("", metric), ("its measure input ", getattr(tp, "measure", None))):
+            sql = _filter_sql(getattr(holder, "filter", None)) if holder is not None else None
+            if sql is not None:
+                return _formula_filter_reason(where, sql)
 
     # `type_params` (new spec) and the measure input (classic spec) carry the
     # same two flags; dbt lifts the latter to the former when it flattens.
@@ -319,10 +364,6 @@ def _unsupported_semantics(metric: Any) -> Optional[str]:
                 "exactly the periods the flag exists to control"
             )
 
-    measure_sql = _filter_sql(getattr(getattr(tp, "measure", None), "filter", None))
-    if measure_sql is not None:
-        return _filter_reason("its measure input ", measure_sql)
-
     # A ratio's sides and a derived metric's inputs are references to other
     # metrics, and a filter on one re-scopes that side alone — `signups (US
     # only) / sessions`. Both become formula edges over the metrics *by name*,
@@ -333,11 +374,218 @@ def _unsupported_semantics(metric: Any) -> Optional[str]:
     for where, ref in inputs:
         ref_sql = _filter_sql(getattr(ref, "filter", None))
         if ref_sql is not None:
-            return _filter_reason(where, ref_sql)
+            return _formula_filter_reason(where, ref_sql)
     return None
 
 
-def _translate_simple(manifest: Any, metric: Any, result: BridgeResult) -> None:
+# --- filter resolution (roadmap 2.17) ---------------------------------------
+#
+# `where_sql_template` is **Jinja, not SQL**. dbt writes
+# `{{ Dimension('order__is_food_order') }} = true`, where `order__` is an
+# *entity link* rather than a table alias: MetricFlow resolves it through the
+# semantic graph into either a column on the measure's own relation or a join,
+# and which one it is cannot be read off the string. So a filter reference is a
+# resolution problem against the manifest, and only after it resolves is there
+# any SQL to compile.
+#
+# v1 admits exactly one shape — a categorical dimension on the binding's own
+# semantic model, reached through its own primary entity or unlinked. Everything
+# else is refused by name. The line is not drawn at "hard": it is drawn where
+# the fan-out risk starts. **A filter across a join is worse to get wrong than a
+# slice across one.** A slice that fans out is visible — the slices stop summing
+# to the total and the engine already reports that. A filter that fans out is
+# invisible: it multiplies the total, and the grain claim cannot see it because
+# the grain claim counts the fact relation, not the join result.
+
+# Every `{{ ... }}` in a template, whatever it holds.
+_JINJA_CALL = re.compile(r"\{\{(.*?)\}\}", re.DOTALL)
+# The one call v1 admits: `Dimension('<ref>')` with exactly one string argument
+# and nothing else — no `.grain('week')`, no second argument, no keyword. A
+# `TimeDimension`, `Entity` or `Metric` call fails this and is quoted back.
+_DIMENSION_CALL = re.compile(r"""^\s*Dimension\(\s*(['"])(?P<ref>[^'"]*)\1\s*\)\s*$""")
+# Stands in for one resolved reference while the predicate is parsed. It has to
+# be a plain identifier in every dialect and must not collide with a real
+# column; `bd_` is this codebase's prefix for exactly that.
+_REF_PLACEHOLDER = "bd_where_ref_{}"
+_PLACEHOLDER_NAMES = re.compile(r"^bd_where_ref_(\d+)$")
+
+
+def _primary_entity(model: Any) -> Optional[Any]:
+    return next((e for e in model.entities if e.type == "primary"), None)
+
+
+def _dimension_named(model: Any, name: str) -> Optional[Any]:
+    return next((d for d in model.dimensions if d.name == name), None)
+
+
+def _resolve_reference(model: Any, primary: Any, ref: str) -> Tuple[Optional[str], Optional[str]]:
+    """A `Dimension()` reference -> the column it reads, or why it is refused.
+
+    Two accepted spellings. `"<entity>__<name>"` where `<entity>` is the
+    model's own primary entity is what MetricFlow normally writes; a bare
+    `"<name>"` is unambiguous within one model and costs nothing to accept.
+    """
+    unresolved = (
+        f"references `{ref}`, which is not a categorical dimension on semantic model '{model.name}'"
+    )
+
+    def _of(dim: Any) -> Tuple[Optional[str], Optional[str]]:
+        if dim.type == "categorical":
+            return _column(dim), None
+        # A time dimension looks like a plain column comparison and is not one:
+        # MetricFlow renders it at a declared granularity, and whether it
+        # truncates here is a question only differential verification against
+        # MetricFlow (roadmap 2.14) can answer. Refusing costs a small set of
+        # metrics; guessing costs a wrong number with a plausible shape.
+        return None, (
+            f"references `{ref}`, which is a *time* dimension — MetricFlow "
+            f"renders those at a declared granularity, and whether it truncates "
+            f"here cannot be reasoned about, only verified"
+        )
+
+    # The bare spelling first: it also covers the (unlikely) dimension whose own
+    # name contains a `__`.
+    direct = _dimension_named(model, ref)
+    if direct is not None:
+        return _of(direct)
+    entity, sep, name = ref.partition("__")
+    if not sep:
+        return None, unresolved
+    if primary is not None and entity == primary.name:
+        linked = _dimension_named(model, name)
+        return _of(linked) if linked is not None else (None, unresolved)
+    if any(e.name == entity for e in model.entities):
+        return None, (
+            f"references `{ref}` through entity `{entity}`, which is a join to "
+            f"another semantic model; cross-relation filters are not compiled "
+            f"yet, and a filter that fans out across a join is invisible where a "
+            f"slice that fans out is not"
+        )
+    return None, unresolved
+
+
+def _resolve_predicate(
+    model: Any, primary: Any, template: str, dialect: str
+) -> Tuple[Optional[str], Optional[str]]:
+    """One `where_sql_template` -> SQL over `model`'s own columns, or a reason.
+
+    Every reference is replaced by a placeholder *before* parsing, and after
+    parsing **every column in the tree must be one of those placeholders**. That
+    is what makes "total resolution" mean what it says: a bare identifier that
+    slipped in — a legacy raw-SQL filter, a dimension MetricFlow would have
+    resolved through the semantic graph to a different column than the one it is
+    spelled as — is refused rather than qualified against the fact relation and
+    hoped for.
+    """
+    sqlglot = _require_sqlglot()
+    exp = sqlglot.expressions
+
+    resolved: List[str] = []
+    problem: Optional[str] = None
+
+    def substitute(match: "re.Match[str]") -> str:
+        nonlocal problem
+        call = _DIMENSION_CALL.match(match.group(1))
+        if call is None:
+            problem = problem or (
+                f"uses `{match.group(0).strip()}`, which is not a plain "
+                f"`Dimension('<name>')` reference; a `TimeDimension`, "
+                f"`metric_time`, a granularity argument, an `Entity` and a "
+                f"`Metric` call each need machinery this does not build"
+            )
+            column = None
+        else:
+            column, why = _resolve_reference(model, primary, call.group("ref"))
+            if column is None:
+                problem = problem or why
+        placeholder = _REF_PLACEHOLDER.format(len(resolved))
+        # Appended even when unresolved, so the placeholder indices stay in step
+        # with `resolved`. The caller returns on `problem` before using either.
+        resolved.append(column or "1")
+        return placeholder
+
+    substituted = _JINJA_CALL.sub(substitute, template)
+    if problem is not None:
+        return None, problem
+
+    read = dialect or None
+    try:
+        statements = [s for s in sqlglot.parse(substituted, read=read) if s is not None]
+    except Exception as e:
+        return None, (
+            f"does not parse as {dialect or 'generic'} SQL once its references "
+            f"are resolved ({type(e).__name__})"
+        )
+    if len(statements) != 1:
+        return None, (
+            f"is {len(statements)} statements rather than one predicate, which no "
+            f"WHERE clause can carry"
+        )
+    tree = statements[0]
+    forbidden = (exp.Select, exp.Subquery, exp.Union, exp.Except, exp.Intersect)
+    if isinstance(tree, forbidden) or any(tree.find_all(*forbidden)):
+        return None, (
+            "contains a subquery or set operation, which is a correlated query "
+            "over the semantic graph rather than a row-level test"
+        )
+
+    for column in tree.find_all(exp.Column):
+        if _PLACEHOLDER_NAMES.match(column.name) is None or column.table:
+            return None, (
+                f"references the bare column `{column.sql(dialect=read)}`, which "
+                f"is not a resolved `Dimension()` reference; breakdown will not "
+                f"guess that a name written in a filter is the column MetricFlow "
+                f"would have resolved it to"
+            )
+
+    def swap(node: Any) -> Any:
+        if not isinstance(node, exp.Column):
+            return node
+        substitution = sqlglot.parse_one(
+            resolved[int(_PLACEHOLDER_NAMES.match(node.name).group(1))], read=read
+        )
+        # A MetricFlow dimension's `expr` is not always a column:
+        # `is_paid: paid_at IS NOT NULL` is real and common. Splicing that into
+        # `<ref> = TRUE` unparenthesised yields `NOT paid_at IS NULL = TRUE`,
+        # which is a different expression — sqlglot generates from the tree and
+        # adds no parentheses of its own. A column needs none and reads better
+        # without.
+        return (
+            substitution if isinstance(substitution, exp.Column) else exp.Paren(this=substitution)
+        )
+
+    # `transform` rather than `replace` in place: a predicate that is *only* a
+    # boolean dimension parses to a bare Column at the root, and `replace` on a
+    # root node cannot rebind the caller's reference — the placeholder survived
+    # into the stored predicate.
+    return tree.transform(swap).sql(dialect=dialect), None
+
+
+def _resolve_filters(model: Any, metric: Any, dialect: str) -> Tuple[List[str], Optional[str]]:
+    """Every predicate of every filter `metric` carries, resolved against
+    `model` — or the one reason the whole metric is refused.
+
+    Metric-level and measure-input filters are both resolved and ANDed, which is
+    what dbt does: its flattening transform merges the second into the first,
+    and manifests exist in both states.
+    """
+    tp = metric.type_params
+    holders = (("", metric), ("its measure input ", getattr(tp, "measure", None)))
+    primary = _primary_entity(model)
+    predicates: List[str] = []
+    for where, holder in holders:
+        if holder is None:
+            continue
+        intersection = getattr(holder, "filter", None)
+        for template in getattr(intersection, "predicates", None) or []:
+            sql, problem = _resolve_predicate(model, primary, template, dialect)
+            if problem is not None:
+                return [], _predicate_reason(where, template, problem)
+            predicates.append(sql)
+    return predicates, None
+
+
+def _translate_simple(manifest: Any, metric: Any, result: BridgeResult, dialect: str = "") -> None:
     name = metric.name
     model, agg, column, agg_time = _measure_source(manifest, metric)
     if model is None:
@@ -394,6 +642,14 @@ def _translate_simple(manifest: Any, metric: Any, result: BridgeResult) -> None:
         )
         return
 
+    # Last, because everything above decides whether this metric is bindable at
+    # all: a filter refusal on a metric that could not be bound anyway would
+    # name the wrong obstacle.
+    where, unresolved = _resolve_filters(model, metric, dialect)
+    if unresolved is not None:
+        result.skip(name, unresolved)
+        return
+
     binding_agg = AGG_MAP[agg]
     result.bindings[name] = BindingSpec(
         relation=_relation(model),
@@ -405,6 +661,7 @@ def _translate_simple(manifest: Any, metric: Any, result: BridgeResult) -> None:
         # at the grain where it becomes a sum. The counted column is the entity.
         entity_key=column if binding_agg == "count_distinct" else None,
         dimensions=_categorical_dimensions(model),
+        where=where,
     )
     result.grains[name] = GRAIN_MAP[mf_grain]
     result.kinds[name] = KIND_MAP.get(binding_agg, "flow")
@@ -506,13 +763,21 @@ def _translate_derived(metric: Any, result: BridgeResult) -> None:
             result.kinds[metric.name] = "rate"
 
 
-def translate(manifest: SemanticManifest) -> BridgeResult:
+def translate(manifest: SemanticManifest, dialect: str = "") -> BridgeResult:
     """Translate every metric in a parsed semantic manifest.
 
     Nothing here raises on an untranslatable metric: they are collected in
     `skipped` so a caller can report all of them at once rather than one per
     run. What *would* be wrong is emitting a binding that is subtly incorrect,
     and that is what each skip reason exists to prevent.
+
+    `dialect` is the sqlglot dialect a resolved filter predicate is parsed and
+    re-emitted in. It matters because this module's standing rule is *generate
+    in the target dialect, never translate into it*: a quoted `"date"` is an
+    identifier on DuckDB and a string literal on Spark, so a predicate that
+    parses generically may mean something else where it will run. The empty
+    string is generic SQL, which is what a caller with no warehouse in hand
+    (every unit test, the scaffolder) gets.
     """
     result = BridgeResult()
     for metric in manifest.metrics:
@@ -535,7 +800,7 @@ def translate(manifest: SemanticManifest) -> BridgeResult:
                 result.skip(metric.name, unsupported)
                 continue
         if kind == "simple":
-            _translate_simple(manifest, metric, result)
+            _translate_simple(manifest, metric, result, dialect)
         elif kind == "ratio":
             _translate_ratio(metric, result)
         elif kind == "derived":
@@ -558,6 +823,6 @@ def translate(manifest: SemanticManifest) -> BridgeResult:
     return result
 
 
-def bridge_project(project_path: str) -> BridgeResult:
+def bridge_project(project_path: str, dialect: str = "") -> BridgeResult:
     """Load a dbt project's semantic manifest and translate it."""
-    return translate(load_manifest(project_path))
+    return translate(load_manifest(project_path), dialect)

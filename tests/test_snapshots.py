@@ -514,6 +514,35 @@ def test_dbt_binding_is_fingerprinted(tmp_path):
     assert definition_sha(BoundFetcher({"m": _binding("amount")}), "other") is None
 
 
+def test_a_binding_that_differs_only_in_its_filter_fingerprints_differently():
+    """Roadmap 2.17 §4.1, and it needs a test rather than a reading of the code.
+
+    `where` is the newest thing that fully determines the values a binding
+    returns. If the fingerprint did not cover it, editing a dbt metric's
+    `filter:` would serve the pre-edit numbers forever *while*
+    `query_provenance` attested the new predicate beside them — C16's exact
+    failure, reintroduced by a new field.
+    """
+
+    class BoundFetcher(BaseDataFetcher):
+        def __init__(self, bindings):
+            self.bindings = bindings
+
+        def fetch_metric(self, *a, **kw):
+            raise AssertionError("not called")
+
+    def sha(where):
+        return definition_sha(
+            BoundFetcher({"m": _binding("amount").model_copy(update={"where": where})}), "m"
+        )
+
+    unfiltered, us, ca = sha([]), sha(["region = 'US'"]), sha(["region = 'CA'"])
+    assert len({unfiltered, us, ca}) == 3
+    assert us == sha(["region = 'US'"])
+    # A second conjunct is a different definition, not a longer spelling of one.
+    assert us != sha(["region = 'US'", "amount > 0"])
+
+
 def test_snapshot_definition_hook_takes_precedence(tmp_path):
     """The extension point a future provider implements instead of being
     special-cased inside snapshots.py."""

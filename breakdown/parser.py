@@ -440,6 +440,30 @@ class BindingSpec(BaseModel):
 
     dimensions: Dict[str, BindingDimension] = Field(default_factory=dict)
 
+    # Row-level predicates, ANDed, over columns of **this binding's own
+    # relation**, unqualified (roadmap 2.17). Empty and absent mean the same
+    # thing: no filter.
+    #
+    # **Import-only.** This is the one field on `BindingSpec` a tree author may
+    # not write, and `MetricDefinition.check_where_is_import_only` is what
+    # enforces it. `bind.sql` already expresses every hand-written filter, and
+    # §4.1's stop rule admits a new field only when `sql:` genuinely cannot
+    # express the thing — a shorter spelling is convenience, which is what the
+    # rule forbids. The importer has no `sql:` escape hatch (composing a SELECT
+    # around a manifest predicate means rendering its Jinja anyway, and then
+    # hiding the predicate inside a subquery where `doctor` cannot see it), so
+    # the boundary moved from *which fields exist* to *which fields an author
+    # may write*. An import-only field must be fully derivable from the source
+    # artifact with no information from the author; the moment one needs a hint
+    # or an override it is an authoring field again.
+    #
+    # A list rather than a joined string, because dbt's `WhereFilterIntersection`
+    # is an AND of separate predicates and keeping the structure lets a skip
+    # reason, a `doctor` line or a *show query* panel quote the one predicate
+    # that matters. Unqualified, because the fact alias is a `dbt_sql` concept
+    # and five builders alias differently — qualification happens at build time.
+    where: List[str] = Field(default_factory=list)
+
     @field_validator("agg")
     @classmethod
     def check_agg(cls, v: str) -> str:
@@ -886,6 +910,22 @@ class MetricDefinition(BaseModel):
     def check_bind(self) -> "MetricDefinition":
         if self.bind is None:
             return self
+        if self.bind.where:
+            # `where` is import-only (roadmap 2.17). The discriminator is
+            # structural and needs no cleverness: manifest bindings live in
+            # `BridgeResult.bindings` and never pass through YAML, so a `where`
+            # arriving on a `MetricDefinition` was written by hand.
+            raise ValueError(
+                f"Metric '{self.name}' declares `bind.where`, which is populated "
+                "by the dbt importer and cannot be written by hand. `bind.sql` "
+                "already expresses every hand-written filter — and unlike a "
+                "`where:` key it is dialect-explicit, owned by you, and still "
+                "checked by `breakdown doctor`'s grain claim:\n"
+                "    bind:\n"
+                "      sql: SELECT * FROM analytics.fct_orders WHERE is_food_order\n"
+                "      grain_key: order_id\n"
+                "      ..."
+            )
         if self.sql is not None:
             raise ValueError(
                 f"Metric '{self.name}' declares both `sql` and `bind`. They are "

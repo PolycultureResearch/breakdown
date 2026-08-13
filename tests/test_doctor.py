@@ -275,7 +275,13 @@ pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
 duckdb = pytest.importorskip("duckdb")
 
 
-def _dbt_project(tmp_path, *, metrics=None, rows="(1, DATE '2024-01-01', 5.0, 'EMEA')"):
+def _dbt_project(
+    tmp_path,
+    *,
+    metrics=None,
+    rows="(1, DATE '2024-01-01', 5.0, 'EMEA')",
+    extra_dimensions=(),
+):
     """A minimal dbt project on disk — dbt_project.yml, profiles.yml, a parsed
     semantic manifest — plus the DuckDB file its profile points at."""
     db = tmp_path / "warehouse.duckdb"
@@ -306,6 +312,7 @@ def _dbt_project(tmp_path, *, metrics=None, rows="(1, DATE '2024-01-01', 5.0, 'E
         "dimensions": [
             {"name": "ordered_at", "type": "time", "type_params": {"time_granularity": "day"}},
             {"name": "region", "type": "categorical"},
+            *extra_dimensions,
         ],
         "measures": [{"name": "revenue", "agg": "sum", "expr": "amount"}],
     }
@@ -350,10 +357,11 @@ def _results(tree_yaml):
 
 def test_dbt_chain_passes_on_a_healthy_project(tmp_path):
     results = _results(_tree(_dbt_project(tmp_path)))
-    # The entity-grain check skips: this fixture's metric is a plain sum, so
-    # there is no non-additive slice to resolve.
-    assert [r.status for r in results.values()] == ["pass"] * 6 + ["skip"]
+    # Two checks skip on this fixture: its one metric is a plain sum, so there
+    # is no non-additive slice to resolve, and it carries no filter.
+    assert [r.status for r in results.values()] == ["pass"] * 6 + ["skip", "skip"]
     assert "no non-additive metrics" in results["entity grain resolves"].detail
+    assert "no imported filters" in results["filters narrow"].detail
     assert "one row per grain" in results["grain claims hold"].detail
     assert "duckdb" in results["dbt profile"].detail
 
@@ -422,6 +430,97 @@ def test_an_unresolvable_profile_stops_before_connecting(tmp_path):
     assert results["dbt profile"].status == "fail"
     assert "NOT_SET_ANYWHERE" in results["dbt profile"].detail
     assert results["warehouse connection"].status == "skip"
+
+
+# --- `filters narrow` (roadmap 2.17 §8) --------------------------------------
+#
+# The check no other semantic layer makes, for the same reason the grain claim
+# was one: **it checks the data instead of trusting the metadata.** It converts
+# the whole class of silently-no-op and silently-everything-drops predicates
+# from a wrong number into a startup result — the class C15 punished.
+
+TWO_REGIONS = "(1, DATE '2024-01-01', 5.0, 'EMEA'), (2, DATE '2024-01-02', 7.0, 'AMER')"
+
+
+def _filtered_project(tmp_path, predicate, *, rows=TWO_REGIONS, extra_dimensions=()):
+    return _dbt_project(
+        tmp_path,
+        rows=rows,
+        extra_dimensions=extra_dimensions,
+        metrics=[
+            {
+                "name": "revenue",
+                "type": "simple",
+                "type_params": {"measure": {"name": "revenue"}},
+                "filter": {"where_filters": [{"where_sql_template": predicate}]},
+            }
+        ],
+    )
+
+
+def test_a_live_filter_passes_and_says_how_much_it_keeps(tmp_path):
+    project = _filtered_project(tmp_path, "{{ Dimension('order__region') }} = 'EMEA'")
+    results = _results(_tree(project))
+    r = results["filters narrow"]
+    assert r.status == "pass"
+    assert "revenue (1/2)" in r.detail
+
+
+def test_the_bind_step_counts_the_filtered_metrics(tmp_path):
+    # A filtered node is deliberately smaller than the metric a reader may have
+    # in a dashboard under the same name, so the fact has to appear where a
+    # reader looks rather than only in the generated SQL.
+    project = _filtered_project(tmp_path, "{{ Dimension('order__region') }} = 'EMEA'")
+    results = _results(_tree(project))
+    assert "1 carry a filter" in results["tree metrics bind"].detail
+    assert "1 under a filter" in results["grain claims hold"].detail
+
+
+def test_a_filter_that_excludes_every_row_fails(tmp_path):
+    # The node would serve an empty or all-zero series. It is the signature of a
+    # dialect-hostile predicate — `= TRUE` against a VARCHAR, a boolean stored
+    # as 'Y' — which is exactly what no local generation-time check can catch.
+    project = _filtered_project(tmp_path, "{{ Dimension('order__region') }} = 'NOWHERE'")
+    r = _results(_tree(project))["filters narrow"]
+    assert r.status == "fail"
+    assert "0 of 2 rows" in r.detail
+    assert "dialect-hostile" in r.remediation
+
+
+def test_a_filter_that_excludes_nothing_warns_rather_than_passing_quietly(tmp_path):
+    # C15's original defect arriving through a new door: a filter that is there,
+    # compiles, runs, and changes no number. Warned rather than failed because a
+    # genuinely vacuous filter over a seven-day probe window is real and failing
+    # it would block a correct tree — but it must not read as clean.
+    project = _filtered_project(tmp_path, "{{ Dimension('order__region') }} <> 'NOWHERE'")
+    r = _results(_tree(project))["filters narrow"]
+    assert r.status == "warn"
+    assert "excluded nothing" in r.detail
+    assert "constant-true" in r.remediation
+
+
+def test_a_predicate_the_warehouse_refuses_fails_with_the_predicate_quoted(tmp_path):
+    # A dimension whose `expr` names a column that is not there. The manifest is
+    # internally consistent, the bridge resolves the reference, and only the
+    # warehouse can say it is wrong — which is the whole argument for probing.
+    project = _filtered_project(
+        tmp_path,
+        "{{ Dimension('order__ghost') }} = 'x'",
+        extra_dimensions=({"name": "ghost", "type": "categorical", "expr": "no_such_column"},),
+    )
+    r = _results(_tree(project))["filters narrow"]
+    assert r.status == "fail"
+    assert "no_such_column = 'x'" in r.detail
+
+
+def test_a_warning_does_not_fail_the_run(capsys):
+    # The exit code gates CI and a deploy; a filter that is vacuous over a
+    # seven-day probe window must not stop either.
+    from breakdown.doctor import CheckResult, print_report
+
+    assert print_report([CheckResult.warn("filters narrow", "excluded nothing")]) == 0
+    out = capsys.readouterr().out
+    assert "[WARN] filters narrow" in out and "1 warned" in out
 
 
 def test_the_dbt_provider_reports_its_own_extra(monkeypatch):

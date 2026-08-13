@@ -181,49 +181,249 @@ def _filter(*predicates):
     return {"where_filters": [{"where_sql_template": p} for p in predicates]}
 
 
-def test_filtered_simple_metric_is_refused_rather_than_served_unfiltered():
-    # The C15 failure: `BindingSpec` has no filter clause, so translating this
-    # metric binds the *whole* relation under the governed metric's name — a
-    # larger, plausible number that `doctor` cannot catch, because the grain
-    # assertion still sees one row per grain key.
-    metric = _classic()
-    metric["filter"] = _filter("{{ Dimension('order__is_paid') }}")
-    r = translate(_manifest([_model()], [metric]))
-    assert not r.bindings
-    reason = r.skipped[0].reason
-    assert "`filter`" in reason
-    assert "{{ Dimension('order__is_paid') }}" in reason
-    assert "unfiltered measure" in reason
+# --- filters: resolved, or the metric is refused (roadmap 2.17) -------------
+#
+# `where_sql_template` is Jinja, not SQL, and `order__` is an entity link rather
+# than a table alias — so translating a filter is a resolution problem against
+# the manifest, not a string copy. The invariant every test below circles is
+# **total resolution or skip**: a metric is translated only when every predicate
+# of every filter it carries resolves to a column on its own relation, which is
+# what makes v1 a strict superset of C15's refusal.
+
+FILTERED_MODEL_DIMS = (
+    {"name": "ordered_at", "type": "time", "type_params": {"time_granularity": "day"}},
+    {"name": "region", "type": "categorical"},
+    {"name": "is_paid", "type": "categorical", "expr": "paid_at IS NOT NULL"},
+)
 
 
-def test_a_filter_on_the_measure_input_is_refused_the_same_way():
-    # Classic spec puts the filter on the measure input; dbt's flattening
-    # transform lifts it to the metric. Manifests exist in both states.
+def _filtered_model(**over):
+    """`_model()` with a second categorical dimension and a foreign entity, so
+    both the resolvable and the cross-relation cases have something to name."""
+    kw = dict(
+        dimensions=FILTERED_MODEL_DIMS,
+        entities=(
+            {"name": "order", "type": "primary", "expr": "order_id"},
+            {"name": "customer", "type": "foreign", "expr": "customer_id"},
+        ),
+    )
+    kw.update(over)
+    return _model(**kw)
+
+
+def _filtered(*predicates):
+    """A simple metric carrying `predicates` as its own metric-level filter."""
     metric = _classic()
-    metric["type_params"]["measure"]["filter"] = _filter("amount > 0")
-    r = translate(_manifest([_model()], [metric]))
-    assert not r.bindings
-    assert "its measure input declares a `filter` (amount > 0)" in r.skipped[0].reason
+    metric["filter"] = _filter(*predicates)
+    return metric
+
+
+def test_a_reference_to_the_bindings_own_dimension_becomes_a_where():
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
+    metric = _filtered("{{ Dimension('order__region') }} = 'US'")
+    r = translate(_manifest([_filtered_model()], [metric]))
+    assert not r.skipped
+    assert r.bindings["revenue"].where == ["region = 'US'"]
+
+
+def test_the_dimensions_expr_is_substituted_not_its_name():
+    # A MetricFlow dimension is a *name* over an `expr`; the column is the expr.
+    # Storing the name would name a column that need not exist.
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
+    r = translate(
+        _manifest([_filtered_model()], [_filtered("{{ Dimension('order__is_paid') }} = TRUE")])
+    )
+    assert r.bindings["revenue"].where == ["(NOT paid_at IS NULL) = TRUE"]
+
+
+def test_an_expression_dimension_is_parenthesised_when_it_is_spliced_in():
+    # `paid_at IS NOT NULL = TRUE` is not the same expression as
+    # `(paid_at IS NOT NULL) = TRUE`; sqlglot generates from the tree and adds
+    # no parentheses of its own, so the splice has to.
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
+    r = translate(
+        _manifest([_filtered_model()], [_filtered("{{ Dimension('order__is_paid') }} = TRUE")])
+    )
+    where = r.bindings["revenue"].where[0]
+    assert where.startswith("(") and where.endswith("= TRUE")
+
+
+def test_a_bare_dimension_name_with_no_entity_link_resolves_too():
+    # MetricFlow normally writes the link; the bare form is unambiguous within
+    # one semantic model and costs nothing to accept.
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
+    r = translate(_manifest([_filtered_model()], [_filtered("{{ Dimension('region') }} = 'US'")]))
+    assert r.bindings["revenue"].where == ["region = 'US'"]
+
+
+def test_the_metric_filter_and_the_measure_inputs_filter_are_both_carried():
+    # dbt's flattening transform merges the second into the first, and manifests
+    # exist in both states — so both are read, and ANDed as separate predicates.
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
+    metric = _filtered("{{ Dimension('order__region') }} = 'US'")
+    metric["type_params"]["measure"]["filter"] = _filter("{{ Dimension('order__is_paid') }}")
+    r = translate(_manifest([_filtered_model()], [metric]))
+    assert r.bindings["revenue"].where == ["region = 'US'", "(NOT paid_at IS NULL)"]
+
+
+def test_every_conjunct_of_an_intersection_survives_as_its_own_predicate():
+    # A list rather than a joined string, so a skip reason, a `doctor` line or a
+    # *show query* panel can quote the one predicate that matters.
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
+    r = translate(
+        _manifest(
+            [_filtered_model()],
+            [
+                _filtered(
+                    "{{ Dimension('order__region') }} IN ('US', 'CA')",
+                    "{{ Dimension('order__is_paid') }}",
+                )
+            ],
+        )
+    )
+    assert r.bindings["revenue"].where == [
+        "region IN ('US', 'CA')",
+        "(NOT paid_at IS NULL)",
+    ]
 
 
 @pytest.mark.parametrize(
     "shape",
     [
-        "amount > 0",
-        {"where_sql_template": "amount > 0"},
-        ["amount > 0"],
-        {"where_filters": [{"where_sql_template": "amount > 0"}]},
+        "{{ Dimension('order__region') }} = 'US'",
+        {"where_sql_template": "{{ Dimension('order__region') }} = 'US'"},
+        ["{{ Dimension('order__region') }} = 'US'"],
+        {"where_filters": [{"where_sql_template": "{{ Dimension('order__region') }} = 'US'"}]},
     ],
 )
 def test_every_serialisation_a_filter_has_ever_had_is_recognised(shape):
     # MetricFlow has accepted all four and normalises them on parse; manifests
     # written by older dbt versions still carry the legacy ones. A shape we did
-    # not recognise would parse as *no filter*, which is the whole failure.
+    # not recognise would parse as *no filter* — which now shows up as an empty
+    # `where` on a binding that is served, the exact C15 shape.
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
     metric = _classic()
     metric["filter"] = shape
-    r = translate(_manifest([_model()], [metric]))
+    r = translate(_manifest([_filtered_model()], [metric]))
+    assert r.bindings["revenue"].where == ["region = 'US'"]
+
+
+def test_the_predicate_is_emitted_in_the_target_dialect():
+    # The module's standing rule is generate in the target dialect, never
+    # translate into it. A predicate parsed generically may mean something else
+    # where it runs — a quoted `"date"` is an identifier on DuckDB and a string
+    # literal on BigQuery.
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
+    metric = _filtered('{{ Dimension("order__region") }} = "US"')
+    r = translate(_manifest([_filtered_model()], [metric]), dialect="bigquery")
+    assert r.bindings["revenue"].where == ["region = 'US'"]
+
+
+# --- refusals, each naming the construct ------------------------------------
+
+
+def _refusal(predicate, model=None):
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
+    r = translate(_manifest([model or _filtered_model()], [_filtered(predicate)]))
+    assert not r.bindings, "expected this predicate to refuse the whole metric"
+    return r.skipped[0].reason
+
+
+def test_a_cross_relation_reference_is_refused_by_name():
+    # The largest remaining share of real filters, and refused for a reason
+    # sharper than "unproven join": a slice that fans out is visible (the slices
+    # stop summing), a filter that fans out is invisible — it multiplies the
+    # total, and the grain claim counts the fact relation, not the join result.
+    reason = _refusal("{{ Dimension('customer__country') }} = 'US'")
+    assert "through entity `customer`" in reason
+    assert "cross-relation filters are not compiled yet" in reason
+
+
+def test_an_unknown_dimension_name_is_refused_rather_than_passed_through():
+    reason = _refusal("{{ Dimension('order__is_food_order') }}")
+    assert "is not a categorical dimension on semantic model 'orders'" in reason
+
+
+def test_a_time_dimension_is_refused_because_metricflow_renders_it_at_a_grain():
+    # It looks like a plain column comparison and is not one. Refusing costs a
+    # small set of metrics; guessing costs a wrong number with a plausible shape.
+    reason = _refusal("{{ Dimension('order__ordered_at') }} >= '2024-01-01'")
+    assert "*time* dimension" in reason
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "{{ TimeDimension('metric_time', 'week') }} >= '2024-01-01'",
+        "{{ Entity('customer') }} IS NOT NULL",
+        "{{ Metric('revenue', group_by=['customer']) }} > 1000",
+        "{{ Dimension('order__region').grain('week') }} = 'US'",
+        "{{ Dimension('order__region', 'week') }} = 'US'",
+    ],
+)
+def test_any_call_that_is_not_a_plain_dimension_reference_is_quoted_back(call):
+    reason = _refusal(call)
+    assert "not a plain `Dimension('<name>')` reference" in reason
+    assert call.split("}}")[0].strip() in reason
+
+
+def test_a_legacy_raw_sql_predicate_is_refused_rather_than_qualified_and_hoped_for():
+    # `amount > 0` is a legal legacy serialisation and it is *not* obviously
+    # safe: the name a filter is written with need not be the column MetricFlow
+    # would resolve it to (a dimension `region` may read `customer_region`), and
+    # qualifying it against the fact relation either errors or silently means
+    # something else. Refusing keeps the only failure mode refusal.
+    reason = _refusal("amount > 0")
+    assert "references the bare column `amount`" in reason
+
+
+def test_a_predicate_mixing_a_resolved_reference_with_a_bare_column_is_refused():
+    reason = _refusal("{{ Dimension('order__region') }} = 'US' AND amount > 0")
+    assert "references the bare column `amount`" in reason
+
+
+def test_a_subquery_is_refused():
+    reason = _refusal("{{ Dimension('order__region') }} IN (SELECT code FROM regions)")
+    assert "subquery or set operation" in reason
+
+
+def test_a_statement_separator_cannot_smuggle_a_second_statement():
+    reason = _refusal("{{ Dimension('order__region') }} = 'US'; DROP TABLE fct_orders")
+    assert "2 statements rather than one predicate" in reason
+
+
+def test_one_unresolvable_conjunct_refuses_the_whole_metric():
+    # The invariant, stated as a test: there is no partial translation. A
+    # dropped conjunct is a larger number under the governed metric's name.
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
+    r = translate(
+        _manifest(
+            [_filtered_model()],
+            [
+                _filtered(
+                    "{{ Dimension('order__region') }} = 'US'",
+                    "{{ Dimension('customer__country') }} = 'US'",
+                )
+            ],
+        )
+    )
     assert not r.bindings
-    assert "declares a `filter` (amount > 0)" in r.skipped[0].reason
+    assert "through entity `customer`" in r.skipped[0].reason
+    assert "there is no partial filter" in r.skipped[0].reason
+
+
+def test_a_refused_filter_is_reported_under_the_metrics_own_name():
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
+    r = translate(_manifest([_filtered_model()], [_filtered("amount > 0")]))
+    assert [s.name for s in r.skipped] == ["revenue"]
+
+
+def test_a_filter_refusal_names_the_measure_input_when_that_is_where_it_lives():
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
+    metric = _classic()
+    metric["type_params"]["measure"]["filter"] = _filter("amount > 0")
+    r = translate(_manifest([_filtered_model()], [metric]))
+    assert r.skipped[0].reason.startswith("its measure input declares a `filter`")
 
 
 def test_an_empty_filter_intersection_is_not_a_filter():
