@@ -165,6 +165,39 @@ def slices(client, metric, dimension, ref, ana):
 # rendering changes, change these with it, and re-measure the tour.
 
 
+TOUR_DOC = os.path.join(REPO, "knowledge", "demo_guided_tour.md")
+
+
+def prints(value, spec="{:.1f}%", scale=100.0):
+    """Assert the tour actually prints this *measured* figure.
+
+    The assertions below pin the engine, which closes the direction that
+    actually failed: attribution changed under the tour (C3, C5) and nothing
+    went red. It leaves the other direction open — edit a percentage in the
+    tour by hand and the literals here still match each other while the
+    document is wrong.
+
+    Deriving the string from the measured value rather than from a third copy
+    closes it both ways at once. Engine drifts, the formatted string stops
+    appearing, red. Tour edited, the string stops appearing, red. The tour's
+    guarantee is only worth what the weaker direction is worth.
+    """
+
+    # The tour is prose and uses a typographic minus (U+2212); Python formats
+    # an ASCII hyphen. Normalize both rather than making the document uglier.
+    def ascii_minus(t):
+        return t.replace("\u2212", "-").replace("\u2013", "-")
+
+    printed = ascii_minus(spec.format(value * scale))
+    with open(TOUR_DOC) as f:
+        text = ascii_minus(f.read())
+    assert printed in text, (
+        f"the guided tour does not print {printed}, but this test pins it. "
+        "Either the engine moved and the tour is stale, or the tour was edited "
+        "without its pin — the document promises both are impossible."
+    )
+
+
 def ui_share(node, parent):
     """A driver's share as the Headline table prints it: means over gap."""
     (c,) = [c for c in node["contributions"] if c["parent"] == parent]
@@ -282,6 +315,10 @@ def test_story_a_signup_regression_traverses_and_localizes(client):
     assert ui_share(top, "new_subscriptions") == pytest.approx(1.3003, **TOUR)
     assert ui_share(top, "new_arpu") == pytest.approx(-0.2795, **TOUR)
     assert ui_comovement(top) == pytest.approx(-0.0208, **TOUR)
+    # ...and the tour prints exactly these, so neither side can drift alone.
+    prints(ui_share(top, "new_subscriptions"))
+    prints(ui_share(top, "new_arpu"))
+    prints(top["relative_change"])
     payload = {c["parent"]: c["share_of_gap"] for c in top["contributions"]}
     assert payload["new_subscriptions"] == pytest.approx(1.2899, **TOUR)
 
