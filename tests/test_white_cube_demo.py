@@ -12,8 +12,9 @@ Kept in sync with `knowledge/demo_guided_tour.md` (the windows a prospect is
 walked through) and `fake_companies/scripts/verify_white_cube_stories.py` (the
 same stories checked one layer down, in the warehouse).
 
-Skipped when the snapshots are absent, so a clone that has not run
-`demo/Makefile` is not a red suite.
+Skipped when the snapshots are absent, so neither a clone that has not run
+`demo/Makefile` nor an unpacked sdist (which excludes `demo/` entirely) is a
+red suite.
 """
 
 import os
@@ -32,7 +33,10 @@ SNAPSHOTS = os.path.join(DEMO, ".breakdown", "snapshots")
 
 pytestmark = pytest.mark.skipif(
     not os.path.isdir(SNAPSHOTS) or not os.listdir(SNAPSHOTS),
-    reason="demo snapshots not built — run `make -C demo snapshots`",
+    reason=(
+        "demo snapshots not present — `demo/` is repo-only, not part of the distribution; "
+        "in a checkout, run `make -C demo snapshots`"
+    ),
 )
 
 START, END = "2024-06-01", "2026-07-30"

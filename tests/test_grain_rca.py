@@ -94,7 +94,10 @@ def test_window_shorter_than_grain_degrades_not_errors():
     data = mixed_grain_data()
 
     result = run_rca(
-        dag, data, {}, "conversions",
+        dag,
+        data,
+        {},
+        "conversions",
         **win(("2024-01-02", "2024-01-05"), ("2024-01-06", "2024-01-09")),
     )
 
@@ -114,7 +117,9 @@ def test_shapley_endpoint_errors_loudly_on_short_window():
 
     with pytest.raises(ValueError, match="contains no whole 'week' period"):
         shapley_attribution(
-            dag, data, "conversions",
+            dag,
+            data,
+            "conversions",
             **win(("2024-01-02", "2024-01-05"), ("2024-01-06", "2024-01-09")),
         )
 
@@ -126,7 +131,10 @@ def test_single_period_window_suppresses_bootstrap_ci():
     data = mixed_grain_data()
 
     result = run_rca(
-        dag, data, {}, "conversions",
+        dag,
+        data,
+        {},
+        "conversions",
         **win(("2024-01-01", "2024-01-28"), ("2024-02-26", "2024-03-03")),
     )
 
@@ -175,7 +183,10 @@ def test_monthly_lag_shifts_whole_months_across_year_boundary():
     dag = Parser(MONTHLY_LAG_YAML).dag
 
     result = run_rca(
-        dag, data, {}, "signups",
+        dag,
+        data,
+        {},
+        "signups",
         **win(("2024-01-01", "2024-06-30"), ("2024-11-01", "2025-01-31")),
         advi_draws=300,
     )

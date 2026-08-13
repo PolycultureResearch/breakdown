@@ -330,6 +330,7 @@ def test_from_frame_sets_last_observed():
 
 # --- default reference window (the matched adjacent block) ---
 
+
 def test_default_reference_plain_4x():
     # 7-day analysis, ample history: 4x7 = 28 days immediately before.
     ref = default_reference_window("2024-03-01", "2024-03-07", "2023-01-01")
@@ -344,18 +345,14 @@ def test_default_reference_min_floor_beats_short_multiple():
 
 def test_default_reference_week_align_already_multiple():
     # 14-day analysis with seasonality in scope: 56 days, already a 7-multiple.
-    ref = default_reference_window(
-        "2024-03-01", "2024-03-14", "2023-01-01", week_align=True
-    )
+    ref = default_reference_window("2024-03-01", "2024-03-14", "2023-01-01", week_align=True)
     assert ref == ("2024-01-05", "2024-02-29")
     assert ((pd.Timestamp(ref[1]) - pd.Timestamp(ref[0])).days + 1) % 7 == 0
 
 
 def test_default_reference_week_align_rounds_up():
     # 10-day analysis: 4x10 = 40 -> 42 (whole weeks).
-    ref = default_reference_window(
-        "2024-03-01", "2024-03-10", "2023-01-01", week_align=True
-    )
+    ref = default_reference_window("2024-03-01", "2024-03-10", "2023-01-01", week_align=True)
     assert (pd.Timestamp(ref[1]) - pd.Timestamp(ref[0])).days + 1 == 42
     assert ref[1] == "2024-02-29"
 
@@ -374,27 +371,21 @@ def test_default_reference_clamped_to_data_start():
 def test_default_reference_clamp_trims_to_whole_weeks():
     # 20 days available with week_align: trimmed down to 14 (2 whole weeks)
     # ending the day before the analysis window.
-    ref = default_reference_window(
-        "2024-01-21", "2024-01-27", "2024-01-01", week_align=True
-    )
+    ref = default_reference_window("2024-01-21", "2024-01-27", "2024-01-01", week_align=True)
     assert ref == ("2024-01-07", "2024-01-20")
 
 
 def test_default_reference_short_stub_kept():
     # Fewer than 7 days available: the stub is kept (advisories own the
     # warning), even with week_align.
-    ref = default_reference_window(
-        "2024-01-06", "2024-01-12", "2024-01-01", week_align=True
-    )
+    ref = default_reference_window("2024-01-06", "2024-01-12", "2024-01-01", week_align=True)
     assert ref == ("2024-01-01", "2024-01-05")
 
 
 def test_default_reference_month_grain_whole_analysis_month():
     # Whole-month analysis: 4x30 = 120 days back from Mar 31 contains whole
     # months without any extension.
-    ref = default_reference_window(
-        "2024-04-01", "2024-04-30", "2023-01-01", coarsest_grain="month"
-    )
+    ref = default_reference_window("2024-04-01", "2024-04-30", "2023-01-01", coarsest_grain="month")
     assert ref[1] == "2024-03-31"
     assert snap_window(ref[0], ref[1], "month") is not None
 
@@ -402,9 +393,7 @@ def test_default_reference_month_grain_whole_analysis_month():
 def test_default_reference_month_grain_extends_for_whole_period():
     # Short analysis: the 28-day block [Feb 18, Mar 16] holds no whole month,
     # so the window reaches back to cover February.
-    ref = default_reference_window(
-        "2024-03-17", "2024-03-23", "2023-01-01", coarsest_grain="month"
-    )
+    ref = default_reference_window("2024-03-17", "2024-03-23", "2023-01-01", coarsest_grain="month")
     assert ref[1] == "2024-03-16"
     snapped = snap_window(ref[0], ref[1], "month")
     assert snapped is not None and snapped.n_periods >= 1
@@ -413,9 +402,7 @@ def test_default_reference_month_grain_extends_for_whole_period():
 def test_default_reference_month_extension_reclamps_to_data_start():
     # Data starts mid-February: the month extension cannot reach a whole
     # month, so the clamped window stands (nodes report status downstream).
-    ref = default_reference_window(
-        "2024-03-17", "2024-03-23", "2024-02-15", coarsest_grain="month"
-    )
+    ref = default_reference_window("2024-03-17", "2024-03-23", "2024-02-15", coarsest_grain="month")
     assert ref == ("2024-02-18", "2024-03-16")
     assert snap_window(ref[0], ref[1], "month") is None
 

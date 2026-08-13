@@ -160,10 +160,27 @@ packages = ["breakdown"]
 # The sdist otherwise mirrors the whole repo. Someone running `pip download` or
 # building from source wants the package, its tests and its docs — not the demo
 # instance's committed parquet, nor the agent/CI scaffolding.
+#
+# `tests/` ships, and two of its modules read files that live in directories
+# excluded here (`knowledge/b2b_mrr_tree.yml`, `demo/.breakdown/snapshots`).
+# Both guard themselves with a module-level `skipif`, so the shipped suite
+# skips them with a reason instead of failing on a file the artifact never
+# contained; the `sdist` CI job runs the suite from an unpacked sdist and
+# asserts on those reasons. Excluding a directory that a test reads is
+# therefore a decision with a second half — make the test skip too.
 [tool.hatch.build.targets.sdist]
 exclude = [
     "/.claude",
     "/.github",
+    # A `uv` interpreter pin for *this* checkout. Left in the sdist it silently
+    # constrains anyone building from source to the version we happen to
+    # develop on, which is narrower than `requires-python` promises.
+    "/.python-version",
+    # A symlink to AGENTS.md, and agent scaffolding by the same reading as
+    # `/.claude`. Symlinks in an sdist are also a portability wart (they do not
+    # survive extraction everywhere), and this one buys nothing: AGENTS.md is
+    # right there.
+    "/CLAUDE.md",
     "/demo",
     "/dist",
     "/knowledge",

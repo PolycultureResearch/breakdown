@@ -22,6 +22,12 @@ jobs:
       - name: Lint
         run: uv run ruff check .
 
+      # AGENTS.md says the codebase is ruff-*formatted*; unenforced, that drifted
+      # to five files. `--check` only reports, so a failure here is fixed with
+      # `uv run ruff format .` and never by the job.
+      - name: Format
+        run: uv run ruff format --check .
+
   # `requires-python = ">=3.11"` is a claim; this is what makes it true. Each
   # version gets the full suite with every provider extra installed (the dev
   # group pulls `metric-breakdown[all]`), so the dbt- and Databricks-backed
@@ -114,6 +120,87 @@ jobs:
                       print("OK:", e)
                   else:
                       raise AssertionError(f"{extra}: expected MissingProviderExtra")
+          PY
+
+  # The source distribution, which nothing else here covers: `lint`, `test`,
+  # `base-install` and `wheel` are every one of them wheel- or checkout-based,
+  # so anything wrong with the sdist reaches PyPI unnoticed. Something already
+  # was — the sdist excludes `/knowledge` and `/demo` but ships `tests/`, and
+  # two test modules read files from those directories, so the published suite
+  # failed on files the artifact never contained.
+  #
+  # It runs the whole shipped suite rather than a subset, because the property
+  # is "every test in the sdist either passes or skips for a reason we chose",
+  # and no subset can prove that. ~3 minutes, most of it sampling. It is not a
+  # duplicate of `base-install`: that one tests the wheel from the checkout,
+  # this one tests the artifact a `pip download` / distro packager gets.
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.0
+        with:
+          enable-cache: true
+
+      - name: Build sdist
+        run: uv build --sdist
+
+      # Installing the .tar.gz rather than the wheel is the point: this builds
+      # the package *from the sdist*, so a file the build needs but the sdist
+      # drops fails here. No extras, like `base-install` — the three provider
+      # tests skip themselves and everything else must pass.
+      - name: Install the sdist in a fresh environment
+        run: |
+          uv venv --python 3.13 .venv-sdist
+          VIRTUAL_ENV=.venv-sdist uv pip install dist/*.tar.gz "pytest>=9.0.2" "httpx>=0.28.1"
+
+      - name: Unpack the sdist
+        run: |
+          mkdir -p "$RUNNER_TEMP/sdist"
+          tar xzf dist/*.tar.gz -C "$RUNNER_TEMP/sdist" --strip-components=1
+
+      # Run from the unpacked sdist, which is what a downstream packager
+      # (Debian, conda-forge, nixpkgs) does with it. `pythonpath = ["."]` means
+      # this imports the sdist's own `breakdown/`; that is the copy under test
+      # here, and the tests themselves exist nowhere but the artifact.
+      - name: Run the shipped suite
+        working-directory: ${{ runner.temp }}/sdist
+        run: |
+          # The default shell here is `bash -e`, *not* `-o pipefail`: without
+          # this line a failing pytest would be masked by `tee` exiting 0.
+          set -o pipefail
+          "$GITHUB_WORKSPACE/.venv-sdist/bin/python" -m pytest tests/ -q -rs \
+            | tee "$RUNNER_TEMP/sdist-tests.txt"
+
+      # A green run that quietly skipped half the suite would be worth nothing,
+      # so the skips are asserted rather than tolerated. Three shapes are
+      # legitimate: a provider SDK a base install does not have, a permission
+      # test root cannot reproduce, and a file in a directory the sdist excludes
+      # — and the last must say so in the words below, so that excluding a new
+      # directory without guarding the tests that read it fails this job instead
+      # of turning them green-by-absence.
+      - name: Every skip is one we chose
+        run: |
+          .venv-sdist/bin/python - <<'PY'
+          import os
+          import re
+
+          text = open(os.environ["RUNNER_TEMP"] + "/sdist-tests.txt").read()
+          # pytest -rs prints one line per skipped test: "SKIPPED [1] file:line: reason".
+          reasons = set(re.findall(r"^SKIPPED \[\d+\] [^:]+:\d+: (.*)$", text, re.M))
+          for r in sorted(reasons):
+              print("skip:", r)
+          assert reasons, "no skips at all — has the -rs summary format changed?"
+          allowed = re.compile(
+              r"extra|metricflow|could not import|not part of the distribution|^root ignores",
+              re.I,
+          )
+          unexpected = [r for r in reasons if not allowed.search(r)]
+          assert not unexpected, f"unexpected skip reason(s): {unexpected}"
+          repo_only = [r for r in reasons if "not part of the distribution" in r]
+          assert len(repo_only) == 2, f"expected the knowledge/ and demo/ guards, got {repo_only}"
           PY
 
   # Keep the install story honest: the wheel must build, expose the console
