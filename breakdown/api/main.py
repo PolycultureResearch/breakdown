@@ -292,7 +292,9 @@ def _remember_fit(traces: MutableMapping, key, fit) -> None:
 
     The trailing eviction is a backstop for a plain dict: a tree's `traces` is
     a `TraceView` onto the process-wide `TraceStore`, which caps *across* trees
-    on every write (256 per tree would be 256 x N InferenceData objects).
+    on every write (256 per tree would be 256 x N InferenceData objects) and
+    caps by total bytes rather than entry count, because one entry's size
+    scales with the loaded window.
     """
     existing = traces.get(key)
     if existing is not None and _fit_rank(existing) > _fit_rank(fit):
@@ -311,6 +313,36 @@ def _fit_rank(fit) -> Tuple[int, int]:
     except Exception:  # pragma: no cover - a trace without a posterior dim
         pass
     return (1 if method == "nuts" else 0, draws)
+
+
+def _fit_summary(fit) -> Dict[str, Dict[str, Optional[float]]]:
+    """The JSON-safe posterior summary for one fit, computed at most once.
+
+    `az.summary` is the one heavy engine call `/metrics/{name}` makes, and it
+    scales with `draws`: 1.1s on an 830-day ADVI trace with 1000 draws, and the
+    UI's box goes to 5000. Nothing memoized it, so it was paid on *every* GET —
+    and `clearRCA` in app.js re-fetches every fitted metric after wiping its
+    own cache, which issues N of these back to back.
+
+    The trace is immutable once fitted, so the answer is too: cache it on the
+    `FitResult` itself, where it is collected with the fit it describes rather
+    than outliving it in a side table. Callers run this via `asyncio.to_thread`
+    — even memoized, it must not be the thing that decides whether /health
+    answers.
+    """
+    cached = getattr(fit, "summary_json", None)
+    if cached is not None:
+        return cached
+    # NaN/inf (e.g. r_hat on single-chain ADVI traces) are not valid JSON
+    summary = {
+        col: {k: (float(v) if math.isfinite(v) else None) for k, v in vals.items()}
+        for col, vals in summarize_trace(fit.trace).to_dict().items()
+    }
+    try:
+        fit.summary_json = summary
+    except AttributeError:  # pragma: no cover - a slotted/frozen fit object
+        pass
+    return summary
 
 
 def _pick_fit(traces: Dict[Tuple[str, Optional[str]], Any], name: str):
@@ -356,9 +388,12 @@ class BreakdownState(State):
     one `TreeState` among many.
 
     `startup_error` is the one composite. It reads "can the default tree
-    serve?", which is two different failures: `discovery_error` when `--tree`
-    named nothing loadable (no tree exists to hang it on) and the default
-    tree's own `load_error` otherwise.
+    serve?", which is three different failures: `auth_error` when the auth
+    variables are configured in a combination that would fail open,
+    `discovery_error` when `--tree` named nothing loadable (no tree exists to
+    hang it on), and the default tree's own `load_error` otherwise. The auth
+    one comes first because it is the one the operator must fix before
+    anything else the process says about itself matters.
     """
 
     def _default_tree(self):
@@ -375,8 +410,10 @@ class BreakdownState(State):
                 return getattr(tree, key)
         if key == "startup_error":
             tree = self._default_tree()
-            return self._state.get("discovery_error") or (
-                tree.load_error if tree is not None else None
+            return (
+                self._state.get("auth_error")
+                or self._state.get("discovery_error")
+                or (tree.load_error if tree is not None else None)
             )
         return super().__getattr__(key)
 
@@ -508,7 +545,10 @@ async def lifespan(app: FastAPI):
     app.state.trees: Dict[str, TreeState] = {}
     app.state.default_tree = ""
     # Fitted models for every tree, capped process-wide: 256 per tree would be
-    # 256 x N InferenceData objects, each holding every posterior draw.
+    # 256 x N InferenceData objects, each holding every posterior draw. The cap
+    # is a byte budget (BREAKDOWN_MAX_TRACE_BYTES) with the entry count as a
+    # backstop — an entry's size scales with the loaded window, so a count
+    # alone bounds nothing.
     app.state.trace_store = TraceStore()
     # A *discovery* failure (`--tree` pointing at nothing) has no tree to hang
     # itself on, so it stays global; a per-tree parse or load failure lands on
@@ -517,6 +557,16 @@ async def lifespan(app: FastAPI):
     # endpoints return 503, and the UI shows a banner pointing at `breakdown
     # doctor` — rather than a container crash-looping with no way to see why.
     app.state.discovery_error = None
+    # An auth configuration that would fail open (see `_auth_config_error`).
+    # The middleware refuses every non-open route with a 503 while this is set,
+    # so the process does not serve data; it is recorded and logged here, and
+    # read by `startup_error`, so `/health` and the UI banner say *why* rather
+    # than leaving an operator staring at 503s. Same degraded-startup
+    # discipline as a bad provider credential: loud, diagnosable, not a
+    # crash-loop with the reason only in a log that scrolled past.
+    app.state.auth_error = _auth_config_error()
+    if app.state.auth_error:
+        logger.error("Refusing to serve data routes: %s", app.state.auth_error)
     # run_id -> the latest progress update from an in-flight RCA or simulation.
     # Written from the worker thread, read by GET /progress. **Not** tree
     # state: run ids are already unique, and a poller shouldn't need to know
@@ -624,27 +674,128 @@ app = FastAPI(title="breakdown API", lifespan=lifespan)
 app.state = BreakdownState(app.state._state)
 
 
-@app.middleware("http")
-async def mcp_bearer_token(request: Request, call_next):
-    """Require a bearer token on /mcp when BREAKDOWN_API_TOKEN is set.
+def _presents_token(request: Request, token: str) -> bool:
+    """Whether this request carries `Authorization: Bearer <token>`.
 
-    The MCP endpoint runs whole analyses, so exposing it off loopback without
-    a gate hands anyone who finds the URL the tree and its data. Opt-in rather
-    than mandatory: unset (the laptop default) keeps the loopback workflow
-    friction-free, set (a public deployment) closes it. The UI and /health stay
-    open — the token is for the machine-facing surface, not a login.
+    Compared as **bytes**, not str: `hmac.compare_digest` raises TypeError on a
+    str containing non-ASCII, so a header of `Bearer sécret` used to be a 500
+    from inside the middleware rather than the 401 every other wrong token
+    gets — a trivially reachable error-page-vs-401 oracle (L3). Starlette
+    decodes header values latin-1 (HTTP's byte-to-str mapping), so latin-1 is
+    the exact inverse and round-trips the bytes the client actually sent; the
+    token comes from the environment, which Python decoded utf-8. A value that
+    cannot round-trip is not a token we issued, so it compares as empty rather
+    than raising — still one constant-time comparison, on the same path.
+    """
+    scheme, _, presented = request.headers.get("authorization", "").partition(" ")
+    try:
+        presented_bytes = presented.encode("latin-1")
+    except UnicodeEncodeError:
+        presented_bytes = b""
+    token_bytes = token.encode("utf-8", "surrogateescape")
+    return scheme.lower() == "bearer" and hmac.compare_digest(presented_bytes, token_bytes)
+
+
+def _under(path: str, prefix: str) -> bool:
+    """Prefix match on **path-segment boundaries**.
+
+    `path.startswith("/mcp")` also matches `/mcphony`, which is the wrong shape
+    of test for a security decision even when no such route exists today: the
+    day someone adds `/metadata`, a `startswith("/meta")` open-list would hand
+    it out. Only `/mcp` itself and things genuinely under it match here.
+    """
+    return path == prefix or path.startswith(prefix + "/")
+
+
+# What stays reachable without a token even in BREAKDOWN_REQUIRE_AUTH mode.
+# Deliberately an *allow*-list, so the gate fails closed: a route added
+# tomorrow is gated by default rather than open until someone remembers it.
+#
+# - `/health` is liveness/readiness. `compose.yaml`'s healthcheck calls it with
+#   no credentials, and orchestrators can't present one, so gating it makes a
+#   correctly-configured deployment look dead.
+# - `/ui` is a JS bundle, not data. Its *fetches* are gated, which is the
+#   intended consequence: this mode assumes a reverse proxy (Cloudflare Access
+#   and the like) injecting the header, or an operator who accepts that the
+#   browser needs one. A login, a cookie or a token-in-the-URL would be hosted
+#   mode (roadmap 3.5) and is deliberately not built here.
+# - `/` is a one-line "the API is running" message and carries nothing.
+_OPEN_PATHS = frozenset({"/", "/health"})
+_OPEN_PREFIXES = ("/ui",)
+
+# Anything but an explicit off switch counts as on, so that a typo
+# (`BREAKDOWN_REQUIRE_AUTH=ture`) closes the door rather than opening it.
+_AUTH_OFF_VALUES = frozenset({"", "0", "false", "no", "off"})
+
+_AUTH_MISCONFIGURED = (
+    "BREAKDOWN_REQUIRE_AUTH is set but BREAKDOWN_API_TOKEN is empty, so every "
+    "request would be checked against an empty secret and pass. Set "
+    "BREAKDOWN_API_TOKEN, or unset BREAKDOWN_REQUIRE_AUTH."
+)
+
+
+def _open_path(path: str) -> bool:
+    return path in _OPEN_PATHS or any(_under(path, prefix) for prefix in _OPEN_PREFIXES)
+
+
+def _require_auth() -> bool:
+    """Whether BREAKDOWN_REQUIRE_AUTH asks for the whole API to be gated."""
+    value = os.environ.get("BREAKDOWN_REQUIRE_AUTH")
+    return value is not None and value.strip().lower() not in _AUTH_OFF_VALUES
+
+
+def _auth_config_error() -> Optional[str]:
+    """The one auth configuration that must not be served: gate everything,
+    with nothing to gate it against."""
+    if _require_auth() and not os.environ.get("BREAKDOWN_API_TOKEN"):
+        return _AUTH_MISCONFIGURED
+    return None
+
+
+@app.middleware("http")
+async def bearer_token(request: Request, call_next):
+    """The bearer-token gate. Two levels, both opt-in through the environment.
+
+    **BREAKDOWN_API_TOKEN alone gates `/mcp`.** The MCP endpoint runs whole
+    analyses, so exposing it off loopback without a gate hands anyone who finds
+    the URL the tree and its data. Unset (the laptop default) keeps the
+    loopback workflow friction-free; set closes that one surface and nothing
+    else, which is what existing deployments already depend on.
+
+    **BREAKDOWN_REQUIRE_AUTH=1 extends the same check to every data route** —
+    /meta, /dag, /series, /metrics/*, /analyze/*, /shapley/*, /rca/*,
+    /simulate, /progress/*, /trees, /trees/{id}/load and their
+    `/trees/{tree_id}/…` aliases. Gating here rather than per route is what
+    keeps the two mounts from drifting: the router is included twice, but the
+    middleware sees one resolved path, so an alias cannot be gated differently
+    from the route it aliases. `_OPEN_PATHS` names the exceptions.
+
+    Set without a token it would gate everything against an empty secret and
+    pass everything, so that combination is refused (503) rather than served —
+    and `lifespan` says so loudly at startup.
 
     A down payment on hosted mode (roadmap 3.5), not a substitute for it: one
     shared secret, no per-user identity, no revocation short of a redeploy."""
+    path = request.url.path
+    if _open_path(path):
+        return await call_next(request)
+
+    config_error = _auth_config_error()
+    if config_error:
+        return JSONResponse({"detail": config_error}, status_code=503)
+
     token = os.environ.get("BREAKDOWN_API_TOKEN")
-    if token and request.url.path.startswith("/mcp"):
-        header = request.headers.get("authorization", "")
-        scheme, _, presented = header.partition(" ")
-        # compare_digest over the raw strings: constant-time, and it also
-        # keeps a missing header from short-circuiting differently.
-        if scheme.lower() != "bearer" or not hmac.compare_digest(presented, token):
+    if token and (_require_auth() or _under(path, "/mcp")):
+        if not _presents_token(request, token):
+            detail = (
+                "Missing or invalid bearer token for /mcp."
+                if _under(path, "/mcp")
+                else "Missing or invalid bearer token. This deployment sets "
+                "BREAKDOWN_REQUIRE_AUTH, so every data route needs "
+                "`Authorization: Bearer <BREAKDOWN_API_TOKEN>`."
+            )
             return JSONResponse(
-                {"detail": "Missing or invalid bearer token for /mcp."},
+                {"detail": detail},
                 status_code=401,
                 headers={"WWW-Authenticate": "Bearer"},
             )
@@ -843,17 +994,41 @@ async def get_meta(request: Request):
     }
 
 
+# What a node definition exposes that is infrastructure rather than modelling:
+# `sql` is the metric's whole statement, `bind` the table plus its WHERE-clause
+# business logic. Everything else in the definition (parents, priors, grain,
+# dimensions) is the tree the UI draws.
+_SENSITIVE_DEFINITION_FIELDS = ("sql", "bind")
+
+
 @router.get("/dag")
 async def get_dag(request: Request):
+    """The tree's shape and every node's definition.
+
+    When `BREAKDOWN_API_TOKEN` is set and the caller doesn't present it, the
+    `sql` and `bind` blocks are redacted to null. `/dag` is open by design —
+    the UI is unauthenticated and needs the shape to draw anything — but on a
+    deployment that bothered to configure a token, "the graph is public" should
+    not also mean "our fully-qualified table names and filter logic are
+    public". Redacted to `null` rather than dropped, so a client reading
+    `def.sql` sees an absent query rather than a KeyError. Unset (the laptop
+    default) behaves exactly as before. The UI's "show query" panel reads
+    `GET /metrics/{name}/query`, not this route, so it loses nothing.
+    """
     tree = _tree(request)
     _require_ready(tree)
     parser = tree.parser
-    return {
-        "nodes": [
-            [name, attrs["definition"].model_dump()] for name, attrs in parser.dag.nodes(data=True)
-        ],
-        "edges": [list(e) for e in parser.dag.edges()],
-    }
+    token = os.environ.get("BREAKDOWN_API_TOKEN")
+    redact = bool(token) and not _presents_token(request, token)
+    nodes = []
+    for name, attrs in parser.dag.nodes(data=True):
+        definition = attrs["definition"].model_dump()
+        if redact:
+            for key in _SENSITIVE_DEFINITION_FIELDS:
+                if key in definition:
+                    definition[key] = None
+        nodes.append([name, definition])
+    return {"nodes": nodes, "edges": [list(e) for e in parser.dag.edges()]}
 
 
 @router.get("/series")
@@ -1003,11 +1178,7 @@ async def get_metric(name: str, request: Request):
     diagnostics = None
     fit = _pick_fit(traces, name)
     if fit is not None:
-        # NaN/inf (e.g. r_hat on single-chain ADVI traces) are not valid JSON
-        summary = {
-            col: {k: (float(v) if math.isfinite(v) else None) for k, v in vals.items()}
-            for col, vals in summarize_trace(fit.trace).to_dict().items()
-        }
+        summary = await asyncio.to_thread(_fit_summary, fit)
         diagnostics = fit.diagnostics
 
     return {
@@ -1216,6 +1387,46 @@ def _fetch_flows_cached(
     return df
 
 
+def _loaded_window(data) -> Tuple[str, str]:
+    """The inclusive span the loaded data actually covers, as ISO dates.
+
+    `date_start`/`date_end` are period *starts* (what /meta reports), so a
+    month-grain tree's `date_end` is the 1st of its last month. The honest
+    upper edge is the last date fully covered — `data_through`, the same anchor
+    the node cards and the goal progress use — so a legitimate request for the
+    end of the last month is not mistaken for one past the end of the data.
+    """
+    start = str(data.date_start.date())
+    edges = [e for e in (data.data_through(n) for n in data.grain_of) if e is not None]
+    end = max(edges) if edges else data.date_end
+    return start, str(end.date())
+
+
+def _require_window_loaded(data, span_start: str, span_end: str) -> None:
+    """Reject a slice window that reaches outside the loaded data. Raises
+    ValueError, which the endpoint turns into a 422.
+
+    Called **before any provider call**: `_run_slice` fetches
+    `min(reference_start, analysis_start) … max(reference_end, analysis_end)`,
+    and nothing checked those dates beyond "they parse". A caller could ask for
+    1900-01-01…2100-12-31 and get a 73,000-day warehouse scan, held under the
+    tree's lock, whose frame then sat in the slice cache forever — even though
+    the request went on to 422 for having no data in it. Checked here rather
+    than in the endpoint because the reference window may be defaulted inside
+    `_run_slice`: what matters is the span about to be fetched, not the span
+    that was passed.
+    """
+    loaded_start, loaded_end = _loaded_window(data)
+    if span_start < loaded_start or span_end > loaded_end:
+        raise ValueError(
+            f"Requested window {span_start}..{span_end} reaches outside the loaded "
+            f"data window {loaded_start}..{loaded_end}. Slicing reads from the "
+            "provider for the window you ask for, so it is restricted to the data "
+            "this process loaded; restart with --start-date/--end-date covering "
+            "the window you want."
+        )
+
+
 def _run_slice(
     tree,
     parser,
@@ -1243,6 +1454,7 @@ def _run_slice(
     spec = defn.dimensions[dimension]
     span_start = min(reference_start, analysis_start)
     span_end = max(reference_end, analysis_end)
+    _require_window_loaded(data, span_start, span_end)
     sliced = _fetch_sliced_cached(tree, parser, defn, spec.source, span_start, span_end)
     weight_sliced = None
     if defn.kind == "rate":
@@ -1419,9 +1631,11 @@ async def simulate(
 async def get_progress(run_id: str, request: Request):
     """Live stage of an in-flight RCA or simulation started with this `run_id`.
 
-    Deliberately cheap and ungated: no lock (the analysis holds it for its whole
-    duration, so taking it here would deadlock the very thing being reported on)
-    and no readiness check. An unknown id is `{"stage": null}` with a 200 rather
+    Deliberately cheap: no lock (the analysis holds it for its whole duration,
+    so taking it here would deadlock the very thing being reported on) and no
+    readiness check. It is a data route like any other for the bearer-token
+    gate, so under BREAKDOWN_REQUIRE_AUTH a poller carries the same header the
+    request it is polling for did. An unknown id is `{"stage": null}` with a 200 rather
     than a 404 — a finished run and a never-started one are the same answer to a
     poller, and neither is an error worth handling on the client.
     """

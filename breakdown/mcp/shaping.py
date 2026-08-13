@@ -46,6 +46,11 @@ RCA_HOW_TO_READ = (
     "from the fitted history (`fit_periods` says how much there was); its share of the gap "
     "may be misallocated between `components.seasonal`, trend, and `unexplained` — load "
     "more history rather than narrating that split as precise.\n"
+    "- A node whose `status` is not `ok` was **not analyzed** — never narrate it as a "
+    "metric that held steady; say it is a gap in the analysis and give `status_reason`. "
+    "An `attribution_failed` node still reports a real `gap`: the move is measured, only "
+    "the split is missing. Nothing upstream of such a node is attributed either, so "
+    "`ranked_causes` is incomplete whenever one is present.\n"
     "- Fits use ADVI, which can understate uncertainty; treat this as triage and confirm "
     "load-bearing findings with a NUTS fit before big decisions."
 )
@@ -168,11 +173,28 @@ def metric_link(name: str, tree=None) -> str:
 def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
     """Compact a run_rca result: drop per-contribution decompositions and
     effective-window detail, collapse components to point estimates, shrink
-    skipped nodes to their status, and omit null node fields."""
+    skipped nodes to their status, and omit null node fields.
+
+    A non-`ok` node keeps `status_reason`, and keeps its own `baseline`,
+    `actual` and `gap` when it has them. Both matter more here than in the HTTP
+    response, not less. `fit_failed` and `attribution_failed` mean *the engine
+    could not analyze this node* — which an assistant must not narrate as
+    "nothing happened here" — and the reason names the offending parent and
+    dates, so dropping it leaves a bare label the assistant can only guess at.
+    An `attribution_failed` node's gap is read off the data rather than the
+    model, so it is a real movement with no split; withholding it while showing
+    the label invites exactly the wrong reading. (`window_shorter_than_grain`
+    carries neither, and correctly compacts to almost nothing.)"""
     nodes: Dict[str, Any] = {}
     for name, node in result["nodes"].items():
         if node["status"] != "ok":
-            nodes[name] = {"status": node["status"], "grain": node["grain"]}
+            degraded = {"status": node["status"], "grain": node["grain"]}
+            if node.get("status_reason"):
+                degraded["status_reason"] = node["status_reason"]
+            for field in ("baseline", "actual", "gap", "relative_change"):
+                if node.get(field) is not None:
+                    degraded[field] = node[field]
+            nodes[name] = degraded
             continue
         windows = node["effective_windows"]
         compact = {
