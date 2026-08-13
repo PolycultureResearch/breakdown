@@ -50,8 +50,13 @@ Snapshots are committed (`demo/.breakdown/snapshots`, 53 files). If missing,
 
 **Four planted stories**, each with a known cause. Full script and the expected
 narrative: [`knowledge/demo_guided_tour.md`](../../../knowledge/demo_guided_tour.md),
-which is authoritative for the windows; `tests/test_white_cube_demo.py` pins
-them and their numbers.
+authoritative for the windows.
+
+**Do not trust the tour's percentages.** It says every number in it is asserted
+in `tests/test_white_cube_demo.py`; that test pins *properties* — gap sign,
+which node ranks first, the lag, a share inequality — and **no** quoted
+percentage. Several of its shares have drifted since it was written. Step 6 of
+the procedure exists partly because of this.
 
 | Story | Target | Reference | Analysis |
 |---|---|---|---|
@@ -94,14 +99,23 @@ uv run breakdown serve --tree knowledge/b2b_mrr_tree.yml \
 scales with metric count. It is also the only tree where a monthly node's fit
 window is realistically short.
 
-**Known-bad: `controllable_attrition`** — negative in every period, because the
-mock draws its two leaves independently at unrelated scales. Roadmap
-[**C13**](../../../knowledge/roadmap.md), open; the row carries the measurements
-and the blast radius. Do not report it as new.
+**Known-bad, stated as a cause rather than a symptom — the cause generalizes and
+the symptom does not.** The mock synthesizes **every metric independently**, so
+on this tree **no formula identity holds exactly**. Two consequences you will
+meet, and both are expected:
 
-That is the only node with impossible values. Treat any *other* negative flow or
-stock as a finding: one labelled known-bad is the calibration, and a second
-means something changed.
+- `controllable_attrition` is negative in every period — its two leaves are
+  drawn at unrelated scales, so "saved" always exceeds "requested". Roadmap
+  [**C13**](../../../knowledge/roadmap.md), open; the row carries the
+  measurements and the blast radius.
+- Any node reporting a large `unexplained` on what the YAML says is an exact
+  identity — e.g. `total_arr = total_mrr * 12` — is the same defect wearing a
+  different symptom, not a new one.
+
+Do not report either as new. Everything *structural* is still fair game: a grain
+handoff that drops periods, a refusal that fires wrongly, a slice that will not
+reconcile. Judge those on their own terms — the mock's independence explains
+wrong *values*, not wrong *behaviour*.
 
 ---
 
