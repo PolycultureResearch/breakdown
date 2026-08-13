@@ -901,6 +901,26 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 }
 #retry-banner button:hover { background: var(--warn-soft); }
 
+/* A CDN dependency that did not load. Red like #degraded-banner because, like
+   a misconfigured provider, it is a condition someone has to fix — but it is
+   emphatically *not* the retry banner: retrying reaches the same healthy
+   server and changes nothing, so there is no button. */
+#library-banner {
+  background: var(--down-soft); border-bottom: 1px solid var(--down-border); color: var(--down-ink);
+  padding: 10px 16px; font-size: 13px; line-height: 1.5;
+}
+#library-banner code {
+  background: var(--down-soft); border-radius: 3px; padding: 1px 4px; font-size: 12px;
+}
+
+/* A qualifier on a section heading — what the numbers under it are, said in
+   the place the eye lands before it reads them. Muted and lowercase so it
+   reads as a caption rather than a competing title. */
+.section-note {
+  font-size: 10.5px; font-weight: 400; color: var(--muted);
+  text-transform: none; letter-spacing: 0; margin-left: 6px;
+}
+
 /* Query provenance (roadmap 2.11): the statement behind a number, on demand.
    Deliberately quiet — it is evidence a reader goes looking for, not chrome. */
 .linkish {

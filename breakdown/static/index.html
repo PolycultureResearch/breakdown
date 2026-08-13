@@ -4,10 +4,29 @@
     <meta charset="utf-8">
     <title>breakdown — Bayesian Metric Trees</title>
     <link rel="stylesheet" href="style.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"></script>
-    <script src="https://cdn.plot.ly/plotly-basic-2.32.0.min.js" charset="utf-8"></script>
+    <!-- Dependencies come from CDN because there is no build step (see AGENTS.md).
+         Each carries a Subresource Integrity hash, so a substituted or corrupted
+         file is refused rather than executed; `crossorigin` is required for the
+         browser to check it at all. All four URLs are version-pinned and the
+         hashes were computed from those exact bytes — bumping a version means
+         recomputing its hash, or the library silently stops loading.
+
+         A library that fails to load (blocked CDN on a corporate network, a
+         failed integrity check) is NOT a server outage, and app.js checks for
+         these globals before it boots so it can say which one is missing
+         instead of blaming the server. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"
+            integrity="sha384-J7Q85oZE4GJ/e7+n2aOQsLXfDwwfnA8S2nZAL5BpFsfpCF84zQD7LroZ/dMnLgex"
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"
+            integrity="sha384-2IH3T69EIKYC4c+RXZifZRvaH5SRUdacJW7j6HtE5rQbvLhKKdawxq6vpIzJ7j9M"
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"
+            integrity="sha384-drxU/AikJCPfvw6zqWesCn7xREkWv1Y91CVTxrMRTwdttj6lHh27yDR9Ap7zABYr"
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdn.plot.ly/plotly-basic-2.32.0.min.js" charset="utf-8"
+            integrity="sha384-4S46ebITffI576imRjTcpoCt5L4Uks/66a846s/v5CubaJwAnqT4E3wVRdGUPiVu"
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 </head>
 <body>
     <header>
@@ -146,6 +165,12 @@
                         <button id="clear-rca" style="display:none">Clear</button>
                     </div>
                     <p class="inline-status">The model trains on all loaded history before the analysis window. The reference is only the comparison baseline the gap is measured against — by default the matched block just before the analysis window.</p>
+                    <!-- Window advisories live here, not in the transient
+                         #status slot: they qualify the answer, and #status is
+                         overwritten by run progress and the completion notice,
+                         so a caveat posted there was gone by the time the
+                         result it qualified appeared. -->
+                    <p id="win-advisories" class="inline-status" hidden></p>
                 </div>
                 <div id="rca-results">
                     <p class="placeholder">Pick the analysis window and run.</p>

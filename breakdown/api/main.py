@@ -960,11 +960,16 @@ async def get_meta(request: Request):
             "earliest_available": {},
             "fitted": [],
         }
+    # A metric whose data edge is unknown is reported as `null`, not omitted.
+    # Omitting it made "we don't know when this metric's data ends" and "this
+    # metric doesn't exist" the same absence, so the UI's tree-wide as-of anchor
+    # (a min over the present keys) silently skipped it and its card showed no
+    # freshness row at all — a metric with no data quietly excluded from the
+    # freshness calculation it should have been the worst case in.
     data_through = {}
     for name in data.grain_of:
         through = data.data_through(name)
-        if through is not None:
-            data_through[name] = str(through.date())
+        data_through[name] = str(through.date()) if through is not None else None
     return {
         "mode": "fitted",
         "tree": tree.id,
