@@ -1,5 +1,10 @@
 # API reference
 
+
+Every date parameter is validated as a date at the boundary: anything that is
+not a real `YYYY-MM-DD` — including an **empty string**, which a cleared date
+field in a form submits — is a 422 naming the parameter, never a 500.
+
 Every route the server answers, its parameters, and what comes back. The UI and
 the MCP server are both built on this surface and nothing else, so anything
 either of them can show you, a `curl` can too.
@@ -192,7 +197,8 @@ Trimmed response:
       "components": null,
       "contributions": [
         {"parent": "order_count", "estimate": 1600.0, "share_of_gap": 0.8,
-         "ci_95": [1450.0, 1740.0], "prob_same_direction": 1.0},
+         "ci_95": [1450.0, 1740.0], "prob_same_direction": 0.998,
+         "prob_same_direction_censored": true},
         {"parent": "average_order_value", "estimate": 388.0, "share_of_gap": 0.19,
          "ci_95": [210.0, 560.0], "prob_same_direction": 0.99}
       ]
@@ -274,6 +280,8 @@ than buried in a status nobody would find useful.
 - **Probabilistic nodes** get `attribution_method: "posterior"` — each contribution is the posterior over the parent's raw-scale coefficient (`beta_raw`) times the parent's window-over-window change. Lagged parents are compared over windows shifted back by the lag, and each lagged contribution reports `lag` and `parent_windows` — the parent's own shifted `{reference, analysis}` windows — so you can see (and reuse, e.g. for `POST /rca/{parent}/slices`) exactly which parent periods were examined. These nodes also report a `components` block: the fitted model's own trend and seasonal terms as window-over-window deltas with CIs, so they no longer hide inside `unexplained`. `components` carries only the terms the model actually contains — every fit has a local level, so `trend` is always there, but a node that declares no [`seasonality`](yaml-reference.md#seasonality) has no `seasonal` key at all rather than a 0.0 with a zero-width interval.
 
 Every contribution is reported as an `estimate` (mean), a 95% interval (`ci_95`), and `prob_same_direction` (mass on the dominant side of zero). The intervals combine coefficient uncertainty (probabilistic nodes) with **window-sampling uncertainty** — the window means themselves are resampled with a circular moving-block bootstrap (≤7-day blocks, jointly across metrics, seeded so responses are deterministic). This is what keeps a 3-day analysis window honest: its CIs are visibly wider than a 4-week window's.
+
+`prob_same_direction` is a proportion over those 500 replicates, so **it is never published as 1.0** — there is no representable value between 0.998 and 1, and a saturated count is the estimator running out of resolution rather than a measurement of certainty. A saturated estimate publishes the ceiling alongside `prob_same_direction_censored: true`, and the UI and the exported report both render it as the bound it is: `>99.8%`. `prob_concentrated` (slices) and `prob_direction` (what-if) follow the same rule with their own sample sizes. Read it as "no replicate crossed zero", not as "the sign is certain".
 
 Unfitted probabilistic nodes in scope are fit with ADVI on demand — on data strictly before the analysis window — and cached, so the endpoint works without a prior `/analyze` call.
 

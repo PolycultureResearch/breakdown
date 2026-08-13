@@ -45,6 +45,7 @@ decomposition are identical; the response is labeled `mode: "cold_start"` and
 carries cold-start caveats. See `knowledge/cold_start_design.md`.
 """
 
+import datetime
 import math
 from itertools import combinations
 from typing import Any, Dict, List, Literal, Optional, Tuple
@@ -52,14 +53,14 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 import networkx as nx
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from breakdown.engine.model import fit_metric
 from breakdown.engine.progress import ProgressFn
 from breakdown.engine.progress import report as _report
-from breakdown.engine.rca import window_mean
+from breakdown.engine.rca import direction_fields, window_mean
 from breakdown.formula import eval_formula
-from breakdown.grains import ensure_grained, fit_grain, snap_window
+from breakdown.grains import ensure_grained, fit_grain, snap_window, to_date
 
 _N_DRAWS = 2000
 _MAX_SOURCES = 10
@@ -135,6 +136,25 @@ class ScenarioRequest(BaseModel):
     interventions: List[Intervention] = Field(default_factory=list)
     assumptions: List[Assumption] = Field(default_factory=list)
     levers: List[Lever] = Field(default_factory=list)
+
+    @field_validator("baseline_start", "baseline_end")
+    @classmethod
+    def check_baseline_date(cls, v: Optional[str]) -> Optional[str]:
+        """A date-shaped field is validated as a date, not as a `str`.
+
+        `pd.to_datetime("")` is `NaT`, and `NaT < NaT` is False — so an empty
+        baseline window passed the "is it backwards?" check below and reached
+        the fit as a not-a-date. Same defect as the query-parameter one
+        (`api/main._iso_date`); this is the body-parameter half of it, and
+        being on the model is what makes it a 422 rather than an exception.
+        """
+        if v is None:
+            return None
+        try:
+            datetime.date.fromisoformat(v)
+        except ValueError:
+            raise ValueError(f"must be a valid YYYY-MM-DD date, got '{v}'")
+        return v
 
 
 def _intervention_label(iv: Intervention) -> str:
@@ -280,8 +300,8 @@ def run_scenario(
         if scenario.baseline_start is None or scenario.baseline_end is None:
             raise ValueError("baseline_start and baseline_end are required when the tree has data.")
         data = ensure_grained(data)
-        b_start = pd.to_datetime(scenario.baseline_start)
-        b_end = pd.to_datetime(scenario.baseline_end)
+        b_start = to_date(scenario.baseline_start, "baseline_start")
+        b_end = to_date(scenario.baseline_end, "baseline_end")
         if b_end < b_start:
             raise ValueError(
                 f"baseline_end '{scenario.baseline_end}' is before "
@@ -465,6 +485,16 @@ def run_scenario(
     # point value.
     beta_draws: Dict[str, np.ndarray] = {}
     beta_means: Dict[str, np.ndarray] = {}
+    # Resolution floor for `prob_direction`. Coefficient draws are *resampled
+    # with replacement* from a fitted posterior, so drawing 2,000 of them from
+    # a 500-draw ADVI fit adds no information about the sign: if all 500 are
+    # positive, so are all 2,000. The direction probability can therefore not
+    # resolve finer than the coarsest posterior behind any propagated
+    # coefficient, and taking the minimum across the run under-claims where a
+    # node happens to be driven by freshly sampled beliefs — which is the safe
+    # side. Cold-start mode fits nothing and samples every belief at `n_draws`,
+    # so it keeps `n_draws`.
+    n_effective = n_draws
     for node in order:
         if node not in needs_beta:
             continue
@@ -482,6 +512,7 @@ def run_scenario(
             )
             beta_draws[node] = arr[rng.choice(arr.shape[0], size=n_draws)]
             beta_means[node] = arr.mean(axis=0)
+            n_effective = min(n_effective, int(arr.shape[0]))
 
     effect_draws: Dict[str, np.ndarray] = {}
     effect_means: Dict[str, float] = {}
@@ -724,7 +755,14 @@ def run_scenario(
                 ],
             },
             "relative_delta": (estimate / base) if abs(base) >= 1e-12 else None,
-            "prob_direction": float(max((d > 0).mean(), (d < 0).mean())),
+            # Same estimator, same resolution ceiling as RCA's
+            # `prob_same_direction`: a proportion over `n_draws` draws has
+            # nothing between 1 − 1/n and 1, so a saturated Monte Carlo
+            # publishes the ceiling and flags itself censored. A propagation
+            # with no spread at all — an exact identity downstream of a pinned
+            # intervention — is not an estimate and keeps its honest 1.0; the
+            # shared helper draws that line.
+            **direction_fields(d, key="prob_direction", n_effective=n_effective),
             "fit_quality": fit_quality,
             "extrapolation": {"flag": bool(flag), **hist},
             "contributions": contribs,

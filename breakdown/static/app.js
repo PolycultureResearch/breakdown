@@ -230,6 +230,66 @@ function pct(x) {
   return (x * 100).toFixed(1) + "%";
 }
 
+/* A direction probability, printed at the resolution it actually has.
+
+   Every one of them (`prob_same_direction`, `prob_concentrated`,
+   `prob_direction`) is a proportion over a finite sample, so it can only take
+   the values k/n — with 500 bootstrap replicates there is nothing between
+   0.998 and 1. When the count saturates, the engine publishes the ceiling and
+   sets the matching `*_censored` flag, and this prints it as the bound it is:
+   `>99.8%`. Printing the bare ceiling would read as a measured value, and
+   printing 100.0% (what the engine used to publish) read as certainty on the
+   contributions where the evidence is thinnest. A withheld probability stays
+   an em dash — see the edge-opacity note in `applyRcaOverlay`. */
+function pctDir(p, censored) {
+  if (p === null || p === undefined || !Number.isFinite(p)) return "—";
+  // Exactly 1 is reachable only where the sample has no spread at all — a
+  // deterministic propagation in what-if, where the sign really is known.
+  if (p >= 1) return "100.0%";
+  // Truncate rather than round: `(0.9995).toFixed(1)` is "100.0", so a
+  // one-decimal rounding would put the ceiling back to certainty, which is the
+  // defect this function exists to fix.
+  return (censored ? ">" : "") + (Math.floor(p * 1000) / 10).toFixed(1) + "%";
+}
+
+/* ---------- Lagged contributions say so, on every surface ----------
+
+   A lagged contribution was measured over the *parent's* own windows, shifted
+   back by the lag — not the windows the section header names. The engine has
+   always published `lag` and `parent_windows` on those contributions, and both
+   attribution tables rendered the parent as a bare name, so a row measured over
+   a different fortnight sat in a table headed by the analysis window with
+   nothing to distinguish it. Lagged edges are the product's signature feature;
+   they cannot be the one thing the tables leave out. */
+function lagUnitLabel(lag, grain) {
+  const g = grain || "day";
+  return `${lag} ${g}${lag === 1 ? "" : "s"}`;
+}
+
+/* The full sentence — used verbatim where there is nothing to hover: the
+   exported report, and the live chip's tooltip. */
+function lagWindowText(c, grain) {
+  if (!c || !c.lag) return "";
+  const head = `measured over the parent's own windows, shifted back ${lagUnitLabel(c.lag, grain)}`;
+  const w = c.parent_windows;
+  return w
+    ? `${head}: reference ${w.reference.start} → ${w.reference.end}, analysis ${w.analysis.start} → ${w.analysis.end}`
+    : head;
+}
+
+/* Live tables: a chip beside the parent name, dates in the tooltip. */
+function lagChip(c, grain) {
+  if (!c || !c.lag) return "";
+  return ` <span class="chip lag" title="${esc(lagWindowText(c, grain))}">lag ${lagUnitLabel(c.lag, grain)}</span>`;
+}
+
+/* Exported report: the same fact printed in full. A tooltip is simply absent
+   from a static report, which is exactly where the reader cannot ask. */
+function lagLine(c, grain) {
+  if (!c || !c.lag) return "";
+  return `<div class="meta">↩ ${esc(lagWindowText(c, grain))}</div>`;
+}
+
 /* A withheld percentage is an em dash, not an empty string. The engine nulls
    `relative_change` / `relative_delta` when the baseline is ~0 — a real
    "cannot be expressed as a percentage" — and rendering that as nothing left
@@ -954,6 +1014,15 @@ function buildRcaReportHtml(res, treePng, stripPng) {
 
   const grainNote = (node) => {
     const bits = [];
+    // The fit window — all loaded history before the analysis window, never the
+    // reference window. The live header has carried it since 2.14; the export
+    // did not, so the one node flagged `⚠ suspect fit` shipped that verdict
+    // with no way to see what the fit was made of. It is the most
+    // decision-relevant fact on such a node, and a static report is precisely
+    // where the reader cannot hover for it.
+    if (node.fit_window) {
+      bits.push(`fitted on ${node.fit_window.n_periods} ${node.grain}s (${node.fit_window.start} → ${node.fit_window.end})`);
+    }
     if (node.grain && node.grain !== "day" && node.effective_windows) {
       const ew = node.effective_windows;
       bits.push(`${node.grain} grain, snapped to ${ew.reference.n_periods}+${ew.analysis.n_periods} whole ${node.grain}s`);
@@ -1013,18 +1082,18 @@ function buildRcaReportHtml(res, treePng, stripPng) {
         : "";
       let tables;
       if (twoLevel) {
-        const headRows = node.contributions.map((c) => `<tr><td><code>${esc(c.parent)}</code></td>${num(fmt(c.decomposition.means.estimate))}${num(shareOf(c.decomposition.means.estimate, node.gap))}${num(ciCell(c.decomposition.means.ci_95))}</tr>`).join("");
+        const headRows = node.contributions.map((c) => `<tr><td><code>${esc(c.parent)}</code>${lagLine(c, node.grain)}</td>${num(fmt(c.decomposition.means.estimate))}${num(shareOf(c.decomposition.means.estimate, node.gap))}${num(ciCell(c.decomposition.means.ci_95))}</tr>`).join("");
         const interaction = node.interaction
           ? `<tr class="em"><td>co-movement shift</td>${num(fmt(node.interaction.estimate))}${num(shareOf(node.interaction.estimate, node.gap))}${num(ciCell(node.interaction.ci_95))}</tr>`
           : "";
-        const detRows = node.contributions.map((c) => `<tr><td><code>${esc(c.parent)}</code></td>${num(fmt(c.decomposition.means.estimate))}${num(fmt(c.decomposition.comovement.estimate))}${num(fmt(c.estimate))}${num(ciCell(c.ci_95))}${num(c.prob_same_direction == null ? "—" : pct(c.prob_same_direction))}</tr>`).join("");
+        const detRows = node.contributions.map((c) => `<tr><td><code>${esc(c.parent)}</code>${lagLine(c, node.grain)}</td>${num(fmt(c.decomposition.means.estimate))}${num(fmt(c.decomposition.comovement.estimate))}${num(fmt(c.estimate))}${num(ciCell(c.ci_95))}${num(pctDir(c.prob_same_direction, c.prob_same_direction_censored))}</tr>`).join("");
         tables = `
           <h4>Headline — window-means bridge</h4>
           <table><tr><th>Driver</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th></tr>${headRows}${interaction}${unexpl}</table>
           <h4>Detailed — per-parent split (means + co-movement = total)</h4>
           <table><tr><th>Parent</th><th class="num">means</th><th class="num">co-movement</th><th class="num">total Δ</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>${detRows}</table>`;
       } else {
-        const rows = node.contributions.map((c) => `<tr><td><code>${esc(c.parent)}</code></td>${num(fmt(c.estimate))}${num(c.share_of_gap == null ? "—" : pct(c.share_of_gap))}${num(ciCell(c.ci_95))}${num(c.prob_same_direction == null ? "—" : pct(c.prob_same_direction))}</tr>`).join("");
+        const rows = node.contributions.map((c) => `<tr><td><code>${esc(c.parent)}</code>${lagLine(c, node.grain)}</td>${num(fmt(c.estimate))}${num(c.share_of_gap == null ? "—" : pct(c.share_of_gap))}${num(ciCell(c.ci_95))}${num(pctDir(c.prob_same_direction, c.prob_same_direction_censored))}</tr>`).join("");
         // Same rows, same rule as the live table — via one function, so the two
         // cannot disagree about whether trend and seasonal are part of the sum.
         const comps = componentRowsHtml(node, 5, shareOf, ciCell);
@@ -1266,11 +1335,19 @@ function metricFormat(name) {
 /* Map a MOVEMENT direction ("up"/"down") to a COLOR direction through the
    metric's declared `direction` (display-only): for down_is_good metrics an
    upward move colors red, a downward move green; neutral always colors gray.
-   Arrows and labels stay directional — only the good/bad coloring flips. */
+   Arrows and labels stay directional — only the good/bad coloring flips.
+
+   An **undeclared** direction (`null`) colors gray too. Green here means
+   "improved", which is a claim, and nobody made it: the engine used to default
+   the field to `up_is_good` in the parser, so the browser could not tell "the
+   author said up is good" from "the author said nothing" and painted the
+   second as the first — `churn_arpu` up 18.5% rendered green while carrying
+   27% of the damage. Refusing to judge is the only honest rendering of an
+   absent declaration, and it is the same rendering `neutral` already had. */
 function goodDir(name, dir) {
   if (dir !== "up" && dir !== "down") return dir;
-  const decl = (state.defs && state.defs[name] && state.defs[name].direction) || "up_is_good";
-  if (decl === "neutral") return "flat";
+  const decl = state.defs && state.defs[name] && state.defs[name].direction;
+  if (!decl || decl === "neutral") return "flat";
   if (decl === "down_is_good") return dir === "up" ? "down" : "up";
   return dir;
 }
@@ -2809,7 +2886,7 @@ function sliceResultHtml(metric) {
 
   const excessCell = (row) => {
     const ci = row.ci_95 ? `95% CI [${fmt(row.ci_95[0])}, ${fmt(row.ci_95[1])}]` : "interval withheld";
-    const p = row.prob_concentrated == null ? "" : ` · P(direction) ${pct(row.prob_concentrated)}`;
+    const p = row.prob_concentrated == null ? "" : ` · P(direction) ${pctDir(row.prob_concentrated, row.prob_concentrated_censored)}`;
     return `<td class="num" title="${esc(`excess ${fmt(row.excess)} · ${ci}${p}`)}">${fmtTight(row.excess)}</td>`;
   };
 
@@ -3133,7 +3210,7 @@ function renderRcaTab() {
           .map((c) => {
             const m = c.decomposition.means;
             return `<tr>
-              <td><code>${esc(c.parent)}</code></td>
+              <td><code>${esc(c.parent)}</code>${lagChip(c, node.grain)}</td>
               <td class="num">${fmt(m.estimate)}</td>
               <td class="num">${shareOf(m.estimate, node.gap)}</td>
               <td class="num">${ciCell(m.ci_95)}</td>
@@ -3155,12 +3232,12 @@ function renderRcaTab() {
         rows = node.contributions
           .map(
             (c) => `<tr>
-              <td><code>${esc(c.parent)}</code></td>
+              <td><code>${esc(c.parent)}</code>${lagChip(c, node.grain)}</td>
               <td class="num">${fmt(c.decomposition.means.estimate)}</td>
               <td class="num">${fmt(c.decomposition.comovement.estimate)}</td>
               <td class="num">${fmt(c.estimate)}</td>
               <td class="num">${ciCell(c.ci_95)}</td>
-              <td class="num">${c.prob_same_direction == null ? "—" : pct(c.prob_same_direction)}</td>
+              <td class="num">${pctDir(c.prob_same_direction, c.prob_same_direction_censored)}</td>
             </tr>`,
           )
           .join("");
@@ -3170,11 +3247,11 @@ function renderRcaTab() {
         rows = node.contributions
           .map(
             (c) => `<tr>
-              <td><code>${esc(c.parent)}</code></td>
+              <td><code>${esc(c.parent)}</code>${lagChip(c, node.grain)}</td>
               <td class="num">${fmt(c.estimate)}</td>
               <td class="num">${c.share_of_gap === null ? "—" : pct(c.share_of_gap)}</td>
               <td class="num">${ciCell(c.ci_95)}</td>
-              <td class="num">${c.prob_same_direction == null ? "—" : pct(c.prob_same_direction)}</td>
+              <td class="num">${pctDir(c.prob_same_direction, c.prob_same_direction_censored)}</td>
             </tr>`,
           )
           .join("");
@@ -3917,7 +3994,7 @@ function renderWhatifResults() {
         <div class="sub">${sub}</div>
         <div class="gap-line ${dirCls}">${fmt(node.baseline)} → ${fmt(node.simulated)}
           <span style="font-size:14px">(${signedPct(node.relative_delta)})</span></div>
-        <div class="wf-ci">Δ ${fmt(node.delta.estimate)} · 95% CI [${fmt(ci[0])}, ${fmt(ci[1])}] · P(direction) ${pct(node.prob_direction)}${
+        <div class="wf-ci">Δ ${fmt(node.delta.estimate)} · 95% CI [${fmt(ci[0])}, ${fmt(ci[1])}] · P(direction) ${pctDir(node.prob_direction, node.prob_direction_censored)}${
           bci ? ` · baseline belief [${fmt(bci[0])}, ${fmt(bci[1])}]` : ""
         }</div>${
           node.fit_quality === "suspect"
@@ -3945,7 +4022,7 @@ function renderWhatifResults() {
         <td class="num">${fmt(node.baseline)} → ${fmt(node.simulated)}</td>
         <td class="num">${signedPct(node.relative_delta)}</td>
         <td class="num">[${fmt(ci[0])}, ${fmt(ci[1])}]</td>
-        <td class="num">${node.prob_direction == null ? "—" : pct(node.prob_direction)}</td>
+        <td class="num">${pctDir(node.prob_direction, node.prob_direction_censored)}</td>
       </tr>`;
     })
     .join("");

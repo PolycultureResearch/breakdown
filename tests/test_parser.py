@@ -488,6 +488,13 @@ metrics:
 
 
 def test_direction_default_and_parsed():
+    """An undeclared `direction` is None, not `up_is_good`.
+
+    The field is a display judgment ("green means improved"), and the default
+    used to be indistinguishable from a declaration once `/dag` serialized it —
+    so the UI painted a claim nobody had made. Undeclared has to survive
+    serialization for a renderer to be able to decline to judge.
+    """
     yaml_content = """
 metrics:
   - name: dau
@@ -495,10 +502,16 @@ metrics:
   - name: support_tickets
     source: dbt.metric.support_tickets
     direction: down_is_good
+  - name: deploys
+    source: dbt.metric.deploys
+    direction: up_is_good
 """
     parser = Parser(yaml_content)
-    assert parser.get_metric("dau").direction == "up_is_good"
+    assert parser.get_metric("dau").direction is None
+    assert parser.get_metric("dau").model_dump()["direction"] is None
     assert parser.get_metric("support_tickets").direction == "down_is_good"
+    # An explicit `up_is_good` is a declaration and stays one.
+    assert parser.get_metric("deploys").direction == "up_is_good"
 
 
 def test_direction_invalid_raises():

@@ -23,7 +23,7 @@ matching what the demo shows, that test is red.
 Three things are deliberately **not** pinned, and each is marked where it
 appears: the sentences an assistant writes in the
 [MCP section](#the-mcp-demo--same-engine-from-claude) — the tool calls and the
-fields behind them are pinned, the prose cannot be — and the two **⚠ known gap**
+fields behind them are pinned, the prose cannot be — and the **⚠ known gap**
 notes, which are product defects filed separately and which the presenter must
 not promise. Nothing else in this document is unasserted.
 
@@ -322,19 +322,22 @@ they are most of the way there.
 
 ## Known gaps — read before the call
 
-Two things this script used to claim are false in the product, not in the
-numbers. Both are filed separately; neither is fixed by the pass that corrected
-the figures above. **Do not promise either on a call.**
+One thing this script used to claim is still false in the product rather than
+in the numbers. **Do not promise it on a call.**
 
-1. **The RCA table renders no lag.** There is no `lag 1` tag and no parent
-   window in the attribution table. The lag is in the payload, in the Metric
-   tab's parents list as a declared chip, and in the slice panel's window
-   footer — nowhere else. See story A.
-2. **`churn_arpu` renders green.** It has no `direction` in
-   `demo/white_cube_tree.yml`; an undeclared metric defaults to `up_is_good`
-   and reaches the UI indistinguishable from a declared one, so it shows as an
-   improvement while carrying 27.3% of the churn damage in story B. The churn
-   branch is not uniformly red.
+1. **`churn_arpu` is uncoloured, not red.** It declares no `direction` in
+   `demo/white_cube_tree.yml`, so the canvas shows its movement — arrow and
+   percentage — without a good/bad tint. It used to render **green**, an
+   improvement, while carrying 27.3% of the churn damage in story B; that is
+   fixed, because an undeclared direction now survives serialization as
+   undeclared instead of defaulting to `up_is_good` before it reaches the UI.
+   What remains is an authoring gap in this tree, not a claim by the product:
+   the churn branch is not uniformly red because one of its nodes has never
+   been classified.
+
+*(The second gap listed here — that the RCA table rendered no lag — is fixed:
+the live table carries a `lag` chip with the shifted windows in its tooltip,
+and the export prints them in full.)*
 
 ---
 

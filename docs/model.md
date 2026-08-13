@@ -288,6 +288,22 @@ absence of information, and it is withheld: `ci_95: null` and
 More generally, **no published `ci_95` is ever zero-width**; if you see one,
 it is a bug.
 
+**And no published direction probability is ever exactly 1.** It is a
+proportion over 500 bootstrap replicates, so the only values it can take are
+`k/500`: there is nothing between **0.998** and 1, and a count that saturates
+— every replicate on one side — is the estimator running out of resolution,
+not a measurement of certainty. Saturation is most likely exactly where the
+evidence is thinnest, so it is published as the ceiling with a companion
+`prob_same_direction_censored: true`, and every surface renders it as the
+bound it is: **`>99.8%`**, never `100.0%`. Read that as "no replicate crossed
+zero", which is a real and useful statement, and not as "the sign is certain",
+which is not one this estimator can make. The same rule and the same flag
+apply to `prob_concentrated` on slices and to `prob_direction` in what-if,
+where the ceiling is set by the Monte Carlo's draw count instead. The one
+exception is a what-if delta with *no spread at all* — an exact propagation
+through an identity from a pinned intervention — which really is known and
+keeps `1.0`.
+
 > **Short windows are still short.** The block cap that used to halve the
 > resampled variance is fixed, but two limits remain and both live in
 > [S6](../knowledge/roadmap.md#statistical-rigor-s--a-standing-workstream),

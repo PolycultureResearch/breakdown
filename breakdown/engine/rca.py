@@ -73,6 +73,7 @@ from breakdown.grains import (
     shift_periods,
     snap_window,
     steps_between,
+    to_date,
 )
 
 # Bootstrap replicates per window; fixed so contribution CIs are comparable
@@ -104,6 +105,64 @@ _DEGENERATE_CI_REL = 1e-9
 # of the node's own level. Relative, not absolute (roadmap C5): a $1e-6 gap on a
 # $26K node and a 1e-6 gap on a rate of 0.4 are not the same claim.
 _GAP_REL_EPS = 1e-12
+
+
+def prob_same_direction(
+    samples: np.ndarray, n_effective: Optional[int] = None
+) -> Tuple[float, bool]:
+    """Share of `samples` on the dominant side of zero, published at the
+    resolution the estimator actually has.
+
+    This is a proportion over a finite sample, so the only values it can take
+    are `k/n`: with `n = _N_BOOT` there is **nothing between 1 − 1/500 = 0.998
+    and 1.0**. A saturated count — every replicate landing on one side — is
+    therefore not a measurement of certainty; it is the estimator running out
+    of resolution, and it happens most readily where the evidence is thinnest.
+    Publishing it as `1.00` claimed a certainty no bootstrap can express and
+    added a decimal place it does not have, which is C5's defect (a saturated
+    clamp reading as certainty) on the probability side rather than the
+    interval side.
+
+    So a saturated estimate publishes the ceiling and says it is censored
+    there: the second return value is True, and every renderer prints the
+    number as a bound (`>99.8%`) rather than a value. Callers that hold a
+    coarser factor pass `n_effective` — the RCA posterior path multiplies the
+    coefficient posterior by only `_N_BOOT` distinct resampled window deltas,
+    so more posterior draws buy no window-sampling resolution.
+
+    A sample with **no spread at all** is exempt: an identical set is not an
+    estimate of a proportion but exact arithmetic (a deterministic propagation
+    in `simulate`), and its sign is genuinely known. In RCA that case never
+    arrives here — the caller withholds the interval and the probability with
+    it, "a confidence read off no information at all".
+    """
+    p = float(max((samples > 0).mean(), (samples < 0).mean()))
+    n = samples.size if n_effective is None else min(samples.size, n_effective)
+    ceiling = 1.0 - 1.0 / n if n else 1.0
+    if p <= ceiling or float(samples.min()) == float(samples.max()):
+        return p, False
+    return ceiling, True
+
+
+def direction_fields(
+    samples: Optional[np.ndarray],
+    key: str = "prob_same_direction",
+    n_effective: Optional[int] = None,
+) -> Dict[str, Any]:
+    """`prob_same_direction`'s payload fields, for whichever name a surface
+    gives it (`prob_concentrated` on slices, `prob_direction` on what-if).
+
+    `None` samples means withheld. The `<key>_censored` flag follows the
+    `lag`/`parent_windows` idiom — present only when it is true, so an
+    uncensored payload is byte-identical to what it was before.
+    """
+    if samples is None:
+        return {key: None}
+    value, censored = prob_same_direction(samples, n_effective)
+    out: Dict[str, Any] = {key: value}
+    if censored:
+        out[f"{key}_censored"] = True
+    return out
 
 
 class NonFiniteAttribution(ValueError):
@@ -230,7 +289,7 @@ def _validate_windows(
     parsed = {}
     for label, value in dates.items():
         try:
-            parsed[label] = pd.Timestamp(value).normalize()
+            parsed[label] = to_date(value, label)
         except (ValueError, TypeError):
             raise ValueError(f"{label} is not a valid date: {value!r}")
 
@@ -1107,9 +1166,7 @@ def run_rca(
                     "estimate": estimate,
                     "share_of_gap": _share_of_gap(estimate, gap, ci_scale),
                     "ci_95": ci,
-                    "prob_same_direction": None
-                    if phi_b_finite is None
-                    else float(max((phi_b_finite > 0).mean(), (phi_b_finite < 0).mean())),
+                    **direction_fields(phi_b_finite),
                     # Two-level view: the window-means bridge part and the
                     # co-movement (covariance/Jensen) shift part. They sum to
                     # `estimate` exactly — as exact values, not just in
@@ -1280,9 +1337,12 @@ def run_rca(
                     "estimate": estimate,
                     "share_of_gap": _share_of_gap(estimate, gap, ci_scale),
                     "ci_95": None if degenerate else [lo, hi],
-                    "prob_same_direction": None
-                    if degenerate
-                    else float(max((samples > 0).mean(), (samples < 0).mean())),
+                    # `n_effective=_N_BOOT`: `samples` is one value per posterior
+                    # draw, but the window delta multiplying them takes only
+                    # `_N_BOOT` distinct values, so a NUTS fit's 4,000 draws do
+                    # not resolve the direction any finer than the bootstrap
+                    # behind them does. Take the coarser of the two.
+                    **direction_fields(None if degenerate else samples, n_effective=_N_BOOT),
                 }
                 # Lagged parents were measured over their own earlier windows;
                 # surface which ones. Keys absent entirely when unlagged.
