@@ -573,6 +573,27 @@ def _is_date_param(name: str) -> bool:
     return name.endswith(("_start", "_end", "_date")) or name == "date"
 
 
+def _endpoint_routes():
+    """Every route object that carries an `endpoint`, at any FastAPI version.
+
+    Not `app.routes` alone. FastAPI 0.137.0 made `include_router` append one
+    lazy `_IncludedRouter` node per include instead of copying routes into the
+    parent, so from 0.137.0 `app.routes` holds two pathless objects where the
+    shared router's ten routes used to appear — and this file already carries a
+    test whose whole subject is that mistake. The dev environment is locked
+    below that version, so a walk of `app.routes` passes locally and finds
+    nothing on a fresh resolve.
+    """
+    from breakdown.api.main import app, router
+
+    seen, out = set(), []
+    for r in list(router.routes) + list(app.routes):
+        if id(r) not in seen and getattr(r, "endpoint", None) is not None:
+            seen.add(id(r))
+            out.append(r)
+    return out
+
+
 def _date_params(fn) -> dict:
     try:
         hints = typing.get_type_hints(fn, include_extras=True)
@@ -592,13 +613,11 @@ def test_every_date_taking_route_validates_its_dates():
     not, so it is one annotated type and this test asks the reviewer's
     question: is there a new date parameter that skipped it?
     """
-    from breakdown.api.main import _iso_date, app
+    from breakdown.api.main import _iso_date
 
     offenders = []
-    for route in app.routes:
-        fn = getattr(route, "endpoint", None)
-        if fn is None:
-            continue
+    for route in _endpoint_routes():
+        fn = route.endpoint
         for pname, ann in _date_params(fn).items():
             validators = [
                 m
@@ -658,10 +677,10 @@ def test_no_date_parameter_can_produce_a_500(bad, tmp_path, monkeypatch):
     good = {"analysis_start": "2024-03-27", "analysis_end": "2024-04-09"}
     checked = 0
     with TestClient(app, raise_server_exceptions=False) as client:
-        for route in app.routes:
-            fn = getattr(route, "endpoint", None)
+        for route in _endpoint_routes():
+            fn = route.endpoint
             path = getattr(route, "path", "")
-            if fn is None or "{tree_id}" in path or not _date_params(fn):
+            if "{tree_id}" in path or not _date_params(fn):
                 continue
             method = "POST" if "POST" in (getattr(route, "methods", None) or ()) else "GET"
             url = path.replace("{name}", "revenue")
