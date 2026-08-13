@@ -185,10 +185,33 @@ def _align_to_spine(
       logged: a three-day ETL outage becomes three zero days otherwise, which
       is indistinguishable from a real collapse and which RCA will happily name
       as the root cause.
+    - **Leading** gaps — periods before the source's first row — are filled on
+      the same terms as interior ones, and warned on the same terms too. They
+      used to be silent, which is the worse half of the same defect: a metric
+      that started partway into the window (a product launched in March, a
+      channel switched on in week 3) trains on a run of fabricated zeros, so
+      the fit sees a manufactured level shift and a manufactured trend on a
+      node RCA will rank as a cause.
+
+      They are *filled* rather than trimmed the way trailing gaps are, despite
+      the arguments rhyming, because the two edges cost different things
+      downstream. Trailing trim shortens a series by an ETL lag — days — and a
+      flow that genuinely was all-quiet before it started is a legitimate
+      series that trimming would silently discard, the same case the empty
+      result below protects. More decisively, per-grain frames are assembled by
+      **inner** join (`build_grained`), so trimming one node's leading run
+      would delete those periods for *every* metric at that grain and narrow
+      the windows `_validate_coverage` accepts tree-wide — a whole tree losing
+      January because one node launched in March is a larger and stranger
+      failure than the one being fixed. Narrowing only the late node's own
+      window is the honest version and needs a per-metric window the frames do
+      not carry yet; until then the warning names exactly which periods are
+      invented.
     - A source returning *no rows at all* keeps the full fill for flows — an
-      all-quiet window is a legitimate flow series. Rows that all miss the
-      spine is a different thing entirely (a query ignoring its bound window),
-      and raises.
+      all-quiet window is a legitimate flow series, so it is *not* a leading
+      gap and does not draw the leading warning (the provider that knows the
+      result was empty says so itself). Rows that all miss the spine is a
+      different thing entirely (a query ignoring its bound window), and raises.
     """
     spine = period_spine(start_date, end_date, grain)
     s = df.set_index("date")[value_col].astype(float)
@@ -208,7 +231,11 @@ def _align_to_spine(
         s = s.loc[: s.last_valid_index()]
 
     first = s.first_valid_index()
-    interior = s.index[s.isna() & (s.index > first)] if first is not None else s.index[:0]
+    empty = s.index[:0]
+    # A source with no rows at all has no "before its first row" — that case is
+    # the legitimate all-quiet window, and stays outside both runs.
+    interior = s.index[s.isna() & (s.index > first)] if first is not None else empty
+    leading = s.index[s.isna() & (s.index < first)] if first is not None else empty
     if len(interior) and kind in ("flow", "stock"):
         shown = [str(d.date()) for d in interior[:5]]
         logger.warning(
@@ -220,6 +247,29 @@ def _align_to_spine(
             ", ".join(shown),
             "0.0" if kind == "flow" else "the previous value",
             "…" if len(interior) > 5 else "that is all of them",
+        )
+
+    # Only flows reach a fill here: `stock` raises just below (nothing to
+    # forward-fill from) and `rate` raises on any gap, so warning for those
+    # kinds would only precede their own clearer error.
+    if len(leading) and kind == "flow":
+        shown = [str(d.date()) for d in leading[:5]]
+        logger.warning(
+            "Metric '%s': %d leading %s period(s) had no row and were filled "
+            "with 0.0 (%s → %s, before the source's first row on %s): %s; %s. "
+            "A gap in the source is not the same as a zero — a metric that had "
+            "not started yet is not a metric that was zero, and the fill gives "
+            "it a manufactured level shift and trend that RCA can rank as a "
+            "cause. Start the window at %s to fit only observed periods.",
+            metric_name,
+            len(leading),
+            grain,
+            leading[0].date(),
+            leading[-1].date(),
+            first.date(),
+            ", ".join(shown),
+            "…" if len(leading) > 5 else "that is all of them",
+            first.date(),
         )
 
     if kind == "flow":
@@ -605,12 +655,18 @@ class LocalDataFetcher(BaseDataFetcher):
         try:
             result = subprocess.run(
                 [
-                    "mf", "query",
-                    "--metrics", metric_name,
-                    "--group-by", group_by,
-                    "--order", group_by,
-                    "--limit", "1",
-                    "--csv", tmp_path,
+                    "mf",
+                    "query",
+                    "--metrics",
+                    metric_name,
+                    "--group-by",
+                    group_by,
+                    "--order",
+                    group_by,
+                    "--limit",
+                    "1",
+                    "--csv",
+                    tmp_path,
                 ],
                 cwd=self.project_path,
                 capture_output=True,
@@ -620,13 +676,12 @@ class LocalDataFetcher(BaseDataFetcher):
             if result.returncode != 0:
                 logger.info(
                     "earliest_date unavailable for '%s': %s",
-                    metric_name, result.stderr.strip(),
+                    metric_name,
+                    result.stderr.strip(),
                 )
                 return None
             df = pd.read_csv(tmp_path)
-            date_col = next(
-                (c for c in df.columns if "metric_time" in c.lower()), None
-            )
+            date_col = next((c for c in df.columns if "metric_time" in c.lower()), None)
             if date_col is None or df.empty:
                 return None
             return str(pd.Timestamp(df[date_col].iloc[0]).date())
@@ -656,9 +711,12 @@ class WarehouseDataFetcher(BaseDataFetcher):
     rate → any missing period is an error (a rate cannot be invented) — while
     **trailing** gaps are trimmed, not filled: periods after the last row the
     SQL returned are treated as not-yet-loaded, so a lagging mart ends the
-    series early instead of manufacturing fake zeros at the tail. (A query
-    returning no rows at all keeps the old full-window fill for flows — an
-    all-quiet window is a legitimate flow series.)
+    series early instead of manufacturing fake zeros at the tail. **Leading**
+    gaps are filled like interior ones and warned about by name, since a flow
+    that starts partway into the window is usually a metric that did not exist
+    yet rather than one that was zero. (A query returning no rows at all keeps
+    the old full-window fill for flows — an all-quiet window is a legitimate
+    flow series.)
 
     Authentication is either a personal access token (`token`) or a Databricks
     CLI OAuth `profile` created by ``databricks auth login --profile <name>``.

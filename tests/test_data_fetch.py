@@ -542,6 +542,132 @@ def test_warehouse_interior_gap_fill_warns(caplog):
 
     assert "interior" in caplog.text.lower()
     assert "2024-01-08" in caplog.text  # names the period it invented
+    assert "leading" not in caplog.text.lower()  # the source's first row is the window's
+
+
+# --- leading gaps: fabricated, and now disclosed -----------------------------
+#
+# Periods *before* the source's first row fall outside the interior run by
+# construction, so they used to be zero-filled with nothing logged at all. That
+# is the metric a first client is most likely to have — a product launched in
+# March, a channel switched on in week 3 — trained on a manufactured level shift
+# and trend, on a node RCA will happily rank as a cause. The fill stays (an
+# all-quiet flow window is legitimate, and per-grain frames inner-join so
+# trimming one late node would delete January for the whole tree); the silence
+# does not.
+
+
+def test_warehouse_leading_gap_fill_warns_and_names_the_periods(caplog):
+    import datetime
+    import logging
+
+    # Source starts on the 20th of a window opened on the 1st: 19 fabricated days.
+    rows = [
+        (datetime.date(2024, 1, 20), 5.0),
+        (datetime.date(2024, 1, 21), 6.0),
+        (datetime.date(2024, 1, 22), 7.0),
+    ]
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        df = _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-22")
+
+    # Non-breaking: the series is exactly what it was before the warning.
+    assert len(df) == 22
+    assert df["m"].head(19).tolist() == [0.0] * 19
+    assert df["m"].tail(3).tolist() == [5.0, 6.0, 7.0]
+
+    text = caplog.text
+    assert "leading" in text.lower()
+    assert "'m'" in text  # names the metric
+    assert "19 leading day period(s)" in text  # names the count
+    assert "2024-01-01 → 2024-01-19" in text  # names the range fabricated
+    assert "2024-01-20" in text  # names where the real data starts
+    # Listed periods are capped at five, like the interior warning.
+    assert "2024-01-05" in text and "2024-01-06" not in text
+    assert "…" in text
+    assert "not the same as a zero" in text  # says what it means
+
+
+def test_leading_gap_warning_lists_them_all_when_there_are_few(caplog):
+    import datetime
+    import logging
+
+    rows = [
+        (datetime.date(2024, 1, 3), 5.0),
+        (datetime.date(2024, 1, 4), 6.0),
+    ]
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-04")
+
+    assert "2 leading day period(s)" in caplog.text
+    assert "that is all of them" in caplog.text
+
+
+def test_local_leading_gap_fill_warns(monkeypatch, caplog):
+    """The warning lives in `_align_to_spine`, so every provider gets it — the
+    whole point of C2 moving the contract out of the warehouse fetcher."""
+    import logging
+
+    frame = _sl_frame([pd.Timestamp("2024-01-15"), pd.Timestamp("2024-01-22")], [100.0, 250.0])
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        df = _local_fetcher(frame, monkeypatch).fetch_metric(
+            "m", "2024-01-01", "2024-01-28", grain="week"
+        )
+
+    assert df["m"].tolist() == [0.0, 0.0, 100.0, 250.0]
+    assert "2 leading week period(s)" in caplog.text
+    assert "2024-01-01 → 2024-01-08" in caplog.text
+
+
+def test_empty_result_full_fill_draws_no_leading_warning(caplog):
+    """ "A source returning no rows at all keeps the full fill for flows" is a
+    decision already taken, not a leading gap — an all-quiet window has no
+    "before its first row". The provider that knows the result was empty warns
+    about that itself; this path must not second-guess it."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        df = _wh_fetcher([]).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week")
+
+    assert df["m"].tolist() == [0.0, 0.0, 0.0, 0.0]
+    assert caplog.text == ""
+
+
+def test_leading_gap_still_raises_for_stock_and_rate(caplog):
+    """`stock` has nothing to forward-fill from and `rate` cannot be invented:
+    both already refused to fabricate, and a warning must not soften either
+    into a log line."""
+    import datetime
+    import logging
+
+    rows = [(datetime.date(2024, 1, 15), 250.0)]
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        with pytest.raises(RuntimeError, match="no value at or before the first week period"):
+            _wh_fetcher(rows).fetch_metric(
+                "m", "2024-01-01", "2024-01-28", grain="week", kind="stock"
+            )
+        with pytest.raises(RuntimeError, match="Rate metric 'm' is missing week periods"):
+            _wh_fetcher(rows).fetch_metric(
+                "m", "2024-01-01", "2024-01-28", grain="week", kind="rate"
+            )
+
+    # The error is the disclosure for these kinds; no leading-fill line.
+    assert "leading" not in caplog.text.lower()
+
+
+def test_leading_and_interior_gaps_are_reported_separately(caplog):
+    import datetime
+    import logging
+
+    rows = [
+        (datetime.date(2024, 1, 15), 100.0),
+        (datetime.date(2024, 1, 29), 250.0),
+    ]
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        df = _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-02-04", grain="week")
+
+    assert df["m"].tolist() == [0.0, 0.0, 100.0, 0.0, 250.0]
+    assert "2 leading week period(s)" in caplog.text
+    assert "1 interior week period(s)" in caplog.text
 
 
 # -- the semantic-layer providers never snapped at all (C2) --
@@ -879,6 +1005,7 @@ def test_mock_reads_per_parent_priors_and_can_generate_a_negative_edge():
 
 # --- earliest_date discovery (roadmap 1.10) ---
 
+
 def test_base_earliest_date_defaults_to_none():
     class _Minimal(BaseDataFetcher):
         def fetch_metric(self, metric_name, start_date, end_date, grain="day", kind="flow"):
@@ -898,7 +1025,9 @@ def test_warehouse_earliest_date_wraps_the_metric_sql(monkeypatch):
 
     cursor = _StubCursor([(datetime.date(2023, 1, 5),)])
     fetcher = WarehouseDataFetcher(
-        host="h", http_path="p", token="t",
+        host="h",
+        http_path="p",
+        token="t",
         metric_sql={"new_mrr": "SELECT ... :start_date ... :end_date"},
     )
     monkeypatch.setattr(fetcher, "_cursor", lambda: cursor)
@@ -913,7 +1042,9 @@ def test_warehouse_earliest_date_wraps_the_metric_sql(monkeypatch):
 
 def test_warehouse_earliest_date_null_and_unknown_metric(monkeypatch):
     fetcher = WarehouseDataFetcher(
-        host="h", http_path="p", token="t",
+        host="h",
+        http_path="p",
+        token="t",
         metric_sql={"new_mrr": "SELECT ..."},
     )
     monkeypatch.setattr(fetcher, "_cursor", lambda: _StubCursor([(None,)]))
@@ -923,7 +1054,10 @@ def test_warehouse_earliest_date_null_and_unknown_metric(monkeypatch):
 
 def test_warehouse_earliest_date_never_raises(monkeypatch):
     fetcher = WarehouseDataFetcher(
-        host="h", http_path="p", token="t", metric_sql={"new_mrr": "SELECT ..."},
+        host="h",
+        http_path="p",
+        token="t",
+        metric_sql={"new_mrr": "SELECT ..."},
     )
 
     def boom():
@@ -937,9 +1071,7 @@ def test_local_earliest_date_parses_probe_csv(monkeypatch, tmp_path):
     import subprocess
 
     fetcher = LocalDataFetcher(project_path=str(tmp_path))
-    monkeypatch.setattr(
-        "breakdown.data_fetch.provider_extra_missing", lambda p: None
-    )
+    monkeypatch.setattr("breakdown.data_fetch.provider_extra_missing", lambda p: None)
     captured = {}
 
     def fake_run(cmd, **kwargs):
@@ -960,9 +1092,7 @@ def test_local_earliest_date_parses_probe_csv(monkeypatch, tmp_path):
 def test_local_earliest_date_never_raises(monkeypatch, tmp_path):
     fetcher = LocalDataFetcher(project_path=str(tmp_path))
     # Missing extra (snapshot-only deployment): quiet None, no crash.
-    monkeypatch.setattr(
-        "breakdown.data_fetch.provider_extra_missing", lambda p: "mf not on PATH"
-    )
+    monkeypatch.setattr("breakdown.data_fetch.provider_extra_missing", lambda p: "mf not on PATH")
     assert fetcher.earliest_date("revenue") is None
 
 
