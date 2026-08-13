@@ -53,6 +53,21 @@ dependencies = [
     # touch `matplotlib.style.core`, removed in matplotlib 3.11, so an unbounded
     # `arviz<1.0.0` resolves to something that cannot be imported.
     "arviz>=0.22.0,<1.0.0",
+    # Deliberately unbounded, and the ceiling that nearly landed here would have
+    # been wrong. FastAPI 0.137.0 changed `include_router` to append one lazy
+    # `_IncludedRouter` node per include instead of copying each route into the
+    # parent, so `app.routes` stopped being a flat list of routes. That reads as
+    # "the app lost twenty routes" to anything counting `.path` there — but
+    # routing, the OpenAPI schema and the operation ids are unchanged. Measured
+    # on 3.13 across 0.135.2, 0.136.0, 0.137.0, 0.138.0, 0.139.0, 0.140.0 and
+    # 0.141.1, and cross-paired against starlette 1.0.0/1.1.0/1.2.0/1.6.0: all 25
+    # paths and all 25 unique operation ids are present at every combination, and
+    # starlette's version makes no difference at all. The double include this
+    # package relies on (§2.16 — one router, mounted bare and under
+    # `/trees/{tree_id}`) is supported throughout; `include_router` does not
+    # mutate the router it is handed, which
+    # `tests/test_project_invariants.py` now asserts alongside the mount
+    # invariant itself. Pin only for a defect that survives that test.
     "fastapi>=0.115.0",
     # Genuinely 2.x: `mcp.server.MCPServer` and the streamable-HTTP session
     # manager breakdown/mcp/server.py builds on do not exist in mcp 1.x.
