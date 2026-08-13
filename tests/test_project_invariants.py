@@ -16,6 +16,11 @@ would: *is there a new place where this rule is not followed?*
 
 A rule that is genuinely violated in one documented place is pinned with that
 exception named, so the exception stays deliberate and a second one fails.
+
+The last section is not one of the four rules but is enforced here for the same
+reason: 2.16's "one `APIRouter`, included twice, so the aliases cannot drift" is
+a structural property of the app, and until it was asserted the only thing that
+noticed it was a README curl test reporting it as a documentation problem.
 """
 
 import ast
@@ -28,9 +33,11 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from fastapi import FastAPI
 
 from breakdown import data_fetch
 from breakdown.api import trees as trees_mod
+from breakdown.api.main import app, router
 from breakdown.data_fetch import _align_to_spine
 from breakdown.engine import model as model_mod
 from breakdown.engine import simulate as simulate_mod
@@ -357,3 +364,73 @@ def test_compute_shapley_refuses_above_its_cap():
         model_mod.compute_shapley(
             formula, parents, {p: 1.0 for p in parents}, {p: 2.0 for p in parents}
         )
+
+
+# --- The 2.16 mount invariant: one router, included twice ---------------------
+
+TREE_PREFIX = "/trees/{tree_id}"
+
+
+def test_every_shared_route_is_mounted_bare_and_tree_prefixed():
+    """2.16's load-bearing property: the aliases cannot drift, because there is
+    one `APIRouter` and it is included twice.
+
+    Enumerates `router.routes` rather than listing the ten endpoints, for the
+    same reason every test above enumerates: a route added tomorrow must be
+    covered on the day it is added, and a test that pinned today's ten would
+    pass while an eleventh reached only one mount.
+
+    This is asserted against `app.openapi()` — the resolved, public view of what
+    the app serves — and not by walking `app.routes`. `app.routes` is not a flat
+    list: since FastAPI 0.137.0 each `include_router` appends one lazy
+    `_IncludedRouter` node rather than copying the routes in, so counting
+    `.path` attributes there under-reports every included route as absent. That
+    is exactly how this defect presented — a probe over `app.routes` showed one
+    pathless object where ten routes were expected, on an app whose ten routes
+    were serving 200s the whole time.
+    """
+    spec_paths = app.openapi()["paths"]
+    served = {(template, method.upper()) for template, ops in spec_paths.items() for method in ops}
+
+    missing = []
+    for route in router.routes:
+        # `include_in_schema=False` would hide a route from the schema and so
+        # from this check. Nothing on this router sets it; if something ever
+        # does, it must be excluded deliberately here rather than silently
+        # dropping out of the invariant.
+        assert getattr(route, "include_in_schema", True), (
+            f"{route.path} is include_in_schema=False, so this invariant cannot "
+            "see it. Either put it back in the schema or name it here."
+        )
+        for method in route.methods:
+            for expected in (route.path, TREE_PREFIX + route.path):
+                if (expected, method) not in served:
+                    missing.append(f"{method} {expected}")
+
+    assert not missing, (
+        f"{sorted(missing)} are not served. Every route on the shared `router` is "
+        "mounted twice — bare (the default tree) and under "
+        f"`{TREE_PREFIX}` — by the two `include_router` calls at the bottom of "
+        "breakdown/api/main.py. A route reaching only one mount means an alias "
+        "has drifted, which is the one thing 2.16's single-router design exists "
+        "to prevent."
+    )
+
+
+def test_the_router_is_not_consumed_by_being_included():
+    """The double include must not mutate the router it includes.
+
+    `app.include_router(router)` twice is only safe if the first call leaves
+    `router.routes` alone — otherwise the second mount would see a consumed
+    object and the tree-prefixed aliases would be silently short. Asserted
+    directly, because it is the assumption the mounting above rests on and it is
+    a property of FastAPI rather than of our code.
+    """
+    before = list(router.routes)
+    probe = FastAPI()
+    probe.include_router(router)
+    probe.include_router(router, prefix=TREE_PREFIX)
+    assert list(router.routes) == before, (
+        "include_router mutated the router it was handed; the two mounts in "
+        "breakdown/api/main.py can no longer share one router object."
+    )

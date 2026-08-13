@@ -463,8 +463,24 @@ def test_readme_has_the_curl_examples_we_think_it_has():
 
 def test_every_documented_curl_hits_a_real_route():
     """Catches a route that no longer exists — including for the examples that
-    are too expensive to replay."""
-    templates = {(r.path, m) for r in app.routes for m in getattr(r, "methods", None) or ()}
+    are too expensive to replay.
+
+    Read off the OpenAPI schema rather than by walking `app.routes`, which is
+    not a flat list of routes and only looked like one. FastAPI **0.137.0**
+    changed `include_router` to append a single lazy `_IncludedRouter` node per
+    include instead of copying each route into the parent, so from 0.137.0 on
+    this walk saw two objects with no `.path` where it used to see twenty, and
+    reported a fully-working app as twenty missing routes. Nothing about the
+    app changed: every path still serves, and the schema's 25 paths and 25
+    unique operation ids are the same set either side of the change (measured
+    on 0.135.2 through 0.141.1). `app.openapi()` is
+    the public, resolved view and is what `_operation_for` below already used —
+    this test was the neighbour that never got the same treatment."""
+    templates = {
+        (template, method.upper())
+        for template, ops in app.openapi()["paths"].items()
+        for method in ops
+    }
     for ex in CURL_EXAMPLES:
         assert any(
             method == ex.method and _path_matches(path, ex.path) for path, method in templates
