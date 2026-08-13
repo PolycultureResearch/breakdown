@@ -838,12 +838,32 @@ refused by name until the binding language can carry a predicate, and every
 snapshot record is fingerprinted against the definition that produced it.
 
 Neither was a statistical limitation; both were engineering defects at the seam
-where this engine meets someone else's data. That seam has now produced four of
-the five silent-wrong-number defects this project has found, and no other part
-of the system has produced more than one — which is the more useful fact than
-any individual fix. Treat a number's *provenance* as the least-tested thing in
-this system, and prefer a provider path with a `doctor` check behind it over one
-without.
+where this engine meets someone else's data.
+
+**A third finding at the same seam came out of re-checking that review against
+current code, and it is the sharpest of the set** (`C18`, shipped 2026-08-12). A
+metric whose source has no rows before some date — a product launched in March,
+a channel switched on in week 3 — was **zero-filled back to the start of the
+loaded window with no warning of any kind**. Nineteen invented zeros in the
+reproduction, and the model then trains on them, so a node that did not exist
+yet acquires a manufactured level shift and a manufactured trend that RCA can
+rank as a cause. What makes it worth reading twice is *where* it was: inside
+`_align_to_spine`, the single shared date-alignment contract that `C1`/`C2`
+created **in order to end this class of defect**, and which warns correctly about
+interior gaps in the very next branch. The fix is a warning naming the fabricated
+periods; trimming them was rejected because per-grain frames inner-join, so
+trimming one late-starting node would delete those periods for every metric at
+that grain.
+
+That seam has now produced **five of the six** silent-wrong-number defects this
+project has found, and no other part of the system has produced more than one.
+The count is not the point; the location of the fifth is. A shared contract
+written to close a class of defect can still carry an instance of it, and this
+one survived being read by two hostile reviews — the second filed it as
+*medium*, because a silent fill reads as a nicety until you notice what the fit
+does with it. Treat a number's *provenance* as the least-tested thing in this
+system, prefer a provider path with a `doctor` check behind it over one without,
+and do not assume a boundary is sound because the last defect there was fixed.
 
 The remaining Horizon 0 items are open. Until they close, the honest statement
 is: the *statistical* limitations are documented; a short, named list of
@@ -1096,6 +1116,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-08-12 | **A fifth defect at the provider boundary, found by re-checking the review rather than by a new one** — the 2026-08-12 review was frozen at `c18d150`; re-verifying all 33 of its findings against `e433daa` confirmed 28 still live and promoted two into [Horizon 0](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend) that it had filed lower. `C18` is the one this paper owes text: a `flow` metric whose source starts partway into the loaded window was zero-filled back to the window's start **silently**, and the fit trained on the invented periods. §3.3 is updated, and its counting claim with it — this seam has produced five of six, not four of five. The location is the finding: `_align_to_spine` is the shared contract `C1`/`C2` built to end this class, and it warns correctly about *interior* gaps three lines away. `C17` (a zero denominator in a formula reaching the encoder as a NaN, and an agent payload as `null`) is the other promotion; it is an engine defect rather than a boundary one and adds no §3.2 weakness. No weakness changed status. Recorded because a reader comparing editions should see that §3.3's "the failure modes are documented rather than hidden" survived a second audit only after two more exceptions were fixed — and that both were found by re-reading a report, not by a third review. |
 | 2026-08-12 | **Two new provider-boundary defects, found and fixed the same day** — a second hostile review (against `c18d150`, scoped to the first client deployment and PyPI publication) found that a dbt metric's `filter` was silently dropped (`C15`) and that a snapshot survived an edit to the metric's own `sql:`/`bind:` block (`C16`), with `query_provenance` then attesting the new statement for the old numbers. Both shipped. No weakness changed status and none was added to §3.2 — both are engineering defects rather than statistical ones. What changed is §3.3, which said flatly that *the* two provider-boundary defects were fixed; that was true of C1/C2 and would have told a reader this boundary was sound. It now records four of the project's five silent-wrong-number defects at this one seam and draws the inference — treat a number's provenance as the least-tested thing here — rather than reporting each instance as a surprise. C15 also falsified a **roadmap** claim rather than a paper one: 2.10 had listed `filters` among what the dbt binding shipped, and they had never worked; that row now says so and real support is filed as 2.17. |
 | 2026-08-11 | **An outside deployment on a shape this paper had not considered** — a music festival: one product cycle a year, five editions of history, a demand clock in days-to-event, months-long true-zero windows, and revenue that restates backwards. §4 gained `S18` (right-censored metrics), `S19` (partial pooling across cycles) and `S20` (zero-inflated/count likelihoods), with a §4.2 entry explaining why `S19` is not the pooling `S15` declined — S15's objection was to pooling across a node's *heterogeneous parents*, which does not apply to pooling one node's coefficient across repeated instances of its own cycle. No weakness changed status and none was added: `C4`'s degenerate-bootstrap failure was **confirmed in production** rather than newly found, on a parent held identically at zero across a whole reference window, and the roadmap row now records the measured instance. Worth logging that the deployment's own workarounds were sound — an expected-pacing *regressor* is the correct encoding of a non-repeating event clock, not a second-best one, since this engine's seasonality is Fourier in integer time and therefore strictly periodic. |
 | 2026-08-08 | **C10 shipped** — no weakness changed status, but §3.2 #6 (parent collinearity) and #7 (the coverage test) each made a factual claim that C10 falsified: both cited the reference tree as containing a live collinear structure. It was removed there rather than preserved as a specimen, since that file is the one new authors copy — so #6 now records that the structure *was* there and how easily it was authored, and #7 records that S17's collinear fixture has to be built rather than borrowed. The diagnostic itself is still missing; nothing about the engine's statistical position improved. |

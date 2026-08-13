@@ -72,7 +72,17 @@ Consequences to keep in mind when reading results:
 - **Windows snap per node** to the whole periods fully inside the requested
   dates; each node reports its `effective_windows`, and a node whose window
   holds no whole period is reported with `status: "window_shorter_than_grain"`
-  rather than failing the analysis. Fits need ≥ 10 whole periods, so monthly
+  rather than failing the analysis. Two further statuses say a node was *not
+  analyzed*, and both carry a `status_reason` naming the cause — read them as
+  gaps in the analysis, never as "nothing happened here":
+  `"fit_failed"` (the node's model could not be fitted, in practice a series
+  with no variance across the window — an unlaunched feature, a stock held flat,
+  a seasonal business's off-season) and `"attribution_failed"` (a formula node
+  whose exact decomposition is not a finite number, in practice a zero
+  denominator on some period in the window). An `attribution_failed` node still
+  reports its own `baseline`, `actual` and `gap`, because those come from the
+  data rather than the model — what is missing is the *split*, not the movement.
+  Neither takes the rest of the tree down. Fits need ≥ 10 whole periods, so monthly
   nodes want roughly a year of history. **Treat that as a hard floor, not a
   recommendation.** A monthly node fit on ~12 periods is where every weakness in
   this document lands at once: the model carries one latent trend state per
@@ -89,6 +99,17 @@ Consequences to keep in mind when reading results:
   series can end before the raw data window does; the trend's flat forecast
   for a monthly node sits at the last *whole month* before the analysis
   window, which can be weeks before the anomaly.
+- **A `flow` metric that starts partway into the loaded window is filled with
+  zeros before its first row**, and those zeros are indistinguishable from
+  measured ones once they reach the fit. This is the one fill the engine
+  performs that is a *judgement* rather than a fact — a metric that did not
+  exist yet is not a metric that was zero — so it is logged with the periods it
+  invented, and you should read that warning. The fit trains on the invented
+  periods, which gives the node a level shift and a trend it never had, and RCA
+  can then rank it as a cause. If a node launched mid-window, the honest fix is
+  a later `--start-date` for the tree, or a window that begins where the metric
+  does. (`stock` and `rate` refuse instead: a stock has nothing to carry
+  backwards, and a rate cannot be invented at all.)
 
 ## What data the fit sees
 
@@ -252,7 +273,12 @@ CI is withheld instead of reported as zero-width: formula nodes get
 `ci_status: "degenerate_single_period"` with `ci_95: null` on their
 contributions; posterior nodes keep their coefficient-posterior CI but are
 flagged `"posterior_only_single_period"` because the window-sampling
-component is absent.
+component is absent. A third value, `"nonfinite_bootstrap_replicates"`, means
+enough replicates evaluated to a non-finite number — again, a near-zero
+denominator, this time hit only by some resamples — that the interval was
+computed from the survivors or withheld entirely. Treat it the same way: the
+point estimate is exact, the interval around it is not something the engine is
+willing to claim.
 
 > **Caveat (open, roadmap C4).** Two known defects sit in this path today, both
 > in the direction of *overconfidence*, and formula-node contribution intervals
