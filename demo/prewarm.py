@@ -28,7 +28,14 @@ import urllib.request
 # and fake_companies/scripts/verify_white_cube_stories.py.
 TOUR_RCAS = [
     ("A  mobile signup CTA", "new_mrr", "2026-01-05", "2026-02-01", "2026-02-09", "2026-03-08"),
-    ("B  professional churn", "net_new_mrr", "2026-03-16", "2026-04-12", "2026-05-11", "2026-06-07"),
+    (
+        "B  professional churn",
+        "net_new_mrr",
+        "2026-03-16",
+        "2026-04-12",
+        "2026-05-11",
+        "2026-06-07",
+    ),
     ("C  Brazil campaign", "signups", "2025-02-03", "2025-03-02", "2025-03-10", "2025-04-06"),
     ("D  onboarding revamp", "new_mrr", "2025-07-07", "2025-08-03", "2025-08-11", "2025-09-07"),
 ]
@@ -53,9 +60,7 @@ def warm_slices(base: str) -> list[str]:
     dag = call(f"{base}/dag")
     failures = []
     pairs = [
-        (name, dim)
-        for name, defn in dag.get("nodes", [])
-        for dim in (defn.get("dimensions") or {})
+        (name, dim) for name, defn in dag.get("nodes", []) for dim in (defn.get("dimensions") or {})
     ]
     print(f"warming {len(pairs)} sliced snapshots...")
     rs, re, as_, ae = SLICE_PROBE

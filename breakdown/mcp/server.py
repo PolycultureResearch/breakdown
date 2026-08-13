@@ -127,9 +127,7 @@ async def list_trees() -> Dict[str, Any]:
 
     state = app.state
     if not state.trees:
-        raise RuntimeError(
-            f"breakdown started without a metric tree: {state.startup_error}."
-        )
+        raise RuntimeError(f"breakdown started without a metric tree: {state.startup_error}.")
     return round_floats(
         {
             "default": state.default_tree,
@@ -438,7 +436,5 @@ async def run_whatif(
         )
     out = round_floats(compact_scenario(result))
     out["how_to_read"] = whatif_how_to_read(result["mode"])
-    out["report_url"] = whatif_link(
-        scenario.model_dump(exclude_defaults=True), tree=state.id
-    )
+    out["report_url"] = whatif_link(scenario.model_dump(exclude_defaults=True), tree=state.id)
     return out

@@ -1,8 +1,20 @@
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from breakdown.engine.rca import _block_bootstrap_indices, run_rca, shapley_attribution
+from breakdown.engine.rca import (
+    NonFiniteAttribution,
+    _block_bootstrap_indices,
+    _effective_block,
+    _hop_weights,
+    _rank_causes,
+    _share_of_gap,
+    run_rca,
+    shapley_attribution,
+)
+from breakdown.grains import BOOT_BLOCK
 from breakdown.parser import Parser
 from tests.synthetic import generate_mock_data, win
 
@@ -92,11 +104,16 @@ def test_rca_posterior_attribution():
 
     # T5: probabilistic nodes report the fitted trend/seasonal deltas.
     comps = oc["components"]
-    assert set(comps) == {"trend", "seasonal"}
     for term in comps.values():
         assert term["ci_95"][0] <= term["estimate"] <= term["ci_95"][1]
-    # No seasonality declared on order_count -> exactly zero seasonal delta.
-    assert comps["seasonal"]["estimate"] == 0.0
+    # order_count declares no seasonality, so the model contains no seasonal
+    # term and the key is absent. It used to report `{estimate: 0.0, ci_95:
+    # [0.0, 0.0]}` — a 95% credible interval of zero width on a parameter that
+    # was never estimated, which is C4's defect class through another door.
+    # "There is no such term" is not the same statement as "we could not
+    # estimate this", so it is not a `ci_status` either.
+    assert set(comps) == {"trend"}
+    assert oc["ci_status"] == "ok"
 
 
 def test_rca_on_demand_fitting_minimal():
@@ -249,9 +266,14 @@ metrics:
     data = generate_mock_data(n_days=100)  # starts 2024-01-01
 
     with pytest.raises(ValueError) as excinfo:
-        run_rca(parser.dag, data, {}, "order_count",
-                **win(("2024-01-01", "2024-02-15"), ("2024-02-16", "2024-03-14")),
-                advi_draws=100)
+        run_rca(
+            parser.dag,
+            data,
+            {},
+            "order_count",
+            **win(("2024-01-01", "2024-02-15"), ("2024-02-16", "2024-03-14")),
+            advi_draws=100,
+        )
     message = str(excinfo.value)
     assert "daily_sessions" in message
     assert "lag 5" in message
@@ -310,8 +332,13 @@ def test_reference_window_starting_before_data_raises():
     data = generate_mock_data(n_days=100)  # starts 2024-01-01
 
     with pytest.raises(ValueError, match="not fully covered by its data"):
-        run_rca(parser.dag, data, {}, "revenue",
-                **win(("2023-12-01", "2024-01-31"), ("2024-02-01", "2024-02-28")))
+        run_rca(
+            parser.dag,
+            data,
+            {},
+            "revenue",
+            **win(("2023-12-01", "2024-01-31"), ("2024-02-01", "2024-02-28")),
+        )
 
 
 def test_analysis_window_running_past_data_raises():
@@ -319,8 +346,13 @@ def test_analysis_window_running_past_data_raises():
     data = generate_mock_data(n_days=100)  # ends 2024-04-09
 
     with pytest.raises(ValueError, match="not fully covered by its data"):
-        run_rca(parser.dag, data, {}, "revenue",
-                **win(("2024-01-01", "2024-01-31"), ("2024-02-01", "2024-05-31")))
+        run_rca(
+            parser.dag,
+            data,
+            {},
+            "revenue",
+            **win(("2024-01-01", "2024-01-31"), ("2024-02-01", "2024-05-31")),
+        )
 
 
 def test_windows_fully_inside_the_data_are_accepted():
@@ -328,8 +360,13 @@ def test_windows_fully_inside_the_data_are_accepted():
     parser = Parser(_WINDOW_TREE)
     data = generate_mock_data(n_days=100)
 
-    result = run_rca(parser.dag, data, {}, "revenue",
-                     **win(("2024-01-01", "2024-01-31"), ("2024-02-01", "2024-02-28")))
+    result = run_rca(
+        parser.dag,
+        data,
+        {},
+        "revenue",
+        **win(("2024-01-01", "2024-01-31"), ("2024-02-01", "2024-02-28")),
+    )
     assert result["nodes"]["revenue"]["gap"] is not None
 
 
@@ -369,7 +406,9 @@ metrics:
     parser = Parser(yaml_content)
 
     result = shapley_attribution(
-        parser.dag, data, "revenue",
+        parser.dag,
+        data,
+        "revenue",
         **win(("2024-01-01", "2024-01-30"), ("2024-01-31", "2024-02-29")),
     )
 
@@ -430,10 +469,12 @@ metrics:
     ref = ("2024-01-01", "2024-02-29")
     # Both analyses start 2024-03-01 -> same fit_end -> the same cached fit,
     # so the only difference is window-sampling uncertainty.
-    r3 = run_rca(parser.dag, data, traces, "y",
-                 **win(ref, ("2024-03-01", "2024-03-03")), advi_draws=300)
-    r28 = run_rca(parser.dag, data, traces, "y",
-                  **win(ref, ("2024-03-01", "2024-03-28")), advi_draws=300)
+    r3 = run_rca(
+        parser.dag, data, traces, "y", **win(ref, ("2024-03-01", "2024-03-03")), advi_draws=300
+    )
+    r28 = run_rca(
+        parser.dag, data, traces, "y", **win(ref, ("2024-03-01", "2024-03-28")), advi_draws=300
+    )
 
     def ci_width(result):
         ci = result["nodes"]["y"]["contributions"][0]["ci_95"]
@@ -497,14 +538,16 @@ def test_rca_day_grain_golden_pinned():
 
 # --- Default reference window (the matched adjacent block) ---
 
+
 def test_rca_defaults_reference_to_matched_adjacent_block():
     """Omitting both reference dates uses the matched adjacent block; the
     response echoes the resolved window and flags it as defaulted. The 54-day
     analysis wants a 216-day reference, so it clamps to the loaded data."""
     dag, data = make_tree()
 
-    result = run_rca(dag, data, {}, "revenue",
-                     analysis_start=AN[0], analysis_end=AN[1], advi_draws=300)
+    result = run_rca(
+        dag, data, {}, "revenue", analysis_start=AN[0], analysis_end=AN[1], advi_draws=300
+    )
 
     assert result["reference_defaulted"] is True
     # Adjacent (ends the day before the analysis window), clamped to the
@@ -516,11 +559,17 @@ def test_rca_defaults_reference_to_matched_adjacent_block():
 def test_rca_explicit_reference_is_unchanged_and_not_flagged():
     dag, data = make_tree()
 
-    defaulted = run_rca(dag, data, {}, "revenue",
-                        analysis_start=AN[0], analysis_end=AN[1], advi_draws=300)
-    explicit = run_rca(dag, data, {}, "revenue", **win(
-        (defaulted["reference_window"]["start"], defaulted["reference_window"]["end"]),
-        AN), advi_draws=300)
+    defaulted = run_rca(
+        dag, data, {}, "revenue", analysis_start=AN[0], analysis_end=AN[1], advi_draws=300
+    )
+    explicit = run_rca(
+        dag,
+        data,
+        {},
+        "revenue",
+        **win((defaulted["reference_window"]["start"], defaulted["reference_window"]["end"]), AN),
+        advi_draws=300,
+    )
 
     assert explicit["reference_defaulted"] is False
     assert explicit["reference_window"] == defaulted["reference_window"]
@@ -530,22 +579,27 @@ def test_rca_explicit_reference_is_unchanged_and_not_flagged():
 def test_rca_single_reference_date_raises():
     dag, data = make_tree()
     with pytest.raises(ValueError, match="both reference_start and reference_end"):
-        run_rca(dag, data, {}, "revenue",
-                analysis_start=AN[0], analysis_end=AN[1], reference_start=REF[0])
+        run_rca(
+            dag,
+            data,
+            {},
+            "revenue",
+            analysis_start=AN[0],
+            analysis_end=AN[1],
+            reference_start=REF[0],
+        )
 
 
 def test_rca_analysis_at_data_start_raises():
     dag, data = make_tree()
     with pytest.raises(ValueError, match="beginning of the loaded data"):
-        run_rca(dag, data, {}, "revenue",
-                analysis_start="2024-01-01", analysis_end="2024-01-14")
+        run_rca(dag, data, {}, "revenue", analysis_start="2024-01-01", analysis_end="2024-01-14")
 
 
 def test_shapley_defaults_reference_and_echoes_windows():
     dag, data = make_tree()
 
-    result = shapley_attribution(dag, data, "revenue",
-                                 analysis_start=AN[0], analysis_end=AN[1])
+    result = shapley_attribution(dag, data, "revenue", analysis_start=AN[0], analysis_end=AN[1])
 
     assert result["reference_defaulted"] is True
     assert result["reference_window"]["end"] == "2024-02-15"
@@ -554,6 +608,7 @@ def test_shapley_defaults_reference_and_echoes_windows():
 
 
 # --- Fit-window provenance and seasonality warnings (1.10) ---
+
 
 def test_rca_surfaces_fit_window_and_seasonality_warnings():
     """Posterior nodes report what the model actually trained on (all loaded
@@ -585,7 +640,9 @@ metrics:
     # Fit = whole days from data start to the day before the analysis window,
     # regardless of the reference dates.
     assert oc["fit_window"] == {
-        "start": "2024-01-01", "end": "2024-02-15", "n_periods": 46,
+        "start": "2024-01-01",
+        "end": "2024-02-15",
+        "n_periods": 46,
     }
     # 46 fitted days < 2 x 60: the declared seasonality is unidentifiable
     # and the warning must reach the RCA response, not just the log.
@@ -595,3 +652,765 @@ metrics:
     assert result["nodes"]["revenue"]["fit_window"] is None
     assert result["nodes"]["daily_sessions"]["fit_window"] is None
     assert result["nodes"]["revenue"]["seasonality_warnings"] is None
+
+
+# --- Degrading instead of dying: zero denominators, unfittable nodes,
+# --- out-of-range windows (H1, M3, M7)
+
+_ZERO_DENOMINATOR_YAML = """
+metrics:
+  - name: sessions
+    source: dbt.metric.sessions
+  - name: order_count
+    source: dbt.metric.order_count
+  - name: revenue
+    source: dbt.metric.revenue
+  - name: aov
+    source: dbt.metric.aov
+    formula: "revenue / order_count"
+    parents: [revenue, order_count]
+  - name: revenue_per_session
+    source: dbt.metric.revenue_per_session
+    formula: "aov * sessions"
+    parents: [aov, sessions]
+"""
+
+_ZD_REF = ("2024-01-01", "2024-02-15")
+_ZD_AN = ("2024-02-16", "2024-03-14")
+_ZD_ZERO_DAY = "2024-02-20"  # inside the analysis window
+
+
+def _zero_denominator_data(n_days: int = 100) -> pd.DataFrame:
+    """One structural zero in a flow denominator, exactly as `_align_to_spine`
+    manufactures it when the source has an interior gap."""
+    rng = np.random.default_rng(7)
+    dates = pd.date_range("2024-01-01", periods=n_days)
+    order_count = 100.0 + rng.normal(0, 5.0, n_days)
+    revenue = 50.0 * order_count + rng.normal(0, 50.0, n_days)
+    sessions = 1000.0 + rng.normal(0, 20.0, n_days)
+    df = pd.DataFrame(
+        {
+            "date": dates,
+            "sessions": sessions,
+            "order_count": order_count,
+            "revenue": revenue,
+        }
+    )
+    i = df.index[df["date"] == pd.Timestamp(_ZD_ZERO_DAY)][0]
+    df.loc[i, "order_count"] = 0.0
+    df["aov"] = np.where(
+        df["order_count"] == 0.0, 0.0, df["revenue"] / df["order_count"].replace(0.0, 1.0)
+    )
+    df["revenue_per_session"] = df["aov"] * df["sessions"]
+    return df
+
+
+def test_zero_denominator_does_not_crash_and_names_the_parent():
+    """A zero denominator used to raise `KeyError: '__import__'` out of the
+    restricted `eval` — an unhandled 500. It now evaluates to inf, and the
+    decomposition refuses the non-finite result with a diagnostic naming the
+    parent series and the dates (a 422 at the API), rather than emitting NaNs
+    that Starlette's `allow_nan=False` encoder cannot serialize."""
+    parser = Parser(_ZERO_DENOMINATOR_YAML)
+    data = _zero_denominator_data()
+
+    with pytest.raises(NonFiniteAttribution) as excinfo:
+        shapley_attribution(parser.dag, data, "aov", **win(_ZD_REF, _ZD_AN))
+
+    message = str(excinfo.value)
+    assert isinstance(excinfo.value, ValueError)  # the API turns this into a 422
+    assert "order_count" in message
+    assert _ZD_ZERO_DAY in message
+    assert "analysis-window" in message
+
+
+def test_zero_denominator_node_degrades_and_the_rest_of_the_tree_reports():
+    """The failing node carries a status and its own numbers; every other node
+    is still attributed, and no score anywhere is non-finite."""
+    parser = Parser(_ZERO_DENOMINATOR_YAML)
+    data = _zero_denominator_data()
+
+    result = run_rca(parser.dag, data, {}, "revenue_per_session", **win(_ZD_REF, _ZD_AN))
+
+    aov = result["nodes"]["aov"]
+    assert aov["status"] == "attribution_failed"
+    assert "order_count" in aov["status_reason"] and _ZD_ZERO_DAY in aov["status_reason"]
+    # Its own movement is read off the data, not the model, so it still reports.
+    assert aov["baseline"] is not None and aov["gap"] is not None
+    assert aov["contributions"] == []
+
+    rps = result["nodes"]["revenue_per_session"]
+    assert rps["status"] == "ok"
+    assert {c["parent"] for c in rps["contributions"]} == {"aov", "sessions"}
+    assert all(result["nodes"][n]["status"] == "ok" for n in ("sessions", "revenue", "order_count"))
+
+    assert all(np.isfinite(r["score"]) for r in result["ranked_causes"])
+    # The property the encoder cares about: nothing non-finite anywhere.
+    json.dumps(result, allow_nan=False)
+
+
+def test_zero_denominator_on_the_target_itself_raises():
+    """The target's decomposition is the whole point of the request — an empty
+    status there is no answer, so it raises (422) with the diagnostic."""
+    parser = Parser(_ZERO_DENOMINATOR_YAML)
+    data = _zero_denominator_data()
+
+    with pytest.raises(NonFiniteAttribution, match="order_count"):
+        run_rca(parser.dag, data, {}, "aov", **win(_ZD_REF, _ZD_AN))
+
+
+def test_rank_causes_ignores_a_non_finite_share():
+    """`min(abs(nan), 1.0)` is nan — every comparison against nan is false, so
+    the clamp let it through and one node's NaN share poisoned the score of
+    every ancestor above it. An undefined share weighs nothing."""
+    parser = Parser(JAFFLE_YAML)
+    scope = {"revenue", "order_count", "average_order_value", "daily_sessions"}
+    nodes_out = {
+        "revenue": {
+            "contributions": [
+                {"parent": "order_count", "share_of_gap": float("nan")},
+                {"parent": "average_order_value", "share_of_gap": 0.4},
+            ]
+        },
+        "order_count": {"contributions": [{"parent": "daily_sessions", "share_of_gap": 0.5}]},
+        "average_order_value": {"contributions": []},
+        "daily_sessions": {"contributions": []},
+    }
+
+    ranked = _rank_causes(parser.dag, "revenue", scope, nodes_out)
+
+    assert all(np.isfinite(r["score"]) for r in ranked)
+    scores = {r["metric"]: r["score"] for r in ranked}
+    assert scores["order_count"] == 0.0  # nan share -> no evidence -> no weight
+    assert scores["daily_sessions"] == 0.0  # and nothing propagates above it
+    assert scores["average_order_value"] == pytest.approx(0.4)
+
+
+_ZERO_VARIANCE_YAML = """
+metrics:
+  - name: leads
+    source: dbt.metric.leads
+  - name: signups
+    source: dbt.metric.signups
+    parents: [leads]
+  - name: price
+    source: dbt.metric.price
+  - name: revenue
+    source: dbt.metric.revenue
+    formula: "signups * price"
+    parents: [signups, price]
+"""
+
+
+def test_zero_variance_parent_leaves_the_rest_of_the_tree_intact():
+    """A parent held at zero for the whole fit window cannot be normalized, so
+    `fit_metric` raises. That used to abort the entire RCA and return nothing;
+    the node is now reported with a `fit_failed` status and everything else is
+    still attributed."""
+    rng = np.random.default_rng(5)
+    n = 100
+    dates = pd.date_range("2024-01-01", periods=n)
+    data = pd.DataFrame(
+        {
+            "date": dates,
+            "leads": np.zeros(n),  # the seasonal business's default state
+            "signups": 40.0 + rng.normal(0, 3.0, n),
+            "price": 20.0 + rng.normal(0, 1.0, n),
+        }
+    )
+    data["revenue"] = data["signups"] * data["price"]
+    parser = Parser(_ZERO_VARIANCE_YAML)
+    traces = {}
+
+    result = run_rca(parser.dag, data, traces, "revenue", **win(REF, AN), advi_draws=300)
+
+    signups = result["nodes"]["signups"]
+    assert signups["status"] == "fit_failed"
+    assert "zero variance" in signups["status_reason"]
+    assert signups["gap"] is not None and signups["contributions"] == []
+    assert ("signups", AN[0]) not in traces
+
+    assert result["nodes"]["revenue"]["status"] == "ok"
+    assert len(result["nodes"]["revenue"]["contributions"]) == 2
+    assert result["nodes"]["leads"]["status"] == "ok"
+    assert result["nodes"]["price"]["status"] == "ok"
+    json.dumps(result, allow_nan=False)
+
+
+def test_out_of_range_window_is_refused_before_any_fit():
+    """Coverage is validated for the whole scope before the fit loop: an
+    out-of-range window used to pay for an ADVI fit of every ancestor —
+    minutes, holding the caller's lock, leaving a cached trace each — and only
+    then 422. The empty trace cache is the observable property."""
+    dag, data = make_tree()  # data ends 2024-04-09
+    traces = {}
+
+    with pytest.raises(ValueError, match="not fully covered by its data"):
+        run_rca(
+            dag,
+            data,
+            traces,
+            "revenue",
+            **win(("2024-01-01", "2024-01-31"), ("2024-02-01", "2024-05-31")),
+            advi_draws=300,
+        )
+
+    assert traces == {}
+
+
+# --- C4(b): the block length may not eat the window -------------------------
+
+
+def _iid_variance_ratio(n: int, n_boot: int = 20000, seed: int = 0) -> float:
+    """Resampled variance of the window mean over its true sampling variance.
+
+    Computed from the resampling scheme itself rather than by simulating
+    series, which removes the realization noise that otherwise swamps this at
+    small n. Writing a replicate's per-position draw counts as `c`, its mean is
+    `c.x / n`; for iid `x` with variance s^2 that gives an expected resampled
+    variance of `s^2 (E||c||^2 - ||E c||^2) / n^2`, and the circular scheme
+    draws every position equally often in expectation, so `E c` is all ones.
+    Against a true sampling variance of `s^2 / n`, the ratio is
+    `(E||c||^2 - n) / n` — no `x` needed. It reproduces the known values as a
+    check: `block = 1` (the ordinary bootstrap) gives exactly `1 - 1/n`, and a
+    block covering the whole window gives 0.
+    """
+    rng = np.random.default_rng(seed)
+    idx = _block_bootstrap_indices(n, n_boot, rng, block=BOOT_BLOCK["day"])
+    flat = (np.arange(n_boot)[:, None] * n + idx).reshape(-1)
+    counts = np.bincount(flat, minlength=n_boot * n).reshape(n_boot, n)
+    return float(((counts.astype(float) ** 2).sum(axis=1).mean() - n) / n)
+
+
+def test_block_length_is_capped_at_a_quarter_of_the_window():
+    """The cap is a quarter, and the block never shrinks as the window grows.
+
+    The old cap was `n // 2`, which put the block on the midpoint of the very
+    degeneracy curve it was reasoning about — and made the block *fall* when the
+    window grew by a period (n=13 -> 6, n=14 -> 7 gave a wider interval at 13
+    than at 14). A user widening their window by a day could get a narrower
+    interval; monotonicity of the rule is what rules that out.
+    """
+    ns = range(1, 61)
+    blocks = [_effective_block(n, BOOT_BLOCK["day"]) for n in ns]
+
+    assert all(b >= 1 for b in blocks)
+    assert all(b == 1 or 4 * b <= n for n, b in zip(ns, blocks))
+    assert blocks == sorted(blocks), "the block must never shrink as the window grows"
+    # The two windows this is quoted on: the README's fortnight, and the
+    # default reference floor.
+    assert _effective_block(14, 7) == 3
+    assert _effective_block(28, 7) == 7
+
+
+def test_short_window_variance_is_not_halved_by_the_block_cap():
+    """The property the cap exists to protect: on iid data the resampled
+    variance of a window mean stays close to the truth at every window length.
+
+    Under the old `n // 2` cap this ratio was ~0.5 for every n <= 15 —
+    intervals ~30% too narrow, worst exactly on the short windows the bootstrap
+    exists to be honest about — and it was not monotone in n: 0.54 at n=13 and
+    0.50 at n=14, so widening the window by a day narrowed the interval. Both
+    assertions below fail on that cap.
+    """
+    ratios = {n: _iid_variance_ratio(n) for n in range(4, 41)}
+
+    worst = min(ratios.items(), key=lambda kv: kv[1])
+    assert worst[1] > 0.72, f"window mean variance attenuated to {worst[1]:.2f} at n={worst[0]}"
+    # The specific pair the old cap inverted: one more period of data must not
+    # buy a narrower interval.
+    assert ratios[14] >= ratios[13] - 0.02
+
+
+# --- C4(a): a degenerate resampling yields no interval, not a narrow one ----
+
+
+_CONSTANT_PARENT_YAML = """
+metrics:
+  - name: intensity
+    source: dbt.metric.intensity
+  - name: base
+    source: dbt.metric.base
+  - name: total
+    source: dbt.metric.total
+    formula: "base * intensity"
+    parents: [base, intensity]
+"""
+
+_C4_REF = ("2024-03-01", "2024-03-31")
+_C4_AN = ("2024-04-01", "2024-04-29")
+
+
+def _constant_parent_data(constant=3.0):
+    rng = np.random.default_rng(5)
+    dates = pd.date_range("2024-01-01", periods=120)
+    base = 100.0 + rng.normal(0, 5.0, len(dates))
+    base[dates >= pd.Timestamp("2024-04-01")] += 20.0
+    intensity = np.full(len(dates), constant)
+    return pd.DataFrame(
+        {"date": dates, "intensity": intensity, "base": base, "total": base * intensity}
+    )
+
+
+def test_constant_parent_window_yields_no_interval_rather_than_a_zero_width_one():
+    """A parent that never moves collapses every replicate to the same value.
+
+    That used to ship as `ci_95: [0.0, 0.0]` with `ci_status: "ok"` and
+    `prob_same_direction: 0.0` — the engine's most-quoted number reporting
+    perfect precision from no information at all, on the state a seasonal
+    business spends months in. It is withheld now, and the node says why.
+    """
+    dag = Parser(_CONSTANT_PARENT_YAML).dag
+    data = _constant_parent_data()
+
+    result = run_rca(dag, data, {}, "total", **win(_C4_REF, _C4_AN))
+
+    node = result["nodes"]["total"]
+    assert node["status"] == "ok"  # the node still reports its own movement
+    assert node["ci_status"] == "degenerate_bootstrap_spread"
+    by_parent = {c["parent"]: c for c in node["contributions"]}
+    held = by_parent["intensity"]
+    assert held["ci_95"] is None
+    assert held["prob_same_direction"] is None
+    # The parent that did move keeps a real interval — the guard is per
+    # quantity, not a blanket refusal of the node.
+    assert by_parent["base"]["ci_95"][0] < by_parent["base"]["ci_95"][1]
+
+    # The property the pinned values above exist to protect: nothing anywhere
+    # in the response ships an interval of zero width.
+    for name, out in result["nodes"].items():
+        for c in out["contributions"]:
+            ci = c["ci_95"]
+            assert ci is None or ci[1] > ci[0], f"zero-width ci_95 on {name} -> {c['parent']}"
+    json.dumps(result, allow_nan=False)
+
+
+def test_a_parent_held_at_zero_is_the_same_case():
+    """The shape C4 was confirmed on in production: the held parent is zero
+    rather than merely constant, so the whole window's product collapses."""
+    dag = Parser(_CONSTANT_PARENT_YAML).dag
+    data = _constant_parent_data(constant=0.0)
+
+    result = run_rca(dag, data, {}, "total", **win(_C4_REF, _C4_AN))
+
+    node = result["nodes"]["total"]
+    assert node["ci_status"] == "degenerate_bootstrap_spread"
+    assert all(c["ci_95"] is None for c in node["contributions"])
+
+
+_ADDITIVE_YAML = """
+metrics:
+  - name: left
+    source: dbt.metric.left
+  - name: right
+    source: dbt.metric.right
+  - name: total
+    source: dbt.metric.total
+    formula: "left + right"
+    parents: [left, right]
+"""
+
+
+def test_a_structurally_zero_term_is_not_mistaken_for_a_degenerate_one():
+    """An additive identity has no co-movement term: it is exactly zero for
+    every replicate whatever the data.
+
+    Two statements have to stay apart here. The term carries **no interval**,
+    like everything else that would otherwise publish a zero-width one. But the
+    node is **not flagged**: nothing about its resampling collapsed, and keying
+    the status on the published widths would raise a degeneracy on every
+    additive node in every tree.
+    """
+    rng = np.random.default_rng(7)
+    dates = pd.date_range("2024-01-01", periods=120)
+    left = 10.0 + rng.normal(0, 0.5, len(dates))
+    right = 100.0 + rng.normal(0, 2.0, len(dates))
+    right[dates >= pd.Timestamp("2024-04-01")] += 5.0
+    data = pd.DataFrame({"date": dates, "left": left, "right": right, "total": left + right})
+
+    result = run_rca(Parser(_ADDITIVE_YAML).dag, data, {}, "total", **win(_C4_REF, _C4_AN))
+
+    node = result["nodes"]["total"]
+    assert node["ci_status"] == "ok"
+    assert all(c["ci_95"] is not None for c in node["contributions"])
+    comovement = node["contributions"][0]["decomposition"]["comovement"]
+    assert comovement["estimate"] == pytest.approx(0.0, abs=1e-9)
+    assert comovement["ci_95"] is None
+
+
+def test_posterior_node_withholds_an_interval_on_an_unmoving_parent():
+    """The same degeneracy reaches the posterior path through the parent's
+    window means: `beta_raw x 0` is a zero-width interval on an identically
+    zero contribution, however wide the coefficient posterior is.
+
+    The parent varies over the fit window (so the fit itself succeeds) and is
+    held flat across both comparison windows.
+    """
+    rng = np.random.default_rng(9)
+    dates = pd.date_range("2024-01-01", periods=120)
+    x = 100.0 + rng.normal(0, 5.0, len(dates))
+    flat = ((dates >= pd.Timestamp(_C4_REF[0])) & (dates <= pd.Timestamp(_C4_REF[1]))) | (
+        (dates >= pd.Timestamp(_C4_AN[0])) & (dates <= pd.Timestamp(_C4_AN[1]))
+    )
+    x[flat] = 100.0
+    y = 0.5 * x + rng.normal(0, 1.0, len(dates))
+    data = pd.DataFrame({"date": dates, "x": x, "y": y})
+    yaml_content = """
+metrics:
+  - name: x
+    source: dbt.metric.x
+  - name: y
+    source: dbt.metric.y
+    parents: [x]
+"""
+
+    result = run_rca(
+        Parser(yaml_content).dag, data, {}, "y", **win(_C4_REF, _C4_AN), advi_draws=300
+    )
+
+    node = result["nodes"]["y"]
+    assert node["ci_status"] == "degenerate_bootstrap_spread"
+    c = node["contributions"][0]
+    assert c["estimate"] == 0.0
+    assert c["ci_95"] is None and c["prob_same_direction"] is None
+
+
+# --- C5: shares above the gap are penalized, not saturated ------------------
+
+
+def test_share_of_gap_is_withheld_relative_to_the_node_scale():
+    """The guard was `abs(gap) < 1e-12`, absolute — so float residue on a node
+    denominated in millions published shares in the thousands, while a real
+    move on a node denominated in rates was thrown away."""
+    # Float residue at the scale of a large node: no share.
+    assert _share_of_gap(5.0, 1e-4, 1e9) is None
+    # A real move on a tiny node: a share, where the absolute guard withheld it.
+    assert _share_of_gap(5e-14, 1e-13, 1e-9) == pytest.approx(0.5)
+    # An ordinary gap is untouched, and a dead-flat node still has no share.
+    assert _share_of_gap(984.5, 595.5, 26386.5) == pytest.approx(1.6533, rel=1e-3)
+    assert _share_of_gap(0.0, 0.0, 0.0) is None
+
+
+def test_hop_weight_penalizes_a_share_above_the_gap():
+    """A parent explaining 165% of its child's gap is *less* well identified
+    than one explaining a clean 80%: it needs 65% of cancellation from
+    somewhere else. It used to score 1.0 — the maximum — for it."""
+
+    def weight(share):
+        return _hop_weights([{"parent": "p", "share_of_gap": share}])["p"]
+
+    assert weight(1.0) == pytest.approx(1.0)  # a clean explanation still scores 1
+    assert weight(0.8) == pytest.approx(0.8)  # under-explaining is unchanged
+    assert weight(1.653) == pytest.approx(1 / 1.653)  # the bundled demo's own share
+    assert weight(1.653) < weight(0.8)
+    assert weight(5e5) < 1e-4  # offsetting noise carries no influence
+    assert weight(-1.653) == weight(1.653)  # direction is not the question here
+    assert weight(None) == 0.0 and weight(float("nan")) == 0.0
+
+    # Within one node the ordering by |share| is untouched: only how much of
+    # the child's score survives the hop changes.
+    weights = _hop_weights(
+        [
+            {"parent": "big", "share_of_gap": 1.653},
+            {"parent": "small", "share_of_gap": -0.616},
+        ]
+    )
+    assert weights["big"] > weights["small"]
+    # ...and a hop can no longer inflate: the parents of one node share out at
+    # most the child's own score, where they could previously each take all of
+    # it.
+    assert sum(weights.values()) <= 1.0
+
+
+_ACCUMULATION_YAML = """
+metrics:
+  - name: noisy_driver
+    source: dbt.metric.noisy_driver
+  - name: offset_a
+    source: dbt.metric.offset_a
+  - name: offset_b
+    source: dbt.metric.offset_b
+  - name: offset_c
+    source: dbt.metric.offset_c
+  - name: clean_driver
+    source: dbt.metric.clean_driver
+  - name: child_a
+    source: dbt.metric.child_a
+    formula: "noisy_driver + offset_a"
+    parents: [noisy_driver, offset_a]
+  - name: child_b
+    source: dbt.metric.child_b
+    formula: "noisy_driver + offset_b"
+    parents: [noisy_driver, offset_b]
+  - name: child_c
+    source: dbt.metric.child_c
+    formula: "noisy_driver + offset_c"
+    parents: [noisy_driver, offset_c]
+  - name: top
+    source: dbt.metric.top
+    formula: "child_a + child_b + child_c + clean_driver"
+    parents: [child_a, child_b, child_c, clean_driver]
+"""
+
+
+def test_offsetting_noise_scores_below_a_clean_explainer():
+    """roadmap C5's accumulation case, with the row's own numbers.
+
+    `noisy_driver` is a parent of three children whose own gaps are small
+    residues of two large opposing parent moves, so its share in each is
+    enormous. Clamped to 1.0, those hops handed it its children's scores in
+    full — 0.33 + 0.33 + 0.34 = 1.0, an *exact tie* with `clean_driver`, which
+    explains 100% of the target's gap on its own. Scores accumulate across
+    children, so a well-connected node needs only a few quiet ones to top the
+    ranking on pure offsetting noise.
+
+    The tie must now break toward the clean explainer, and by a wide margin.
+    """
+    dag = Parser(_ACCUMULATION_YAML).dag
+    scope = set(dag.nodes)
+
+    def node(*shares):
+        return {"contributions": [{"parent": p, "share_of_gap": s} for p, s in shares]}
+
+    nodes_out = {
+        "top": node(("child_a", 0.33), ("child_b", 0.33), ("child_c", 0.34), ("clean_driver", 1.0)),
+        "child_a": node(("noisy_driver", 500.0), ("offset_a", -499.0)),
+        "child_b": node(("noisy_driver", 500.0), ("offset_b", -499.0)),
+        "child_c": node(("noisy_driver", 500.0), ("offset_c", -499.0)),
+        **{
+            n: {"contributions": []}
+            for n in scope
+            if n.endswith("driver") or n.startswith("offset")
+        },
+    }
+
+    ranked = _rank_causes(dag, "top", scope, nodes_out)
+    scores = {r["metric"]: r["score"] for r in ranked}
+
+    assert scores["clean_driver"] > scores["noisy_driver"]
+    assert scores["noisy_driver"] < 0.01
+    assert ranked[0]["metric"] == "clean_driver"
+    # The old rule scored both at exactly 1.0. Separating them must not have
+    # dragged the clean explainer down into the noise: it still leads every
+    # offsetting node by orders of magnitude.
+    offsetting = [scores[n] for n in scores if n.startswith("offset") or n == "noisy_driver"]
+    assert scores["clean_driver"] > 10 * max(offsetting)
+
+
+def test_ranked_causes_no_longer_saturates_on_an_ordinary_window():
+    """The everyday shape this was found on, on the jaffle tree over two
+    ordinary fortnights: `revenue`'s parents pull in opposite directions
+    (+146% / -51%, the same shape as the bundled demo's +165% / -62%), which is
+    exactly what the unclamped `share_of_gap` exists to express — and the clamp
+    reported the leader's influence as exactly **1.0**, reading as certainty at
+    the moment the split was least settled.
+
+    Nothing about this window is pathological: the gap is -442 on a baseline of
+    ~7,900. The leader is unchanged; the false certainty is gone."""
+    dag, data = make_tree()
+    result = run_rca(
+        dag, data, {}, "revenue", **win(("2024-02-26", "2024-03-10"), ("2024-03-11", "2024-03-24"))
+    )
+
+    shares = {c["parent"]: c["share_of_gap"] for c in result["nodes"]["revenue"]["contributions"]}
+    assert shares["order_count"] > 1.0, "this window no longer cancels"
+    assert shares["average_order_value"] < 0.0
+    ranked = result["ranked_causes"]
+    assert ranked[0]["metric"] == "order_count"  # the bigger mover still leads
+    assert ranked[0]["score"] < 1.0  # but no longer at the saturation point
+    assert all(0.0 <= r["score"] <= 1.0 for r in ranked)
+
+
+# --- M1: a defaulted reference window is one the engine will accept ---------
+
+
+_LAGGED_YAML = """
+metrics:
+  - name: spend
+    source: dbt.metric.spend
+  - name: signups
+    source: dbt.metric.signups
+    parents: [spend]
+    lags: { spend: 7 }
+"""
+
+
+def _lagged_data(n_days: int):
+    rng = np.random.default_rng(4)
+    dates = pd.date_range("2024-01-01", periods=n_days)
+    spend = 100.0 + rng.normal(0, 5.0, n_days)
+    signups = 0.5 * spend + rng.normal(0, 1.0, n_days)
+    return pd.DataFrame({"date": dates, "spend": spend, "signups": signups})
+
+
+def test_defaulted_reference_window_leaves_room_for_the_lags():
+    """The engine must not reject the window it chose for the caller.
+
+    With 45 loaded days the matched adjacent block reaches back to the first
+    loaded day, and a 7-day lag then reads the parent from a week before
+    that — so the whole RCA 422'd citing 2023-12-25, a date nobody typed, on a
+    tree that works fine at 60 or 200 days. Short history is a new client's
+    first weeks, which is the worst possible moment for a confusing refusal.
+    """
+    dag = Parser(_LAGGED_YAML).dag
+    data = _lagged_data(45)  # 2024-01-01 .. 2024-02-14
+
+    result = run_rca(
+        dag,
+        data,
+        {},
+        "signups",
+        analysis_start="2024-02-01",
+        analysis_end="2024-02-14",
+        advi_draws=300,
+    )
+
+    assert result["reference_defaulted"]
+    # Clamped to the first day whose lagged parent window is loaded, not to the
+    # first loaded day.
+    assert result["reference_window"]["start"] == "2024-01-08"
+    assert result["reference_window"]["end"] == "2024-01-31"
+    assert result["nodes"]["signups"]["status"] == "ok"
+    assert (
+        result["nodes"]["signups"]["contributions"][0]["parent_windows"]["reference"]["start"]
+        == "2024-01-01"
+    )
+
+
+def test_defaulted_reference_window_is_unchanged_when_the_lags_fit():
+    """The floor only ever binds on short history: with room to spare the
+    matched adjacent block is exactly what it always was."""
+    dag = Parser(_LAGGED_YAML).dag
+
+    long_result = run_rca(
+        dag,
+        _lagged_data(200),
+        {},
+        "signups",
+        analysis_start="2024-06-01",
+        analysis_end="2024-06-14",
+        advi_draws=300,
+    )
+
+    assert long_result["reference_window"] == {"start": "2024-04-06", "end": "2024-05-31"}
+
+
+def test_no_readable_reference_window_says_so_in_terms_of_the_lags():
+    """When even one period of reference cannot be read, the refusal names the
+    cause and the fix rather than a shifted date out of nowhere."""
+    dag = Parser(_LAGGED_YAML).dag
+    data = _lagged_data(12)  # 2024-01-01 .. 2024-01-12
+
+    with pytest.raises(ValueError) as excinfo:
+        run_rca(
+            dag,
+            data,
+            {},
+            "signups",
+            analysis_start="2024-01-06",
+            analysis_end="2024-01-12",
+            advi_draws=300,
+        )
+
+    message = str(excinfo.value)
+    assert "not enough history" in message
+    assert "2024-01-08" in message  # the earliest readable reference date
+    assert "--start-date" in message
+
+
+def test_an_explicit_reference_window_still_fails_coverage():
+    """M1 is about not handing someone an error for a choice they did not make.
+    A window the caller typed is still theirs to answer for."""
+    dag = Parser(_LAGGED_YAML).dag
+    data = _lagged_data(45)
+
+    with pytest.raises(ValueError, match="not fully covered by its data"):
+        run_rca(
+            dag,
+            data,
+            {},
+            "signups",
+            **win(("2024-01-01", "2024-01-31"), ("2024-02-01", "2024-02-14")),
+            advi_draws=300,
+        )
+
+
+# --- payload invariants the renderers should not have to enforce ------------
+
+
+def _walk_intervals(result):
+    """Every `ci_95` the response publishes, with a label for the failure."""
+    for name, node in result["nodes"].items():
+        for key in ("interaction",):
+            if node[key]:
+                yield f"{name}.{key}", node[key]["ci_95"]
+        for term, summary in (node["components"] or {}).items():
+            yield f"{name}.components.{term}", summary["ci_95"]
+        for c in node["contributions"]:
+            yield f"{name} -> {c['parent']}", c["ci_95"]
+            for part, summary in c.get("decomposition", {}).items():
+                yield f"{name} -> {c['parent']}.{part}", summary["ci_95"]
+
+
+def test_no_published_interval_is_ever_zero_width():
+    """One invariant covering the whole payload, in place of a filter in each
+    renderer: `[0, 0]` as a 95% interval asserts a precision nothing measured.
+
+    It arrives from three directions — a collapsed resampling (C4a), a term the
+    model does not contain, and an identity whose co-movement is zero by
+    construction — and a consumer cannot tell which from the interval, so none
+    of them ships one.
+    """
+    dag, data = make_tree()
+    for target in ("revenue", "order_count"):
+        result = rca_on(dag, data, {}, target)
+        for label, ci in _walk_intervals(result):
+            assert ci is None or ci[1] > ci[0], f"zero-width ci_95 at {label}"
+
+    result = run_rca(
+        Parser(_CONSTANT_PARENT_YAML).dag,
+        _constant_parent_data(),
+        {},
+        "total",
+        **win(_C4_REF, _C4_AN),
+    )
+    for label, ci in _walk_intervals(result):
+        assert ci is None or ci[1] > ci[0], f"zero-width ci_95 at {label}"
+
+
+def test_ranked_causes_only_lists_metrics_something_attributed_to():
+    """A ranking row with no provenance cannot be acted on.
+
+    Every node in scope used to be listed, so a tree whose target could not be
+    decomposed produced numbered rows of `{score: 0.0, via: null}` — zero-width
+    bars and "via —" in the UI, and the same filter reinvented by every
+    consumer. Nodes a hop actually reached are still listed at 0.0: "reached,
+    explains nothing" is a finding, and `nodes` remains the full inventory.
+    """
+    dag, data = make_tree()
+    result = rca_on(dag, data, {}, "revenue")
+
+    ranked = result["ranked_causes"]
+    assert ranked, "the jaffle tree has ranked causes"
+    assert all(r["via"] is not None for r in ranked)
+    assert {r["metric"] for r in ranked} <= set(result["nodes"]) - {"revenue"}
+
+    # A node reached by a hop that carried no weight stays, with its via.
+    scope = {"revenue", "order_count", "average_order_value", "daily_sessions"}
+    nodes_out = {
+        "revenue": {
+            "contributions": [
+                {"parent": "order_count", "share_of_gap": 0.0},
+                {"parent": "average_order_value", "share_of_gap": 1.0},
+            ]
+        },
+        "order_count": {"contributions": []},  # never reaches daily_sessions
+        "average_order_value": {"contributions": []},
+        "daily_sessions": {"contributions": []},
+    }
+
+    ranked = _rank_causes(Parser(JAFFLE_YAML).dag, "revenue", scope, nodes_out)
+
+    by_metric = {r["metric"]: r for r in ranked}
+    assert by_metric["order_count"] == {"metric": "order_count", "score": 0.0, "via": "revenue"}
+    assert "daily_sessions" not in by_metric

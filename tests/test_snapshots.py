@@ -179,6 +179,30 @@ def test_provider_outage_served_from_snapshots(tmp_path):
 
 
 def test_unwritable_dir_serves_uncached(tmp_path, caplog):
+    """A snapshot dir the process cannot create degrades to serving uncached.
+
+    The obstruction is a *file* where the store wants a directory, so
+    `os.makedirs` raises ENOTDIR — which is true for every uid. Permission bits
+    would not be: root ignores them, the write succeeds, and this test failed
+    under Docker or any CI that runs as root. (The EACCES flavour of the same
+    OSError is covered below, where it can actually be produced.)
+    """
+    blocked = tmp_path / "not-a-dir"
+    blocked.write_text("")
+    inner = CountingFetcher()
+    fetcher = SnapshotFetcher(inner, SnapshotStore(str(blocked / "snapshots")))
+    df = fetcher.fetch_metric("m", "2024-01-01", "2024-01-03")
+    assert len(df) == 3
+    assert "snapshot write failed" in caplog.text
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0,
+    reason="root ignores the permission bits this makes the directory unwritable with",
+)
+def test_read_only_dir_serves_uncached(tmp_path, caplog):
+    """The realistic shape of the same failure: a snapshot dir mounted or
+    chmod'd read-only. Only reproducible as an unprivileged user."""
     read_only = tmp_path / "ro"
     read_only.mkdir()
     os.chmod(read_only, 0o500)

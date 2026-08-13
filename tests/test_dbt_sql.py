@@ -5,8 +5,13 @@ matching strings. A query builder that emits plausible-looking SQL with the
 wrong window bound or the wrong week boundary is exactly the failure class the
 engine exists to avoid, and only running it catches that.
 
-Dialect-specific expectations (BigQuery, Snowflake, Databricks) are asserted on
-the emitted text, since there is no engine here to run them against.
+Dialect-specific expectations (BigQuery, Snowflake, Databricks) have no engine
+here to run against. Where it matters they are asserted on the *parse tree* the
+dialect's own parser produces — `sqlglot.parse_one(sql, dialect=...)` and then
+assertions on node types and argument positions — which is the closest thing to
+a warehouse validator available offline. Text matching is the blind spot that
+let three dialect defects reach a real warehouse; a string that "looks right"
+in one dialect's grammar is wrong in another's, and only a parse can tell.
 """
 
 import pandas as pd
@@ -22,7 +27,8 @@ from breakdown.dbt_sql import (
 )
 from breakdown.parser import BindingDimension, BindingSpec
 
-pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
+sqlglot = pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
+exp = sqlglot.expressions
 duckdb = pytest.importorskip("duckdb")
 
 
@@ -182,6 +188,149 @@ def test_every_dialect_and_grain_emits_a_date_expression(dialect, grain):
     # whole statement — a naive per-line search matches Snowflake's `DATEADD`.
     assert "bd_fact.ordered_at" in sql
     assert 'AS "date"' in sql or "AS `date`" in sql
+
+
+# --- truncation, asserted on the parse tree rather than the characters ------
+#
+# `DATE_TRUNC` is where the dialects disagree hardest, and text assertions have
+# now missed the disagreement three times. **BigQuery's signature is
+# `DATE_TRUNC(date_expression, date_part)`** — the expression first, the part as
+# a bare keyword — which is the mirror of everyone else's
+# `DATE_TRUNC('PART', expr)`. Because the builder parses in the *target*
+# dialect, sqlglot never rewrote the portable form, so day and month grain
+# emitted `DATE_TRUNC('DAY', col)` and BigQuery rejected every such query with
+# "No matching signature for function DATE_TRUNC". `"DATE_TRUNC" in sql` was
+# true the whole time.
+#
+# So these parse the generated SQL with the dialect's own parser and assert on
+# structure: which argument holds the date expression, which holds the part.
+
+
+def _truncation(sql: str, dialect: str, expected: int = 1):
+    """The truncation call(s) in `sql`, as the dialect's own parser reads them.
+
+    sqlglot models a truncation as `TimestampTrunc`/`DateTrunc` with `.this`
+    (the date expression) and `.unit` (the date part) — *semantic* roles, filled
+    positionally per dialect. That is precisely the axis the bug is on, so it is
+    the axis to assert.
+    """
+    tree = sqlglot.parse_one(sql, dialect=dialect)
+    calls = list(tree.find_all(exp.DateTrunc, exp.TimestampTrunc))
+    assert len(calls) == expected, f"expected {expected} truncation call(s), got {len(calls)}"
+    return calls
+
+
+def _bq(grain: str) -> str:
+    return build_query(
+        _bind(),
+        grain=grain,
+        start_date="2024-01-01",
+        end_date="2024-01-31",
+        dialect="bigquery",
+    )
+
+
+def test_the_bigquery_parser_really_can_tell_the_broken_form_from_the_fixed_one():
+    # The premise of everything below: a round trip through sqlglot's BigQuery
+    # parser is only worth writing if it *distinguishes* the defect. It does,
+    # and for the same reason BigQuery itself rejects the query — the grammar is
+    # positional, so argument 1 is read as the date expression whatever it is.
+    broken = _truncation("SELECT DATE_TRUNC('MONTH', bd_fact.ordered_at) AS d", "bigquery")[0]
+    # A string literal lands where the date belongs...
+    assert isinstance(broken.this, exp.Literal) and broken.this.this == "MONTH"
+    # ...and the column lands where the date part belongs. That mismatched pair
+    # is exactly what "No matching signature" names, and it is what the
+    # assertions below detect.
+    assert broken.unit.name.upper() == "ORDERED_AT"
+
+    fixed = _truncation("SELECT DATE_TRUNC(bd_fact.ordered_at, MONTH) AS d", "bigquery")[0]
+    assert isinstance(fixed.this, exp.Column)
+    assert fixed.unit.name.upper() == "MONTH"
+
+
+@pytest.mark.parametrize("grain, part", [("day", "DAY"), ("week", "ISOWEEK"), ("month", "MONTH")])
+def test_bigquery_truncation_puts_the_date_first_and_the_part_second(grain, part):
+    call = _truncation(_bq(grain), "bigquery")[0]
+    # Argument 1 is a date expression over the real time column — not a string.
+    assert not isinstance(call.this, exp.Literal)
+    assert {c.name for c in call.this.find_all(exp.Column)} == {"ordered_at"}
+    # Argument 2 is the date part, and the right one. ISOWEEK rather than WEEK
+    # matters independently: BigQuery's WEEK starts on Sunday.
+    assert call.unit.name.upper() == part
+
+
+@pytest.mark.parametrize("grain", ["day", "week", "month"])
+def test_bigquery_truncates_a_date_whatever_the_column_type_is(grain):
+    # BigQuery's DATE_TRUNC takes a DATE; a TIMESTAMP needs TIMESTAMP_TRUNC and
+    # a DATETIME needs DATETIME_TRUNC. A dbt `agg_time_dimension` is very often
+    # a TIMESTAMP, and nothing on this path knows which it is — `time_column` is
+    # a bare string and the manifest carries a granularity but no data type. The
+    # CAST is what makes one expression right for all three.
+    call = _truncation(_bq(grain), "bigquery")[0]
+    assert isinstance(call.this, exp.Cast)
+    assert call.this.to.this == exp.DataType.Type.DATE
+
+
+@pytest.mark.parametrize("grain", ["day", "week", "month"])
+def test_the_bigquery_cast_stays_out_of_the_window_predicates(grain):
+    # The window compares the *raw* column, deliberately: casting there would
+    # cost partition pruning on the one clause where it is worth having, and
+    # `_bounded` builds the same predicates for the diagnostic queries. So the
+    # cast must be confined to the truncation.
+    tree = sqlglot.parse_one(_bq(grain), dialect="bigquery")
+    bounds = list(tree.find(exp.Where).find_all(exp.GTE, exp.LT))
+    assert len(bounds) == 2
+    for bound in bounds:
+        assert isinstance(bound.this, exp.Column)
+        assert bound.this.name == "ordered_at"
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda d: build_resolved_slice_query(
+            _dau("last"),
+            dimension="status",
+            grain="month",
+            start_date="2024-01-01",
+            end_date="2024-01-02",
+            dialect=d,
+        ),
+        lambda d: build_multivalue_assertion(
+            _dau("last"), dimension="status", grain="month", dialect=d
+        ),
+    ],
+)
+def test_every_builder_that_truncates_gets_the_bigquery_form(build):
+    # `_truncate` feeds three builders, not just `build_query`. A fix that
+    # reached only the query the UI runs would still leave `doctor`'s
+    # multi-value assertion and the resolved-slice query malformed on BigQuery.
+    tree = sqlglot.parse_one(build("bigquery"), dialect="bigquery")
+    calls = list(tree.find_all(exp.DateTrunc, exp.TimestampTrunc))
+    assert calls, "expected this builder to truncate the time column"
+    for call in calls:
+        assert isinstance(call.this, exp.Cast)
+        assert call.unit.name.upper() == "MONTH"
+
+
+@pytest.mark.parametrize(
+    "dialect", ["duckdb", "postgres", "databricks", "spark", "snowflake", "trino"]
+)
+@pytest.mark.parametrize("grain, part", [("day", "DAY"), ("week", "WEEK"), ("month", "MONTH")])
+def test_other_dialects_keep_the_portable_argument_order(dialect, grain, part):
+    # The regression guard in the other direction: BigQuery's order and its cast
+    # are a BigQuery override, and a future "fix" that generalised either would
+    # break every warehouse that reads `DATE_TRUNC('PART', expr)`. Here the part
+    # is argument 1 and the bare column is argument 2, with no cast.
+    if dialect == "snowflake" and grain == "week":
+        pytest.skip("Snowflake's ISO week is a DATEADD offset, not a truncation")
+    sql = build_query(
+        _bind(), grain=grain, start_date="2024-01-01", end_date="2024-01-31", dialect=dialect
+    )
+    call = _truncation(sql, dialect)[0]
+    assert call.unit.name.upper() == part
+    assert isinstance(call.this, exp.Column)
+    assert call.this.name == "ordered_at"
 
 
 def test_month_grain_buckets_to_the_first(con):

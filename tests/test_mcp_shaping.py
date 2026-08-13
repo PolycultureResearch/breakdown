@@ -125,8 +125,12 @@ def test_compact_rca():
     out = compact_rca(_rca_fixture())
 
     assert set(out) == {
-        "target", "reference_window", "analysis_window", "reference_defaulted",
-        "nodes", "ranked_causes",
+        "target",
+        "reference_window",
+        "analysis_window",
+        "reference_defaulted",
+        "nodes",
+        "ranked_causes",
     }
     assert out["reference_defaulted"] is False
     assert len(out["ranked_causes"]) == 10  # capped
@@ -147,6 +151,49 @@ def test_compact_rca():
         "status": "window_shorter_than_grain",
         "grain": "month",
     }
+
+
+def test_compact_rca_keeps_the_reason_and_gap_of_a_node_that_could_not_be_analyzed():
+    """`fit_failed` / `attribution_failed` are not `window_shorter_than_grain`.
+
+    Both carry a `status_reason` naming the offending parent and dates, and an
+    `attribution_failed` node measured a real gap off the data — only the split
+    is missing. Compacting those away leaves an assistant a bare label it can
+    only narrate as "nothing happened here", which is the one reading the
+    status exists to prevent.
+    """
+    fixture = _rca_fixture()
+    fixture["nodes"]["aov"] = {
+        "status": "attribution_failed",
+        "grain": "day",
+        "status_reason": "parent 'order_count' is zero on 1 of 14 analysis-window day(s) (2024-04-01).",
+        "effective_windows": None,
+        "baseline": 184.7,
+        "actual": 182.2,
+        "gap": -2.5,
+        "relative_change": -0.0135,
+        "attribution_method": None,
+        "fit_quality": None,
+        "sign_warnings": None,
+        "ci_status": None,
+        "unexplained": None,
+        "components": None,
+        "interaction": None,
+        "contributions": [],
+    }
+
+    node = compact_rca(fixture)["nodes"]["aov"]
+
+    assert node["status"] == "attribution_failed"
+    assert "order_count" in node["status_reason"] and "2024-04-01" in node["status_reason"]
+    assert node["gap"] == -2.5  # the movement is measured; only the split is not
+    assert node["baseline"] == 184.7 and node["actual"] == 182.2
+    # still compact: none of the ok-node analysis channels are invented for it
+    assert "contributions" not in node and "unexplained" not in node
+
+    # the caveat that travels with the payload has to say what these mean
+    assert "not analyzed" in RCA_HOW_TO_READ
+    assert "ranked_causes` is incomplete" in RCA_HOW_TO_READ
 
 
 def test_compact_rca_surfaces_fit_window_and_seasonality_warnings():

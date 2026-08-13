@@ -17,7 +17,8 @@ breakdown/
                    # resample_up, GrainedData (per-grain frames), BOOT_BLOCK
   data_fetch.py    # BaseDataFetcher + Mock / Local / Cloud / Warehouse implementations
                    # (provider SDKs are optional extras — imported lazily, never at module scope)
-  dbt_bridge.py    # dbt's target/semantic_manifest.json → BindingSpec per node (MSI, no dbt Cloud)
+  dbt_manifest.py  # in-tree Pydantic models for dbt's semantic_manifest.json (no MSI dependency)
+  dbt_bridge.py    # dbt's target/semantic_manifest.json → BindingSpec per node (no dbt Cloud)
   dbt_sql.py       # BindingSpec + grain + window (+ dimension) → dialect SQL via sqlglot
   dbt_provider.py  # the `dbt` provider: profiles.yml → connection → generated SQL → spine
   engine/
@@ -25,11 +26,12 @@ breakdown/
     rca.py         # run_rca() + shapley_attribution() — all window-over-window attribution
     slices.py      # slice_attribution() — dimensional slicing of one metric's gap (pure, no I/O)
     simulate.py    # run_scenario() — do-operator what-if; fitted (posterior draws) or cold start (data=None)
+    progress.py    # report() — advisory progress callbacks; swallows callback exceptions
   api/
-    main.py        # FastAPI app — routes, lifespan, per-tree state wiring
+    main.py        # FastAPI app — routes, lifespan, the bearer-token gate, per-tree state wiring
     trees.py       # TreeState (one per tree) + the process-wide TraceStore, discovery
   mcp/
-    server.py      # MCP server — 5 tools over the same engine/state (mounted at /mcp)
+    server.py      # MCP server — 6 tools over the same engine/state (mounted at /mcp)
     shaping.py     # MCP response compaction, how_to_read caveats, UI deep links
   cli.py           # Console entry point (`breakdown serve` / `breakdown doctor` / `--version`)
   doctor.py        # Provider connectivity checks — reuses the real fetchers
@@ -60,6 +62,16 @@ Design rules:
 
 ---
 
+## `formula.py`
+
+AST validation (`validate_formula`), name extraction (`referenced_names`) and safe evaluation (`eval_formula`) — shared by the parser, the engine and `data_fetch`. The expression is arithmetic-only over parent names; calls and attribute access are rejected, and `eval` runs with `{"__builtins__": {}}` as its globals.
+
+A zero denominator yields numpy's own `inf`/`nan` rather than raising; callers decide what a non-finite value means for them (`shapley_attribution` refuses to attribute one, naming the offending series).
+
+⚠️ **The `np.errstate` block around the `eval` is load-bearing, not cosmetic.** numpy reports divide-by-zero and invalid-value conditions through Python's *warnings* machinery, which resolves `__import__` from the **calling frame's globals** — and those globals are deliberately `{"__builtins__": {}}`, which is exactly what makes the `eval` safe alongside the AST allow-list. So the very first zero denominator used to die with `KeyError: '__import__'` instead of producing `inf`. Silencing the conditions means that path is never entered. Do **not** "fix" a future recurrence by putting `__import__` (or any other builtin) back into the eval globals — that reopens the sandbox. Keep the allow-list and the empty builtins exactly as they are.
+
+---
+
 ## `data_fetch.py`
 
 ### Provider SDKs are optional extras
@@ -86,7 +98,19 @@ Returns a DataFrame with columns `["date", metric_name]`, sorted by date, no NaN
 **Every provider reaches that shape through the same two module-level helpers** — this is a contract, not a convention, and it is enforced in one place because the alternative was tried and failed (roadmap C1/C2, fixed):
 
 - `_to_naive_dates(df, metric_name)` parses `date` and **drops any timezone**, keeping the wall-clock label. It must run first: `floor_period` normalizes but *preserves* tzinfo, so a tz-aware midnight satisfies every period-start check and then matches nothing against the tz-naive spine. That path used to return a full spine of zeros, silently, and snapshot them. The zone is dropped rather than converted — a row labelled midnight `+09:00` means that calendar date, and converting through UTC moves it back a day.
-- `_align_to_spine(df, metric_name, grain, kind, start, end, value_col)` reindexes onto the spine of whole periods inside the window and fills by `kind`: partial edge periods dropped, **trailing** gaps trimmed (not-yet-loaded, not zero), **interior** gaps filled — flow → 0, stock → forward-fill (leading gap errors), rate → error, with a warning naming the periods it invented. Rows that *all* miss the spine raise (a query ignoring its bound window); *no rows at all* keeps the full fill for flows, since an all-quiet window is a legitimate flow series.
+- `_align_to_spine(df, metric_name, grain, kind, start, end, value_col)` reindexes onto the spine of whole periods inside the window and fills by `kind`. Partial edge periods are dropped, and the three edges are treated differently on purpose:
+
+  | Gap position | `flow` | `stock` | `rate` |
+  |---|---|---|---|
+  | **Leading** (before the source's first row) | fill `0` + **warning naming the invented periods** | raise (nothing to forward-fill from) | raise |
+  | **Interior** | fill `0` + warning | forward-fill + warning | raise |
+  | **Trailing** | trim | trim | trim |
+
+  Rows that *all* miss the spine raise (a query ignoring its bound window); *no rows at all* keeps the full fill for flows, since an all-quiet window is a legitimate flow series — and that case draws **no** leading warning, because the provider that knows the result was empty says so itself.
+
+  **The leading warning is the recent half of the same defect the interior one guards** (previously silent). A metric that started partway into the window — a product launched in March, a channel switched on in week 3 — trains on a run of fabricated zeros, so the fit sees a manufactured level shift *and* a manufactured trend on a node RCA will happily rank as a cause. The warning names the fabricated periods and the source's actual first row, and points at a later `--start-date`.
+
+  **Leading gaps are filled rather than trimmed, unlike trailing ones**, even though the arguments rhyme, because the two edges cost different things downstream. Trailing trim shortens a series by an ETL lag — days — whereas a flow that genuinely was all-quiet before it started is a legitimate series that trimming would silently discard. More decisively: per-grain frames are assembled by **inner** join (`build_grained`), so trimming one node's leading run would delete those periods for *every* metric at that grain and narrow the windows `_validate_coverage` accepts tree-wide — a whole tree losing January because one node launched in March is a larger and stranger failure than the one being fixed. Narrowing only the late node's own window is the honest version and needs a per-metric window the frames do not carry yet; until then the warning names exactly which periods are invented.
 
 Label policy stays per-provider on purpose: the warehouse fetcher **errors** on a misaligned label because the SQL author owns the aggregation, while the semantic-layer fetchers **floor with a warning** via `_floor_labels` because a dbt project may legitimately use non-Monday weeks.
 
@@ -246,6 +270,32 @@ exists to avoid:
   and `grains.floor_period` would relabel the bucket to the previous Monday,
   landing it on the spine and hiding the shift completely. So BigQuery gets
   `ISOWEEK` and Snowflake a `DAYOFWEEKISO` offset, both session-independent.
+- **BigQuery reverses `DATE_TRUNC`'s arguments, so *every* grain needs an
+  override — not just the ones whose date part differs.** Its signature is
+  `DATE_TRUNC(date_expression, date_part)`, with the part a bare keyword rather
+  than a quoted string: the mirror of everyone else's `DATE_TRUNC('PART', expr)`.
+  Because `_parse_dialect` reads in the **target** dialect, sqlglot never
+  rewrote the portable form, so day and month grain emitted
+  `DATE_TRUNC('DAY', col)` and BigQuery rejected the whole query with *"No
+  matching signature for function DATE_TRUNC"*. Week worked only because its
+  ISOWEEK override happened to be written the right way round. `_TRUNC_OVERRIDES`
+  now spells out `day`, `week` and `month` for BigQuery.
+
+  **The `CAST(… AS DATE)` in those overrides is load-bearing.** BigQuery's
+  `DATE_TRUNC` takes a DATE; a TIMESTAMP needs `TIMESTAMP_TRUNC` and a DATETIME
+  `DATETIME_TRUNC` — and a dbt `agg_time_dimension` is very often a TIMESTAMP, so
+  the week override was wrong for the common case too. Picking the right function
+  would need the column's SQL type, which nothing on this path has
+  (`BindingSpec.time_column` is a bare string, the manifest's time dimension
+  carries a granularity but no data type, and the value may be an arbitrary
+  `expr` rather than a column name). The cast is correct for DATE, TIMESTAMP and
+  DATETIME alike and needs nothing we don't have. It is free of both costs one
+  might fear: partition pruning is unaffected, because the window predicates
+  compare the **raw** column and not this expression; and UTC is the reference
+  zone either way, since BigQuery's TIMESTAMP→DATE cast and `TIMESTAMP_TRUNC`
+  both default to UTC, so no bucket differs from the type-aware form. Tests pin
+  the argument order, the cast, every builder that truncates, and that the cast
+  stays out of the window predicates.
 - **The window bound is half-open on `end + 1 day`.** breakdown windows are
   inclusive, but `<= end_date` against a *timestamp* column drops everything
   after midnight on the last day — roughly 1/31 of a monthly figure, silently.
@@ -422,9 +472,15 @@ Internals are three helpers, each documented in-code:
 
 Inference: `nuts` → `pm.sample(draws, tune, target_accept=0.9, chains=chains)`; `advi` → `pm.fit(n=20_000).sample(draws)`. Returns a `FitResult` (trace + normalization constants + fitted period-start `dates` + `grain` + `fit_end` + diagnostics).
 
-### `compute_shapley(formula, parent_names, baselines, actuals) -> Dict[str, float]`
+`FitResult` also carries **`summary_json`** — the memoized JSON-safe `az.summary` of its own trace, filled in on first request by the API's `_fit_summary`. The trace is immutable once fitted, so its summary is too. It is declared on the dataclass rather than attached ad hoc from outside for a specific reason: summarizing an 830-day trace costs ~1.1s, so adding `slots=True` here later would silently turn the memo off and put that second back on every `GET /metrics/{name}`, a defect no test would name.
 
-Pure Shapley enumeration (O(2ⁿ)): distributes `formula(actuals) − formula(baselines)` across parents; values sum to the gap exactly.
+### `compute_shapley(formula, parent_names, baselines, actuals, node=None) -> Dict[str, float]`
+
+Pure Shapley enumeration (O(2ⁿ)): distributes `formula(actuals) − formula(baselines)` across parents; values sum to the gap exactly. `node` names the metric being attributed and is used **only** in the refusal message below, so callers that have it should pass it — `shapley_attribution` and `run_rca` both do, at all six call sites.
+
+**`_MAX_SHAPLEY_PARENTS = 10`, and more than that raises.** The enumeration is O(2ⁿ) and RCA runs it six times per formula node (three exact games, three over the bootstrap replicates), all while holding the caller's per-tree lock — so the cost doubles per parent *and* serializes every other request behind it. End to end through `run_rca` on a developer laptop: 10 parents ~3.5s, 12 ~20s, 14 ~80s. Refusing is deliberate rather than degrading to a sampled or truncated Shapley value, which is a **different number** than the one the author asked for. The message names the node and prescribes the fix — split it into intermediate sums, which preserves the identity and keeps every attribution exact. The constant matches `_MAX_SOURCES` in `engine/simulate.py`, which caps the identical enumeration over scenario sources.
+
+The coalition loop wraps its subtraction in `np.errstate(invalid/divide/over="ignore")`. `eval_formula` already silences numpy's warnings internally (they are *fatal* under its restricted globals — see `formula.py` below), but a formula that produced an `inf` there makes this subtraction `inf - inf` and warns here instead. A non-finite result is caught and reported by name in `shapley_attribution`, so the warning would only land in an operator's log beside a 422 that already explains itself.
 
 ### `summarize_trace(trace) -> pd.DataFrame`
 
@@ -443,23 +499,58 @@ Window args on both entry points are **keyword-only**, and the reference pair is
 Two guards then run on the resolved dates, called by `shapley_attribution` and `run_rca` alike, because a window that is merely *wrong* rather than *empty* produces a plausible number:
 
 - `_validate_windows(...)` — grain- and data-independent ordering: `reference_start <= reference_end < analysis_start <= analysis_end`. Overlap is an error, not a warning (a shared period counts as both the normal regime and the departure from it); an inverted window is rejected here rather than silently snapping to an empty one.
-- `_validate_coverage(frame, node, grain, snapped_ref, snapped_an, lags)` — the snapped windows must lie *fully* inside the node's own grain frame. A window entirely outside the data already raised in `_window_values`; this catches the partial overlap, which silently averages whichever periods happen to exist. Lagged parents are checked against their shifted windows and reported with the parent, its lag, and the shifted dates — the caller never typed that window, so naming the one they did type would send them looking in the wrong place. Called per node in `run_rca` (after the `window_shorter_than_grain` check, so grain mismatch still degrades gracefully rather than raising).
+- `_validate_coverage(frame, node, grain, snapped_ref, snapped_an, lags)` — the snapped windows must lie *fully* inside the node's own grain frame. A window entirely outside the data already raised in `_window_values`; this catches the partial overlap, which silently averages whichever periods happen to exist. Lagged parents are checked against their shifted windows and reported with the parent, its lag, and the shifted dates — the caller never typed that window, so naming the one they did type would send them looking in the wrong place. Called per node in `run_rca` in the **pre-fit scope pass** (after the `window_shorter_than_grain` check, so grain mismatch still degrades gracefully rather than raising) — see step 0 of `run_rca` below for why it moved ahead of the fits.
 
 ### `shapley_attribution(dag, data, target, *, analysis_start, analysis_end, reference_start=None, reference_end=None)`
 
 Symmetric per-period Shapley decomposition for a formula metric at the target's grain: each parent's attribution is `means + covariance_analysis − covariance_reference` (three exact games; both windows evaluated period-by-period), so `attribution` sums to `gap = actual − baseline` exactly and the per-parent parts are returned under `decomposition`. Windows snap to whole periods (`grain` + `effective_windows` in the response); a window with no whole period raises `ValueError`. This is the `GET /shapley` contract. Raises `ValueError` if the metric has no formula.
 
+**Non-finite results are refused, not emitted.** If `baseline`, `actual` or any attribution value is not finite (in practice a zero denominator somewhere in a window), the function raises **`NonFiniteAttribution`** — a `ValueError` subclass, so the API still turns it into a 422 carrying the message. Emitting the NaN instead reaches Starlette's `allow_nan=False` encoder as an unhandled **500 with no diagnostic at all**, and over MCP turns every number in the node into `null`. Every field downstream (gap, shares, CIs, unexplained, every ranked-cause score) would inherit it anyway.
+
+It is its own subclass rather than a bare `ValueError` so `run_rca` can degrade *this* condition to a per-node status without also swallowing the unrelated `ValueError`s the same call raises (an over-wide parent set, a window that misses the data).
+
+`_nonfinite_diagnosis` builds the message in terms the analyst can act on: which parent series holds zeros or non-finite values, in which window, and on which dates (truncated at `_MAX_SHOWN_DATES = 5`, as `_align_to_spine` does). Deciding which parent *is* the denominator would mean interpreting the formula, so every zero-or-non-finite parent series is named and the reader picks.
+
 ### `run_rca(dag, data, traces, target, *, analysis_start, analysis_end, reference_start=None, reference_end=None, advi_draws=500)`
 
 Root cause analysis over `nx.ancestors(dag, target) | {target}`. `traces` is the caller's cache (`app.state.traces` in the API); missing probabilistic fits are added to it in place (ADVI, `fit_end=analysis_start`, keyed `(node, analysis_start)`).
 
+0. **Resolve and validate every node's scope first, before any fitting.** One pass over the sorted scope builds `scoped[node] = (grain, frame, snapped_ref, snapped_an)` and calls `_validate_coverage` there. Coverage used to be checked per node *inside* the attribution loop, which runs after the fits — so a window outside the loaded data paid for an ADVI fit of every ancestor (minutes, holding the caller's lock, leaving a cached trace each) and only then 422'd. A window holding no whole period at a node's grain is **not** a coverage failure: that node gets `(grain, frame, None, None)` and is reported with a status below, exactly as before.
 1. **Fit what's missing.** Probabilistic (non-formula, non-root) nodes in scope without a trace are fitted with ADVI — skipped when their windows hold no whole period at their grain.
-2. **Per-node attribution at the node's own grain.** Each node snaps the requested windows (`snap_window`); no whole period → `status: "window_shorter_than_grain"` with null numbers and empty contributions (the RCA proceeds). Otherwise the node reports `status: "ok"`, `grain`, `effective_windows`, `baseline`, `actual`, `gap` (mean-per-period at the node's grain), `relative_change` (None if `|baseline| < 1e-12`), `ci_status`, plus:
+2. **Per-node attribution at the node's own grain.** Each node reads its snapped windows from `scoped`. Every record is built by **`_node_out(**fields)`**, which starts from a template with **every key present and null** and lets the caller override what it knows — so a node that was skipped or failed answers the same shape as one that was attributed, and consumers (the UI, the MCP compaction) branch on `status`, never on which keys happen to exist. Nodes report `status`, `status_reason`, `grain`, `effective_windows`, `baseline`, `actual`, `gap` (mean-per-period at the node's grain), `relative_change` (None if `|baseline| < 1e-12`), `ci_status`, plus:
    - **Formula node** → `attribution_method="shapley"`: the three-game decomposition, bootstrapped with the grain's block length (`BOOT_BLOCK`: day 7, week 4, month 2) for `ci_95`/`prob_same_direction`; single-period windows withhold CIs (`ci_status: "degenerate_single_period"`). Each contribution carries `decomposition: {means: {estimate, ci_95}, comovement: {estimate, ci_95}}` (parts sum to `estimate` exactly per replicate) and the node carries `interaction` (summed co-movement shift + CI) — the data behind the UI's Headline/Detailed views. `unexplained = gap − shapley gap` (measurement residual only).
    - **Probabilistic node** → `attribution_method="posterior"`: `arr = trace.posterior["beta_raw"].reshape(-1, n_parents)`; for parent `i`, `samples = arr[:, i] * bootstrapped parent delta` → `estimate` (mean), `ci_95` (2.5/97.5 pct), `prob_same_direction`. Window period-starts map to the fitted index via `steps_between(dates, fit.dates[0], grain)`; lagged parents measure their delta over windows shifted back by `shift_periods(·, −lag, grain)` (whole periods, correct across month/year bounds), and each lagged contribution (both attribution methods; `shapley_attribution` carries a top-level map) reports `lag` + `parent_windows` — the shifted `{reference, analysis}` windows, the dates to narrate the parent with and to reuse for follow-up analysis. Both keys are absent entirely on unlagged contributions, so unlagged responses are unchanged. Trend/seasonal deltas are reported in `components`. `unexplained = gap − Σ estimates − trend − seasonal`. Single-period windows flag `ci_status: "posterior_only_single_period"`. Posterior nodes also report `fit_window: {start, end, n_periods}` (what the model actually trained on — all loaded whole periods before `analysis_start`, never the reference window) and `seasonality_warnings` (the fit's identifiability diagnostics, previously log-only); both are `null` on formula/root nodes.
    - **Root node** → `attribution_method=None`, empty contributions, `unexplained=None`.
    - Every contribution carries `share_of_gap = estimate / gap` (None if `|gap| < 1e-12`).
-3. **`ranked_causes`** (documented heuristic): `score[target]=1.0`, propagated in reverse topological order; `score[p] += score[c] * min(|share_of_gap|, 1.0)`. All scoped nodes except the target, sorted desc, each `{"metric", "score", "via"}`. Scores (not raw gaps) are the cross-grain-comparable quantity.
+3. **`ranked_causes`** (documented heuristic): `score[target]=1.0`, propagated in reverse topological order; `score[p] += score[c] * min(|share_of_gap|, 1.0)`. All scoped nodes except the target, sorted desc, each `{"metric", "score", "via"}`. Scores (not raw gaps) are the cross-grain-comparable quantity. ⚠️ The weight is `0.0 if share is None or not np.isfinite(share)`: a **non-finite share slips straight through `min(abs(share), 1.0)`** because NaN compares false against everything, and one NaN term then poisons the score of every ancestor above it — the whole ranking, from one node. An undefined share carries no evidence about influence, so it weighs nothing, exactly like the `None` case.
+
+### Per-node `status` — one bad node does not end the analysis
+
+Every node in scope carries a `status`; anything other than `"ok"` reports the node **without attribution** and lets the rest of the tree through, with the engine's own diagnostic in **`status_reason`** (`null` when `ok`).
+
+| `status` | Cause | What survives on the node |
+|---|---|---|
+| `ok` | — | everything |
+| `window_shorter_than_grain` | the windows hold no whole period at the node's grain | `grain` only |
+| `fit_failed` | the node's own `fit_metric` raised — overwhelmingly a series with **no variance across the fit window** (a parent held flat, e.g. a seasonal business whose default state is zero), which cannot be normalized | `grain`, `effective_windows`, `baseline`, `actual`, `gap`, `relative_change` — these are read off the data, not the model, so only the attribution is missing |
+| `attribution_failed` | `shapley_attribution` raised `NonFiniteAttribution` for this node (a zero denominator over these windows) | as above, plus `attribution_method` |
+
+Both new statuses replace a whole-analysis abort: **one unfittable node used to end the RCA and return nothing**. The `try` around `fit_metric` wraps that single call and nothing else, so unrelated failures elsewhere in the loop still surface; failures are collected into `fit_failures: Dict[str, str]` and consumed in the attribution loop.
+
+**The RCA target is the exception for `attribution_failed`.** The whole response is about that node, so an empty answer for it is no answer at all — `NonFiniteAttribution` on the target is re-raised and becomes a 422 carrying the diagnostic.
+
+### `ci_status`
+
+Independent of `status`, and reported per node:
+
+| `ci_status` | Meaning |
+|---|---|
+| `ok` | intervals computed normally |
+| `degenerate_single_period` | formula node, single-period window — the block bootstrap would return identical replicates, so intervals are withheld rather than reported at a falsely-zero width |
+| `posterior_only_single_period` | the same for a posterior node: coefficient uncertainty remains, the window-sampling component is absent |
+| `nonfinite_bootstrap_replicates` | at least one interval on this node was computed from a **subset** of the replicates, or withheld because fewer than `_MIN_CI_REPLICATES = 100` survived |
+
+`nonfinite_bootstrap_replicates` exists because individual replicates can come out non-finite where the *exact* decomposition did not — a resampled denominator mean can land on ~0 even when no single period is zero. NaN propagates through `np.percentile` into Starlette's `allow_nan=False` encoder as an unhandled 500 (and into `null`s over MCP), so the `_finite`/`_ci` helpers drop those replicates and report on what survives, withholding the interval entirely if too few do — the same posture as `slices._excess_fields` and as `single_period`. **The point estimates are unaffected**: they are the exact Shapley values, never bootstrap means. `prob_same_direction` is computed over the surviving replicates too, or `None` when the interval was withheld.
 
 `window_mean(data, col, start, end)` is the shared helper (inclusive bounds; raises on empty window).
 
@@ -515,6 +606,18 @@ Response contract: `{"mode": "fitted"|"cold_start", "baseline_window" (null in c
 | `BREAKDOWN_EAGER` | `--eager` | unset (a directory of trees loads lazily) |
 | `BREAKDOWN_START_DATE` | `--start-date` | `2024-01-01` |
 | `BREAKDOWN_END_DATE` | `--end-date` | `2024-04-09` |
+| `BREAKDOWN_HOST` / `BREAKDOWN_PORT` | `--host` / `--port` | `127.0.0.1` / `9090` (also read by MCP deep links + transport security) |
+| `BREAKDOWN_SNAPSHOT_DIR` | `--snapshot-dir` / `--no-snapshots` | tree-adjacent `.breakdown/snapshots`; `"off"` disables |
+| `BREAKDOWN_REFRESH` | `--refresh` | unset (skip snapshot reads for one pass, still write) |
+
+Not settable from a flag — deployment concerns with no laptop equivalent:
+
+| Env var | Default | Read by |
+|---------|---------|---------|
+| `BREAKDOWN_API_TOKEN` | unset | the bearer gate (below) and `/dag`'s `sql`/`bind` redaction |
+| `BREAKDOWN_REQUIRE_AUTH` | unset | the bearer gate — extends it from `/mcp` to every non-open route |
+| `BREAKDOWN_MAX_TRACE_BYTES` | `512 * 1024 * 1024` | `trees._byte_budget()`; `0` disables the byte bound, leaving only the entry count |
+| `BREAKDOWN_PUBLIC_URL` | `http://127.0.0.1:$BREAKDOWN_PORT` | `mcp/shaping.py`'s deep links |
 
 Dates are validated (ISO format, start ≤ end) both at the CLI and in `lifespan`. `load_tree(tree)` builds the fetcher from the tree's `provider` config and fetches every metric for the window **at its declared grain/kind**, assembling per-grain frames via `build_grained` (inner join on `date` within each grain only — a monthly metric no longer drops daily rows tree-wide). For `local`/`cloud` the queried metric name is the last segment of `source`, renamed to the tree `name`; mock generates by tree name directly.
 
@@ -527,6 +630,30 @@ Dates are validated (ISO format, start ≤ end) both at the CLI and in `lifespan
 **Degraded startup:** the parse and the load are each wrapped in a try/except, and the failure is recorded **per tree** on `TreeState.load_error`. The app still serves — that tree's data routes reject via `_require_ready` (503 with the error + a `breakdown doctor` hint), MCP tools reject the same way in `_state()`, the UI shows a banner, and *the other trees are unaffected*. `/ui`, `/`, `/trees` and `/health` keep working; a container never crash-loops on a bad token. A failure with no tree to hang it on — `--tree` naming nothing loadable — is the one global case (`app.state.discovery_error`), and then `_tree()` 503s rather than 404ing, since "there is no tree" is not "you asked for the wrong one". Per-metric diagnosis is deliberately not here — that's `doctor.py`'s job.
 
 Static files and the default tree resolve via `importlib.resources` (`files("breakdown")`), not repo-relative paths, so an installed wheel behaves like a checkout.
+
+### The bearer-token gate (`bearer_token` middleware)
+
+Two levels, both opt-in through the environment, both enforced in **one HTTP middleware** rather than per route.
+
+- **`BREAKDOWN_API_TOKEN` alone gates `/mcp`.** The MCP endpoint runs whole analyses, so exposing it off loopback without a gate hands anyone who finds the URL the tree and its data. Unset (the laptop default) keeps the loopback workflow friction-free; set closes that one surface and nothing else, which is what existing deployments already depend on.
+- **`BREAKDOWN_REQUIRE_AUTH` extends the same check to every route** but `_OPEN_PATHS`/`_OPEN_PREFIXES`.
+
+**Gating in the middleware rather than per route is what keeps the two mounts from drifting.** The router is included twice (bare and under `/trees/{tree_id}`), but the middleware sees one *resolved* path — so an alias cannot be gated differently from the route it aliases. A test enumerates every data route in both mounts against exactly that risk.
+
+Four details are load-bearing:
+
+- **The open list is an *allow*-list, so the gate fails closed.** `_OPEN_PATHS = {"/", "/health"}` and `_OPEN_PREFIXES = ("/ui",)`; a route added tomorrow is gated by default rather than open until someone remembers it. That is why `/openapi.json` and `/docs` are gated. `/health` is open because `compose.yaml`'s healthcheck calls it with no credentials and orchestrators can't present one — gating it makes a correctly configured deployment look dead. `/ui` is a JS bundle, not data; its **fetches** are gated, which is the intended consequence: this mode assumes a reverse proxy injecting the header, or an operator who accepts that the browser needs one. A login, a cookie or a token-in-the-URL would be hosted mode (roadmap 3.5) and is deliberately not built here.
+- **`_under(path, prefix)` matches on path-segment boundaries.** `path.startswith("/mcp")` also matches `/mcphony`, which is the wrong shape of test for a security decision even when no such route exists today: the day someone adds `/metadata`, a `startswith("/meta")` open-list would hand it out. Only `/mcp` itself and genuine children match.
+- **`_require_auth()` treats anything but an explicit off as on.** `_AUTH_OFF_VALUES = {"", "0", "false", "no", "off"}`, compared case-insensitively after stripping — so `BREAKDOWN_REQUIRE_AUTH=ture` closes the door rather than opening it.
+- **`_presents_token` compares *bytes*, not `str`.** `hmac.compare_digest` raises `TypeError` on a `str` containing non-ASCII, so a header of `Bearer sécret` used to be a **500 from inside the middleware** rather than the 401 every other wrong token gets — a trivially reachable error-page-vs-401 oracle. Starlette decodes header values latin-1 (HTTP's byte-to-str mapping), so latin-1 is the exact inverse and round-trips the bytes the client actually sent; the token comes from the environment, which Python decoded utf-8. A value that cannot round-trip is not a token we issued, so it compares as empty rather than raising — still one constant-time comparison, on the same path.
+
+**`_auth_config_error()` names the one configuration that must not be served:** `BREAKDOWN_REQUIRE_AUTH` set with no `BREAKDOWN_API_TOKEN` would check every request against an empty secret and pass everything — it fails *open*. So non-open routes return **503**, `lifespan` records it on `app.state.auth_error` and logs it loudly, and `startup_error` reads it so `/health` reports `degraded` with the reason. Same degraded-startup discipline as a bad provider credential: loud, diagnosable, not a crash-loop with the reason only in a log that scrolled past.
+
+`app.state.startup_error` is consequently a **three-way** composite, in this order: `auth_error` (the operator must fix this before anything else the process says about itself matters) → `discovery_error` (`--tree` named nothing loadable, so there is no tree to hang it on) → the default tree's own `load_error`.
+
+**`/dag` redaction is separate from the flag.** Whenever `BREAKDOWN_API_TOKEN` is set and the caller doesn't present it, `_SENSITIVE_DEFINITION_FIELDS = ("sql", "bind")` are replaced with `None` in each node's dump. `/dag` is open by design — the UI is unauthenticated and needs the shape to draw anything — but on a deployment that bothered to configure a token, "the graph is public" should not also mean "our fully-qualified table names and WHERE-clause logic are public". Redacted to `null` rather than dropped, so a client reading `def.sql` sees an absent query rather than a `KeyError`. Unset (the laptop default) behaves exactly as before, and the UI's *show query* panel reads `GET /metrics/{name}/query`, not this route, so it loses nothing.
+
+This is a down payment on hosted mode (roadmap 3.5), not a substitute: one shared secret, no per-user identity, no revocation short of a redeploy.
 
 ### State: one `TreeState` per tree (roadmap 2.16)
 
@@ -542,25 +669,31 @@ A process serves **several** trees, and they are peers: a wide tree with revenue
 | `load_error` | `str \| None` | This tree's parse or load failure; gates its data routes only |
 | `loaded` / `loading` | `bool` | Drive `state` (`loaded` \| `loading` \| `not_loaded` \| `error`) on the index |
 | `traces` | `TraceView` | This tree's view of the shared trace cache, keyed `(name, fit_end)` — the engine's own key |
-| `slice_cache` | `Dict[Tuple[str, str, str, str, str], pd.DataFrame]` | On-demand sliced frames, keyed `(metric, dimension_source, grain, start, end)` — deliberately separate from `GrainedData` |
-| `flow_cache` | `Dict[...]` | Entity-flow transition matrices, keyed by a *pair* of windows |
+| `slice_cache` | `BoundedCache` (64) | On-demand sliced frames, keyed `(metric, dimension_source, grain, start, end)` — deliberately separate from `GrainedData` |
+| `flow_cache` | `BoundedCache` (64) | Entity-flow transition matrices, keyed by a *pair* of windows |
 | `lock` | `asyncio.Lock` | Serializes sampling (analyze + RCA fits) **on this tree** |
 | `earliest` / `earliest_task` | `Dict[str, str \| None]` / `Task` | Background history discovery |
 
-App-wide state is what genuinely isn't a tree's: `trees`, `default_tree`, `trace_store`, `discovery_error`, and `progress`.
+App-wide state is what genuinely isn't a tree's: `trees`, `default_tree`, `trace_store`, `discovery_error`, `auth_error`, and `progress`.
 
 Four things about this shape are load-bearing:
 
 - **The lock is per-tree.** One global lock is right when there is one tree and one trace cache; with eight it would make an RCA on the revenue tree wait behind a simulation on an unrelated marketing tree, for no reason — the caches they mutate are disjoint. (The `waiting` progress stage stays meaningful: it now means "queued behind another run *on this tree*".)
-- **The trace cap is global.** `MAX_CACHED_TRACES = 256` *per tree* would be 256 × N `InferenceData` objects, each holding every posterior draw. One `TraceStore` keyed `(tree_id, metric, fit_end)` is shared, and each tree gets a `TraceView` — a `MutableMapping` speaking the engine's `(metric, fit_end)` key — so `fit_metric` stays a pure function and nothing in `engine/` learns that more than one tree exists. `TraceView.__iter__` snapshots with `list(...)` before filtering, for the same reason `/meta` does (C8): a lazy generator over a dict a worker thread is inserting into raises "dictionary changed size during iteration".
+- **The trace cap is global, and it is a byte budget.** `MAX_CACHED_TRACES = 256` *per tree* would be 256 × N `InferenceData` objects, each holding every posterior draw. One `TraceStore` keyed `(tree_id, metric, fit_end)` is shared, and each tree gets a `TraceView` — a `MutableMapping` speaking the engine's `(metric, fit_end)` key — so `fit_metric` stays a pure function and nothing in `engine/` learns that more than one tree exists. `TraceView.__iter__` snapshots with `list(...)` before filtering, for the same reason `/meta` does (C8): a lazy generator over a dict a worker thread is inserting into raises "dictionary changed size during iteration".
+
+  ⚠️ **An entry count cannot bound memory, because an entry's size scales with the loaded window.** One ADVI fit (1000 draws) of the demo tree's `order_count` over an 830-day window measures **13.4 MB** of posterior, so 256 of them is ~3.4 GB against `demo/fly.toml`'s `memory = "2gb"` — and tuning the count down just moves the cliff to a wider window. So the real bound is `MAX_CACHED_TRACE_BYTES` (512 MiB, overridable with `BREAKDOWN_MAX_TRACE_BYTES`; `0` disables the byte bound), with the count kept as a secondary backstop against a pathological number of tiny fits. Eviction is insertion-ordered — oldest first — until **both** bounds fit.
+
+  Four details: `_trace_nbytes` sums `nbytes` across the `InferenceData`'s groups, which reads the arrays' own shape/dtype metadata and **touches no data** (the honest alternative, `pickle.dumps`, materializes a second full copy of the very object we are trying not to hold two of); an unknown shape measures 0 and is bounded by the count alone. `__setitem__` calls `_forget` before inserting, since a refit must re-insert at the end *and* drop the old entry's bytes rather than overwriting in place. `_evict` stops at `len > 1`: **the newest entry is never evicted**, because the caller is holding it and about to serve from it, and a single fit larger than the whole budget should degrade to "cache of one", not "cache of none". A non-integer `BREAKDOWN_MAX_TRACE_BYTES` warns and falls back to the default; a negative one clamps to 0.
+
+- **The two per-tree frame caches are bounded too**, by `BoundedCache` — a `dict` subclass whose only added behaviour is evicting the oldest entry on write past `max_entries` (`MAX_CACHED_SLICES` / `MAX_CACHED_FLOWS`, 64 each). Both are keyed by *caller-chosen windows*, so on a public deployment where every visitor picks their own they grew without limit and nothing ever evicted from them. Counts rather than bytes is right here: a cached slice frame is one metric by one dimension over one window — 9,648 rows measured 435 KB, two orders of magnitude under a trace — so 64 of each per tree is a few tens of MB at worst.
 - **`progress` is not tree state.** Run ids are already unique, and a poller shouldn't need to know which tree it is watching — which is why `GET /progress/{run_id}` is the one data route with no tree-scoped form.
-- **`app.state.<attr>` still reads and writes the *default* tree's.** `BreakdownState` (a `starlette` `State` subclass) aliases every field above onto `app.state`, which is what keeps the MCP server, the README's examples and the whole test suite addressing the same attributes they always have. `app.state.startup_error` is the one composite: `discovery_error or default.load_error`.
+- **`app.state.<attr>` still reads and writes the *default* tree's.** `BreakdownState` (a `starlette` `State` subclass) aliases every field above onto `app.state`, which is what keeps the MCP server, the README's examples and the whole test suite addressing the same attributes they always have. `app.state.startup_error` is the one composite: `auth_error or discovery_error or default.load_error`.
 
 **Lazy loading (§5.1).** Boot parses **every** tree's YAML (cheap, no I/O beyond the file) and fetches **none**, so `GET /trees` is a complete, instant index without touching a warehouse. A tree's data loads on the first request that needs it, in `_ensure_loaded` — under that tree's lock, off the event loop, with the double check inside the lock so two viewers opening the same cold tree don't both fetch. A tree that failed to load keeps its `load_error` rather than being retried on every request, which would hammer a down warehouse once per click. The exception is a **single-file** `--tree`, which loads eagerly: lazy buys nothing with one tree, and the port being up should mean the data is too (`_eager_trees`; `--eager` asks for the same from a directory).
 
 ### Routes
 
-**`GET /health`** — always 200: `{status: "ok", provider, metrics}` or `{status: "degraded", error}`. Liveness for orchestrators (the body, not the code, carries degraded-ness) and the UI's first request. Reports on the **default** tree, like every unprefixed route; the per-tree view is `/trees`.
+**`GET /health`** — always 200: `{status: "ok", provider, metrics}` or `{status: "degraded", error}` (the error being `startup_error`, so an auth misconfiguration surfaces here too). Liveness for orchestrators (the body, not the code, carries degraded-ness) and the UI's first request. Reports on the **default** tree, like every unprefixed route; the per-tree view is `/trees`. One of the three paths that stay open under `BREAKDOWN_REQUIRE_AUTH` — orchestrators cannot present a credential.
 
 **`GET /trees`** — the index's data source: `{default, trees: [{id, title, description, owner, period, goal, provider, metric_count, state, load_error, progress}]}` (`period` and `goal` are null on the trees that declare none). Answers from parsed YAML alone and **never triggers a load** — the lazy loading above is worthless if the index pays for it. `progress` is `{current, target, as_of}` for a loaded tree that declares a goal and `null` otherwise — including for the many trees that declare none, which is normal rather than a gap. The pairing with `state` is what keeps it honest: `progress: null` + `not_loaded` means *we haven't looked* and must not render as a zero. `current` is read at the tree's own data edge (the anchor the node cards use, only periods fully completed by it), so the index agrees with what the tree itself shows.
 
@@ -570,11 +703,15 @@ Four things about this shape are load-bearing:
 
 **`GET /meta`** — `mode` (`"fitted"` | `"cold_start"` — which surface the UI should boot), metrics, data window (null in cold start), provider, per-metric `grains`/`kinds`/`data_through` maps (`data_through` = each metric's honest data edge, which may lag the requested window), `earliest_available` (per-metric earliest provider date from the background discovery task — `{}` until it fills, null per metric when the provider can't say; drives the UI's "history exists before --start-date" nudge), fitted list (UI bootstrap).
 
-**`GET /dag`** — nodes (`[name, definition.model_dump()]`) and edges.
+**`GET /dag`** — nodes (`[name, definition.model_dump()]`) and edges. When `BREAKDOWN_API_TOKEN` is set and the caller presents no valid token, each definition's `sql` and `bind` are replaced with `None` — see the bearer-token gate above.
 
 **`GET /series`** — every metric's series at its native grain: `{metrics: {name: {grain, dates, values}}}` (mixed grains have no shared date axis, so dates are per-metric); hydrates the UI's node cards in a single request (NaN → null).
 
 **`GET /metrics/{name}`** — definition, time series, and posterior summary via `summarize_trace` (non-finite values serialized as `null`).
+
+The summary goes through **`_fit_summary(fit)`**, which memoizes it on the `FitResult`'s own `summary_json` field and runs under `asyncio.to_thread`. `az.summary` is the one heavy engine call this route makes and it scales with `draws` — 1.1s on an 830-day ADVI trace at 1000 draws, and the UI's box goes to 5000 — yet nothing memoized it, so it was paid on **every** GET, and `clearRCA` in `app.js` re-fetches every fitted metric after wiping its own cache, issuing N of these back to back. The trace is immutable once fitted, so the answer is too; caching it on the `FitResult` collects it with the fit it describes rather than leaving it to outlive it in a side table. Even memoized it stays off the event loop — it must not be the thing that decides whether `/health` answers.
+
+**`GET /metrics/{name}/query`** — the roadmap-2.11 provenance surface, over `BaseDataFetcher.query_provenance` (see `dbt_provider.py` above). Optional `dimension` selects the sliced query. `sql: null` is a legitimate answer carrying the provider's own `note` (mock synthesizes; the semantic-layer providers never see SQL), and `executed` distinguishes the statement that ran from the one that *would* run for the loaded window — a snapshot hit serves the number without executing anything. 404 for an unknown metric or an undeclared dimension; `_require_ready` 503s a tree that didn't load, since provenance still needs a parsed tree.
 
 **`POST /analyze/{name}`** — `inference_method` (`nuts`|`advi`), `draws`, `tune` (50–5000). Runs `fit_metric` via `asyncio.to_thread` under the lock; stores the trace in `app.state.traces`.
 
@@ -584,11 +721,13 @@ Four things about this shape are load-bearing:
 
 **`POST /rca/{name}/slices`** — `dimension` + analysis params required, reference params optional (resolved in `_run_slice` via `resolve_reference_window`, since `slice_attribution` keeps concrete dates — the engine stays pure; result carries `reference_defaulted`). 404 unknown metric; 422 for an undeclared dimension, a provider that raises `SliceNotSupported`, or engine `ValueError`s. `_run_slice` (sync, via `asyncio.to_thread` under the lock) computes the fetch span (`min(starts)..max(ends)` — lag-shifted windows are the *caller's* to pass when slicing a lagged parent), reads through `slice_cache` (querying by the same `source`-last-segment rule as startup for SL providers), fetches the `weight` metric's slices too for rates (must share the rate's grain), and calls the pure `slice_attribution`.
 
+⚠️ **`_require_window_loaded(data, span_start, span_end)` runs before any provider call**, raising `ValueError` → 422. Nothing checked these dates beyond "they parse", so a caller could ask for `1900-01-01…2100-12-31` and get a 73,000-day warehouse scan, **held under the tree's lock**, whose frame then sat in the slice cache forever — even though the request went on to 422 for having no data in it. It is checked inside `_run_slice` rather than in the endpoint because the reference window may be *defaulted* there: what matters is the span about to be fetched, not the span that was passed. `_loaded_window(data)` supplies the bound as `(date_start, max data_through)` — `date_start`/`date_end` are period *starts*, so a month-grain tree's `date_end` is the 1st of its last month, and using `data_through` (the same anchor node cards and goal progress use) keeps a legitimate request for the end of the last month from being mistaken for one past the end of the data.
+
 **`POST /simulate`** — `ScenarioRequest` body. Runs `run_scenario` via `asyncio.to_thread` under the lock; `app.state.data` is passed straight through, so a cold-start tree (data `None`) selects the engine's cold-start branch with no route logic. `ValueError` → 422. Optional `run_id` opts into progress reporting (below).
 
 **`GET /progress/{run_id}`** — the live stage of an in-flight RCA or simulation. Exists because a minute-long fit behind a spinner is indistinguishable from a hung one, and it needs no job queue: the analysis already runs in `asyncio.to_thread`, so the event loop is free to answer. Three deliberate choices:
 
-- **No lock.** The analysis holds `app.state.lock` for its whole duration, so taking it here would deadlock the report against the thing being reported on.
+- **No lock.** The analysis holds `app.state.lock` for its whole duration, so taking it here would deadlock the report against the thing being reported on. Cheap and unreadiness-checked, but **not ungated**: it is a data route like any other to the bearer middleware, so under `BREAKDOWN_REQUIRE_AUTH` a poller carries the same header the request it is polling for did.
 - **Unknown id → `{"stage": null}` with 200**, not 404. To a poller a finished run and a never-started one are the same answer, and neither is an error worth client-side handling.
 - **`app.state.progress` is bounded** (`MAX_PROGRESS_ENTRIES`, insertion-ordered eviction) for the same reason as `traces`: a client that navigates away mid-run never sends the request that would clean its entry up, and on the public demo that is every visitor.
 
@@ -602,7 +741,9 @@ Four things about this shape are load-bearing:
 
 `mcp/server.py` defines an `MCPServer` ("breakdown") with six async tools — `list_trees` (the `/trees` index, so an assistant asked "why did paid signups stall" can *find* the tree that models paid acquisition before analysing it; a sibling tool rather than a second return shape on `get_tree`), `get_tree` (compact `/meta` + `/dag`; carries `mode`, each metric's declared `dimensions`, and, cold start, asserted baselines instead of a data window), `explain_metric` (definition + neighbors + series summary + fit status; series summary is null on a cold-start tree, with `baseline`/`plausible` declarations in the definition), `run_rca`, `slice_metric` (the traverse-then-slice follow-up: localizes a metric's gap within one declared dimension via the same `_run_slice` path as the endpoint, lag-shifted windows per its docstring), and `run_whatif` (`/simulate`'s engine with `Intervention`/`Assumption` as typed params; `baseline_start`/`baseline_end` are Optional — required on a fitted tree, omitted on a cold-start one). Tools own no state: they read the FastAPI `app.state` (lazy import to avoid the cycle — `api/main.py` imports `server.mcp` to mount it) and run engine calls exactly like the endpoints do: `async with state.lock: await asyncio.to_thread(...)`. Every tool takes an optional `tree`; `await _state(tree)` resolves it to a `TreeState` (default tree when omitted) and loads it on the way, since the tools are the one caller with no page to show a `loading` state to. `report_url` carries `#tree=`, so a link an assistant hands over keeps naming that tree even if the server's default changes. Engine `ValueError`s propagate as MCP tool errors so the calling model can self-correct windows. `run_rca` guards cold start via `_require_data` — a tool error naming `run_whatif` as the tool that does work.
 
-`mcp/shaping.py` shapes engine results for LLM consumption: `round_floats` (4 significant figures, non-finite → null), `compact_rca` (drops per-contribution `decomposition` and window detail, collapses `components` to point estimates and `fit_window` to `fit_periods`, passes `seasonality_warnings` and top-level `reference_defaulted` through, shrinks skipped nodes, omits null node fields — but keeps a null `ci_95` inside contributions: withheld-interval semantics — and passes `lag`/`parent_windows` through on lagged contributions), `compact_slice` (window detail → period counts, per-slice nulls and empty caveats trimmed, reconciliation collapsed to status + residual share) with `SLICE_HOW_TO_READ` (excess-vs-contribution, zero-sum excess, `noise_level`, `__other__`, mix-is-composition, reconciliation, and the lag-shifted-window rule), `compact_scenario` (baseline nodes shrink to `{status, baseline}`, extrapolation stats collapse to the flag; `mode` and any non-null `baseline_ci_95` belief intervals pass through), `RCA_HOW_TO_READ`/`whatif_how_to_read(mode)` (docs/model.md caveats attached to every analysis response; cold-start results append `COLD_START_HOW_TO_READ`, which reframes every number as a stated belief), and `rca_link`/`whatif_link`/`metric_link` (UI deep links matching `applyDeepLink()`'s hash params in `static/app.js`; base URL from `BREAKDOWN_PUBLIC_URL`, default `http://127.0.0.1:$BREAKDOWN_PORT`).
+`mcp/shaping.py` shapes engine results for LLM consumption: `round_floats` (4 significant figures, non-finite → null), `compact_rca` (drops per-contribution `decomposition` and window detail, collapses `components` to point estimates and `fit_window` to `fit_periods`, passes `seasonality_warnings` and top-level `reference_defaulted` through, omits null node fields — but keeps a null `ci_95` inside contributions: withheld-interval semantics — and passes `lag`/`parent_windows` through on lagged contributions), `compact_slice` (window detail → period counts, per-slice nulls and empty caveats trimmed, reconciliation collapsed to status + residual share) with `SLICE_HOW_TO_READ` (excess-vs-contribution, zero-sum excess, `noise_level`, `__other__`, mix-is-composition, reconciliation, and the lag-shifted-window rule), `compact_scenario` (baseline nodes shrink to `{status, baseline}`, extrapolation stats collapse to the flag; `mode` and any non-null `baseline_ci_95` belief intervals pass through), `RCA_HOW_TO_READ`/`whatif_how_to_read(mode)` (docs/model.md caveats attached to every analysis response; cold-start results append `COLD_START_HOW_TO_READ`, which reframes every number as a stated belief), and `rca_link`/`whatif_link`/`metric_link` (UI deep links matching `applyDeepLink()`'s hash params in `static/app.js`; base URL from `BREAKDOWN_PUBLIC_URL`, default `http://127.0.0.1:$BREAKDOWN_PORT`).
+
+⚠️ **`compact_rca` shrinks every non-`ok` node to `{status, grain}`**, which predates the `fit_failed` / `attribution_failed` statuses and has not caught up with them. Two things are dropped that an assistant needs: **`status_reason`**, the engine's whole diagnostic for *why* the node failed, and the **`baseline`/`actual`/`gap`** that those two statuses deliberately still carry (they are read off the data, not the model). Over MCP a failed node therefore reads as a bare label with no numbers and no reason, where the HTTP response carries both. `window_shorter_than_grain` is unaffected — it genuinely has nothing else to say.
 
 Transport: streamable HTTP mounted at `/mcp`, stateless with plain-JSON responses. Two SDK quirks the wiring handles: a mounted sub-app's lifespan never runs, so the host `lifespan` drives `mcp.session_manager.run()`; and the SDK's session manager is single-use per instance, so the mount is a shim (`_McpMount`) and each lifespan startup rebuilds the transport app (tests open several `TestClient`s per process). The SDK's default Host-header validation admits localhost only; when `BREAKDOWN_HOST` (set by `serve --host`) is non-loopback, `rebuild()` disables DNS-rebinding protection so containers/shared hosts can reach `/mcp`.
 

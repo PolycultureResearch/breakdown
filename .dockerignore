@@ -1,9 +1,67 @@
+# What never enters a build layer.
+#
+# Two images build from this directory — the root `Dockerfile` (`COPY . .`) and
+# `demo/Dockerfile` (explicit COPYs, repo-root context) — and both read this
+# file, so anything named here is invisible to both.
+#
+# **These are not .gitignore patterns.** Every pattern is anchored at the
+# context root: a bare `snapshots` matches `./snapshots` and nothing deeper, and
+# `*.yml` matches only the YAML sitting next to this file. Use `**/` to reach
+# any depth. That distinction is load-bearing in both directions below — it is
+# what lets `snapshots` and `*.yml` exclude the operator's data and tree while
+# leaving `breakdown/examples/*.yml` and `demo/.breakdown/snapshots/` (both
+# deliberately shipped) in the context.
+#
+# When in doubt, exclude. A file the build needs and cannot see fails the build
+# loudly; a secret the build can see ships silently, in a layer that travels
+# wherever the image does.
+
+# --- The operator's own tree, data and credentials ---
+#
+# The documented recipe (README, "A shared instance with Docker") has these
+# sitting in the repo root and handed to the container at *runtime*: the tree
+# mounted read-only at /config/tree.yml, the snapshot cache at /snapshots. A
+# tree carries the warehouse host, catalog, inline `sql:` business logic and —
+# since `${VAR}` interpolation is offered, not enforced — possibly a literal
+# token. A snapshot is the client's warehouse data as parquet. Neither has any
+# business also being baked in.
+*.yml
+*.yaml
+snapshots
+.breakdown
+# Credentials an operator plausibly leaves beside compose.yaml: a `.env` for
+# `docker compose`, a BigQuery service-account keyfile, a Databricks CLI config
+# or OAuth token cache, a private key of any shape.
+.env
+.env.*
+*.json
+*.pem
+*.key
+*.p12
+.databrickscfg
+.databricks
+# Warehouse data in the other shapes it arrives in — a DuckDB file the `dbt`
+# provider reads, an export someone dropped here.
+*.parquet
+*.csv
+*.duckdb
+*.db
+*.sqlite
+
+# --- Repo noise ---
 .git
 .venv
 .pytest_cache
 .ruff_cache
-__pycache__
-*.pyc
+**/__pycache__
+**/*.py[co]
+**/.DS_Store
 dist
 .claude
 knowledge/archive
+# Internal critique that names clients and describes undisclosed defects
+# (see .gitignore) — untracked, so it is in the context of any working copy
+# that has one.
+knowledge/grill_*.md
+_to_delete
+_grill_tmp

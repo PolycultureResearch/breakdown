@@ -740,7 +740,8 @@ def test_shapley_endpoint_defaults_reference():
         assert body["reference_defaulted"] is True
         assert body["reference_window"]["end"] == "2024-02-15"
         assert body["analysis_window"] == {
-            "start": "2024-02-16", "end": "2024-04-09",
+            "start": "2024-02-16",
+            "end": "2024-04-09",
         }
 
 
@@ -773,3 +774,392 @@ def test_meta_reports_earliest_available():
             time.sleep(0.05)
         assert set(meta["earliest_available"]) == set(meta["metrics"])
         assert all(v == "2020-01-01" for v in meta["earliest_available"].values())
+
+
+# --- bounds and gates (H4/H5/H6, L3) ---
+
+
+def test_slice_window_outside_loaded_data_is_422_before_any_fetch(sliced_env):
+    """`/rca/{name}/slices` fetched `min(starts)..max(ends)` from the provider
+    with no check that those dates lie inside the loaded window (H6). A caller
+    could ask for 1900..2100 and get a 73,000-day scan, held under the tree's
+    lock, whose frame then sat in the slice cache forever — even though the
+    request went on to 422 for having no data in it.
+
+    The observable property is that nothing was fetched, so nothing was
+    cached."""
+    with TestClient(app) as client:
+        resp = client.post(
+            "/rca/signups/slices",
+            params={
+                "dimension": "region",
+                "reference_start": "1900-01-01",
+                "reference_end": "1901-01-01",
+                "analysis_start": "2099-01-01",
+                "analysis_end": "2100-12-31",
+            },
+        )
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert "outside the loaded data window" in detail
+        assert "2024-01-01..2024-04-09" in detail, detail
+        assert len(app.state.slice_cache) == 0, "the rejected window was still fetched"
+
+
+def test_slice_window_check_covers_a_defaulted_reference(sliced_env):
+    """The reference window may be defaulted inside `_run_slice`, so the check
+    has to look at the span actually about to be fetched."""
+    with TestClient(app) as client:
+        resp = client.post(
+            "/rca/signups/slices",
+            params={
+                "dimension": "region",
+                "analysis_start": "2024-04-01",
+                "analysis_end": "2024-05-01",  # past the loaded window's end
+            },
+        )
+        assert resp.status_code == 422
+        assert "outside the loaded data window" in resp.json()["detail"]
+        assert len(app.state.slice_cache) == 0
+
+
+def test_slice_and_flow_caches_are_bounded():
+    """`slice_cache` and `flow_cache` were plain dicts with no cap, no TTL and
+    no eviction anywhere in the package — keyed by caller-chosen windows, so on
+    a public deployment they grow until the process dies. C8 bounded `traces`
+    and never looked at its two siblings."""
+    from breakdown.api.trees import MAX_CACHED_FLOWS, MAX_CACHED_SLICES, TreeState
+
+    tree = TreeState(id="t", path="t.yml")
+    for i in range(MAX_CACHED_SLICES + 10):
+        tree.slice_cache[("signups", "region", "day", "2024-01-01", i)] = i
+    assert len(tree.slice_cache) == MAX_CACHED_SLICES
+    assert list(tree.slice_cache.values()) == list(range(10, MAX_CACHED_SLICES + 10))
+
+    for i in range(MAX_CACHED_FLOWS + 10):
+        tree.flow_cache[("signups", "region", i)] = i
+    assert len(tree.flow_cache) == MAX_CACHED_FLOWS
+    assert list(tree.flow_cache.values())[0] == 10, "eviction drops the oldest key first"
+
+
+class _SizedFit:
+    """A stand-in for a `FitResult` whose trace reports a known size."""
+
+    def __init__(self, megabytes):
+        nbytes = int(megabytes * 1024 * 1024)
+        group = type("Group", (), {"nbytes": nbytes})()
+        self.trace = type("Trace", (), {"posterior": group, "groups": lambda self: ["posterior"]})()
+
+
+def test_trace_store_evicts_on_a_byte_budget():
+    """The cap was an entry count, but an entry's size scales with the loaded
+    window: one ADVI fit of the demo tree over 830 days measures 13.4 MB, so
+    256 of them is ~3.4 GB against fly.toml's 2 GB (H4). Tuning the count down
+    just moves the cliff to a wider window."""
+    from breakdown.api.trees import TraceStore
+
+    budget = 40 * 1024 * 1024
+    store = TraceStore(max_bytes=budget)
+    traces = store.view("tree")
+    for i in range(6):
+        traces[(f"m{i}", None)] = _SizedFit(13.4)
+
+    assert store.total_bytes <= budget
+    assert len(traces) == 2, "13.4 MB entries under a 40 MB budget"
+    assert ("m0", None) not in traces, "eviction should drop the oldest key first"
+    assert ("m5", None) in traces
+
+
+def test_trace_store_keeps_the_newest_fit_even_when_it_alone_busts_the_budget():
+    """Degrade to a cache of one, never a cache of none: the caller is holding
+    that fit and about to serve from it."""
+    from breakdown.api.trees import TraceStore
+
+    store = TraceStore(max_bytes=1024)
+    traces = store.view("tree")
+    traces[("m", None)] = _SizedFit(13.4)
+    assert len(traces) == 1
+
+
+def test_trace_store_entry_count_is_still_a_backstop():
+    """Unmeasurable (or free) entries are bounded by the count as before."""
+    from breakdown.api.trees import TraceStore
+
+    store = TraceStore(max_entries=3, max_bytes=1024**3)
+    traces = store.view("tree")
+    for i in range(10):
+        traces[(f"m{i}", None)] = object()
+    assert len(traces) == 3
+    assert store.total_bytes == 0
+
+
+def test_trace_store_byte_budget_is_env_overridable(monkeypatch):
+    from breakdown.api.trees import MAX_CACHED_TRACE_BYTES, TraceStore
+
+    monkeypatch.setenv("BREAKDOWN_MAX_TRACE_BYTES", str(7 * 1024 * 1024))
+    assert TraceStore().max_bytes == 7 * 1024 * 1024
+    monkeypatch.setenv("BREAKDOWN_MAX_TRACE_BYTES", "not-a-number")
+    assert TraceStore().max_bytes == MAX_CACHED_TRACE_BYTES
+
+
+def test_trace_store_refit_does_not_double_count_bytes():
+    """A refit re-inserts at the same key; the old entry's bytes go with it."""
+    from breakdown.api.trees import TraceStore
+
+    store = TraceStore()
+    traces = store.view("tree")
+    traces[("m", None)] = _SizedFit(10)
+    traces[("m", None)] = _SizedFit(10)
+    assert store.total_bytes == 10 * 1024 * 1024
+    del traces[("m", None)]
+    assert store.total_bytes == 0
+    assert len(traces) == 0
+
+
+def test_metric_summary_is_computed_once_per_fit(monkeypatch):
+    """`az.summary` is the one heavy engine call on `GET /metrics/{name}`: 1.1s
+    on an 830-day ADVI trace, scaling with `draws`, and nothing memoized it —
+    so `clearRCA`'s re-fetch of every fitted metric paid it N times (H5)."""
+    import breakdown.api.main as main
+
+    calls = []
+    real = main.summarize_trace
+
+    def counting(trace):
+        calls.append(trace)
+        return real(trace)
+
+    monkeypatch.setattr(main, "summarize_trace", counting)
+    with TestClient(app) as client:
+        assert client.post("/analyze/daily_sessions?inference_method=advi&draws=100").status_code
+        first = client.get("/metrics/daily_sessions").json()["summary"]
+        second = client.get("/metrics/daily_sessions").json()["summary"]
+
+    assert first is not None and first == second
+    assert len(calls) == 1, "the summary was recomputed on every GET"
+
+
+def test_non_ascii_bearer_token_is_401_not_500(monkeypatch):
+    """`hmac.compare_digest` raises TypeError comparing strs with non-ASCII, so
+    a header of `Bearer sécret` was a 500 from inside the middleware — an
+    error-page-vs-401 oracle anyone could trip (L3)."""
+    monkeypatch.setenv("BREAKDOWN_API_TOKEN", "s3cret")
+    with TestClient(app) as client:
+        # Sent as bytes because httpx refuses to encode a non-ASCII str header
+        # — which is exactly the point: only a hand-rolled client sends these,
+        # and it must get a 401 like everyone else.
+        for header in ("Bearer sécret", "Bearer s3crét", "Bearer ünicode"):
+            resp = client.post("/mcp/", json={}, headers={"Authorization": header.encode("utf-8")})
+            assert resp.status_code == 401, header
+            assert resp.headers["WWW-Authenticate"] == "Bearer"
+
+
+def test_non_ascii_configured_token_still_authenticates(monkeypatch):
+    """The bytes have to round-trip, not merely fail safely: a deployment whose
+    secret happens to be non-ASCII must still be able to use it."""
+    monkeypatch.setenv("BREAKDOWN_API_TOKEN", "sécret")
+    with TestClient(app) as client:
+        resp = client.post(
+            "/mcp/",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            headers={
+                "Authorization": "Bearer sécret".encode("utf-8"),
+                "Accept": "application/json, text/event-stream",
+            },
+        )
+        # Past the gate is all this asserts — the MCP transport's own host
+        # check is what tests/test_mcp.py covers.
+        assert resp.status_code != 401, resp.text
+
+        wrong = client.post("/mcp/", json={}, headers={"Authorization": "Bearer s3cret"})
+        assert wrong.status_code == 401
+
+
+# --- /dag does not publish bindings to unauthenticated callers ---
+
+BOUND_TREE = """
+provider:
+  type: mock
+
+metrics:
+  - name: signups
+    source: my_project.metrics.signups
+    sql: SELECT ordered_at AS date, count(*) AS signups FROM analytics.fct_signups GROUP BY 1
+  - name: activations
+    source: my_project.metrics.activations
+    parents: [signups]
+    bind:
+      relation: analytics.fct_activations
+      grain_key: activation_id
+      time_column: activated_at
+      agg: sum
+      measure: amount
+"""
+
+
+@pytest.fixture
+def bound_env(tmp_path, monkeypatch):
+    tree_file = tmp_path / "bound_tree.yml"
+    tree_file.write_text(BOUND_TREE)
+    monkeypatch.setenv("BREAKDOWN_TREE", str(tree_file))
+    monkeypatch.delenv("BREAKDOWN_API_TOKEN", raising=False)
+
+
+def _dag_nodes(client, **kwargs):
+    resp = client.get("/dag", **kwargs)
+    assert resp.status_code == 200
+    return {name: definition for name, definition in resp.json()["nodes"]}
+
+
+def test_dag_publishes_bindings_when_no_token_is_configured(bound_env):
+    """The laptop default is unchanged: no token, no redaction."""
+    with TestClient(app) as client:
+        nodes = _dag_nodes(client)
+        assert nodes["signups"]["sql"].startswith("SELECT")
+        assert nodes["activations"]["bind"]["relation"] == "analytics.fct_activations"
+
+
+def test_dag_redacts_sql_and_bind_from_unauthenticated_callers(bound_env, monkeypatch):
+    """`/dag` served the full definition — fully-qualified table names and
+    WHERE-clause business logic — to anyone, on a deployment that had bothered
+    to configure a token."""
+    monkeypatch.setenv("BREAKDOWN_API_TOKEN", "s3cret")
+    with TestClient(app) as client:
+        nodes = _dag_nodes(client)
+        assert nodes["signups"]["sql"] is None
+        assert nodes["activations"]["bind"] is None
+        # null, not a removed key: `def.sql` must not become a KeyError.
+        assert "sql" in nodes["signups"] and "bind" in nodes["activations"]
+        # Everything the UI draws with is untouched.
+        assert nodes["activations"]["parents"] == ["signups"]
+        assert nodes["signups"]["source"] == "my_project.metrics.signups"
+
+        authed = _dag_nodes(client, headers={"Authorization": "Bearer s3cret"})
+        assert authed["signups"]["sql"].startswith("SELECT")
+        assert authed["activations"]["bind"]["relation"] == "analytics.fct_activations"
+
+        # The per-tree mount is the same handler, so it redacts too.
+        prefixed = client.get("/trees/bound_tree/dag").json()["nodes"]
+        assert dict(prefixed)["signups"]["sql"] is None
+
+
+# --- BREAKDOWN_REQUIRE_AUTH: the whole data surface behind the same token ---
+
+# Every JSON data route, in both mounts. The router is included twice, so the
+# risk this list guards is an alias gated differently from the route it aliases.
+_DATA_ROUTES = [
+    ("get", "/meta"),
+    ("get", "/dag"),
+    ("get", "/series"),
+    ("get", "/metrics/revenue"),
+    ("get", "/metrics/revenue/query"),
+    ("post", "/analyze/revenue"),
+    ("get", "/shapley/revenue?analysis_start=2024-03-01&analysis_end=2024-04-09"),
+    ("post", "/rca/revenue?analysis_start=2024-03-01&analysis_end=2024-04-09"),
+    (
+        "post",
+        "/rca/revenue/slices?dimension=region&analysis_start=2024-03-01&analysis_end=2024-04-09",
+    ),
+    ("post", "/simulate"),
+    ("get", "/progress/whatever"),
+    ("get", "/trees"),
+    ("post", "/trees/jaffle_shop_tree/load"),
+    ("get", "/trees/jaffle_shop_tree/meta"),
+    ("get", "/trees/jaffle_shop_tree/dag"),
+    ("get", "/trees/jaffle_shop_tree/metrics/revenue"),
+]
+
+
+@pytest.fixture
+def require_auth_env(monkeypatch):
+    monkeypatch.setenv("BREAKDOWN_API_TOKEN", "s3cret")
+    monkeypatch.setenv("BREAKDOWN_REQUIRE_AUTH", "1")
+
+
+def test_require_auth_gates_every_data_route(require_auth_env):
+    """The token alone gates /mcp only. BREAKDOWN_REQUIRE_AUTH=1 extends the
+    same check to the whole JSON surface, both mounts."""
+    with TestClient(app) as client:
+        for method, path in _DATA_ROUTES:
+            resp = getattr(client, method)(path)
+            assert resp.status_code == 401, f"{method.upper()} {path} was open"
+            assert resp.headers["WWW-Authenticate"] == "Bearer"
+
+        headers = {"Authorization": "Bearer s3cret"}
+        assert client.get("/meta", headers=headers).status_code == 200
+        assert client.get("/trees", headers=headers).status_code == 200
+        assert client.get("/trees/jaffle_shop_tree/dag", headers=headers).status_code == 200
+
+
+def test_require_auth_leaves_health_ui_and_root_open(require_auth_env):
+    """/health is what orchestrators and compose.yaml's healthcheck call with no
+    credentials; /ui is a JS bundle, not data; / carries nothing."""
+    with TestClient(app) as client:
+        assert client.get("/health").status_code == 200
+        assert client.get("/health").json()["status"] == "ok"
+        assert client.get("/ui/").status_code == 200
+        assert client.get("/ui/app.js").status_code == 200
+        assert client.get("/").status_code == 200
+
+
+def test_require_auth_is_off_by_default():
+    """Existing deployments must not break: the token alone still gates /mcp
+    and nothing else."""
+    with TestClient(app) as client:
+        assert client.get("/meta").status_code == 200
+        assert client.get("/dag").status_code == 200
+
+
+def test_token_without_require_auth_leaves_data_routes_open(monkeypatch):
+    monkeypatch.setenv("BREAKDOWN_API_TOKEN", "s3cret")
+    monkeypatch.delenv("BREAKDOWN_REQUIRE_AUTH", raising=False)
+    with TestClient(app) as client:
+        assert client.get("/meta").status_code == 200
+        assert client.get("/series").status_code == 200
+        assert client.post("/mcp/", json={}).status_code == 401
+
+
+def test_require_auth_without_a_token_refuses_to_serve(monkeypatch):
+    """Otherwise every request is checked against an empty secret and passes —
+    the one auth configuration that fails open."""
+    monkeypatch.setenv("BREAKDOWN_REQUIRE_AUTH", "1")
+    monkeypatch.delenv("BREAKDOWN_API_TOKEN", raising=False)
+    with TestClient(app) as client:
+        for method, path in _DATA_ROUTES:
+            resp = getattr(client, method)(path)
+            assert resp.status_code == 503, f"{method.upper()} {path} served"
+            assert "BREAKDOWN_API_TOKEN" in resp.json()["detail"]
+            assert "BREAKDOWN_REQUIRE_AUTH" in resp.json()["detail"]
+
+        # /health still answers — degraded, naming the misconfiguration, so an
+        # operator sees the reason instead of unexplained 503s.
+        health = client.get("/health").json()
+        assert health["status"] == "degraded"
+        assert "BREAKDOWN_REQUIRE_AUTH" in health["error"]
+
+
+def test_require_auth_accepts_any_value_but_an_explicit_off(monkeypatch):
+    """A typo must close the door, not open it."""
+    from breakdown.api.main import _require_auth
+
+    for value in ("1", "true", "TRUE", "yes", "on", "ture"):
+        monkeypatch.setenv("BREAKDOWN_REQUIRE_AUTH", value)
+        assert _require_auth() is True, value
+    for value in ("", "0", "false", "no", "off", "Off"):
+        monkeypatch.setenv("BREAKDOWN_REQUIRE_AUTH", value)
+        assert _require_auth() is False, value
+    monkeypatch.delenv("BREAKDOWN_REQUIRE_AUTH")
+    assert _require_auth() is False
+
+
+def test_gate_prefixes_match_on_path_segments():
+    """`startswith("/mcp")` also matches `/mcphony`, and an open-list built the
+    same way would hand out a future `/uiconfig`."""
+    from breakdown.api.main import _open_path, _under
+
+    assert _under("/mcp", "/mcp") and _under("/mcp/", "/mcp")
+    assert not _under("/mcphony", "/mcp")
+    assert _open_path("/ui") and _open_path("/ui/app.js")
+    assert not _open_path("/uiconfig")
+    assert _open_path("/health") and not _open_path("/healthz")
+    assert _open_path("/") and not _open_path("/meta")

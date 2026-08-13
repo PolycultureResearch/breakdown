@@ -195,7 +195,19 @@ A `provider: none` tree has no data, so the UI boots **what-if-first** over decl
 1. **Target summary card**: gap in business units, baseline → actual, relative change, the two windows.
 2. **Ranked causes**: one row per cause — rank, metric name, horizontal score bar, "via <child>". Clicking a row selects the node and highlights the path from cause to target.
 3. **Slice panel** (per ranked cause, when its metric declares `dimensions` — read from `/dag`, which carries each node's full definition; `/meta` does not): a `slice by <dim>` chip row, toggling `POST /rca/{name}/slices` into an inline panel. Windows come from the contribution that *measured* that metric — `parent_windows` when the edge is lagged, else the node's `effective_windows` — so a slice across a lag compares the shifted periods, not the target's calendar ones. Renders a verdict line, a four-column table (flows: share of gap / baseline share / excess; rates: within / mix / excess, plus the `mix_total` note), the windows used, and any reconciliation or caveat blocks. The verdict claims localization only when the leader is not `noise_level` **and** its excess is ≥25% of the gap — ranking always yields a first row, so without that floor the panel would name a slice even when the gap is spread evenly. Slice state is scoped to one analysis and cleared on re-run or Clear.
-4. **Attribution detail**: per child node, a contributions table plus the `unexplained` remainder. Formula (Shapley) nodes are **two-level** with a global Headline/Detailed toggle: **Headline** (default) shows each parent's window-means-bridge contribution plus one explicit italic *co-movement shift* row (from the response's per-contribution `decomposition` and node-level `interaction`); **Detailed** shows the full per-parent split (means + co-movement = total Δ, CI, P(dir)). Posterior nodes always show the flat table (estimate, share, 95% CI, P(direction)). Non-day nodes note their grain and snapped windows in the block header; single-period windows render "—" for withheld CIs; nodes skipped as `window_shorter_than_grain` are listed in the RCA card.
+4. **Attribution detail**: per child node, a contributions table plus the `unexplained` remainder. Formula (Shapley) nodes are **two-level** with a global Headline/Detailed toggle: **Headline** (default) shows each parent's window-means-bridge contribution plus one explicit italic *co-movement shift* row (from the response's per-contribution `decomposition` and node-level `interaction`); **Detailed** shows the full per-parent split (means + co-movement = total Δ, CI, P(dir)). Posterior nodes always show the flat table (estimate, share, 95% CI, P(direction)). Non-day nodes note their grain and snapped windows in the block header; single-period windows render "—" for withheld CIs.
+
+### Degraded nodes (`status` / `ci_status`)
+
+`POST /rca/{name}` degrades a node rather than failing the whole tree: any `status` other than `"ok"` means that node was reported **without attribution**, carrying the engine's own sentence in `status_reason`. Three statuses arrive today — `window_shorter_than_grain`, `fit_failed`, `attribution_failed` — and the distinction the UI must preserve is **which part of the record survived**: a too-short window loses the numbers themselves, whereas a fit or attribution failure keeps real `baseline`/`actual`/`gap` (measured from the data, not the model) and loses only the decomposition.
+
+**The cardinal sin this guards against is rendering a degraded node as an analyzed one that simply found nothing.** An empty contributions table plus a null `attribution_method` otherwise reads as *"posterior, no drivers"* — the engine saying "I couldn't" presented as "there is nothing there", which is the worst available misreading. So:
+
+- **`NODE_STATUS` is one vocabulary, used by every consumer** — canvas overlay, ranked causes, attribution detail, the exported report — with `label` (noun phrase), `short` (chip) and `explains` (which part of the record survived). Four renderers inventing four phrasings for the same condition is how the distinction erodes.
+- **`nodeStatus()` surfaces unknown statuses verbatim** rather than swallowing them. A status this build has never heard of is still not `ok`, and treating it as ok is precisely the failure this block exists to prevent.
+- **A degraded *target*** gets an explicit line saying the ranked causes below carry no information about it, since nothing was attributed to it.
+
+`CI_STATUS_NOTE` does the same for `ci_status`, and **all non-ok values are surfaced**, including `nonfinite_bootstrap_replicates`: rendering a note for one value and nothing for the others reads as "interval checked and fine" when it means "not said". Each entry carries a `why` explaining that withheld or subset intervals leave the **point estimates unaffected** — they are the exact Shapley values, never bootstrap means.
 
 ## Metric tab
 
@@ -233,18 +245,29 @@ Current hints: `method` (ADVI vs NUTS, and that ADVI's mean-field assumption und
 | `GET /health` | first request in `init()`; on `status: "degraded"` show `#degraded-banner` with the startup error + a `breakdown doctor` hint and skip loading the DAG |
 | `GET /trees` | second request in `init()`, before any tree is chosen — the index, and which tree the switcher is on |
 | `POST /trees/{id}/load` | the index's **Load** button |
-
-**Transient failures vs. answers.** `api()` attaches the HTTP status to the error it throws, and `apiWithWake()` retries `502/503/504` and outright fetch rejections with exponential backoff (~23s of patience over 6 attempts); every other status is an answer, not an outage, and is rethrown at once. `init()` uses it for the `/health` probe — on a host that suspends idle instances that request *is* what boots the machine — and reports "Waking the server up…" while it retries instead of leaving a blank page. If it still fails, `#retry-banner` (amber, distinct from `#degraded-banner`'s red, which means *misconfigured* rather than *unreachable*) offers a **Try again** button that re-runs `init()` without a page reload. The case this exists for is the hosted demo taking the server away mid-session, not first load.
 | `GET /meta` | metric names, data date range, provider, fitted list — bootstraps header controls |
-| `GET /dag` | nodes + edges |
+| `GET /dag` | nodes + edges, each node's full definition (this is where the slice panel reads `dimensions`; `/meta` does not carry them) |
 | `GET /series` | every metric's native-grain series, per-metric `{grain, dates, values}` (one call) — hydrates the node cards |
 | `GET /metrics/{name}` | definition, time series, posterior summary |
+| `GET /metrics/{name}/query` | the Metric tab's **show query** provenance panel (see below) |
 | `POST /analyze/{name}` | fit from the Metric tab |
 | `POST /rca/{name}` | the RCA run (`run_id` opts into progress reporting) |
+| `POST /rca/{name}/slices` | the per-cause slice panel in the Root cause tab |
 | `POST /simulate` | the what-if scenario run (JSON body: baseline window, interventions, assumptions, levers; `run_id` opts into progress) |
 | `GET /progress/{run_id}` | polled ~2.5×/s while a run is in flight — the live stage of that run |
 
+Every one of these except `GET /trees` and `GET /progress/{run_id}` is requested through `treePath()`, so it carries the tree id.
+
+**Transient failures vs. answers.** `api()` attaches the HTTP status to the error it throws, and `apiWithWake()` retries `502/503/504` and outright fetch rejections with exponential backoff (~23s of patience over 6 attempts); every other status is an answer, not an outage, and is rethrown at once. `init()` uses it for the `/health` probe — on a host that suspends idle instances that request *is* what boots the machine — and reports "Waking the server up…" while it retries instead of leaving a blank page. If it still fails, `#retry-banner` (amber, distinct from `#degraded-banner`'s red, which means *misconfigured* rather than *unreachable*) offers a **Try again** button that re-runs `init()` without a page reload. The case this exists for is the hosted demo taking the server away mid-session, not first load.
+
 States to handle everywhere: loading, empty (no fit yet), error (surface the API `detail` string in the status area, never a silent failure).
+
+### The UI is unauthenticated, and two server-side gates act on that
+
+Neither is a frontend feature; both change what the UI receives, so they belong here.
+
+- **`BREAKDOWN_REQUIRE_AUTH` gates every request in the table above.** `/ui` itself stays open — it is a JS bundle, not data — but every fetch it makes needs `Authorization: Bearer <BREAKDOWN_API_TOKEN>`, and the browser will not add one. That mode therefore assumes **a reverse proxy injecting the header** (Cloudflare Access and the like), or an operator who accepts that the browser cannot use it. There is deliberately no login, no cookie and no token-in-the-URL in `app.js`: that would be hosted mode (roadmap 3.5). If you are debugging a UI that loads and then fails every call with 401, this is why.
+- **`GET /dag` redacts `sql` and `bind` to `null`** whenever `BREAKDOWN_API_TOKEN` is set and the caller presents no token — which, per the point above, is the normal state for the browser. Anything rendering a definition must treat those two fields as **absent rather than empty**. The Metric tab's query panel is unaffected because it reads `GET /metrics/{name}/query`, not `/dag`.
 
 ## Deep links
 

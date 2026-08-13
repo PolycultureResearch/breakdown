@@ -48,6 +48,7 @@ metrics:
 
   - name: average_order_value
     source: jaffle_shop.metrics.average_order_value
+    kind: rate   # an average is a ratio — never summed when resampled
 
   - name: revenue
     description: "Arithmetic identity — Shapley attribution available"
@@ -76,9 +77,26 @@ The YAML is validated and compiled into a directed acyclic graph using NetworkX.
 
 **Requirements:** Python 3.11+
 
+> **⚠️ Not on PyPI yet — install from a checkout.** `metric-breakdown` has
+> never been published, so the `pip install` and `uvx` commands in this README
+> (here and in [Provider extras](#provider-extras)) **do not resolve today**.
+> They are written for the release, not for the present tense. Until it lands,
+> the checkout below is the only way to install breakdown, and it is a complete
+> one — same engine, same UI, same MCP server. The first published version will
+> be **0.1.0**, so `metric-breakdown~=0.1.0` is the pin to write down now.
+
+```bash
+git clone https://github.com/PolycultureResearch/breakdown
+cd breakdown
+uv sync
+uv run breakdown serve            # or: uv run python main.py serve
+```
+
 > **Installed as `metric-breakdown`, used as `breakdown`.** The name `breakdown`
 > was already taken on PyPI, so that is the distribution name — but the command,
 > the import package and everything in this documentation are `breakdown`.
+
+Once it is published, either of these will work:
 
 ```bash
 pip install metric-breakdown
@@ -91,15 +109,6 @@ Or, with [uv](https://github.com/astral-sh/uv), without installing anything:
 uvx --from metric-breakdown breakdown serve
 ```
 
-Or work from a checkout:
-
-```bash
-git clone https://github.com/PolycultureResearch/breakdown
-cd breakdown
-uv sync
-uv run breakdown serve            # or: uv run python main.py serve
-```
-
 `breakdown --version` reports the installed version — the first thing to include
 in a bug report.
 
@@ -108,7 +117,10 @@ in a bug report.
 The base install is the whole product — engine, API, UI, MCP server — with the
 **`mock` provider**, which is enough to run the bundled example tree and every
 analysis in this README. Connecting to real data pulls in a vendor SDK, and
-those are **extras** you opt into:
+those are **extras** you opt into. (The `pip install` forms below describe the
+package as it will publish; see the [Quickstart](#quickstart) note — until the
+first release, a checkout's `uv sync` already installs all of them, because its
+dev group asks for `[all]`.)
 
 | You want to use | Install | Brings in |
 |---|---|---|
@@ -179,20 +191,134 @@ uv run pytest tests/ -v
 
 ## Deploying
 
+### Authentication
+
+**By default there is none, and that is safe only because the default bind is
+loopback.** `breakdown serve` listens on `127.0.0.1`, so nothing is reachable
+from off the machine. The moment you pass `--host 0.0.0.0` (which every
+container deployment does), the entire API — your tree, your series, your
+generated SQL — is open to anyone who can reach the port. Decide this before you
+expose the port, not after.
+
+Access control is one shared bearer token, configured with two environment
+variables:
+
+| Variable | Effect |
+|---|---|
+| `BREAKDOWN_API_TOKEN` | The secret itself. Set alone, it gates **`/mcp` only** — every JSON data route stays open. This is the default behavior and is unchanged. |
+| `BREAKDOWN_REQUIRE_AUTH` | Extends the same bearer check to **every route** except a small allow-list. Requires `BREAKDOWN_API_TOKEN`. |
+
+Callers present it as a standard bearer header:
+
+```bash
+export BREAKDOWN_API_TOKEN=$(openssl rand -hex 32)
+export BREAKDOWN_REQUIRE_AUTH=1
+breakdown serve --host 0.0.0.0
+
+curl -H "Authorization: Bearer $BREAKDOWN_API_TOKEN" http://your-host:9090/meta
+```
+
+**`BREAKDOWN_REQUIRE_AUTH` is on unless it is explicitly off.** Anything other
+than `""`, `0`, `false`, `no` or `off` (case-insensitive, whitespace stripped)
+counts as on — so `BREAKDOWN_REQUIRE_AUTH=ture` closes the door rather than
+opening it. A typo in a security switch must fail toward the safe side.
+
+**What stays open with the flag on**, and nothing else:
+
+| Open | Why |
+|---|---|
+| `/health` | Liveness and readiness. `compose.yaml`'s healthcheck calls it with no credentials, and orchestrators can't present one — gating it makes a correctly configured deployment look dead. |
+| `/ui` and everything under it | A JS bundle, not data. |
+| `/` | A one-line "the API is running" message that carries nothing. |
+
+Everything else is gated, **including `/openapi.json` and `/docs`** — the
+allow-list is an allow-list precisely so a route added tomorrow is closed by
+default rather than open until someone remembers it. Matching is on **path
+segment boundaries**, so `/healthz` and `/uiconfig` are *not* treated as open;
+only `/health` itself, and `/ui` plus genuine children like `/ui/app.js`.
+
+> **With the flag on, the browser UI's own fetches are gated too.** `/ui` loads,
+> but every request it makes (`/meta`, `/dag`, `/series`, RCA, …) needs the
+> header, and a browser will not add one by itself. This mode therefore assumes
+> **a reverse proxy that injects the header** — Cloudflare Access, an
+> authenticating ingress, an oauth2-proxy sidecar — or an operator who accepts
+> that the UI is unusable without one and is gating a machine-facing API. There
+> is deliberately no login page, no cookie, and no token-in-the-URL: that is
+> hosted mode ([roadmap 3.5](https://github.com/PolycultureResearch/breakdown/blob/main/knowledge/roadmap.md)),
+> and a half-built version of it would be worse than none.
+
+**Setting `BREAKDOWN_REQUIRE_AUTH` without `BREAKDOWN_API_TOKEN` is refused.**
+Every request would otherwise be checked against an empty secret and pass — the
+one configuration that fails *open*. Instead, non-open routes return **503**,
+`GET /health` reports `{"status": "degraded", …}` naming the misconfiguration,
+and the process logs it at startup. You get loud, diagnosable 503s rather than a
+deployment that looks protected and isn't.
+
+There is one asymmetry to know about before you debug it. `/health` is on the
+open allow-list and always answers **200**, which is what lets the container
+healthcheck run without credentials — so in this misconfigured state the
+container reports **healthy while being unusable**: every data route 503s and
+the health probe passes. The `status` field is where the truth is; read the
+body, not the code. (This is the same design that keeps a provider outage from
+looking like a dead container, and it costs exactly this one confusing case.)
+
+**Query redaction, independent of the flag.** Whenever `BREAKDOWN_API_TOKEN` is
+set and a caller does not present it, `GET /dag` returns each node's `sql` and
+`bind` as `null` rather than their real contents. `/dag` has to stay reachable
+for the unauthenticated UI to draw anything — but those two blocks are the only
+parts of a definition that are infrastructure rather than modeling: `sql` is the
+metric's whole statement and `bind` carries the fully-qualified table name plus
+its WHERE-clause business logic. On a deployment that bothered to configure a
+token, "the graph is public" should not also mean "our warehouse layout and
+filter logic are public". They are redacted to `null` rather than dropped, so a
+client reading `def.sql` sees an absent query instead of a missing key. With no
+token set (the laptop default) nothing is redacted. The UI's *show query* panel
+reads [`GET /metrics/{name}/query`](#get-metricsnamequery), which is gated
+normally, so it loses nothing.
+
+**What this is not.** One shared secret, no per-user identity, no audit trail,
+and no revocation short of rotating the value and restarting. It is a down
+payment on hosted mode, not a substitute for it. If you need per-user access,
+put breakdown behind something that provides it.
+
 ### A shared instance with Docker
 
 ```bash
 cp path/to/my_tree.yml tree.yml
 export DATABRICKS_TOKEN=...        # whatever ${VARS} your tree references
+export BREAKDOWN_API_TOKEN=$(openssl rand -hex 32)
+export BREAKDOWN_REQUIRE_AUTH=1    # gate every route, not just /mcp
+export BREAKDOWN_PUBLIC_URL=https://breakdown.acme.com
 docker compose up --build
 ```
 
 The [`compose.yaml`](https://github.com/PolycultureResearch/breakdown/blob/main/compose.yaml) mounts `./tree.yml` read-only at `/config/tree.yml`, passes provider credentials through as environment variables, and healthchecks `GET /health`. The image is large (~2.5–3 GB — PyMC and its compiler toolchain); the first build takes a while.
 
-Two things differ from a laptop run:
+> **Set the access-control variables in your environment — the shipped
+> `compose.yaml` passes them through.** `BREAKDOWN_API_TOKEN`,
+> `BREAKDOWN_REQUIRE_AUTH` and `BREAKDOWN_PUBLIC_URL` are all listed bare in its
+> `environment:` block, so there is nothing to edit; what the file cannot do is
+> decide them for you. A container publishes its port, so leaving the two token
+> variables unset means the whole API is open to whatever can reach the host —
+> that is a choice, and it should be a deliberate one. See
+> [Authentication](#authentication) for exactly what each level gates: the token
+> alone gates `/mcp` and redacts `sql`/`bind` from `/dag`; `BREAKDOWN_REQUIRE_AUTH`
+> extends the bearer check to every route but `/`, `/health` and `/ui`.
+>
+> `BREAKDOWN_PUBLIC_URL` is what makes the MCP server's `report_url` deep links
+> resolve — without it they point at `http://127.0.0.1:9090`, which is correct
+> only on the container's own loopback and therefore useless to whoever the link
+> was handed to.
+>
+> **A variable you never export is *absent* in the container, not empty**, which
+> is what keeps an unset `BREAKDOWN_REQUIRE_AUTH` from tripping the
+> no-token-configured refusal below.
+
+Three things differ from a laptop run:
 
 - **Credentials must be headless.** The Databricks CLI OAuth `profile:` flow opens a browser, which a container can't. Use `token: ${DATABRICKS_TOKEN}` in the tree's provider block instead (see [`provider`](#provider) for `${VAR}` interpolation). If you must reuse a profile, mount both `~/.databrickscfg` and `~/.databricks/token-cache.json` read-only into the container.
 - **Startup failures degrade, not crash.** If the provider can't be reached (bad token, warehouse down), the server still starts: `GET /health` returns `{"status": "degraded", "error": …}`, data endpoints return 503, and the UI shows the error with a pointer to `breakdown doctor`. Fix the config and restart — no crash-loop to debug through.
+- **The port is published, so the API is exposed.** The compose file passes the access-control variables through, but it cannot set them — if you export nothing, nothing is gated. See [Authentication](#authentication) above.
 
 ### Checking connectivity: `breakdown doctor`
 
@@ -238,13 +364,48 @@ you. Keep the restating version in the tree if you report on it, but do not make
 it an RCA target mid-period — the model would be training on values that are
 still changing.
 
+### Environment variables
+
+Every `breakdown serve` flag has an environment-variable form, which is what a
+container or a scheduled job uses. The flag wins where both are set.
+
+| Variable | CLI flag | Default | What it does |
+|---|---|---|---|
+| `BREAKDOWN_TREE` | `--tree` | bundled `jaffle_shop_tree.yml` | Tree file **or a directory** of them ([Serving several trees](#serving-several-trees)) |
+| `BREAKDOWN_DEFAULT_TREE` | `--default-tree` | the only tree, else alphabetically first | Which tree the unprefixed routes mean |
+| `BREAKDOWN_EAGER` | `--eager` | unset (a directory loads lazily) | Load the default tree at boot instead of on first use |
+| `BREAKDOWN_START_DATE` | `--start-date` | `2024-01-01` | Start of the loaded data window |
+| `BREAKDOWN_END_DATE` | `--end-date` | `2024-04-09` | End of the loaded data window |
+| `BREAKDOWN_HOST` | `--host` | `127.0.0.1` | Bind address. Anything non-loopback exposes the API — see [Authentication](#authentication) |
+| `BREAKDOWN_PORT` | `--port` | `9090` | Listen port |
+| `BREAKDOWN_SNAPSHOT_DIR` | `--snapshot-dir` / `--no-snapshots` | `.breakdown/snapshots` beside the tree | Parquet snapshot cache; `off` disables it |
+| `BREAKDOWN_REFRESH` | `--refresh` | unset | Skip snapshot reads for one pass and refetch, still writing |
+| `BREAKDOWN_API_TOKEN` | — | unset | Bearer token. Alone it gates `/mcp` and redacts `sql`/`bind` from `/dag` |
+| `BREAKDOWN_REQUIRE_AUTH` | — | unset | Gate every route but `/`, `/health`, `/ui`. Needs `BREAKDOWN_API_TOKEN` |
+| `BREAKDOWN_PUBLIC_URL` | — | `http://127.0.0.1:$BREAKDOWN_PORT` | Base URL for MCP `report_url` deep links, when the server is reached at anything else |
+| `BREAKDOWN_MAX_TRACE_BYTES` | — | `536870912` (512 MiB) | Byte budget for the fitted-model cache; `0` disables the byte bound |
+
+**`BREAKDOWN_MAX_TRACE_BYTES` is the one worth understanding before you size a
+box.** Fitted models are cached so a second RCA is fast, and the cache is bounded
+by **total bytes** rather than by a number of entries, with a 256-entry backstop
+behind it. That is not a stylistic choice: one entry's size scales with the
+loaded data window — a single ADVI fit over an 830-day window measures ~13 MB of
+posterior — so no fixed entry count can be safe for every window, and tuning the
+count down only moves the cliff to a wider one. With a byte budget, a wider
+window simply caches fewer fits instead of OOM-killing the process. The 512 MiB
+default assumes the smallest box this is expected to run on (a 2 GB VM, where the
+interpreter plus PyMC and one tree's frames sit near 0.5–0.7 GB resident); raise
+it on a larger host, lower it on a smaller one. The on-demand slice and
+entity-flow caches are bounded too, by entry count — a slice frame is two orders
+of magnitude smaller than a trace.
+
 ---
 
 ## Driving the UI
 
 Start the server and open `http://localhost:9090/ui`. Breakdown fetches every metric's series from the provider at startup, so the first load takes a few seconds. The steps below use the bundled default `breakdown/examples/jaffle_shop_tree.yml` and its `2024-01-01`–`2024-04-09` window; substitute your own target and dates. The header date pickers are bounded to the loaded `--start-date`/`--end-date` window.
 
-**1. Inspect a metric — and fit its model.** Click any node in the graph to open the **Metric** tab (right sidebar) with its time series. Nodes that have a probabilistic parent (e.g. `order_count`) show an **Analyze** section: pick **ADVI — fast, approximate** or **NUTS — slow, exact** and click **Run** to fit the BSTS. Both controls are labelled, a line under the draws box says what the current setting actually costs, and the `ⓘ` beside each expands a short explanation (with a link into [docs/model.md](docs/model.md) where it goes deeper). The posterior — trend, seasonality, and the `beta` / `beta_raw` coefficient on each parent — fills in, and the node picks up the "fitted" tint. Leaf and formula nodes just show their series.
+**1. Inspect a metric — and fit its model.** Click any node in the graph to open the **Metric** tab (right sidebar) with its time series. Nodes that have a probabilistic parent (e.g. `order_count`) show an **Analyze** section: pick **ADVI — fast, approximate** or **NUTS — slow, exact** and click **Run** to fit the BSTS. Both controls are labelled, a line under the draws box says what the current setting actually costs, and the `ⓘ` beside each expands a short explanation (with a link into [docs/model.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md) where it goes deeper). The posterior — trend, seasonality, and the `beta` / `beta_raw` coefficient on each parent — fills in, and the node picks up the "fitted" tint. Leaf and formula nodes just show their series.
 
 **2. Run a root-cause analysis.** Choose a **Target** in the header bar, then open the **Root cause** tab and pick the **Analysis** window — the period you want explained — from a preset (Last 7 days, Last 14 days, Last full week) or the date pair. The **Reference** fills itself with the matched adjacent block (marked **auto**) and stays editable: touch it and it becomes custom; the auto chip restores it. The model doesn't train on the reference — it trains on *all* loaded history before the analysis window (each node's result says exactly what it was fitted on) — so the reference is only the baseline the gap is measured against. Click **Run RCA**: breakdown auto-fits any upstream probabilistic models it needs and paints the result on the graph — nodes tinted by direction of change, edges weighted by each parent's share of the explained gap, and a ranked cause list with credible intervals. **Copy link** yields a shareable `#rca=…` URL carrying the resolved windows; **Clear** resets.
 
@@ -534,6 +695,7 @@ Every key under `priors` must be either `coefficient` or the name of a parent; a
 
 ```yaml
 - name: churn_mrr
+  source: my.metrics.churn_mrr
   parents: [paid_cmau]
   expected_signs: { paid_cmau: positive }   # churn_mrr is stored negative: more actives should mean less-negative churn
 ```
@@ -561,19 +723,53 @@ Formulas express exact arithmetic relationships between a metric and its parents
 
 ```yaml
 - name: net_revenue
+  source: my.metrics.net_revenue
   formula: "gross_revenue - cost_of_goods_sold"
   parents: [gross_revenue, cost_of_goods_sold]
 
 - name: revenue
+  source: my.metrics.revenue
   formula: "order_count * average_order_value"
   parents: [order_count, average_order_value]
 
 - name: conversion_rate
+  source: my.metrics.conversion_rate
+  kind: rate
   formula: "order_count / daily_sessions"
   parents: [order_count, daily_sessions]
 ```
 
+Every metric needs a `source`, formula nodes included — see the note under
+[Grains](#grains) on why a formula node is still fetched.
+
 When a formula is defined, the BSTS model fits the **residual** (`y - formula(parents)`) rather than using parent regressors. This correctly captures the structural relationship and surfaces unexplained variance in the residual.
+
+**At most 10 parents on a formula node.** Exact Shapley attribution enumerates
+every coalition, so the work doubles with each parent — end to end through an
+RCA, 10 parents is ~3.5s, 12 is ~20s, 14 is ~80s, all of it holding the tree's
+lock. An 11th parent is **refused by name** rather than quietly approximated: a
+sampled or truncated Shapley value is a different number from the one you asked
+for, and breakdown does not substitute one for the other.
+
+The remedy is to **split the node into intermediate sums** — group some parents
+under their own formula node and make that node the parent here:
+
+```yaml
+- name: other_revenue          # the intermediate sum
+  source: my.metrics.other_revenue
+  formula: "services_revenue + partner_revenue + marketplace_revenue"
+  parents: [services_revenue, partner_revenue, marketplace_revenue]
+
+- name: total_revenue          # now 2 parents instead of 4
+  source: my.metrics.total_revenue
+  formula: "product_revenue + other_revenue"
+  parents: [product_revenue, other_revenue]
+```
+
+That preserves the identity exactly, so every attribution stays exact — and it
+usually reads better, since the intermediate node is a number someone in the
+business already talks about. (The same cap applies to what-if scenario sources,
+which enumerate the same coalitions.)
 
 ### Lagged regressors
 
@@ -582,6 +778,7 @@ Some causal effects show up with a delay — the README's motivating example is 
 ```yaml
 - name: churn_rate
   source: my.metrics.churn_rate
+  kind: rate
   parents: [support_tickets]
   lags: { support_tickets: 21 }   # churn responds to tickets from 3 weeks earlier (daily node)
 ```
@@ -634,9 +831,48 @@ Metrics have different natural time grains: signups are daily events, a cohort c
 
 **Period labels are period starts** everywhere: days at midnight, weeks on Monday (ISO), months on the 1st. Partial edge periods are dropped, never zero-filled — a coarse metric's series may therefore end a few days before the raw data window does.
 
-**Windows snap per node.** RCA windows stay day-resolution dates in the API; each node interprets them as the whole periods fully inside. A node whose window holds no whole period reports `"status": "window_shorter_than_grain"` instead of failing the RCA, and every node reports its `grain` and `effective_windows`. Windows that snap to a single period suppress the bootstrap CI (`ci_status: "degenerate_single_period"`) rather than reporting a falsely-precise interval.
+**Windows snap per node.** RCA windows stay day-resolution dates in the API; each node interprets them as the whole periods fully inside. A node whose window holds no whole period reports `"status": "window_shorter_than_grain"` instead of failing the RCA, and every node reports its `grain` and `effective_windows`. Windows that snap to a single period suppress the bootstrap CI (`ci_status: "degenerate_single_period"`) rather than reporting a falsely-precise interval. `window_shorter_than_grain` is one of several per-node statuses — see [Per-node `status`](#per-node-status--one-bad-node-does-not-end-the-analysis) for the full set and what each means.
 
-**Warehouse SQL contract per grain.** The SQL owns the aggregation: return one row per period at the declared grain, labeled by period start. **Interior** gaps are filled by kind — flow → 0, stock → forward-fill (a gap before the first period is an error), rate → any missing period is an error. **Trailing** gaps are trimmed, not filled: periods after the last row the SQL returned are treated as not-yet-loaded, so a lagging mart ends the series early instead of manufacturing zeros at the tail. (A query returning no rows at all keeps the full zero spine for flows — an all-quiet window is legitimate.)
+**Gaps, and what happens to them.** Every provider aligns its result onto the
+spine of whole periods inside the loaded window, and what happens to a missing
+period depends on **which edge of the series it is on** and on the metric's
+`kind`. Partial edge periods are always dropped. For the `warehouse` provider the
+SQL owns the aggregation, so return one row per period at the declared grain,
+labeled by period start.
+
+| Where the gap is | `flow` | `stock` | `rate` |
+|---|---|---|---|
+| **Leading** — before the source's first row | filled with `0`, **with a warning naming the invented periods** | error (nothing to forward-fill from) | error |
+| **Interior** — a hole in the middle | filled with `0`, with a warning | forward-fill, with a warning | error |
+| **Trailing** — after the source's last row | **trimmed**, not filled | trimmed | trimmed |
+
+- **Trailing gaps are trimmed rather than filled** because periods after the last
+  row are *not yet loaded*, not zero: a lagging mart should end the series early
+  rather than manufacture a collapse at the tail. This is what `data_through`
+  reports per metric.
+- **Interior gaps are warned about** because a three-day ETL outage becomes three
+  zero days, which is indistinguishable from a real collapse — and RCA will
+  happily name it as the root cause.
+- **A query returning no rows at all** keeps the full zero spine for flows and
+  draws no leading warning: an all-quiet window is a legitimate flow series, and
+  the provider that knows the result was empty says so itself.
+
+**A metric that started partway into the loaded window is zero-filled before its
+first row.** A product launched in March, a channel switched on in week 3, a
+metric the warehouse only began recording last quarter — with `kind: flow` all of
+these get a run of fabricated zeros back to your `--start-date`. That is not
+harmless padding: the fit sees a manufactured level shift and a manufactured
+trend on a node RCA can then rank as a cause. breakdown now **warns and names the
+fabricated periods**, so check your startup logs for it.
+
+The honest fix is a **later `--start-date` for that tree** — start the window
+where the metric actually starts, and fit only observed periods. (Trimming the
+leading run automatically is not available, and deliberately: per-grain frames are
+assembled by inner join, so dropping one node's leading periods would delete them
+for *every* metric at that grain — a whole tree losing January because one node
+launched in March.) If the late-starting metric matters less than the history the
+rest of the tree needs, the alternative is to split it into its own tree with its
+own window.
 
 **Rates over true-zero periods.** A seasonal business has stretches where the
 denominator is genuinely zero — nothing on sale, no sessions, no sends — and a
@@ -650,7 +886,8 @@ zero honestly, and make the rate a `formula` node over them:
   source: my.metrics.orders
 - name: sessions          # flow
   source: my.metrics.sessions
-- name: conversion_rate   # derived, not fetched
+- name: conversion_rate   # the rate is now an exact identity over the two flows
+  source: my.metrics.conversion_rate
   kind: rate
   formula: "orders / sessions"
   parents: [orders, sessions]
@@ -661,6 +898,15 @@ window visible as what it was — no traffic — instead of an error or an inven
 number. Coarsening the grain until every period has a denominator is the other
 option, and the worse one: it throws away resolution everywhere to fix a
 problem that exists in a few windows.
+
+**A `formula:` node is still fetched.** `source` is required on every metric,
+formula nodes included, and startup asks the provider for each one exactly like
+any other — the formula says how the node *decomposes*, not where its number
+comes from. That is deliberate: fetching the node independently is what makes
+`unexplained` meaningful (it is the measured series' own departure from the
+identity), and it is what lets breakdown tell you your identity has drifted from
+what the warehouse reports. So point `source` at the governed metric even when
+you could compute it, and keep `kind: rate` on a ratio-shaped one.
 
 **Data freshness.** Each metric's true data edge is tracked as it is fetched and exposed as `data_through` in `GET /meta` — the inclusive last date its last observed period covers. When sources disagree (one mart lags the others), the UI anchors every card's headline number, delta, and sparkline at the tree-wide edge via the **As of** selector (toolbar), which defaults to the oldest `data_through` across metrics and counts only periods *fully completed* by that date — so a calendar week the data edge cuts in half never becomes a headline number. The one case this cannot catch is a partially loaded most-recent period (the mart wrote *some* rows for it): detecting that needs load-completeness metadata on the mart side.
 
@@ -684,6 +930,7 @@ window-over-window gap across the dimension's values:
       values: [pro, team, enterprise]   # optional pin-list, overrides top_k
 
 - name: trial_conversion_rate
+  source: my.metrics.trial_conversion_rate
   kind: rate
   formula: "conversions / trial_starts"
   parents: [conversions, trial_starts]
@@ -716,9 +963,11 @@ design.
 
 ```yaml
 - name: revenue
+  source: my.metrics.revenue
   format: currency          # shorthand for {style: currency}
 
 - name: daily_sessions
+  source: my.metrics.daily_sessions
   format:
     style: number           # currency | percent | number  (default number)
     unit: sessions          # small caption under the value; grows the card one line
@@ -787,22 +1036,82 @@ It reports every metric's whole-period count against the fit minimum (`signups: 
 
 ## API reference
 
-Every data route below also answers at **`/trees/{tree_id}/…`** when the process
-serves [several trees](#serving-several-trees); the bare paths shown here are
-aliases for the default tree.
+The **tree-scoped** routes below also answer at **`/trees/{tree_id}/…`** when the
+process serves [several trees](#serving-several-trees); the bare paths are
+aliases for the default tree. The process-wide routes have one form only — a
+`run_id` is already unique, and the index and the health probe are about the
+whole process rather than one tree.
+
+**Tree-scoped** (each also at `/trees/{tree_id}/…`):
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/trees` | Every tree: title, owner, metric count, `state` (`loaded` \| `not_loaded` \| `loading` \| `error`), plus `period`/`goal` where declared and `progress` for a loaded tree that has a goal. Reads parsed YAML only — never triggers a data load |
-| `POST` | `/trees/{id}/load` | Fetch one tree's data now, and return its updated index card |
-| `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), fitted models, per-metric `earliest_available` history discovery (UI bootstrap) |
-| `GET` | `/dag` | Full metric DAG (nodes + edges) |
-| `GET` | `/metrics/{name}` | Metric definition, time series, and posterior summary |
+| `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), per-metric `grains`/`kinds`/`data_through`, fitted models, per-metric `earliest_available` history discovery (UI bootstrap) |
+| `GET` | `/dag` | Full metric DAG (nodes + edges), each node carrying its whole definition. `sql` and `bind` come back `null` to a caller that presents no token when one is configured — see [Authentication](#authentication) |
+| `GET` | `/series` | Every metric's series at its native grain, `{name: {grain, dates, values}}` — one call, hydrates the UI's node cards. Mixed-grain trees have no shared date axis, so dates are per metric |
+| `GET` | `/metrics/{name}` | Metric definition, time series, posterior summary and fit diagnostics |
+| `GET` | `/metrics/{name}/query` | **The query behind a metric's numbers**, when the provider knows it — the provenance surface. Optional `dimension` for the sliced form |
 | `POST` | `/analyze/{name}` | Run Bayesian sampling for a metric |
 | `GET` | `/shapley/{name}` | Shapley attribution for a formula metric |
 | `POST` | `/rca/{name}` | Root cause analysis over the metric's ancestors |
+| `POST` | `/rca/{name}/slices` | Attribute one metric's gap across a declared dimension's values — the traverse-then-slice follow-up |
 | `POST` | `/simulate` | Do-operator what-if scenario (fitted posteriors, or declared beliefs on a cold-start tree) |
+
+**Process-wide:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | A one-line "the API is running" banner carrying no tree data. Open even under `BREAKDOWN_REQUIRE_AUTH` |
+| `GET` | `/health` | Always 200. `{"status": "ok", provider, metrics}`, or `{"status": "degraded", "error": …}` when the default tree can't serve. Liveness for orchestrators — the body, not the status code, carries degraded-ness. Open even under `BREAKDOWN_REQUIRE_AUTH` |
+| `GET` | `/trees` | Every tree: title, owner, metric count, `state` (`loaded` \| `not_loaded` \| `loading` \| `error`), plus `period`/`goal` where declared and `progress` for a loaded tree that has a goal. Reads parsed YAML only — never triggers a data load |
+| `POST` | `/trees/{id}/load` | Fetch one tree's data now, and return its updated index card |
+| `GET` | `/progress/{run_id}` | Live stage of an in-flight RCA or simulation started with that `run_id` |
 | `GET` | `/ui` | Interactive DAG visualization |
+| — | `/mcp` | [MCP server](#mcp-server-ai-assistants) for AI assistants (streamable HTTP). Gated by `BREAKDOWN_API_TOKEN` whenever one is set |
+
+### `GET /metrics/{name}/query`
+
+**Never ship a number the engine can't defend.** For most providers a reader
+could not see what was actually asked of the warehouse, which left every number
+unfalsifiable by exactly the person being asked to trust it. This route closes
+that hole: it returns the query behind a metric, so an analyst can check the
+number against the definition they think they have.
+
+| Param | Description |
+|-------|-------------|
+| `dimension` | *(optional)* Show the **sliced** query for one of the metric's declared `dimensions` instead of the plain one |
+
+```bash
+curl "http://localhost:9090/metrics/revenue/query"
+curl "http://localhost:9090/metrics/signups/query?dimension=region"
+```
+
+```json
+{
+  "metric": "revenue",
+  "dimension": null,
+  "provider": "dbt",
+  "sql": "SELECT DATE_TRUNC('day', ordered_at) AS date, SUM(order_total) AS value ...",
+  "dialect": "duckdb",
+  "executed": true,
+  "note": null
+}
+```
+
+- **`sql: null` is a real answer, not an error.** The `mock` provider synthesizes
+  its data, and the `local`/`cloud` semantic-layer providers hand a metric name
+  to someone else's planner and never see SQL. `note` says which case it is —
+  "we never see the query" and "no query is run" are different facts about how
+  much a reader can verify, and the response keeps them apart rather than
+  flattening both to *unavailable*.
+- **`executed`** distinguishes the statement that *ran* from the statement that
+  *would* run for the loaded window. A snapshot hit serves the number without
+  executing anything; the binding still determines it exactly, so the query is
+  real provenance either way — but you are told which, rather than left to
+  assume. `note` repeats it in words.
+- `warehouse` returns the author's own `sql`; `dbt` returns what it generated;
+  `SnapshotFetcher` delegates to whichever provider it wraps.
+- 404 for an unknown metric, or a `dimension` the metric doesn't declare.
 
 ### `POST /analyze/{name}`
 
@@ -844,7 +1153,7 @@ seasonality is in the target's scope), clamped to the loaded data. The
 response echoes the resolved `reference_window`/`analysis_window` and sets
 `reference_defaulted`. The reference is only the comparison baseline — the
 model always fits on all loaded history before `analysis_start` — see
-[docs/model.md](docs/model.md).
+[docs/model.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md).
 
 Example response:
 
@@ -898,7 +1207,7 @@ Trimmed response:
   "analysis_window": {"start": "2024-02-16", "end": "2024-04-09"},
   "nodes": {
     "revenue": {
-      "status": "ok", "grain": "day",
+      "status": "ok", "status_reason": null, "grain": "day",
       "effective_windows": {
         "reference": {"start": "2024-01-01", "end": "2024-02-15", "n_periods": 46},
         "analysis": {"start": "2024-02-16", "end": "2024-04-09", "n_periods": 54}
@@ -942,7 +1251,45 @@ Trimmed response:
 }
 ```
 
-Per-node fields added by grain support: `grain` (the grain the node was analyzed at), `effective_windows` (the whole periods the requested windows snapped to at that grain), `status` (`"ok"`, or `"window_shorter_than_grain"` when the windows contain no whole period — the node is reported without attribution instead of failing the RCA), and `ci_status` (`"ok"`, `"degenerate_single_period"` for formula nodes whose window snapped to one period — bootstrap CIs are withheld — or `"posterior_only_single_period"` for posterior nodes, whose coefficient uncertainty remains but whose window-sampling component is absent). Gaps are mean-per-period at each node's own grain, so compare nodes via `share_of_gap` and `ranked_causes` scores, not raw gaps, in mixed-grain trees.
+Per-node fields added by grain support: `grain` (the grain the node was analyzed at) and `effective_windows` (the whole periods the requested windows snapped to at that grain). Gaps are mean-per-period at each node's own grain, so compare nodes via `share_of_gap` and `ranked_causes` scores, not raw gaps, in mixed-grain trees.
+
+#### Per-node `status` — one bad node does not end the analysis
+
+Every node in scope carries a `status`. Anything other than `"ok"` means the
+node is reported **without attribution** while the rest of the tree comes back
+normally, with the reason in `status_reason` (`null` when the status is `"ok"`).
+Read `status` first and branch on it; every other key is always present, so a
+skipped node has the same shape as an attributed one.
+
+| `status` | What it means to you |
+|---|---|
+| `ok` | Attributed normally. |
+| `window_shorter_than_grain` | Your windows hold no whole period at this node's grain — e.g. a 3-day window on a monthly node. Nothing is wrong with the data; widen the window, or accept that this node can't speak to a change this short. |
+| `fit_failed` | The node's own model could not be fitted. Overwhelmingly this is **a series with no variance across the fit window** — a parent held at zero the whole time, which for a seasonal business is simply its off-season. A constant series cannot be normalized, so there is no coefficient to attribute with. |
+| `attribution_failed` | A formula node whose exact decomposition is not a finite number over these windows — in practice **a zero denominator** somewhere in the window. Note what survives: the node's own `baseline`, `actual` and `gap` are read off the data, not the model, so they are real and are still reported. Only the split across parents is missing. |
+
+`fit_failed` and `attribution_failed` exist because the alternative was worse:
+one unfittable node used to abort the entire tree analysis and return nothing at
+all. `status_reason` carries the engine's own diagnostic — for
+`attribution_failed` it names the offending parent series, the window, and the
+dates that are zero, so you can narrow the window past them or fix the series at
+the source.
+
+The **RCA target itself is the exception**: the whole response is about that
+node, so a failure there is raised as a 422 carrying the same diagnostic rather
+than buried in a status nobody would find useful.
+
+#### `ci_status`
+
+`ci_status` reports the health of a node's credible intervals, independently of
+`status`:
+
+| `ci_status` | Meaning |
+|---|---|
+| `ok` | Intervals computed normally. |
+| `degenerate_single_period` | A formula node whose windows snapped to one period. The block bootstrap would return identical replicates, so intervals are **withheld** rather than reported at a falsely-zero width. |
+| `posterior_only_single_period` | The same for a posterior node — coefficient uncertainty remains, but the window-sampling component is absent, so the interval is narrower than the truth. |
+| `nonfinite_bootstrap_replicates` | At least one interval on this node was computed from a **subset** of the bootstrap replicates, or withheld because too few survived. A resampled denominator can land on ~0 even when no single period is zero. **The point estimates are unaffected** — they are the exact Shapley values, never bootstrap means; only the intervals lost resolution. |
 
 **Two-level attribution (formula nodes).** Each formula-node contribution also carries a `decomposition` — `{"means": {estimate, ci_95}, "comovement": {estimate, ci_95}}` with `means + comovement = estimate` exactly per bootstrap replicate — and the node carries an `interaction` summary (the summed co-movement shift across parents, with its own CI). The UI's default **Headline** view is the classic price/volume/mix bridge built from these: one row per parent showing its means-bridge contribution, plus one explicit *co-movement shift* row, plus unexplained — rows total to the gap. The **Detailed** toggle expands each parent to its full split. The interaction is shown as its own labeled row rather than silently folded into the factors; for products it is exactly the parents' covariance delta, for other formulas the full within-window co-movement/Jensen shift.
 
@@ -951,11 +1298,13 @@ Per-node fields added by grain support: `grain` (the grain the node was analyzed
 `POST /rca/{name}` combines the two attribution methods across a metric tree:
 
 - **Formula nodes** get `attribution_method: "shapley"` — exact symmetric per-day Shapley values (a window-means bridge plus each parent's share of the within-window co-movement term of each window, analysis added and reference subtracted), so shifts in the parents' within-window co-movement are attributed to parents. `unexplained` is only the target's own measurement noise around the formula — for an exact identity it is zero.
-- **Probabilistic nodes** get `attribution_method: "posterior"` — each contribution is the posterior over the parent's raw-scale coefficient (`beta_raw`) times the parent's window-over-window change. Lagged parents are compared over windows shifted back by the lag, and each lagged contribution reports `lag` and `parent_windows` — the parent's own shifted `{reference, analysis}` windows — so you can see (and reuse, e.g. for `POST /rca/{parent}/slices`) exactly which parent periods were examined. These nodes also report a `components` block: the fitted model's own trend and seasonal terms as window-over-window deltas with CIs, so they no longer hide inside `unexplained`.
+- **Probabilistic nodes** get `attribution_method: "posterior"` — each contribution is the posterior over the parent's raw-scale coefficient (`beta_raw`) times the parent's window-over-window change. Lagged parents are compared over windows shifted back by the lag, and each lagged contribution reports `lag` and `parent_windows` — the parent's own shifted `{reference, analysis}` windows — so you can see (and reuse, e.g. for `POST /rca/{parent}/slices`) exactly which parent periods were examined. These nodes also report a `components` block: the fitted model's own trend and seasonal terms as window-over-window deltas with CIs, so they no longer hide inside `unexplained`. `components` carries only the terms the model actually contains — every fit has a local level, so `trend` is always there, but a node that declares no [`seasonality`](#seasonality) has no `seasonal` key at all rather than a 0.0 with a zero-width interval.
 
 Every contribution is reported as an `estimate` (mean), a 95% interval (`ci_95`), and `prob_same_direction` (mass on the dominant side of zero). The intervals combine coefficient uncertainty (probabilistic nodes) with **window-sampling uncertainty** — the window means themselves are resampled with a circular moving-block bootstrap (≤7-day blocks, jointly across metrics, seeded so responses are deterministic). This is what keeps a 3-day analysis window honest: its CIs are visibly wider than a 4-week window's.
 
-Unfitted probabilistic nodes in scope are fit with ADVI on demand — on data strictly before the analysis window — and cached, so the endpoint works without a prior `/analyze` call. `ranked_causes` is a documented heuristic that propagates an influence score from the target up the ancestor tree (weighting each hop by the parent's clamped share of its child's gap); use it as a triage ordering.
+Unfitted probabilistic nodes in scope are fit with ADVI on demand — on data strictly before the analysis window — and cached, so the endpoint works without a prior `/analyze` call.
+
+`ranked_causes` is a documented heuristic: it propagates an influence score from the target up the ancestor tree, weighting each hop by the parent's `|share_of_gap|` (capped at 1) divided by the child's total gross parent movement — the sum of every parent's `|share_of_gap|`, floored at 1 so a decomposition that sums tidily is never penalized. That divisor is what stops a parent scoring full marks on a gap its siblings cancelled: two parents at +165% and −62% both rank *below* a lone parent cleanly explaining 80%. Each row carries `via`, the child it was reached through, so a score can be traced back to the hop that produced it; a node no hop ever reached is omitted rather than listed at zero (`nodes` remains the full inventory of what was in scope). Use it as a triage ordering, not as a probability.
 
 See [docs/model.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md) for how to read `components`, `unexplained`, and the bootstrap's assumptions.
 
@@ -1017,6 +1366,61 @@ curl -X POST "http://localhost:9090/rca/signups/slices?dimension=region&referenc
 
 Sliced series are fetched from the provider on demand for just these windows and cached per (metric, dimension, window); nothing about slicing touches the startup data or the fits.
 
+**Both windows must lie inside the loaded data window.** Because slicing reads
+from the provider for whatever window you ask for, an out-of-range request is a
+422 naming the loaded window, checked **before any provider call**. Previously
+nothing bounded these dates beyond "they parse", so a typo could ask a warehouse
+for a 200-year scan — holding the tree's lock for the duration — and only then
+fail for having no data in it. If you need a window outside what is loaded,
+restart with a wider `--start-date`/`--end-date` for that tree.
+
+### `POST /simulate`
+
+Do-operator what-if: intervene on one or more metrics, propagate the change
+through the downstream subgraph per posterior draw, and report the steady-state
+effect with credible intervals. The scenario is a **JSON body**; the only query
+parameter is the optional `run_id`.
+
+| Body field | Type | Description |
+|---|---|---|
+| `baseline_start` | date | Start of the window defining "current normal". **Required** on a tree with data; **rejected** on a [cold-start tree](#cold-start-mode-what-if-with-no-data), where operating points come from each node's declared `baseline` instead |
+| `baseline_end` | date | End of that window. Same rule |
+| `interventions` | list | `{metric, mode, value}` — `mode` is `set` (absolute level), `delta` (absolute change), or `pct` (fractional change, `0.1` = +10%). One intervention per metric |
+| `assumptions` | list | `{source, target, effect: {kind, low, high}, id?, note?}` — a user-asserted effect on an edge the tree doesn't encode. `kind` is `relative` (scaled by the target's baseline) or `absolute` (the target's business units); `low`/`high` are read as the **central 90% interval** of a Normal |
+| `levers` | list | `{name, value?, unit?}` — display metadata only; levers have no dynamics of their own in v1 |
+
+A scenario needs **at least one** intervention or assumption, and at most **10**
+of the two combined — the source decomposition enumerates coalitions exactly as
+[formula attribution](#formula) does, and is capped for the same reason.
+
+`baseline_start`/`baseline_end` are the window the simulation measures *from*:
+each node's operating point is its mean over that window, at the node's own
+grain. It is not a fit window — coefficients come from posteriors fitted on all
+loaded history, or from declared priors on a cold-start tree.
+
+```bash
+curl -X POST "http://localhost:9090/simulate" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "baseline_start": "2024-03-13",
+    "baseline_end": "2024-04-09",
+    "interventions": [{"metric": "daily_sessions", "mode": "pct", "value": 0.10}]
+  }'
+```
+
+The response carries `mode` (`fitted` | `cold_start`), the resolved
+`baseline_window` (null in cold start), `n_draws`, `seed`, a `sources`
+decomposition (each intervention's and assumption's signed share, summing
+exactly to the point delta by Shapley efficiency), per-node results
+(`status` — `baseline` | `affected` | `intervened` — `baseline`, `simulated`,
+`delta` with `ci_95`, `relative_delta`, `prob_direction`, `fit_quality`,
+`extrapolation`, `contributions`), plus `warnings` and always-on `caveats`. The
+run is seeded, so identical calls are byte-identical.
+
+Pass an optional `run_id` query parameter to follow a long simulation with
+[`GET /progress/{run_id}`](#get-progressrun_id--live-progress), exactly as for
+RCA.
+
 ---
 
 ## MCP server (AI assistants)
@@ -1062,26 +1466,45 @@ or from Claude Desktop via `claude_desktop_config.json` (stdio bridge):
 
 ### What it looks like
 
-A real, unedited exchange against the bundled demo tree (Claude with the MCP server connected):
+An exchange of this shape, against the bundled demo tree. **The figures are
+executed, not remembered:** every number below comes from a real `run_rca` on
+`breakdown/examples/jaffle_shop_tree.yml` over the windows named in it, and
+[`tests/test_readme.py`](https://github.com/PolycultureResearch/breakdown/blob/main/tests/test_readme.py)
+re-runs that analysis on every CI run and fails if any of them drifts. The
+narration is written to show how the `how_to_read` block is meant to be *used* —
+it illustrates a good answer rather than reproducing a captured one.
 
-**Prompt:** *"Why was revenue down the last two weeks?"*
+**Prompt:** *"What moved revenue over the last two weeks?"*
 
-> Revenue was down because average order value dropped, not because of traffic or order volume — those actually improved and partially masked a bigger AOV problem.
+> Revenue is up slightly, and I can tell you exactly how the two factors behind it split. What I can't tell you, from two weeks of daily data, is that either of them is more than noise.
 >
-> Comparing the last two weeks of data (Mar 27 – Apr 9, 2024) to the two weeks before:
+> Comparing the last two weeks of loaded data (Mar 27 – Apr 9, 2024) against the two weeks before (Mar 13 – Mar 26):
 >
-> - Revenue fell ~1.4%, from about $735.7K to $725.2K per day (a gap of roughly –$10.4K/day).
-> - Average order value is the culprit: it dropped ~4.9% ($5,132 → $4,879), contributing about –$36K/day to revenue. The model is essentially certain about this (95% credible interval of –$50.9K to –$20.5K, with the direction certain).
-> - Order count rose ~3.8% (142.7 → 148 orders/day), contributing about +$27K/day — offsetting most of the AOV damage. Without that lift, the revenue decline would have been ~3.5× larger.
-> - Sessions were up ~2.2% and explain about half of the order-count gain; the rest is a modest underlying trend.
+> - Revenue rose 2.3%, from $26,387 to $26,982 per day — a gap of +$596/day.
+> - **Order count pushed it up.** 142.7 → 148.0 orders/day (+3.8%), worth +$985/day. That is 165% of the gap on its own; shares are unclamped here, and this one exceeds 100% precisely because something else is pulling the other way.
+> - **Average order value is that something else.** $184.68 → $182.15 (−1.4%), worth −$367/day, or −62% of the gap.
+> - **Those two figures are arithmetic, not inference.** `revenue = order_count × average_order_value` is an identity, so the split of it is exact over the days themselves. The pair sums to +$617/day against an observed +$596, leaving `unexplained` at −$22/day — under 4% of the gap. Whatever moved revenue, it was these two: there is no third story hiding in the remainder.
+> - **What is *not* established is either leg's direction.** Order count's contribution carries a 95% credible interval of −$1,499 to +$3,365 (`prob_same_direction` 0.78); AOV's runs −$909 to +$119 (0.92). Both cross zero. The estimates are what these two windows did; the intervals ask how much of that survives resampling 14 daily observations per window, and at this length the answer is: not much. Fourteen periods is a thin basis for a direction.
+> - Sessions were up 2.2%, and the fitted model puts about two-thirds of the order-count gain on them (+3.7 of the +5.4 orders/day) — the least settled leg of the three, at −9.6 to +17.4 orders/day and `prob_same_direction` 0.69. That one is also the only leg that comes from a fitted model rather than the identity, and it was fitted with ADVI, which tends to understate uncertainty — so read 0.69 as the optimistic end.
 >
-> The unexplained remainder is small (~$583/day), so the AOV-vs-volume story accounts for nearly the whole move. Note this tree can't say why AOV fell — that's outside the modeled drivers — so the next step would be checking things like discounting/promos, product mix, or a shift toward cheaper SKUs in that window.
+> So the honest summary is: the decomposition is solid and the trend claim isn't there yet. I wouldn't act on either leg on this evidence. The fix is more periods — a longer window, or more history behind the fit — and I'd choose the next window from the question you're actually asking — an incident, a launch, a price change — not by re-running this until one of them comes back clean.
 >
-> One caveat on the question: the loaded data only covers Jan 1 – Apr 9, 2024, so "last two weeks" here means the most recent two weeks of available data, not the end of the year.
+> Two things this analysis cannot reach at all. It can't say *why* AOV moved: nothing upstream of it is modeled, so that question is outside the tree — discounting and promos, product mix, a shift toward cheaper SKUs. And "the last two weeks" is the last two weeks *of loaded data*: the tree covers Jan 1 – Apr 9, 2024, not up to today.
 >
-> Interactive report: `http://127.0.0.1:9090/ui/#rca=revenue&reference_start=2024-03-13&reference_end=2024-03-26&analysis_start=2024-03-27&analysis_end=2024-04-09`
+> Interactive report: `http://127.0.0.1:9090/ui/#tree=jaffle_shop_tree&rca=revenue&reference_start=2024-03-13&reference_end=2024-03-26&analysis_start=2024-03-27&analysis_end=2024-04-09`
 
-Every claim in that answer traces back to a field in the tool response: the offsetting order-count lift is the unclamped `share_of_gap` design at work, "essentially certain" is `ci_95` + `prob_same_direction` read as confidence language, the small `unexplained` is cited as evidence the story is complete, and "this tree can't say why AOV fell" is the DAG-is-a-hypothesis caveat from `how_to_read` — applied where it matters instead of flattened into a disclaimer. The closing link replays the exact analysis in the UI.
+Every figure there comes from a field in a tool response — the analysis from `run_rca`, the loaded data window from `get_tree` — and the hedges around them are `how_to_read`'s own rules, applied where each one bites. Order count's 165% share is the unclamped `share_of_gap` design at work — the number is only interpretable *because* it is allowed past 100%. The line between what is exact and what is estimated is the payload's own, not a rhetorical softening: on a formula node each contribution's `estimate` **is** the Shapley value over the realized series, while `ci_95` and `prob_same_direction` come entirely from the block bootstrap over the window means. "Here is precisely what happened, and no, I can't promise it will happen again" is one payload read correctly, not one number hedged twice. The confidence language is applied per contribution rather than flattened into a single voice — three legs, three intervals — and `how_to_read`'s ADVI-understates-uncertainty caveat is attached to the sessions leg alone, because that is the only contribution with a fit behind it (`inference_method: "advi"`; the revenue split has no model in it at all). The small `unexplained` is cited as evidence the decomposition is complete, which is the only thing entitling the answer to rule out a third story. "It can't say why AOV moved" is the DAG-is-a-hypothesis caveat, stated where it bites rather than appended as a disclaimer. The closing link replays the exact analysis in the UI.
+
+Two things there are *not* backed by a field. The smaller one: what the interval is made *of* — resampled window means — is in `docs/model.md`, not in `how_to_read`, which defines `ci_95` without saying where its width comes from. The larger one: the refusal to go window-shopping for a cleaner interval. That rule lives in `docs/model.md` under [Multiplicity: a ranking is a search](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md#multiplicity-a-ranking-is-a-search) and is not carried in the `how_to_read` block, which is worth knowing if you are relying on that block alone to keep a narrator honest. It is load-bearing here, too: this same tree over a four-week pair *does* return an order-count interval that excludes zero — and a different story, because revenue fell over that span. Reporting the four-week version because the two-week version came back inconclusive would be the exact failure this engine exists to prevent, and it would look, in the output, identical to having asked the four-week question first.
+
+One thing the narration still does *not* do: quote `ranked_causes`. The ranking here is `order_count` 0.44 (via `revenue`), `daily_sessions` 0.30 (via `order_count`), `average_order_value` 0.27 (via `revenue`) — a fair triage order, and not a probability that any of them is the cause. Worth understanding before you lean on a score: each hop weights a parent by `|share_of_gap|` capped at 1, then divides by how much gross parent movement the child's gap had to absorb. So order count scores 0.44 rather than a saturated 1.0 despite explaining 165% of the gap — a parent explaining 165% *while another cancels 62% of it* is a weaker lead than one cleanly explaining 80% of a gap nothing is fighting, and the score now says so. `via` names the child each node was reached through, so a score can be traced back to the hop that produced it. On a four-node tree the contributions are easier to read directly; the ranking earns its keep when the tree is wide. See [`ranked_causes` is a heuristic](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md#ranked_causes-is-a-heuristic) in `docs/model.md`.
+
+**Securing it.** `/mcp` runs whole analyses, so exposing it off loopback without
+a gate hands anyone who finds the URL your tree and its data. Set
+`BREAKDOWN_API_TOKEN` and `/mcp` requires `Authorization: Bearer <token>` —
+that one variable gates this endpoint and nothing else, which is the case it was
+built for. See [Authentication](#authentication) for gating the rest of the API
+too.
 
 Notes: the first `run_rca`/`run_whatif` on a tree fits models on demand (ADVI) and can take a minute; fits are cached and shared with the UI. The cache resets when `--reload` restarts the process. Set `BREAKDOWN_PUBLIC_URL` if the server is reached at anything other than `http://127.0.0.1:<port>` so `report_url` links resolve.
 
@@ -1136,11 +1559,19 @@ AGENTS.md            # Orientation for contributors (human or AI) — start here
 breakdown/
   parser.py          # YAML → Pydantic models → NetworkX DAG
   formula.py         # Shared formula validation / safe evaluation
+  grains.py          # All grain arithmetic: period snapping, kind-aware resampling
   data_fetch.py      # BaseDataFetcher + Mock / Local / Cloud / Warehouse implementations
+  snapshots.py       # Parquet read-through cache at the fetcher boundary
+  dbt_manifest.py    # In-tree models for dbt's semantic_manifest.json
+  dbt_bridge.py      # semantic_manifest.json → BindingSpec per node (no dbt Cloud)
+  dbt_sql.py         # BindingSpec + grain + window (+ dimension) → dialect SQL
+  dbt_provider.py    # The `dbt` provider: profiles.yml → connection → generated SQL
   engine/
     model.py         # fit_metric() — BSTS via PyMC; compute_shapley()
     rca.py           # run_rca() + shapley_attribution() — root cause analysis
     slices.py        # slice_attribution() — dimensional slicing of a metric's gap
+    simulate.py      # run_scenario() — do-operator what-if (fitted or cold start)
+    progress.py      # Progress callbacks for long-running analyses
   api/
     main.py          # FastAPI app
     trees.py         # TreeState — one per metric tree served by the process

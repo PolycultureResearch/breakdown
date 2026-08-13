@@ -2,7 +2,7 @@ import datetime
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import networkx as nx
 import yaml
@@ -671,6 +671,49 @@ class MetricDefinition(BaseModel):
         return v
 
     @model_validator(mode="after")
+    def check_unique_parents(self) -> "MetricDefinition":
+        # Parent order is the axis order of `beta`/`beta_raw`, and the DAG holds
+        # one edge per (parent, child) — so a name listed twice makes
+        # `defn.parents` one entry longer than `list(dag.predecessors(name))`.
+        # Everything that reads a coefficient positionally off the definition
+        # (the node card's per-parent `beta_raw[i]`, for one) then reads the
+        # wrong axis for every parent after the repeat.
+        seen: Dict[str, int] = {}
+        for parent in self.parents:
+            seen[parent] = seen.get(parent, 0) + 1
+        repeated = ", ".join(f"'{p}' {n} times" for p, n in seen.items() if n > 1)
+        if repeated:
+            raise ValueError(
+                f"Metric '{self.name}' lists parent {repeated} in {self.parents}. "
+                "Parent order is the axis order of the learned coefficients, and "
+                "the DAG keeps one edge per parent, so a repeat shifts every "
+                "later parent's coefficient by one place. List each parent once."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def check_unique_seasonality_names(self) -> "MetricDefinition":
+        # Each entry's name becomes the name of its Fourier coefficients in the
+        # model (`sin_<name>_h1`, `cos_<name>_h1`, …). Two entries sharing one
+        # collide there, and the sampler's complaint arrives at fit time naming
+        # a variable the author never wrote.
+        seen: Dict[str, int] = {}
+        for s in self.seasonality:
+            seen[s.name] = seen.get(s.name, 0) + 1
+        repeated = sorted(name for name, n in seen.items() if n > 1)
+        if repeated:
+            raise ValueError(
+                f"Metric '{self.name}' declares the seasonality name "
+                f"{', '.join(repr(n) for n in repeated)} more than once. Each "
+                "entry's name names its own Fourier coefficients "
+                "(`sin_<name>_h1`, `cos_<name>_h1`), so two entries sharing a "
+                "name collide in the model and the fit fails with a variable-name "
+                "error that never mentions the tree. Name each component "
+                "distinctly (e.g. 'weekly' and 'yearly')."
+            )
+        return self
+
+    @model_validator(mode="after")
     def check_expected_signs(self) -> "MetricDefinition":
         if not self.expected_signs:
             return self
@@ -897,6 +940,90 @@ class MetricTreeConfig(BaseModel):
     provider: DataProviderConfig = Field(default_factory=DataProviderConfig)
     metrics: List[MetricDefinition]
 
+    @model_validator(mode="after")
+    def check_unique_metric_names(self) -> "MetricTreeConfig":
+        """A metric name is a node's identity in the DAG, so it must be unique
+        (roadmap C6).
+
+        Without this the two passes in `_build_dag` merge the definitions
+        instead of refusing them: the last one wins `nodes[name]["definition"]`
+        while **both** definitions' edges are added, so
+        `list(dag.predecessors(name))` — the axis order of `beta`/`beta_raw` —
+        returns the union while `priors`, `lags` and `expected_signs` were
+        validated against only the survivor's `parents`. Every declared prior
+        then lands on the wrong axis or falls back to `Normal(0, 1)`, and the
+        fetch loop overwrites one metric's series with the other's. Nothing
+        raises and nothing warns.
+
+        There is no reading under which the author meant that, so this refuses
+        rather than picking a merge strategy. It runs before any DAG is built.
+        """
+        positions: Dict[str, List[int]] = {}
+        for i, metric in enumerate(self.metrics, start=1):
+            positions.setdefault(metric.name, []).append(i)
+        duplicated = {name: at for name, at in positions.items() if len(at) > 1}
+        if not duplicated:
+            return self
+        detail = "; ".join(
+            f"'{name}' is defined {len(at)} times, at positions "
+            f"{', '.join(str(i) for i in at)} of `metrics:` "
+            f"(sources: {', '.join(repr(self.metrics[i - 1].source) for i in at)})"
+            for name, at in duplicated.items()
+        )
+        raise ValueError(
+            f"Duplicate metric name in this tree: {detail}. A metric's name is "
+            "its identity in the DAG: two definitions sharing one would collapse "
+            "into a single node carrying the union of both definitions' parents, "
+            "while only the last definition's priors, lags and expected_signs "
+            "are validated — so declared priors land on the wrong coefficient "
+            "and one definition's data overwrites the other's. Rename one, or "
+            "merge them into a single definition."
+        )
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """`SafeLoader` that refuses duplicate keys in a mapping.
+
+    PyYAML keeps the last of two identical keys and says nothing, which is the
+    same defect as a duplicate metric name one level down: `priors:` declaring
+    `signups:` twice silently drops one prior, and a repeated `dimensions:`
+    entry silently drops a dimension. Both read as declared in the file.
+
+    The check compares **constructed** keys, so it also catches YAML 1.1's
+    trap: a bare `on:` resolves to the boolean `True` and therefore collides
+    with a `true:` in the same mapping (see `BindingDimension.key`). When the
+    two keys were written differently, the message says so.
+    """
+
+    def construct_mapping(self, node: Any, deep: bool = False) -> Dict[Any, Any]:
+        seen: Dict[Any, Tuple[str, int]] = {}
+        for key_node, _ in node.value:
+            # Only scalars can be tree keys; `<<` is YAML's merge key, which is
+            # legitimately repeatable.
+            if not isinstance(key_node, yaml.ScalarNode):
+                continue
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                continue
+            key = self.construct_object(key_node, deep=True)
+            line = key_node.start_mark.line + 1
+            if key in seen:
+                first_text, first_line = seen[key]
+                aka = ""
+                if first_text != key_node.value:
+                    aka = (
+                        f" ('{first_text}' and '{key_node.value}' are one key: "
+                        f"YAML 1.1 resolves both to {key!r})"
+                    )
+                raise ValueError(
+                    f"Duplicate key '{key_node.value}' at line {line}, already "
+                    f"set at line {first_line}{aka}. YAML keeps only the last of "
+                    "two identical keys, so the earlier one — a prior, a lag, a "
+                    "dimension — would be dropped with no error at all. Delete "
+                    "or rename one."
+                )
+            seen[key] = (key_node.value, line)
+        return super().construct_mapping(node, deep=deep)
+
 
 class Parser:
     def __init__(self, yaml_content: str):
@@ -904,7 +1031,7 @@ class Parser:
         self.dag = self._build_dag()
 
     def _parse_yaml(self, content: str) -> MetricTreeConfig:
-        data = yaml.safe_load(content)
+        data = yaml.load(content, Loader=_UniqueKeyLoader)
         return MetricTreeConfig(**data)
 
     def _build_dag(self) -> nx.DiGraph:
@@ -929,8 +1056,49 @@ class Parser:
 
         self._validate_grains(G)
         self._validate_dimension_weights(G)
+        self._validate_shapley_parents(G)
         self._validate_goal(G)
         return G
+
+    @staticmethod
+    def _validate_shapley_parents(G: nx.DiGraph) -> None:
+        """A formula node's parents are enumerated in coalitions by
+        `compute_shapley`, which refuses more than `_MAX_SHAPLEY_PARENTS` of
+        them. That refusal is the chokepoint no direct library caller can walk
+        around, but by the time it fires the author is minutes into an RCA — so
+        the same limit is checked here, where a too-wide node surfaces at tree
+        load and in `breakdown doctor`.
+
+        The parents counted are `list(G.predecessors(name))`, the same call the
+        engine makes, so the two can't disagree about the number.
+
+        The constant is imported here rather than at module scope because
+        `breakdown.engine.model` imports `MetricDefinition` from this module: a
+        top-level import would be circular (verified — it raises ImportError on
+        `import breakdown.parser`). A function-scope import costs nothing on the
+        boot path either way — `engine.model` is already imported at module
+        scope by `breakdown.api.main`, and it keeps `pymc`/`arviz` inside its
+        own functions (roadmap C14), so reaching it from here loads no part of
+        the inference stack.
+        """
+        from breakdown.engine.model import _MAX_SHAPLEY_PARENTS
+
+        for name in G.nodes:
+            defn = G.nodes[name]["definition"]
+            if defn.formula is None:
+                continue
+            n = len(list(G.predecessors(name)))
+            if n > _MAX_SHAPLEY_PARENTS:
+                raise ValueError(
+                    f"Formula node '{name}' has too many parents for exact "
+                    f"Shapley attribution: {n} parents, at most "
+                    f"{_MAX_SHAPLEY_PARENTS} are supported (the coalition "
+                    "enumeration is O(2^n), so each extra parent doubles the "
+                    "work). Split the node into intermediate sums — group some "
+                    "parents under their own formula node and make that node the "
+                    "parent here — which preserves the identity and keeps every "
+                    "attribution exact."
+                )
 
     def _validate_goal(self, G: nx.DiGraph) -> None:
         """Resolve `tree.goal` against the tree (needs the full node set).

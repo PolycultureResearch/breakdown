@@ -511,6 +511,206 @@ def test_warehouse_tz_aware_offset_keeps_the_labelled_date():
     assert df["m"].tolist() == [100.0]
 
 
+# --- per-row timezone offsets (M5) -------------------------------------------
+#
+# The C1 guard above drops a *uniform* zone. A column whose rows carry
+# *different* offsets is invisible to it and used to crash pandas outright —
+# and that column is not exotic: any daily window crossing a DST boundary
+# produces one on psycopg2 or the Snowflake connector, i.e. an ordinary March
+# or November query.
+#
+# pandas' own error suggests `utc=True`, which is the wrong fix here: it would
+# convert the rows to a common zone and move some of them to the previous
+# calendar day, which is a silent wrong number arriving through the fix for a
+# crash. The policy is unchanged from the uniform case — keep each row's own
+# labelled wall-clock date.
+
+
+def test_mixed_offsets_across_spring_forward_keep_their_labelled_dates(caplog):
+    """A US/Eastern daily window over the March transition: -05:00 before,
+    -04:00 after. Used to raise `ValueError: Mixed timezones detected`."""
+    import logging
+
+    from breakdown.data_fetch import _to_naive_dates
+
+    df = pd.DataFrame(
+        {
+            "date": [
+                "2024-03-09 00:00:00-05:00",
+                "2024-03-10 00:00:00-05:00",
+                "2024-03-11 00:00:00-04:00",
+            ],
+            "v": [1.0, 2.0, 3.0],
+        }
+    )
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        out = _to_naive_dates(df, "m")
+
+    assert out["date"].tolist() == [
+        pd.Timestamp("2024-03-09"),
+        pd.Timestamp("2024-03-10"),
+        pd.Timestamp("2024-03-11"),
+    ]
+    assert out["date"].dt.tz is None
+    # The operator has to fix a different thing than "your source returned a
+    # timezone", so the warning must say a different thing.
+    assert "mixed timezone offsets" in caplog.text
+    assert "-0500" in caplog.text and "-0400" in caplog.text
+
+
+def test_mixed_offsets_across_fall_back_keep_their_labelled_dates(caplog):
+    """The November transition, the other direction: -04:00 then -05:00."""
+    import logging
+
+    from breakdown.data_fetch import _to_naive_dates
+
+    df = pd.DataFrame(
+        {
+            "date": [
+                "2024-11-02 00:00:00-04:00",
+                "2024-11-03 00:00:00-04:00",
+                "2024-11-04 00:00:00-05:00",
+            ],
+            "v": [1.0, 2.0, 3.0],
+        }
+    )
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        out = _to_naive_dates(df, "m")
+
+    assert out["date"].tolist() == [
+        pd.Timestamp("2024-11-02"),
+        pd.Timestamp("2024-11-03"),
+        pd.Timestamp("2024-11-04"),
+    ]
+    assert "mixed timezone offsets" in caplog.text
+
+
+def test_mixed_positive_offsets_are_not_converted_through_utc():
+    """The guard against pandas' suggested fix.
+
+    Sydney's April fall-back returns midnights at +11:00 then +10:00. Both are
+    the *previous* calendar day in UTC, so `pd.to_datetime(..., utc=True)`
+    would silently move every row back a day — the wall-clock policy exists
+    precisely to refuse that.
+    """
+    from breakdown.data_fetch import _to_naive_dates
+
+    df = pd.DataFrame(
+        {
+            "date": ["2024-04-06 00:00:00+11:00", "2024-04-08 00:00:00+10:00"],
+            "v": [1.0, 2.0],
+        }
+    )
+    out = _to_naive_dates(df, "m")
+
+    assert out["date"].tolist() == [pd.Timestamp("2024-04-06"), pd.Timestamp("2024-04-08")]
+
+
+def test_uniform_tz_column_is_unchanged_by_the_mixed_offset_path(caplog):
+    """The C1 path must behave exactly as before: one warning naming the zone,
+    and not a word about mixed offsets."""
+    import logging
+
+    from breakdown.data_fetch import _to_naive_dates
+
+    df = pd.DataFrame(
+        {"date": pd.to_datetime(["2024-06-03", "2024-06-04"]).tz_localize("Asia/Tokyo")}
+    )
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        out = _to_naive_dates(df, "m")
+
+    assert out["date"].tolist() == [pd.Timestamp("2024-06-03"), pd.Timestamp("2024-06-04")]
+    assert "timezone-aware (Asia/Tokyo)" in caplog.text
+    assert "mixed" not in caplog.text
+
+
+def test_naive_column_passes_through_without_warning(caplog):
+    import logging
+
+    from breakdown.data_fetch import _to_naive_dates
+
+    df = pd.DataFrame({"date": pd.to_datetime(["2024-06-03", "2024-06-04"]), "v": [1.0, 2.0]})
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        out = _to_naive_dates(df, "m")
+
+    assert out["date"].tolist() == [pd.Timestamp("2024-06-03"), pd.Timestamp("2024-06-04")]
+    assert caplog.text == ""
+
+
+def test_unparseable_dates_keep_their_own_error():
+    """The fallback is for a timezone mix and nothing else — a column of
+    garbage must still report a parse failure, not a timezone diagnosis."""
+    from breakdown.data_fetch import _to_naive_dates
+
+    df = pd.DataFrame({"date": ["not a date", "also not"], "v": [1.0, 2.0]})
+    with pytest.raises(ValueError, match="Unknown datetime string format"):
+        _to_naive_dates(df, "m")
+
+
+def test_warehouse_mixed_offset_rows_survive_the_full_fetch():
+    """End to end on the provider path: the connector hands back
+    `datetime`s with per-row offsets, and the series comes out on its
+    labelled dates instead of raising."""
+    import datetime
+
+    est = datetime.timezone(datetime.timedelta(hours=-5))
+    edt = datetime.timezone(datetime.timedelta(hours=-4))
+    rows = [
+        (datetime.datetime(2024, 3, 9, 0, 0, tzinfo=est), 100.0),
+        (datetime.datetime(2024, 3, 10, 0, 0, tzinfo=est), 200.0),
+        (datetime.datetime(2024, 3, 11, 0, 0, tzinfo=edt), 300.0),
+    ]
+    df = _wh_fetcher(rows).fetch_metric("m", "2024-03-09", "2024-03-11")
+
+    assert df["m"].tolist() == [100.0, 200.0, 300.0]
+    assert df["date"].tolist() == [
+        pd.Timestamp("2024-03-09"),
+        pd.Timestamp("2024-03-10"),
+        pd.Timestamp("2024-03-11"),
+    ]
+    assert df["date"].dt.tz is None
+
+
+def test_fall_back_hour_repeated_wall_clock_is_refused_not_summed():
+    """The one case the wall-clock policy cannot disambiguate: in the fall-back
+    hour the same wall clock occurs twice at two offsets, so both rows floor
+    onto the same date.
+
+    At day/week/month grain that is not an ambiguity about *which period* the
+    rows belong to — both repetitions genuinely fall on 2024-11-03 — so
+    flooring is the right answer and needs no refusal of its own. Two rows for
+    one period is a grain violation whatever the timezone (a result not grouped
+    to the grain it claims), and both provider paths already refuse it: the
+    warehouse fetcher on its period-start guard, the semantic-layer path when
+    `_align_to_spine` reindexes a duplicated date. Neither sums them nor picks
+    one, which is the silent-wrong-number version this pins out.
+    """
+    import datetime
+
+    from breakdown.data_fetch import _align_to_spine, _floor_labels, _to_naive_dates
+
+    edt = datetime.timezone(datetime.timedelta(hours=-4))
+    est = datetime.timezone(datetime.timedelta(hours=-5))
+    rows = [
+        (datetime.datetime(2024, 11, 3, 1, 30, tzinfo=edt), 100.0),
+        (datetime.datetime(2024, 11, 3, 1, 30, tzinfo=est), 200.0),
+        (datetime.datetime(2024, 11, 4, 0, 0, tzinfo=est), 300.0),
+    ]
+    # The warehouse author owns the aggregation, so a 01:30 label is a bug in
+    # the query and is named as one.
+    with pytest.raises(RuntimeError, match="not aligned to period starts"):
+        _wh_fetcher(rows).fetch_metric("m", "2024-11-03", "2024-11-04")
+
+    # The semantic-layer path floors instead — and both repetitions floor onto
+    # 2024-11-03, which is the right date for both. The duplicate is then
+    # refused rather than silently collapsed.
+    df = pd.DataFrame({"date": [r[0] for r in rows], "value": [r[1] for r in rows]})
+    df = _floor_labels(_to_naive_dates(df, "m"), "m", "day")
+    assert df["date"].tolist()[:2] == [pd.Timestamp("2024-11-03")] * 2
+    with pytest.raises(ValueError, match="duplicate labels"):
+        _align_to_spine(df, "m", "day", "flow", "2024-11-03", "2024-11-04", "value")
+
+
 def test_warehouse_rows_entirely_off_the_spine_raise():
     """SQL that ignores its bound parameters returns rows for the wrong window;
     every row then falls off the spine and the old code zero-filled the lot.
@@ -542,6 +742,132 @@ def test_warehouse_interior_gap_fill_warns(caplog):
 
     assert "interior" in caplog.text.lower()
     assert "2024-01-08" in caplog.text  # names the period it invented
+    assert "leading" not in caplog.text.lower()  # the source's first row is the window's
+
+
+# --- leading gaps: fabricated, and now disclosed -----------------------------
+#
+# Periods *before* the source's first row fall outside the interior run by
+# construction, so they used to be zero-filled with nothing logged at all. That
+# is the metric a first client is most likely to have — a product launched in
+# March, a channel switched on in week 3 — trained on a manufactured level shift
+# and trend, on a node RCA will happily rank as a cause. The fill stays (an
+# all-quiet flow window is legitimate, and per-grain frames inner-join so
+# trimming one late node would delete January for the whole tree); the silence
+# does not.
+
+
+def test_warehouse_leading_gap_fill_warns_and_names_the_periods(caplog):
+    import datetime
+    import logging
+
+    # Source starts on the 20th of a window opened on the 1st: 19 fabricated days.
+    rows = [
+        (datetime.date(2024, 1, 20), 5.0),
+        (datetime.date(2024, 1, 21), 6.0),
+        (datetime.date(2024, 1, 22), 7.0),
+    ]
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        df = _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-22")
+
+    # Non-breaking: the series is exactly what it was before the warning.
+    assert len(df) == 22
+    assert df["m"].head(19).tolist() == [0.0] * 19
+    assert df["m"].tail(3).tolist() == [5.0, 6.0, 7.0]
+
+    text = caplog.text
+    assert "leading" in text.lower()
+    assert "'m'" in text  # names the metric
+    assert "19 leading day period(s)" in text  # names the count
+    assert "2024-01-01 → 2024-01-19" in text  # names the range fabricated
+    assert "2024-01-20" in text  # names where the real data starts
+    # Listed periods are capped at five, like the interior warning.
+    assert "2024-01-05" in text and "2024-01-06" not in text
+    assert "…" in text
+    assert "not the same as a zero" in text  # says what it means
+
+
+def test_leading_gap_warning_lists_them_all_when_there_are_few(caplog):
+    import datetime
+    import logging
+
+    rows = [
+        (datetime.date(2024, 1, 3), 5.0),
+        (datetime.date(2024, 1, 4), 6.0),
+    ]
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-04")
+
+    assert "2 leading day period(s)" in caplog.text
+    assert "that is all of them" in caplog.text
+
+
+def test_local_leading_gap_fill_warns(monkeypatch, caplog):
+    """The warning lives in `_align_to_spine`, so every provider gets it — the
+    whole point of C2 moving the contract out of the warehouse fetcher."""
+    import logging
+
+    frame = _sl_frame([pd.Timestamp("2024-01-15"), pd.Timestamp("2024-01-22")], [100.0, 250.0])
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        df = _local_fetcher(frame, monkeypatch).fetch_metric(
+            "m", "2024-01-01", "2024-01-28", grain="week"
+        )
+
+    assert df["m"].tolist() == [0.0, 0.0, 100.0, 250.0]
+    assert "2 leading week period(s)" in caplog.text
+    assert "2024-01-01 → 2024-01-08" in caplog.text
+
+
+def test_empty_result_full_fill_draws_no_leading_warning(caplog):
+    """ "A source returning no rows at all keeps the full fill for flows" is a
+    decision already taken, not a leading gap — an all-quiet window has no
+    "before its first row". The provider that knows the result was empty warns
+    about that itself; this path must not second-guess it."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        df = _wh_fetcher([]).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week")
+
+    assert df["m"].tolist() == [0.0, 0.0, 0.0, 0.0]
+    assert caplog.text == ""
+
+
+def test_leading_gap_still_raises_for_stock_and_rate(caplog):
+    """`stock` has nothing to forward-fill from and `rate` cannot be invented:
+    both already refused to fabricate, and a warning must not soften either
+    into a log line."""
+    import datetime
+    import logging
+
+    rows = [(datetime.date(2024, 1, 15), 250.0)]
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        with pytest.raises(RuntimeError, match="no value at or before the first week period"):
+            _wh_fetcher(rows).fetch_metric(
+                "m", "2024-01-01", "2024-01-28", grain="week", kind="stock"
+            )
+        with pytest.raises(RuntimeError, match="Rate metric 'm' is missing week periods"):
+            _wh_fetcher(rows).fetch_metric(
+                "m", "2024-01-01", "2024-01-28", grain="week", kind="rate"
+            )
+
+    # The error is the disclosure for these kinds; no leading-fill line.
+    assert "leading" not in caplog.text.lower()
+
+
+def test_leading_and_interior_gaps_are_reported_separately(caplog):
+    import datetime
+    import logging
+
+    rows = [
+        (datetime.date(2024, 1, 15), 100.0),
+        (datetime.date(2024, 1, 29), 250.0),
+    ]
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        df = _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-02-04", grain="week")
+
+    assert df["m"].tolist() == [0.0, 0.0, 100.0, 0.0, 250.0]
+    assert "2 leading week period(s)" in caplog.text
+    assert "1 interior week period(s)" in caplog.text
 
 
 # -- the semantic-layer providers never snapped at all (C2) --
@@ -879,6 +1205,7 @@ def test_mock_reads_per_parent_priors_and_can_generate_a_negative_edge():
 
 # --- earliest_date discovery (roadmap 1.10) ---
 
+
 def test_base_earliest_date_defaults_to_none():
     class _Minimal(BaseDataFetcher):
         def fetch_metric(self, metric_name, start_date, end_date, grain="day", kind="flow"):
@@ -898,7 +1225,9 @@ def test_warehouse_earliest_date_wraps_the_metric_sql(monkeypatch):
 
     cursor = _StubCursor([(datetime.date(2023, 1, 5),)])
     fetcher = WarehouseDataFetcher(
-        host="h", http_path="p", token="t",
+        host="h",
+        http_path="p",
+        token="t",
         metric_sql={"new_mrr": "SELECT ... :start_date ... :end_date"},
     )
     monkeypatch.setattr(fetcher, "_cursor", lambda: cursor)
@@ -913,7 +1242,9 @@ def test_warehouse_earliest_date_wraps_the_metric_sql(monkeypatch):
 
 def test_warehouse_earliest_date_null_and_unknown_metric(monkeypatch):
     fetcher = WarehouseDataFetcher(
-        host="h", http_path="p", token="t",
+        host="h",
+        http_path="p",
+        token="t",
         metric_sql={"new_mrr": "SELECT ..."},
     )
     monkeypatch.setattr(fetcher, "_cursor", lambda: _StubCursor([(None,)]))
@@ -923,7 +1254,10 @@ def test_warehouse_earliest_date_null_and_unknown_metric(monkeypatch):
 
 def test_warehouse_earliest_date_never_raises(monkeypatch):
     fetcher = WarehouseDataFetcher(
-        host="h", http_path="p", token="t", metric_sql={"new_mrr": "SELECT ..."},
+        host="h",
+        http_path="p",
+        token="t",
+        metric_sql={"new_mrr": "SELECT ..."},
     )
 
     def boom():
@@ -937,9 +1271,7 @@ def test_local_earliest_date_parses_probe_csv(monkeypatch, tmp_path):
     import subprocess
 
     fetcher = LocalDataFetcher(project_path=str(tmp_path))
-    monkeypatch.setattr(
-        "breakdown.data_fetch.provider_extra_missing", lambda p: None
-    )
+    monkeypatch.setattr("breakdown.data_fetch.provider_extra_missing", lambda p: None)
     captured = {}
 
     def fake_run(cmd, **kwargs):
@@ -960,9 +1292,7 @@ def test_local_earliest_date_parses_probe_csv(monkeypatch, tmp_path):
 def test_local_earliest_date_never_raises(monkeypatch, tmp_path):
     fetcher = LocalDataFetcher(project_path=str(tmp_path))
     # Missing extra (snapshot-only deployment): quiet None, no crash.
-    monkeypatch.setattr(
-        "breakdown.data_fetch.provider_extra_missing", lambda p: "mf not on PATH"
-    )
+    monkeypatch.setattr("breakdown.data_fetch.provider_extra_missing", lambda p: "mf not on PATH")
     assert fetcher.earliest_date("revenue") is None
 
 

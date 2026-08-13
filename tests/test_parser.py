@@ -1109,3 +1109,250 @@ metrics:
 """
     with pytest.raises(ValueError, match="deadline must be a YYYY-MM-DD date"):
         Parser(tree)
+
+
+# --- name collisions (roadmap C6) -------------------------------------------
+
+
+DUPLICATE_NAME_TREE = """
+metrics:
+  - name: ads
+    source: w.ads
+  - name: email
+    source: w.email
+  - name: signups
+    source: w.signups
+    parents: [ads]
+    priors:
+      ads: {distribution: Normal, params: {mu: 2.0, sigma: 0.1}}
+  - name: signups
+    source: w.signups_v2
+    parents: [email]
+"""
+
+
+def test_duplicate_metric_name_is_rejected():
+    with pytest.raises(ValueError) as exc:
+        Parser(DUPLICATE_NAME_TREE)
+    msg = str(exc.value)
+    # The message has to find both definitions in a file the author cannot
+    # eyeball: the name, how many there are, where each sits, and what
+    # distinguishes them.
+    assert "'signups' is defined 2 times" in msg
+    assert "positions 3, 4" in msg
+    assert "'w.signups'" in msg and "'w.signups_v2'" in msg
+
+
+def test_duplicate_name_can_no_longer_merge_two_definitions_into_one_node():
+    """The C6 reproduction: a tree that parsed clean while
+    `list(dag.predecessors('signups'))` returned the union of both
+    definitions' parents and the surviving definition declared one.
+
+    `predecessors` is the axis order of `beta`/`beta_raw`, so the declared
+    prior on `ads` was being applied to whichever axis happened to land there.
+    The union is now unconstructible: nothing gets a DAG at all.
+    """
+    with pytest.raises(ValueError):
+        Parser(DUPLICATE_NAME_TREE)
+
+    # And with the duplicate resolved, the two views of a node's parents agree.
+    parser = Parser(
+        DUPLICATE_NAME_TREE.replace(
+            "name: signups\n    source: w.signups_v2", "name: signups_v2\n    source: w.signups_v2"
+        )
+    )
+    for name in parser.dag.nodes:
+        defn = parser.get_metric(name)
+        assert list(parser.dag.predecessors(name)) == defn.parents
+
+
+def test_duplicate_metric_name_fails_before_the_dag_exists():
+    # The refusal lives on MetricTreeConfig, so it fires while the YAML is
+    # still being validated — before any DAG is built or any series fetched.
+    import yaml as _yaml
+
+    from breakdown.parser import MetricTreeConfig
+
+    with pytest.raises(ValueError, match="Duplicate metric name"):
+        MetricTreeConfig(**_yaml.safe_load(DUPLICATE_NAME_TREE))
+
+
+def test_three_definitions_of_one_name_report_every_position():
+    tree = """
+metrics:
+  - name: dau
+    source: w.a
+  - name: dau
+    source: w.b
+  - name: dau
+    source: w.c
+"""
+    with pytest.raises(ValueError, match="defined 3 times, at positions 1, 2, 3"):
+        Parser(tree)
+
+
+def test_a_parent_listed_twice_is_rejected():
+    # `parents` order is the axis order of the learned coefficients while the
+    # DAG holds one edge per parent, so a repeat leaves `defn.parents` one
+    # longer than `list(dag.predecessors(name))` and shifts every coefficient
+    # read positionally off the definition after it.
+    tree = """
+metrics:
+  - name: ads
+    source: w.ads
+  - name: email
+    source: w.email
+  - name: signups
+    source: w.signups
+    parents: [ads, email, ads]
+"""
+    with pytest.raises(ValueError, match="lists parent 'ads' 2 times"):
+        Parser(tree)
+
+
+def test_a_metric_that_is_its_own_parent_is_caught_as_a_cycle():
+    # Already handled: the self-loop makes the graph non-acyclic, so the
+    # existing cycle check refuses it. Pinned so the refusal survives.
+    tree = """
+metrics:
+  - name: dau
+    source: w.dau
+    parents: [dau]
+"""
+    with pytest.raises(ValueError, match="contains cycles"):
+        Parser(tree)
+
+
+def test_a_repeated_yaml_key_is_rejected_with_both_lines():
+    # PyYAML keeps the last of two identical mapping keys and says nothing —
+    # the same silent merge as a duplicate metric name, one level down. Here
+    # the mu: 2.0 prior would simply never exist.
+    tree = """
+metrics:
+  - name: ads
+    source: w.ads
+  - name: signups
+    source: w.signups
+    parents: [ads]
+    priors:
+      ads: {distribution: Normal, params: {mu: 2.0}}
+      ads: {distribution: Normal, params: {mu: 9.0}}
+"""
+    with pytest.raises(ValueError) as exc:
+        Parser(tree)
+    msg = str(exc.value)
+    assert "Duplicate key 'ads' at line 10, already set at line 9" in msg
+
+
+def test_a_repeated_dimension_name_is_rejected():
+    tree = """
+metrics:
+  - name: signups
+    source: w.signups
+    dimensions:
+      region: customer__region
+      region: customer__country
+"""
+    with pytest.raises(ValueError, match="Duplicate key 'region'"):
+        Parser(tree)
+
+
+def test_yaml_11_makes_on_and_true_the_same_key_and_that_is_caught():
+    # The `on:` trap again (see test_join_key_is_not_named_on_because_yaml_
+    # would_eat_it): YAML 1.1 resolves a bare `on` to True, so `on:` and
+    # `true:` in one mapping are one key. The duplicate check compares
+    # constructed keys, so it sees the collision and says why.
+    bind = (
+        SUM_BIND + "      dimensions:\n        region:\n          column: region\n"
+        "          join: dim_customers\n          on: customer_id\n          true: other_id\n"
+    )
+    with pytest.raises(ValueError) as exc:
+        Parser(_bound_tree(bind))
+    msg = str(exc.value)
+    assert "are one key" in msg and "YAML 1.1" in msg
+
+
+def test_yaml_anchors_and_merge_keys_still_load():
+    # `<<` is legitimately repeatable, so the duplicate-key check must skip it.
+    tree = """
+defaults: &defaults
+  grain: week
+  kind: flow
+
+metrics:
+  - name: ads
+    source: w.ads
+    <<: *defaults
+  - name: signups
+    source: w.signups
+    <<: *defaults
+    parents: [ads]
+"""
+    parser = Parser(tree)
+    assert parser.get_metric("signups").grain == "week"
+
+
+def test_a_repeated_seasonality_name_is_rejected():
+    # Each entry names its own Fourier coefficients (`sin_<name>_h1`), so two
+    # entries sharing a name collide inside the model and the fit dies with a
+    # variable-name error that never mentions the tree.
+    tree = """
+metrics:
+  - name: dau
+    source: w.dau
+    seasonality:
+      - {period: 7, name: weekly}
+      - {period: 365, name: weekly}
+"""
+    with pytest.raises(ValueError, match="seasonality name 'weekly' more than once"):
+        Parser(tree)
+
+
+# --- the exact-Shapley parent cap, at parse time ----------------------------
+
+
+def _wide_formula_tree(n: int) -> str:
+    parents = [f"p{i}" for i in range(n)]
+    lines = "".join(f"  - name: {p}\n    source: w.{p}\n" for p in parents)
+    return (
+        "metrics:\n"
+        + lines
+        + "  - name: total\n    source: w.total\n"
+        + f'    formula: "{" + ".join(parents)}"\n'
+        + f"    parents: [{', '.join(parents)}]\n"
+    )
+
+
+def test_a_formula_node_above_the_shapley_cap_is_refused_at_parse_time():
+    # `compute_shapley` refuses it too — that is the chokepoint a direct
+    # library caller cannot walk around — but an author should hear about a
+    # 13-parent node when the tree loads, not five minutes into an RCA.
+    from breakdown.engine.model import _MAX_SHAPLEY_PARENTS
+
+    with pytest.raises(ValueError) as exc:
+        Parser(_wide_formula_tree(_MAX_SHAPLEY_PARENTS + 1))
+    msg = str(exc.value)
+    assert "Formula node 'total' has too many parents" in msg
+    assert f"at most {_MAX_SHAPLEY_PARENTS} are supported" in msg
+
+
+def test_a_formula_node_at_the_shapley_cap_parses():
+    from breakdown.engine.model import _MAX_SHAPLEY_PARENTS
+
+    parser = Parser(_wide_formula_tree(_MAX_SHAPLEY_PARENTS))
+    assert len(list(parser.dag.predecessors("total"))) == _MAX_SHAPLEY_PARENTS
+
+
+def test_the_cap_is_only_for_formula_nodes():
+    # A probabilistic node's parents are regressors, not coalition players:
+    # nothing enumerates 2^n over them.
+    from breakdown.engine.model import _MAX_SHAPLEY_PARENTS
+
+    n = _MAX_SHAPLEY_PARENTS + 1
+    parents = [f"p{i}" for i in range(n)]
+    tree = (
+        "metrics:\n"
+        + "".join(f"  - name: {p}\n    source: w.{p}\n" for p in parents)
+        + f"  - name: total\n    source: w.total\n    parents: [{', '.join(parents)}]\n"
+    )
+    assert len(list(Parser(tree).dag.predecessors("total"))) == n

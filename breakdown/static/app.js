@@ -23,6 +23,7 @@ const state = {
   rca: null,           // last POST /rca response
   refMode: "auto",     // "auto": server picks the reference (matched adjacent block); "custom": user-typed
   rcaView: "headline", // formula-node attribution view: "headline" | "detailed"
+  winAdvisories: [],   // window caveats from validateWindows — shown with the RESULT, not only before it
   activeCause: null,   // highlighted ranked cause
   slices: {},          // metric -> {dimension, result|error|loading, lag} for the open slice
 
@@ -138,7 +139,19 @@ function hashParams() {
 }
 
 async function api(path, opts) {
-  const resp = await fetch(path, opts);
+  let resp;
+  try {
+    resp = await fetch(path, opts);
+  } catch (netErr) {
+    // A rejected fetch is the only thing that genuinely means "the connection
+    // dropped". Tag it, because `err.status === undefined` is *also* true of
+    // every ReferenceError and TypeError thrown by our own rendering code —
+    // which is how a CDN-blocked library used to be reported as an unreachable
+    // server. See `isTransient`.
+    const err = new Error(netErr.message || "Network request failed");
+    err.network = true;
+    throw err;
+  }
   if (!resp.ok) {
     let detail;
     try { detail = (await resp.json()).detail; } catch { /* not json */ }
@@ -158,9 +171,30 @@ async function api(path, opts) {
 const WAKE_STATUSES = new Set([502, 503, 504]);
 
 function isTransient(err) {
-  // A rejected fetch (no `status`) is a dropped connection: the machine went
-  // away mid-request, which is exactly the case worth retrying.
-  return err.status === undefined || WAKE_STATUSES.has(err.status);
+  // Only two things are transient: a rejected fetch (tagged `network` by
+  // `api()`) and a gateway status from the edge. This used to read
+  // `err.status === undefined`, which is true of *every* error that never
+  // touched the network — a ReferenceError from a CDN-blocked `cytoscape`
+  // included. That reported a healthy server as unreachable and offered a
+  // Try again button that could never succeed. An error we did not raise
+  // ourselves is a bug or a missing dependency, and must say so.
+  return err.network === true || WAKE_STATUSES.has(err.status);
+}
+
+/* The four CDN libraries this page needs, checked before anything is drawn.
+   A corporate proxy, an ad blocker, an offline laptop or a failed
+   Subresource Integrity check all produce the same symptom — the global is
+   simply absent — and the failure surfaces much later as a ReferenceError
+   inside rendering code. Naming the missing library and its host is the
+   difference between a five-second diagnosis and blaming the server. */
+const CDN_LIBS = [
+  { global: "cytoscape", name: "Cytoscape.js", host: "cdnjs.cloudflare.com" },
+  { global: "dagre", name: "dagre", host: "cdnjs.cloudflare.com" },
+  { global: "Plotly", name: "Plotly.js", host: "cdn.plot.ly" },
+];
+
+function missingLibs() {
+  return CDN_LIBS.filter((l) => typeof window[l.global] === "undefined");
 }
 
 async function apiWithWake(path, { attempts = 6, onWaiting = null } = {}) {
@@ -180,7 +214,10 @@ async function apiWithWake(path, { attempts = 6, onWaiting = null } = {}) {
 }
 
 function fmt(x) {
-  if (x === null || x === undefined) return "—";
+  // NaN and ±Infinity fall through every branch below and render as literal
+  // "NaN" / "Infinity". They mean the same thing a null does here — no number
+  // to show — so they get the same em dash.
+  if (x === null || x === undefined || !Number.isFinite(x)) return "—";
   const ax = Math.abs(x);
   if (ax >= 10000) return x.toLocaleString(undefined, { maximumFractionDigits: 0 });
   if (ax >= 100) return x.toLocaleString(undefined, { maximumFractionDigits: 1 });
@@ -189,12 +226,17 @@ function fmt(x) {
 }
 
 function pct(x) {
-  if (x === null || x === undefined) return "—";
+  if (x === null || x === undefined || !Number.isFinite(x)) return "—";
   return (x * 100).toFixed(1) + "%";
 }
 
+/* A withheld percentage is an em dash, not an empty string. The engine nulls
+   `relative_change` / `relative_delta` when the baseline is ~0 — a real
+   "cannot be expressed as a percentage" — and rendering that as nothing left
+   `(-3.06 ())` in the headline and blank cells in the Δ% column, both of which
+   read as "nothing to report" rather than "not defined here". */
 function signedPct(x) {
-  if (x === null || x === undefined) return "";
+  if (x === null || x === undefined || !Number.isFinite(x)) return "—";
   return (x >= 0 ? "+" : "") + (x * 100).toFixed(1) + "%";
 }
 
@@ -642,6 +684,8 @@ function validateWindows() {
     });
     runBtn.disabled = true;
     setStatus(msg, "error");
+    state.winAdvisories = [];
+    renderWindowAdvisories();
     return false;
   };
 
@@ -683,8 +727,24 @@ function validateWindows() {
   if (daysInclusive(new Date(re), new Date(as)) > 2) {
     advisories.push("gap between windows — in a trending business a non-adjacent reference absorbs trend into the comparison");
   }
-  setStatus(advisories.length ? "ⓘ " + advisories.join(" · ") : "");
+  // Advisories qualify the *result*, so they go in a persistent line inside
+  // the setup panel and are remembered for the results card and the export.
+  // They used to be written to `#status`, which run progress overwrites on its
+  // first 400ms poll and the completion notice overwrites again — so the
+  // caveat about the window was always erased by the run it was warning about,
+  // and never reached the report a reader sees without its author.
+  state.winAdvisories = advisories;
+  renderWindowAdvisories();
+  setStatus("");
   return true;
+}
+
+function renderWindowAdvisories() {
+  const el = $("win-advisories");
+  if (!el) return;
+  const adv = state.winAdvisories || [];
+  el.hidden = !adv.length;
+  el.textContent = adv.length ? "ⓘ " + adv.join(" · ") : "";
 }
 
 /* Keep the Share menu's items in sync with what is currently shareable. */
@@ -697,6 +757,160 @@ function updateShareMenu() {
   // (a metric, an RCA run, a what-if) qualifies.
   if (save) save.disabled = !location.hash || location.hash.length < 2;
 }
+
+/* ---------- degraded RCA nodes ----------
+   `POST /rca/{name}` degrades a node instead of failing the whole tree: any
+   `status` other than "ok" means that node was reported *without* attribution,
+   with the engine's own sentence in `status_reason`. The cardinal sin this
+   guards against is rendering one of those as an analyzed node that simply
+   found nothing — an empty contributions table plus a null `attribution_method`
+   otherwise reads as "posterior, no drivers". Every consumer (canvas overlay,
+   ranked causes, attribution detail, the exported report) goes through here so
+   the vocabulary is one string, not four.
+
+   `label` is the noun phrase; `short` is the chip; `explains` says which part
+   of the record survived, because that differs and it matters: a fit failure
+   loses the decomposition, a too-short window loses the numbers themselves. */
+const NODE_STATUS = {
+  window_shorter_than_grain: {
+    label: "not analyzed — window shorter than grain",
+    short: "window < grain",
+    explains: "The windows hold no whole period at this metric's grain, so it has no measured movement here at all.",
+  },
+  fit_failed: {
+    label: "not analyzed — model fit failed",
+    short: "fit failed",
+    explains: "Its movement below is measured from the data and stands; what is missing is the decomposition, because this node's model could not be fitted.",
+  },
+  attribution_failed: {
+    label: "not decomposed — attribution failed",
+    short: "attribution failed",
+    explains: "Its movement below is measured from the data and stands; what is missing is the decomposition, because the formula has no finite value over these windows.",
+  },
+};
+
+/* The status entry for a node, or null when it is fine. Unknown statuses are
+   surfaced verbatim rather than swallowed — a status this build has never
+   heard of is still not "ok", and silently treating it as ok is the failure
+   mode this whole block exists to prevent. */
+function nodeStatus(node) {
+  if (!node || !node.status || node.status === "ok") return null;
+  return (
+    NODE_STATUS[node.status] || {
+      label: `not analyzed — ${node.status}`,
+      short: node.status,
+      explains: "",
+    }
+  );
+}
+
+/* `ci_status` is the interval's own health, independent of the node's status.
+   All four values are surfaced: rendering nothing for three of them and a note
+   for the fourth reads as "interval checked and fine" when it means "not
+   said". */
+const CI_STATUS_NOTE = {
+  degenerate_single_period: {
+    text: "single-period window: no bootstrap CI",
+    why: "A single period gives the block bootstrap nothing to resample, so every replicate is identical and the interval would be falsely zero-width. It is withheld instead.",
+  },
+  posterior_only_single_period: {
+    text: "single-period window: posterior-only CI",
+    why: "Intervals here carry the coefficient posterior only — the window-resampling component is absent, because a single period cannot be resampled. Read them as narrower than the truth.",
+  },
+  nonfinite_bootstrap_replicates: {
+    text: "intervals withheld: non-finite bootstrap replicates",
+    why: "Enough bootstrap replicates came out non-finite (a resampled denominator mean landing on zero) that an interval was withheld entirely, or computed only from the replicates that survived. Point estimates are unaffected: they are the exact Shapley values, never bootstrap means.",
+  },
+  degenerate_bootstrap_spread: {
+    text: "intervals withheld: a parent does not vary in this window",
+    why: "At least one parent holds the same value across the whole window — an unlaunched feature, a stock held flat, a seasonal business's off-season — so every bootstrap replicate resamples the same number and the interval would come out exactly zero-width. A zero-width interval is not certainty, it is the absence of information, so it is withheld (roadmap C4).",
+  },
+};
+
+/* The note for a `ci_status`, or null when there is nothing to say. `"ok"` and
+   `null` are the only silent values; everything else is surfaced, including a
+   value this build has never heard of.
+
+   This mirrors `nodeStatus()` deliberately. `CI_STATUS_NOTE[x]` on its own
+   returns undefined for an unknown status and renders nothing — which is
+   indistinguishable from "interval checked and fine". That is exactly how
+   `posterior_only_single_period` went unrendered for its whole life: the
+   lookup table was the enumeration, and an enumeration with a silent default
+   is not one. A status the engine emits and this build cannot name is still
+   not `ok`. */
+/* How a node's decomposition was computed. Three known answers and no silent
+   default: `x === "shapley" ? … : "posterior"` labelled a null or unrecognised
+   method "posterior", which is a specific claim about how the numbers were
+   produced — the sort of claim that must never be a fallback branch. */
+const ATTRIBUTION_LABEL = {
+  shapley: "Shapley (exact)",
+  posterior: "posterior",
+  slice_sum: "slice sum",
+  slice_blend: "slice blend",
+};
+
+function attributionLabel(method) {
+  if (!method) return "attribution method not reported";
+  return ATTRIBUTION_LABEL[method] || `attribution method: ${method}`;
+}
+
+function ciStatusNote(status) {
+  if (!status || status === "ok") return null;
+  return (
+    CI_STATUS_NOTE[status] || {
+      text: `interval flagged: ${status}`,
+      why: "This build does not recognise that interval status, so it is shown verbatim. It is not 'ok' — the engine flagged something about this interval that a newer version of the UI would explain. Treat the interval as qualified until you can check the engine's docs.",
+    }
+  );
+}
+
+/* Trend and seasonal rows for a posterior node's attribution table. They are
+   part of the arithmetic — `unexplained = gap − Σcontributions − trend −
+   seasonal` — so a table without them does not reconcile to the gap and hands
+   the reader an unexplained figure that is smaller than the hole in the table.
+
+   A component that is identically zero with a [0, 0] interval is a term the
+   model does not carry (an unseasonal metric's seasonal component). Rendering
+   `[0.00, 0.00]` as a 95% credible interval asserts a precision that was never
+   estimated, so those rows are dropped: they contribute nothing to the sum, and
+   silence about a term that does not exist is honest.
+
+   Shared by the live table and the exported report so the two cannot drift —
+   the export carried these rows and the live view did not, which is how the
+   discrepancy survived. */
+function componentRowsHtml(node, nCols, shareOf, ciCell) {
+  const comps = node.components;
+  if (!comps || nCols !== 5) return "";
+  // No `zeroish` filter any more: the engine used to emit a structurally
+  // absent `seasonal` as `{estimate: 0, ci_95: [0, 0]}` — a zero-width 95%
+  // interval asserting infinite precision about a term the model never had —
+  // and this function dropped the row to compensate. C4 fixed it at the
+  // source: a term the node does not declare is simply not a key. Absence is
+  // the only signal now, which is why the filter is just `comps[k]`.
+  return ["trend", "seasonal"]
+    .filter((k) => comps[k])
+    .map(
+      (k) => `<tr class="dim"><td>${k}</td>
+        <td class="num">${fmt(comps[k].estimate)}</td>
+        <td class="num">${shareOf(comps[k].estimate, node.gap)}</td>
+        <td class="num">${ciCell(comps[k].ci_95)}</td>
+        <td class="num">—</td></tr>`,
+    )
+    .join("");
+}
+
+/* Always-on footer for the Root cause tab, the counterpart of the what-if
+   tab's `res.caveats`. The exported report has carried a Methods footnote and
+   the words "triage heuristic, not rigorous multi-hop attribution" since it
+   shipped; the live view — where the ranked list is the single most prominent
+   thing on screen — carried neither, so the reader most likely to act on the
+   ranking was the one told least about what it is. (The deeper tension is
+   roadmap S12; this is only the disclosure, not the fix.) */
+const RCA_CAVEATS = [
+  "Ranked causes are a triage order, not evidence: the score walks the tree multiplying each edge's share of its child's gap. Read it as where to look next, and read the attribution tables for what was actually measured.",
+  "Changes are window-mean differences at each node's grain. Formula edges are exact Shapley attributions; probabilistic edges multiply a fitted posterior by the parent's window delta, so they are fitted associations, not experiments.",
+  "Intervals are 95% credible intervals combining the coefficient posterior with a moving-block bootstrap of the window rows. Where one is withheld the table says so; the point estimates are unaffected.",
+];
 
 /* ---------- exportable RCA report (roadmap 1.5) ----------
    Self-contained HTML built entirely client-side: the browser already holds
@@ -731,7 +945,11 @@ function buildRcaReportHtml(res, treePng, stripPng) {
   const target = res.nodes[res.target];
   const now = new Date();
   const ciCell = (ci) => (ci ? `[${fmt(ci[0])}, ${fmt(ci[1])}]` : "—");
-  const shareOf = (v, gap) => (Math.abs(gap) > 1e-12 ? pct(v / gap) : "—");
+  // A withheld numerator is not a zero share: `null / gap` is 0 in JavaScript,
+  // so an unguarded division printed "0.0%" for a quantity the engine declined
+  // to give.
+  const shareOf = (v, gap) =>
+    v == null || gap == null || Math.abs(gap) <= 1e-12 ? "—" : pct(v / gap);
   const num = (v) => `<td class="num">${v}</td>`;
 
   const grainNote = (node) => {
@@ -740,18 +958,57 @@ function buildRcaReportHtml(res, treePng, stripPng) {
       const ew = node.effective_windows;
       bits.push(`${node.grain} grain, snapped to ${ew.reference.n_periods}+${ew.analysis.n_periods} whole ${node.grain}s`);
     }
-    if (node.ci_status === "degenerate_single_period") bits.push("single-period window: no bootstrap CI");
+    if (node.fit_quality === "suspect") bits.push("⚠ suspect fit — the engine's own fit check failed for this node's model");
     if (node.sign_warnings && node.sign_warnings.length) bits.push("⚠ learned sign contradicts declared expectation");
+    if (node.seasonality_warnings && node.seasonality_warnings.length) bits.push("⚠ seasonality unidentifiable from fitted history");
     return bits.length ? ` · ${esc(bits.join(" · "))}` : "";
   };
 
+  // Every caveat the live view hides behind a `title=` tooltip has to be
+  // printed here in full. A static report is read without its author present
+  // and with nothing to hover: a caveat rendered as a tooltip is simply absent
+  // from it, which turns "we withheld this interval" into silence.
+  const caveatBlock = (node) => {
+    const out = [];
+    const ci = ciStatusNote(node.ci_status);
+    if (ci) out.push(`<strong>${esc(ci.text)}.</strong> ${esc(ci.why)}`);
+    if (node.fit_quality === "suspect") {
+      out.push(
+        "<strong>Suspect fit.</strong> The engine's own fit check failed for this node's model " +
+        "(NUTS: R̂, divergences or effective sample size; ADVI: an ELBO that had not settled). " +
+        "The contributions in this section rest on that fit.",
+      );
+    }
+    (node.seasonality_warnings || []).forEach((w) => out.push(esc(w)));
+    return out.map((t) => `<p class="warn">⚠ ${t}</p>`).join("");
+  };
+
+  // The movement line: real for every node the engine reached, including the
+  // ones it could not decompose.
+  const gapLine = (node) =>
+    node.gap == null
+      ? ""
+      : `<p class="meta">gap ${fmt(node.gap)} (${node.relative_change == null ? "—" : signedPct(node.relative_change)}) · ${fmt(node.baseline)} → ${fmt(node.actual)} window means${node.grain && node.grain !== "day" ? ` per ${esc(node.grain)}` : ""}</p>`;
+
   const order = [res.target, ...res.ranked_causes.map((c) => c.metric)];
   const blocks = order
-    .filter((name) => res.nodes[name] && res.nodes[name].contributions.length)
+    .filter((name) => res.nodes[name] && (res.nodes[name].contributions.length || nodeStatus(res.nodes[name])))
     .map((name) => {
       const node = res.nodes[name];
+      const st = nodeStatus(node);
+      // A degraded node gets a section of its own rather than being dropped:
+      // an export that omits it is an export that claims the ranked causes
+      // below are the whole story. Reasons print in full — a static report
+      // has no hover to hide them behind.
+      if (st) {
+        return `<section>
+          <h3><code>${esc(name)}</code> <span class="meta">${esc(st.label)}</span></h3>
+          ${gapLine(node)}
+          <p class="warn">⚠ ${esc(st.explains)}${node.status_reason ? ` <em>${esc(node.status_reason)}</em>` : ""}</p>
+        </section>`;
+      }
       const twoLevel = node.contributions.some((c) => c.decomposition);
-      const unexpl = node.unexplained !== null
+      const unexpl = node.unexplained != null
         ? `<tr class="dim"><td>unexplained</td>${num(fmt(node.unexplained))}${num(shareOf(node.unexplained, node.gap))}<td class="num">—</td></tr>`
         : "";
       let tables;
@@ -767,35 +1024,37 @@ function buildRcaReportHtml(res, treePng, stripPng) {
           <h4>Detailed — per-parent split (means + co-movement = total)</h4>
           <table><tr><th>Parent</th><th class="num">means</th><th class="num">co-movement</th><th class="num">total Δ</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>${detRows}</table>`;
       } else {
-        const rows = node.contributions.map((c) => `<tr><td><code>${esc(c.parent)}</code></td>${num(fmt(c.estimate))}${num(c.share_of_gap === null ? "—" : pct(c.share_of_gap))}${num(ciCell(c.ci_95))}${num(c.prob_same_direction == null ? "—" : pct(c.prob_same_direction))}</tr>`).join("");
-        const comps = node.components
-          ? `<tr class="dim"><td>trend</td>${num(fmt(node.components.trend.estimate))}<td class="num">—</td>${num(ciCell(node.components.trend.ci_95))}<td class="num">—</td></tr>
-             <tr class="dim"><td>seasonal</td>${num(fmt(node.components.seasonal.estimate))}<td class="num">—</td>${num(ciCell(node.components.seasonal.ci_95))}<td class="num">—</td></tr>`
-          : "";
-        const unexpl5 = node.unexplained !== null
+        const rows = node.contributions.map((c) => `<tr><td><code>${esc(c.parent)}</code></td>${num(fmt(c.estimate))}${num(c.share_of_gap == null ? "—" : pct(c.share_of_gap))}${num(ciCell(c.ci_95))}${num(c.prob_same_direction == null ? "—" : pct(c.prob_same_direction))}</tr>`).join("");
+        // Same rows, same rule as the live table — via one function, so the two
+        // cannot disagree about whether trend and seasonal are part of the sum.
+        const comps = componentRowsHtml(node, 5, shareOf, ciCell);
+        const unexpl5 = node.unexplained != null
           ? `<tr class="dim"><td>unexplained</td>${num(fmt(node.unexplained))}${num(shareOf(node.unexplained, node.gap))}<td class="num">—</td><td class="num">—</td></tr>`
           : "";
         tables = `<table><tr><th>Parent</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>${rows}${comps}${unexpl5}</table>`;
       }
       const signWarn = (node.sign_warnings || []).map((w) => `<p class="warn">⚠ ${esc(w)}</p>`).join("");
       return `<section>
-        <h3><code>${esc(name)}</code> <span class="meta">${node.attribution_method === "shapley" ? "Shapley (exact)" : "posterior"}${grainNote(node)}</span></h3>
-        <p class="meta">gap ${fmt(node.gap)} (${node.relative_change == null ? "—" : signedPct(node.relative_change)}) · ${fmt(node.baseline)} → ${fmt(node.actual)} window means${node.grain && node.grain !== "day" ? ` per ${esc(node.grain)}` : ""}</p>
-        ${signWarn}${tables}
+        <h3><code>${esc(name)}</code> <span class="meta">${esc(attributionLabel(node.attribution_method))}${grainNote(node)}</span></h3>
+        ${gapLine(node)}
+        ${signWarn}${caveatBlock(node)}${tables}
       </section>`;
     })
     .join("");
 
-  const skipped = Object.entries(res.nodes)
-    .filter(([, n]) => n.status === "window_shorter_than_grain")
-    .map(([n, node]) => `<code>${esc(n)}</code> (${esc(node.grain)})`);
+  const degraded = Object.entries(res.nodes).filter(([, n]) => nodeStatus(n));
 
   const ranked = res.ranked_causes
-    .map((c, i) => `<tr><td>${i + 1}</td><td><code>${esc(c.metric)}</code></td>${num(c.score.toFixed(2))}<td>via ${esc(c.via || "—")}</td></tr>`)
+    .map((c, i) => `<tr><td>${i + 1}</td><td><code>${esc(c.metric)}</code></td>${num(Number.isFinite(c.score) ? c.score.toFixed(2) : "—")}<td>via ${esc(c.via || "—")}</td></tr>`)
     .join("");
 
+  // `data_through` carries `null` for a metric whose data edge is unknown.
+  // Filter before the min: `null < "9999"` is `true` in JS (null coerces to 0),
+  // so an unknown edge would win the comparison and become the tree-wide anchor.
   const dataThrough = state.meta && state.meta.data_through
-    ? Object.values(state.meta.data_through).reduce((a, b) => (a < b ? a : b), "9999")
+    ? Object.values(state.meta.data_through)
+        .filter((d) => typeof d === "string")
+        .reduce((a, b) => (a < b ? a : b), "9999")
     : null;
 
   return `<!DOCTYPE html>
@@ -819,13 +1078,23 @@ function buildRcaReportHtml(res, treePng, stripPng) {
   @media print { body { margin: 8px auto; } section { break-inside: avoid; } }
 </style></head><body>
   <h1>Root cause analysis — <code>${esc(res.target)}</code></h1>
-  <p class="meta">reference ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)} vs analysis ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}${dataThrough ? ` · data through ${esc(dataThrough)}` : ""}${state.meta ? ` · provider: ${esc(state.meta.provider)}` : ""} · generated ${now.toISOString().slice(0, 16).replace("T", " ")} UTC</p>
-  <div class="gap ${goodDir(res.target, target.gap >= 0 ? "up" : "down")}">${target.gap >= 0 ? "+" : ""}${fmt(target.gap)} (${signedPct(target.relative_change)})</div>
+  <p class="meta">reference ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)}${res.reference_defaulted ? " (chosen by the engine, not by the person who ran this)" : ""} vs analysis ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}${dataThrough ? ` · data through ${esc(dataThrough)}` : ""}${state.meta ? ` · provider: ${esc(state.meta.provider)}` : ""} · generated ${now.toISOString().slice(0, 16).replace("T", " ")} UTC</p>
+  ${(state.winAdvisories || []).length
+    ? `<p class="warn">⚠ About these windows: ${esc(state.winAdvisories.join(" · "))}</p>`
+    : ""}
+  ${target.gap == null
+    ? `<p class="warn">⚠ ${esc((nodeStatus(target) || {}).label || "not analyzed")} — ${esc(target.status_reason || "")}</p>`
+    : `<div class="gap ${gapLineParts(res.target, target.gap).cls}">${gapLineParts(res.target, target.gap).sign}${fmt(target.gap)} (${signedPct(target.relative_change)})</div>
+       ${nodeStatus(target) ? `<p class="warn">⚠ ${esc(nodeStatus(target).label)} — ${esc(target.status_reason || "")} The ranked causes below carry no information about this target: nothing was attributed to it.</p>` : ""}`}
   ${stripPng ? `<img src="${stripPng}" alt="target series with reference and analysis windows shaded">` : ""}
   ${treePng ? `<h3>Metric tree</h3><img src="${treePng}" alt="metric tree with RCA overlay">` : ""}
   <h3>Ranked causes <span class="meta">(triage heuristic, not rigorous multi-hop attribution)</span></h3>
   <table><tr><th>#</th><th>Metric</th><th class="num">score</th><th>via</th></tr>${ranked}</table>
-  ${skipped.length ? `<p class="meta">Not analyzed — window shorter than grain: ${skipped.join(", ")}.</p>` : ""}
+  ${degraded.length
+    ? `<p class="warn">⚠ ${degraded.length} of ${Object.keys(res.nodes).length} metrics in scope could not be analyzed, so this ranking is incomplete — nothing upstream of them was attributed. ${degraded
+        .map(([n, node]) => `<code>${esc(n)}</code> (${esc(nodeStatus(node).short)})`)
+        .join(", ")}. Each is detailed below.</p>`
+    : ""}
   <h3 style="margin-top:24px">Attribution detail</h3>
   ${blocks}
   <div class="footnote">
@@ -1011,6 +1280,29 @@ function goodDir(name, dir) {
 function goodClass(name, dir, prefix) {
   const g = goodDir(name, dir);
   return g === "up" ? `${prefix}-up` : g === "down" ? `${prefix}-down` : null;
+}
+
+/* The MOVEMENT direction a gap claims, or null when it claims none.
+   `null >= 0` is `true` in JavaScript and so is `0 >= 0`, so testing a gap
+   with `>=` painted two different non-claims green: a node the engine could
+   not measure, and a node that provably did not move (the engine's own
+   threshold for "no movement" is `abs(gap) < 1e-12`, which is exactly when it
+   withholds `share_of_gap` and `relative_change`). Green means *improved* in
+   this legend; neither of those is an improvement. Callers must treat null as
+   "no tint, no arrow, no sign". */
+const GAP_EPS = 1e-12;
+
+function gapDir(gap) {
+  if (gap == null || !Number.isFinite(gap) || Math.abs(gap) < GAP_EPS) return null;
+  return gap > 0 ? "up" : "down";
+}
+
+/* The gap headline's colour class and leading sign, withheld together when the
+   gap makes no directional claim. `.gap-line` with no up/down class is the ink
+   colour — the "no claim" rendering, which is what a null or zero gap is. */
+function gapLineParts(name, gap) {
+  const d = gapDir(gap);
+  return { cls: d ? goodDir(name, d) : "", sign: d === "up" ? "+" : "" };
 }
 
 /* Card height grows by one line when the metric shows a unit caption. Used for
@@ -1572,6 +1864,21 @@ const CY_STYLE = [
     selector: "node.rca-unexplained",
     style: { "border-style": "dashed", "border-color": COL.warn, "border-width": 3 },
   },
+  {
+    // Analysis was attempted and failed. Same amber caveat channel as the
+    // unexplained badge, but the whole card goes amber rather than keeping an
+    // up/down fill — so at a glance it is distinguishable from a healthy node,
+    // from a node with a genuinely small effect, and from `rca-unexplained`
+    // (which is green/red *inside* an amber outline: analyzed, with a large
+    // residual). Placed after the tint rules so it wins if both ever apply.
+    selector: "node.rca-not-analyzed",
+    style: {
+      "background-color": COL.warnSoft,
+      "border-style": "dashed",
+      "border-color": COL.warn,
+      "border-width": 3,
+    },
+  },
   /* what-if overlay: sign=hue, certainty=background opacity, pinned=heavy border */
   {
     selector: "node.sim-up",
@@ -1776,7 +2083,16 @@ function labelBetaEdges(name, metricData) {
     if (mean === undefined) return;
     const edge = state.cy.getElementById(`${p}->${name}`);
     if (edge.length && !state.rca) {
-      edge.data("label", `β ${fmt(mean)} [${fmt(lo)}, ${fmt(hi)}]`);
+      // A missing bound (the API nulls any non-finite summary stat) used to
+      // render `β 0.10 [—, —]`: a point estimate wearing the brackets of an
+      // interval it does not have. This project's whole stance is that a
+      // relationship without an interval is not a result, so say the interval
+      // is missing rather than drawing an empty one.
+      const haveCI = Number.isFinite(lo) && Number.isFinite(hi);
+      edge.data(
+        "label",
+        haveCI ? `β ${fmt(mean)} [${fmt(lo)}, ${fmt(hi)}]` : `β ${fmt(mean)} · no interval`,
+      );
     }
   });
 }
@@ -1827,10 +2143,14 @@ function renderMetricTab(name, data) {
     <table class="kv">
       <tr><td>Source</td><td><code>${esc(def.source)}</code> <button class="linkish" data-query="${esc(name)}">show query</button></td></tr>
       <tr><td>Grain</td><td><code>${esc(grain)}</code> · ${esc(def.kind || "flow")}</td></tr>
-      ${state.meta.data_through && state.meta.data_through[name]
-        ? `<tr><td>Data through</td><td>${esc(state.meta.data_through[name])}${
-            state.meta.data_through[name] < state.meta.date_end
-              ? ' <span class="chip lag">lags window end</span>' : ""
+      ${state.meta.data_through && name in state.meta.data_through
+        ? `<tr><td>Data through</td><td>${
+            state.meta.data_through[name] === null
+              ? '<span class="muted" title="This metric returned no rows the engine could date, so its freshness is unknown — which is not the same as fresh.">unknown</span>'
+              : `${esc(state.meta.data_through[name])}${
+                  state.meta.data_through[name] < state.meta.date_end
+                    ? ' <span class="chip lag">lags window end</span>' : ""
+                }`
           }</td></tr>`
         : ""}
       <tr><td>Parents</td><td>${parentChips}</td></tr>
@@ -2026,10 +2346,15 @@ function renderPosterior(name, data) {
       const key = `beta_raw[${i}]`;
       const mean = summary.mean?.[key];
       if (mean === undefined) return;
+      const lo = summary["hdi_2.5%"]?.[key];
+      const hi = summary["hdi_97.5%"]?.[key];
+      // `[—, —]` is a pair of empty brackets pretending to be an interval;
+      // one em dash says the interval is absent, which is the fact.
+      const hdi = Number.isFinite(lo) && Number.isFinite(hi) ? `[${fmt(lo)}, ${fmt(hi)}]` : "—";
       rows += `<tr>
         <td><code>${esc(p)}</code></td>
         <td class="num">${fmt(mean)}</td>
-        <td class="num">[${fmt(summary["hdi_2.5%"]?.[key])}, ${fmt(summary["hdi_97.5%"]?.[key])}]</td>
+        <td class="num">${hdi}</td>
       </tr>`;
     });
   }
@@ -2073,6 +2398,27 @@ function renderPosterior(name, data) {
   if (typeof dx.min_ess_bulk === "number" && Number.isFinite(dx.min_ess_bulk)) {
     bits.push(`min ESS ${Math.round(dx.min_ess_bulk).toLocaleString()}`);
   }
+  // The engine's own verdict on the fit. It is computed for every fit — NUTS
+  // thresholds R̂/divergences/ESS, ADVI checks whether the ELBO settled — and
+  // was rendered nowhere in this UI, so a model the engine itself called
+  // `suspect` looked exactly like one it was happy with. UC4's whole job is
+  // telling a healthy fit from a broken one; a verdict the engine reached and
+  // the screen withheld is the most expensive kind of silence here.
+  let verdict = "";
+  if (dx.fit_quality === "suspect") {
+    verdict = `<div class="diag"><span class="warn">⚠ The engine flagged this fit as suspect.</span>
+      ${dx.method === "advi"
+        ? "The ADVI objective (the ELBO) had not settled by the end of optimization, so the approximation may not have converged on anything."
+        : "One of R̂, the divergence count or the effective sample size crossed the engine's threshold."}
+      Numbers derived from this fit — coefficients, intervals, and any RCA contribution through this node — inherit that.</div>`;
+  } else if (dx.fit_quality === "ok") {
+    verdict = `<div class="diag">Engine fit check: <span class="ok">ok</span>.</div>`;
+  } else if (dx.fit_quality) {
+    // Unknown verdict: shown verbatim rather than swallowed into silence,
+    // which would read as "nothing to report".
+    verdict = `<div class="diag">Engine fit check: <span class="warn">${esc(dx.fit_quality)}</span>.</div>`;
+  }
+
   let diag = "";
   if (bits.length) {
     diag = `<div class="diag">${bits.join(" · ")} ${hintHTML("diagnostics")}</div>${hintSlot("diagnostics")}`;
@@ -2080,7 +2426,14 @@ function renderPosterior(name, data) {
     diag = `<div class="diag">ADVI approximation — <span class="warn">no convergence
       diagnostics</span>; R̂, divergences and ESS are MCMC-only. Re-run with NUTS to
       check the fit. ${hintHTML("diagnostics")}</div>${hintSlot("diagnostics")}`;
+  } else if (summary) {
+    // A fit exists but reported no diagnostics and no method. Saying nothing
+    // here is the exact failure the ADVI branch above was written to fix.
+    diag = `<div class="diag">This fit reported <span class="warn">no diagnostics</span>
+      — that is the absence of a check, not a clean bill of health.
+      ${hintHTML("diagnostics")}</div>${hintSlot("diagnostics")}`;
   }
+  diag = verdict + diag;
 
   // full raw summary behind a collapsible
   const params = Object.keys(summary.mean || {});
@@ -2210,47 +2563,88 @@ function applyRcaOverlay() {
 
   Object.entries(res.nodes).forEach(([name, node]) => {
     const n = cy.getElementById(name);
-    const tint = goodClass(name, node.gap >= 0 ? "up" : "down", "rca");
-    if (tint) n.addClass(tint);
-    // large-unexplained badge: dashed amber border + ◌ glyph on the card
+    const st = nodeStatus(node);
     let mark = null;
-    if (
-      node.contributions.length &&
-      node.unexplained != null &&
-      Math.abs(node.gap) > 1e-9 &&
-      Math.abs(node.unexplained / node.gap) > 0.35
-    ) {
-      n.addClass("rca-unexplained");
-      mark = "◌";
+    if (st) {
+      // A node the engine could not analyze must not read as one it analyzed
+      // and found quiet, and it must not vanish either — a disappeared node is
+      // as misleading as a green one. Amber fill + dashed amber border + ⚠,
+      // and deliberately NO up/down tint: the good/bad channel is the
+      // *attribution* overlay's, and there is no attribution here. The card's
+      // delta pill still shows the movement, which is real and measured.
+      n.addClass("rca-not-analyzed");
+      mark = "⚠";
+    } else {
+      // No tint when the gap claims no direction (null, or below the engine's
+      // own 1e-12 "did not move" threshold). A flat metric rendered green is
+      // the legend saying `improved` about a metric that stood still.
+      const gd = gapDir(node.gap);
+      const tint = gd && goodClass(name, gd, "rca");
+      if (tint) n.addClass(tint);
+      // large-unexplained badge: dashed amber border + ◌ glyph on the card
+      if (
+        node.contributions.length &&
+        node.unexplained != null &&
+        Math.abs(node.gap) > 1e-9 &&
+        Math.abs(node.unexplained / node.gap) > 0.35
+      ) {
+        n.addClass("rca-unexplained");
+        mark = "◌";
+      }
     }
     // the card shows the RCA change (gap over the two windows) while RCA is on
     state.cardOverlay[name] = {
       value: null, // keep the latest value as the big number
       dpct: node.relative_change,
-      dir: node.gap >= 0 ? "up" : "down",
+      // `null >= 0` is true, so a node with no measured gap would tint and
+      // arrow *upward* — check for it rather than letting it read as growth.
+      // A gap of exactly zero is the same non-claim and gets the same ▬.
+      dir: gapDir(node.gap) || "flat",
       mark,
     };
     node.contributions.forEach((c) => {
       const e = cy.getElementById(`${c.parent}->${name}`);
       if (!e.length) return;
-      const share = c.share_of_gap === null ? 0 : Math.min(Math.abs(c.share_of_gap), 1);
+      const share = c.share_of_gap == null ? 0 : Math.min(Math.abs(c.share_of_gap), 1);
       e.data("w", 2 + 6 * share);
-      // certainty channel: opacity from prob_same_direction (null -> solid)
-      e.data("op", c.prob_same_direction == null ? 1 : Math.max(0.35, 2 * (c.prob_same_direction - 0.5)));
-      e.data("label", c.share_of_gap === null ? "" : pct(Math.abs(c.share_of_gap)));
-      // Edge color = the effect's goodness for the CHILD it lands on.
-      const edgeTint = goodClass(name, c.estimate >= 0 ? "up" : "down", "rca");
+      // Certainty channel: opacity from prob_same_direction. A *withheld* one
+      // (null — the block bootstrap could not produce enough finite
+      // replicates, so `ci_95` is null too) used to render at full opacity,
+      // i.e. identical to P(direction) = 1.0: "we could not establish the
+      // direction" drawn as the most certain edge on the canvas. It now sits
+      // at the bottom of the scale, where an unestablished direction belongs.
+      e.data("op", c.prob_same_direction == null ? 0.35 : Math.max(0.35, 2 * (c.prob_same_direction - 0.5)));
+      e.data("label", c.share_of_gap == null ? "" : pct(Math.abs(c.share_of_gap)));
+      // Edge color = the effect's goodness for the CHILD it lands on. A
+      // contribution of exactly zero makes no directional claim.
+      const ed = gapDir(c.estimate);
+      const edgeTint = ed && goodClass(name, ed, "rca");
       if (edgeTint) e.addClass(edgeTint);
     });
   });
 
   renderAllCards(); // repaint cards with the RCA overlay folded in
+  ensureRcaLegendExtras();
   document.querySelectorAll(".rca-only").forEach((el) => (el.style.display = "flex"));
+}
+
+/* The ⚠ mark is meaningless without a legend line, and the RCA legend rows are
+   toggled together by `.rca-only` — so this row is inserted once, next to the
+   ◌ row it must be told apart from, and then follows the same toggle. */
+function ensureRcaLegendExtras() {
+  const legend = $("legend");
+  if (!legend || $("legend-not-analyzed")) return;
+  const row = document.createElement("div");
+  row.className = "legend-row rca-only";
+  row.id = "legend-not-analyzed";
+  row.style.display = "none";
+  row.innerHTML = '<span class="swatch notanalyzed"></span> ⚠ not analyzed';
+  legend.appendChild(row);
 }
 
 function clearRcaStyles() {
   const cy = state.cy;
-  cy.elements().removeClass("faded rca-up rca-down pathhl rca-unexplained");
+  cy.elements().removeClass("faded rca-up rca-down pathhl rca-unexplained rca-not-analyzed");
   cy.nodes().forEach((n) => n.data("label", n.id()));
   cy.edges().forEach((e) => {
     e.data("w", 2);
@@ -2414,10 +2808,21 @@ function sliceResultHtml(metric) {
         : fmt(x);
 
   const excessCell = (row) => {
-    const ci = row.ci_95 ? `95% CI [${fmt(row.ci_95[0])}, ${fmt(row.ci_95[1])}]` : "no CI";
+    const ci = row.ci_95 ? `95% CI [${fmt(row.ci_95[0])}, ${fmt(row.ci_95[1])}]` : "interval withheld";
     const p = row.prob_concentrated == null ? "" : ` · P(direction) ${pct(row.prob_concentrated)}`;
-    return `<td class="num" title="${esc(`excess ${row.excess} · ${ci}${p}`)}">${fmtTight(row.excess)}</td>`;
+    return `<td class="num" title="${esc(`excess ${fmt(row.excess)} · ${ci}${p}`)}">${fmtTight(row.excess)}</td>`;
   };
+
+  /* The engine reserves four dimension values as buckets rather than data:
+     rendering them raw made `__null__` look like a category someone named. */
+  const SLICE_SENTINEL = {
+    __other__: "everything else",
+    __null__: "no value (NULL)",
+    __absent__: "absent from this window",
+    __other_moved__: "moved within “everything else”",
+  };
+  const sliceLabel = (v) =>
+    SLICE_SENTINEL[v] ? `<em>${esc(SLICE_SENTINEL[v])}</em>` : `<code>${esc(v)}</code>`;
   const rows = r.slices
     .map((row, i) => {
       // Concentration is relative to size: lead with the slice carrying more
@@ -2427,15 +2832,15 @@ function sliceResultHtml(metric) {
         ? ' <span class="slice-noise" title="The bootstrap cannot distinguish this slice&#39;s concentration from zero — the gap is not localized here.">noise</span>'
         : "";
       const lead = i === 0 && !row.noise_level ? ' class="slice-lead"' : "";
-      const label = `<td><code>${esc(row.value)}</code>${noise}${row.n_values ? ` <span class="dim">(${row.n_values})</span>` : ""}</td>`;
+      const label = `<td>${sliceLabel(row.value)}${noise}${row.n_values ? ` <span class="dim">(${row.n_values})</span>` : ""}</td>`;
       return rate
         ? `<tr${lead}>${label}
-             <td class="num" title="the slice's own rate moved: ${row.within}">${fmtTight(row.within)}</td>
-             <td class="num" title="traffic moved between slices: ${row.mix}">${fmtTight(row.mix)}</td>
+             <td class="num" title="the slice's own rate moved: ${esc(fmt(row.within))}">${fmtTight(row.within)}</td>
+             <td class="num" title="traffic moved between slices: ${esc(fmt(row.mix))}">${fmtTight(row.mix)}</td>
              ${excessCell(row)}
            </tr>`
         : `<tr${lead}>${label}
-             <td class="num" title="contribution ${fmt(row.contribution)}">${row.share_of_gap == null ? "—" : pct(row.share_of_gap)}</td>
+             <td class="num" title="contribution ${esc(fmt(row.contribution))}">${row.share_of_gap == null ? "—" : pct(row.share_of_gap)}</td>
              <td class="num">${row.baseline_share == null ? "—" : pct(row.baseline_share)}</td>
              ${excessCell(row)}
            </tr>`;
@@ -2457,7 +2862,7 @@ function sliceResultHtml(metric) {
     top && !top.noise_level && top.baseline_share != null && top.share_of_gap != null
       && concentration >= 0.25;
   const verdict = localized
-    ? `<p class="slice-verdict"><code>${esc(top.value)}</code> carries
+    ? `<p class="slice-verdict">${sliceLabel(top.value)} carries
          <strong>${pct(top.share_of_gap)}</strong> of the gap on a
          ${pct(top.baseline_share)} baseline share.</p>`
     : `<p class="slice-verdict dim">Not localized by ${esc(r.dimension)} — no slice carries
@@ -2501,13 +2906,26 @@ function sliceResultHtml(metric) {
            what kind of movement happened; they do not sum to the gap above.</p>
        </div>`
     : "";
+  // `additivity` has three values and only one of them used to say anything.
+  // "unknown" — the default for every provider that cannot inspect its own
+  // binding, which is most of them — rendered exactly like "exact": a table of
+  // shares presented as a partition of the metric, with nothing to say the
+  // partition was never verified. Quiet, because `reconciliation` below is the
+  // empirical check and usually passes; but not silent, because "we checked
+  // and they partition" and "we could not check" are different facts.
   const overlap =
     r.additivity === "overlapping" && r.overlap
       ? `<p class="inline-status">These slices share entities, so they overstate the
          metric by ${fmt(r.overlap.mean)} on average
          (${pct(r.overlap.share_of_baseline)} of baseline) — deduplication overlap,
          not an unexplained cause. Contribution shares are withheld.</p>`
-      : "";
+      : r.additivity === "exact"
+        ? ""
+        : `<p class="inline-status">The provider could not confirm these slices partition
+           <code>${esc(r.metric)}</code> without double-counting (<code>additivity:
+           ${esc(r.additivity || "unreported")}</code>), so treat the shares below as
+           unverified against the metric's own definition. The reconciliation check
+           is the empirical test of it.</p>`;
   const recon =
     r.reconciliation && !["ok", "not_applicable"].includes(r.reconciliation.status)
       ? `<p class="inline-status error">Slices do not sum back to the metric
@@ -2517,10 +2935,13 @@ function sliceResultHtml(metric) {
   const caveats = (r.caveats || []).length
     ? `<p class="inline-status">${r.caveats.map(esc).join(" ")}</p>`
     : "";
-  const degenerate =
-    r.ci_status === "degenerate_single_period"
-      ? '<p class="inline-status">Single-period window: no bootstrap CI.</p>'
-      : "";
+  // Through the same vocabulary as the tree's attribution blocks, so this
+  // panel cannot fall behind when the engine gains a `ci_status` value — it
+  // used to test one literal and say nothing about anything else.
+  const ciNote = ciStatusNote(r.ci_status);
+  const degenerate = ciNote
+    ? `<p class="inline-status"><span class="ci-flag" title="${esc(ciNote.why)}">${esc(ciNote.text)}</span></p>`
+    : "";
 
   return `${verdict}
     <table class="data-table slice-table">${head}${rows}</table>
@@ -2562,63 +2983,129 @@ async function toggleSlice(metric, dimension) {
 function renderRcaTab() {
   const res = state.rca;
   const target = res.nodes[res.target];
+  const targetStatus = nodeStatus(target);
 
-  if (target.status === "window_shorter_than_grain") {
+  // The target itself failed. Ranked causes and attribution are computed from
+  // *its* contributions, so with none there is nothing to rank: showing the
+  // usual sections would present a list of zero-score metrics as an answer.
+  if (targetStatus) {
+    const gp = gapLineParts(res.target, target.gap);
+    const gapBlock =
+      target.gap == null
+        ? ""
+        : `<div class="gap-line ${gp.cls}">${gp.sign}${fmt(target.gap)} <span style="font-size:14px">(${signedPct(target.relative_change)})</span></div>
+           <div class="sub">${fmt(target.baseline)} → ${fmt(target.actual)} (window means${target.grain && target.grain !== "day" ? ` per ${esc(target.grain)}` : ""})</div>`;
     $("rca-results").innerHTML = `
       <div class="rca-card">
-        <div class="sub">${esc(res.target)}</div>
-        <p class="placeholder">The requested windows contain no whole
-        <strong>${esc(target.grain)}</strong> period, so this
-        ${esc(target.grain)}-grain metric cannot be analyzed. Widen the
-        windows to at least one full ${esc(target.grain)}.</p>
+        <div class="sub">${esc(res.target)} · ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)} vs ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}</div>
+        ${gapBlock}
+        <p class="degraded-note"><strong>⚠ ${esc(targetStatus.label)}.</strong>
+          ${esc(targetStatus.explains)}
+          ${target.status_reason ? `<span class="degraded-reason">${esc(target.status_reason)}</span>` : ""}
+          No causes can be ranked for a target with no attribution.</p>
       </div>`;
     return;
   }
 
-  const dirCls = goodDir(res.target, target.gap >= 0 ? "up" : "down");
-  const skipped = Object.entries(res.nodes)
-    .filter(([, n]) => n.status === "window_shorter_than_grain")
-    .map(([name, n]) => `<code>${esc(name)}</code> (${esc(n.grain)})`);
-  const skippedNote = skipped.length
-    ? `<p class="inline-status">Not analyzed — window shorter than grain: ${skipped.join(", ")}.</p>`
+  const targetGap = gapLineParts(res.target, target.gap);
+  // Every node in scope the engine could not analyze. Naming the count in the
+  // summary is the point: a reader who scrolls past one otherwise takes the
+  // ranked causes for a complete list, when in fact nothing upstream of a
+  // failed node was attributed at all.
+  const degraded = Object.entries(res.nodes).filter(([, n]) => nodeStatus(n));
+  const degradedNote = degraded.length
+    ? `<p class="degraded-note"><strong>⚠ ${degraded.length} of ${Object.keys(res.nodes).length} metrics in scope could not be analyzed</strong>,
+        so the ranked causes are incomplete — nothing upstream of them was attributed.
+        ${degraded
+          .map(([name, n]) => {
+            const st = nodeStatus(n);
+            const why = `${st.explains}${n.status_reason ? `\n\n${n.status_reason}` : ""}`;
+            return `<code title="${esc(why)}">${esc(name)}</code> <span class="degraded-why">(${esc(st.short)})</span>`;
+          })
+          .join(", ")}. Each is detailed under Attribution detail.</p>`
+    : "";
+
+  // The advisories that were on screen when Run was pressed belong with the
+  // answer, not only with the form that produced it.
+  const windowNote = (state.winAdvisories || []).length
+    ? `<p class="degraded-note">ⓘ About these windows: ${esc(state.winAdvisories.join(" · "))}</p>`
     : "";
 
   const maxScore = Math.max(...res.ranked_causes.map((c) => c.score), 1e-9);
   const causeRows = res.ranked_causes
-    .map(
-      (c, i) => `
-      <div class="cause-row" data-metric="${esc(c.metric)}">
+    .map((c, i) => {
+      // The score is honest — it comes from the *child's* attribution of this
+      // metric, which succeeded. What failed is this metric's own
+      // decomposition, so the row stays and says so; without the flag a
+      // top-ranked cause looks like a lead the user can follow upward, and it
+      // is a dead end.
+      const st = nodeStatus(res.nodes[c.metric]);
+      const flag = st
+        ? ` <span class="cause-flag" title="${esc(`${st.explains}${res.nodes[c.metric].status_reason ? `\n\n${res.nodes[c.metric].status_reason}` : ""}`)}">⚠ ${esc(st.short)}</span>`
+        : "";
+      return `
+      <div class="cause-row${st ? " degraded" : ""}" data-metric="${esc(c.metric)}">
         <span class="cause-rank">${i + 1}</span>
-        <span class="cause-name">${esc(c.metric)}</span>
+        <span class="cause-name">${esc(c.metric)}</span>${flag}
         <span class="cause-bar-wrap"><span class="cause-bar" style="width:${(100 * c.score) / maxScore}%"></span></span>
         <span class="cause-via">via ${esc(c.via || "—")}</span>
       </div>
-      ${sliceControlsHtml(c.metric)}`,
-    )
+      ${sliceControlsHtml(c.metric)}`;
+    })
     .join("");
 
   // attribution detail: target first, then ranked order
   const order = [res.target, ...res.ranked_causes.map((c) => c.metric)];
   const view = state.rcaView;
-  const shareOf = (v, gap) => (Math.abs(gap) > 1e-12 ? pct(v / gap) : "—");
+  // `null / gap` is 0 in JavaScript, so an unguarded division printed "0.0%"
+  // for a numerator the engine withheld. A withheld share is an em dash.
+  const shareOf = (v, gap) =>
+    v == null || gap == null || Math.abs(gap) <= 1e-12 ? "—" : pct(v / gap);
   const ciCell = (ci) => (ci ? `[${fmt(ci[0])}, ${fmt(ci[1])}]` : "—");
   const anyTwoLevel = order.some((name) => {
     const n = res.nodes[name];
     return n && n.contributions.some((c) => c.decomposition);
   });
   const blocks = order
-    .filter((name) => res.nodes[name] && res.nodes[name].contributions.length)
+    .filter((name) => res.nodes[name] && (res.nodes[name].contributions.length || nodeStatus(res.nodes[name])))
     .map((name) => {
       const node = res.nodes[name];
-      const method = node.attribution_method === "shapley" ? "Shapley (exact)" : "posterior";
+      const st = nodeStatus(node);
+      // A failed node gets a block of its own rather than being filtered out.
+      // `attribution_method` is null on these, so the old code would have
+      // labelled it "posterior" over an empty table — a node that could not be
+      // analyzed presented as one that was analyzed and found nothing.
+      if (st) {
+        const movement =
+          node.gap == null
+            ? ""
+            : `<p class="inline-status">gap <strong>${fmt(node.gap)}</strong> (${node.relative_change == null ? "—" : signedPct(node.relative_change)}) ·
+                ${fmt(node.baseline)} → ${fmt(node.actual)} (window means${node.grain && node.grain !== "day" ? ` per ${esc(node.grain)}` : ""})</p>`;
+        return `
+        <div class="attr-block degraded">
+          <h4>${esc(name)} <span class="method">· ${esc(st.label)}</span></h4>
+          ${movement}
+          <p class="degraded-note">${esc(st.explains)}
+            ${node.status_reason ? `<span class="degraded-reason">${esc(node.status_reason)}</span>` : ""}</p>
+        </div>`;
+      }
+      const method = esc(attributionLabel(node.attribution_method));
       const ew = node.effective_windows;
       const snapNote =
         node.grain && node.grain !== "day" && ew
           ? ` · ${esc(node.grain)} grain, snapped to ${ew.reference.n_periods}+${ew.analysis.n_periods} whole ${esc(node.grain)}s`
           : "";
-      const ciNote =
-        node.ci_status === "degenerate_single_period"
-          ? ` · single-period window: no bootstrap CI`
+      const ci = ciStatusNote(node.ci_status);
+      const ciNote = ci
+        ? ` · <span class="ci-flag" title="${esc(ci.why)}">${esc(ci.text)}</span>`
+        : "";
+      // The engine's own verdict on the fit behind these numbers. It is
+      // computed for every fit (NUTS: R-hat / divergences / ESS; ADVI: whether
+      // the ELBO settled) and was rendered nowhere — so a node whose model the
+      // engine itself flagged looked exactly like one it was happy with.
+      const fitNote2 =
+        node.fit_quality === "suspect"
+          ? ` · <span class="sign-flag" title="The engine's own fit check failed for this node's model — for NUTS that is R̂, divergences or effective sample size; for ADVI it is an ELBO that had not settled. The contributions below rest on this fit.">⚠ suspect fit</span>`
           : "";
       const signNote =
         node.sign_warnings && node.sign_warnings.length
@@ -2693,8 +3180,20 @@ function renderRcaTab() {
           .join("");
       }
 
+      // Trend and seasonal are part of the decomposition, not decoration: the
+      // engine computes `unexplained = gap − Σcontributions − trend − seasonal`
+      // (engine/rca.py). Omitting them here — while the exported report showed
+      // them — left a table whose own shares summed to 108.5% of a gap with no
+      // visible reason, and made `unexplained` look like the only residual when
+      // a real, estimated component was sitting outside the table. A component
+      // that is identically zero with a [0, 0] interval is not in the model at
+      // all; printing it as a 95% credible interval of exactly zero claims a
+      // precision nobody measured, so those rows are dropped instead (they add
+      // nothing to the sum either way).
+      const componentRows = componentRowsHtml(node, nCols, shareOf, ciCell);
+
       let unexplained = "";
-      if (node.unexplained !== null) {
+      if (node.unexplained != null) {
         const dash = '<td class="num">—</td>';
         if (nCols === 6) {
           // Detailed view: unexplained sits in the "total Δ" column.
@@ -2705,10 +3204,11 @@ function renderRcaTab() {
       }
       return `
         <div class="attr-block">
-          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${signNote}${seasNote}</span></h4>
+          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${fitNote2}${signNote}${seasNote}</span></h4>
           <table class="data-table">
             ${header}
             ${rows}
+            ${componentRows}
             ${unexplained}
           </table>
         </div>`;
@@ -2725,14 +3225,15 @@ function renderRcaTab() {
   $("rca-results").innerHTML = `
     <div class="rca-card">
       <div class="sub">${esc(res.target)} · ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)}${res.reference_defaulted ? " (auto)" : ""} vs ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}</div>
-      <div class="gap-line ${dirCls}">${target.gap >= 0 ? "+" : ""}${fmt(target.gap)} <span style="font-size:14px">(${signedPct(target.relative_change)})</span></div>
+      <div class="gap-line ${targetGap.cls}">${targetGap.sign}${fmt(target.gap)} <span style="font-size:14px">(${signedPct(target.relative_change)})</span></div>
       <div id="rca-strip"></div>
       <div class="sub">${fmt(target.baseline)} → ${fmt(target.actual)} (window means${target.grain && target.grain !== "day" ? ` per ${esc(target.grain)}` : ""})</div>
-      ${skippedNote}
+      ${windowNote}
+      ${degradedNote}
     </div>
 
     <section>
-      <h3>Ranked causes</h3>
+      <h3>Ranked causes <span class="section-note">triage order, not evidence</span></h3>
       ${causeRows || '<p class="placeholder">No upstream causes — target is a source metric.</p>'}
     </section>
 
@@ -2742,7 +3243,8 @@ function renderRcaTab() {
         ${viewToggle}
       </div>
       ${blocks || '<p class="placeholder">No attributable edges in scope.</p>'}
-    </section>`;
+    </section>
+    <div class="wf-caveats">${RCA_CAVEATS.map(esc).join("<br>")}</div>`;
 
   document.querySelectorAll(".cause-row").forEach((row) => {
     row.addEventListener("click", () => highlightCause(row.dataset.metric));
@@ -3401,8 +3903,11 @@ function renderWhatifResults() {
   const cards = sinks
     .map((name) => {
       const node = res.nodes[name];
-      const dirCls = goodDir(name, node.delta.estimate >= 0 ? "up" : "down");
-      const ci = node.delta.ci_95;
+      // A simulated delta of exactly zero is not an improvement; withhold the
+      // colour rather than letting `>= 0` paint it green.
+      const dd = gapDir(node.delta.estimate);
+      const dirCls = dd ? goodDir(name, dd) : "";
+      const ci = node.delta.ci_95 || [];
       const sub = isCold
         ? `${esc(name)} · cold start — declared beliefs`
         : `${esc(name)} · baseline ${esc(res.baseline_window.start)} → ${esc(res.baseline_window.end)}`;
@@ -3414,7 +3919,11 @@ function renderWhatifResults() {
           <span style="font-size:14px">(${signedPct(node.relative_delta)})</span></div>
         <div class="wf-ci">Δ ${fmt(node.delta.estimate)} · 95% CI [${fmt(ci[0])}, ${fmt(ci[1])}] · P(direction) ${pct(node.prob_direction)}${
           bci ? ` · baseline belief [${fmt(bci[0])}, ${fmt(bci[1])}]` : ""
-        }</div>
+        }</div>${
+          node.fit_quality === "suspect"
+            ? `<div class="wf-warning">⚠ The engine flagged the model behind <code>${esc(name)}</code> as suspect (ADVI: the ELBO had not settled; NUTS: R̂ / divergences / ESS over threshold). This outcome is propagated through that fit.</div>`
+            : ""
+        }
         ${waterfallHtml(name, node, labelFor)}
       </div>`;
     })
@@ -3428,7 +3937,11 @@ function renderWhatifResults() {
       const node = res.nodes[n];
       const ci = node.delta.ci_95;
       return `<tr>
-        <td><code>${esc(n)}</code>${node.status === "intervened" ? ' <span class="chip lag">⊙ set</span>' : ""}${node.extrapolation && node.extrapolation.flag ? " ⚠" : ""}</td>
+        <td><code>${esc(n)}</code>${node.status === "intervened" ? ' <span class="chip lag">⊙ set</span>' : ""}${node.extrapolation && node.extrapolation.flag ? " ⚠" : ""}${
+          node.fit_quality === "suspect"
+            ? ' <span class="cause-flag" title="The engine flagged the model behind this node as suspect — for ADVI, an ELBO that had not settled; for NUTS, R̂ / divergences / ESS over threshold. This row is propagated through that fit.">⚠ suspect fit</span>'
+            : ""
+        }</td>
         <td class="num">${fmt(node.baseline)} → ${fmt(node.simulated)}</td>
         <td class="num">${signedPct(node.relative_delta)}</td>
         <td class="num">[${fmt(ci[0])}, ${fmt(ci[1])}]</td>
@@ -3761,21 +4274,40 @@ function goalBarHtml(card) {
   if (!prog) {
     // §2.3: never a blank that reads as zero, and never a stale number
     // presented as live. A dash, the reason, and a way to fix it.
+    // `state` has four values, not two: a tree mid-load is not one nobody has
+    // opened, and saying so sent the reader looking for a button that is not
+    // on the card.
     const why =
       card.state === "error"
         ? "this tree failed to load"
-        : "not loaded — nobody has opened this tree in this process yet";
+        : card.state === "loading"
+          ? "loading now — its number will appear when the load finishes"
+          : card.state === "loaded"
+            ? "loaded, but this goal's metric has no completed period to read yet"
+            : "not loaded — nobody has opened this tree in this process yet";
     return (
       `<div class="goal-row"><span class="goal-dash">—</span>${target}</div>` +
       `<p class="goal-pace muted">${esc(why)}</p>`
     );
   }
   const share = goal.target ? prog.current / goal.target : null;
-  const bar =
+  // How much of the goal is *achieved*, which is not `current / target` when
+  // the goal is to push a metric DOWN: churn at 5% against a 2% target is 250%
+  // of target and 0% achieved, and the bar used to sit clamped at full — the
+  // picture of success on a goal being missed by a factor of two and a half.
+  const achieved =
     share === null
+      ? null
+      : goal.direction === "down"
+        ? prog.current > 0
+          ? goal.target / prog.current
+          : 1
+        : share;
+  const bar =
+    achieved === null
       ? ""
       : `<div class="goal-bar"><span class="goal-fill ${goal.direction === "down" ? "down" : "up"}"` +
-        ` style="width:${(Math.max(0, Math.min(1, share)) * 100).toFixed(1)}%"></span></div>`;
+        ` style="width:${(Math.max(0, Math.min(1, achieved)) * 100).toFixed(1)}%"></span></div>`;
   return (
     bar +
     `<div class="goal-row"><strong>${esc(fmt(prog.current))}</strong>${target}` +
@@ -3893,6 +4425,15 @@ function initTreeSwitcher() {
 
 async function init() {
   setStatus("Loading…", "busy");
+  // Checked before the first request, so a blocked CDN is diagnosed as a
+  // blocked CDN rather than surfacing later as a ReferenceError inside
+  // buildGraph() that used to be reported as an unreachable server.
+  const missing = missingLibs();
+  if (missing.length) {
+    showLibraryBanner(missing);
+    setStatus(`Missing browser dependency: ${missing.map((l) => l.name).join(", ")}`, "error");
+    return;
+  }
   try {
     // The server keeps serving when the startup data load fails (bad
     // credentials, unreachable warehouse); surface that instead of eight
@@ -4032,6 +4573,25 @@ async function init() {
       setStatus(`Failed to load: ${err.message}`, "error");
     }
   }
+}
+
+/* A blocked CDN is not an outage. Red like `#degraded-banner` because, like a
+   misconfigured provider, it is a condition the operator has to fix — but the
+   text names the library and the host so the fix is obvious, instead of
+   sending someone to check a server that is answering perfectly. */
+function showLibraryBanner(libs) {
+  if ($("library-banner")) return;
+  const banner = document.createElement("div");
+  banner.id = "library-banner";
+  const list = libs.map((l) => `<code>${esc(l.name)}</code> (${esc(l.host)})`).join(", ");
+  const hosts = [...new Set(libs.map((l) => l.host))].map(esc).join(", ");
+  banner.innerHTML =
+    `<strong>A browser dependency did not load.</strong> ${list}. ` +
+    `The server is fine — these come from a CDN, and something between this ` +
+    `browser and it (a corporate proxy, an ad blocker, an offline network, or ` +
+    `a failed integrity check) stopped them. Allow <code>${hosts}</code>, or ` +
+    `open this instance from a network that can reach them.`;
+  document.body.prepend(banner);
 }
 
 function showRetryBanner() {

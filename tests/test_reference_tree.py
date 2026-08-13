@@ -5,9 +5,14 @@ that happened to be true once (roadmap C10).
 Nothing loaded this file before C10, which is how it drifted to *zero* `grain`,
 `kind`, `dimensions` and `expected_signs` declarations while remaining the
 documented answer to "how hard is this to author".
+
+Skipped when the tree is absent. `knowledge/` is repo scaffolding — design docs
+and the roadmap — and the sdist excludes it, so the published suite would
+otherwise fail here on a file the artifact never contained.
 """
 
 import logging
+import os
 
 import pytest
 
@@ -15,7 +20,17 @@ from breakdown.data_fetch import MockDataFetcher
 from breakdown.grains import build_grained
 from breakdown.parser import Parser
 
-TREE = "knowledge/b2b_mrr_tree.yml"
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TREE = os.path.join(REPO, "knowledge", "b2b_mrr_tree.yml")
+
+pytestmark = pytest.mark.skipif(
+    not os.path.isfile(TREE),
+    reason=(
+        "knowledge/b2b_mrr_tree.yml not present — it is repo-only, not part of the "
+        "distribution; read it at "
+        "https://github.com/PolycultureResearch/breakdown/blob/main/knowledge/b2b_mrr_tree.yml"
+    ),
+)
 
 
 @pytest.fixture(scope="module")

@@ -2,23 +2,67 @@ services:
   breakdown:
     build: .
     ports:
+      # Published on every interface — that is what makes it a shared instance,
+      # and it is also why BREAKDOWN_API_TOKEN below is not optional.
       - "9090:9090"
     volumes:
       # Your metric tree. Reference secrets from it as ${DATABRICKS_TOKEN}
       # etc. — the values below pass through from the host environment.
+      # It is mounted, not baked: .dockerignore keeps ./tree.yml out of the
+      # image, because an image layer travels and a mount does not.
       - ./tree.yml:/config/tree.yml:ro
       # Parquet snapshot cache: restarts refit from here instead of
       # re-hitting the warehouse. (/config is read-only, so the default
       # tree-adjacent location won't work in this container.)
       - ./snapshots:/snapshots
+      # A `type: dbt` or `type: local` tree also needs its dbt project and
+      # profile inside the container, at the paths the tree itself names:
+      # - ./my_dbt_project:/config/dbt:ro
+      # - ~/.dbt:/root/.dbt:ro
     environment:
+      # A bare name passes the host's value through; a variable unset on the
+      # host is simply absent in the container.
+
+      # --- Access control. Decide this before the port is published. ---
+      # With neither set, the whole API — tree, series, generated SQL, and the
+      # /mcp endpoint that runs analyses — is open to anything that can reach
+      # the host. BREAKDOWN_API_TOKEN alone gates /mcp and redacts sql/bind
+      # from /dag. BREAKDOWN_REQUIRE_AUTH extends the same bearer check to
+      # every route but /, /health and /ui — including the browser UI's own
+      # fetches, so that mode assumes a proxy injecting the header. Set without
+      # a token it refuses to serve (503) rather than checking every request
+      # against an empty secret. See README, "Authentication".
+      - BREAKDOWN_API_TOKEN
+      - BREAKDOWN_REQUIRE_AUTH
+      # The URL clients actually reach this container at. Without it the MCP
+      # server's report_url deep links point at http://127.0.0.1:9090 —
+      # correct only on the container's own loopback, and therefore useless to
+      # whoever was handed the link.
+      - BREAKDOWN_PUBLIC_URL
+
+      # --- Provider credentials: whatever ${VARS} your tree references ---
+      # DATABRICKS_TOKEN is the common case, not the only one. A `type: dbt`
+      # tree authenticates through its own profiles.yml, so pass whatever that
+      # file reads — SNOWFLAKE_PASSWORD, PGPASSWORD, the DBT_ENV_SECRET_* names
+      # dbt's env_var() uses. BigQuery's service-account method wants a keyfile
+      # *path*, so it needs a read-only mount above as well as a variable here.
       - DATABRICKS_TOKEN
+
+      # --- Data window and snapshot cache ---
       - BREAKDOWN_START_DATE
       - BREAKDOWN_END_DATE
       - BREAKDOWN_SNAPSHOT_DIR=/snapshots
       - BREAKDOWN_REFRESH
+    # /health presents no credentials, which is why it is one of the three
+    # paths that stay open under BREAKDOWN_REQUIRE_AUTH — a gated /health would
+    # make a correctly configured deployment look dead. It answers 200 even
+    # when the provider is unreachable (`{"status": "degraded", …}`), so this
+    # checks that the process is serving, not that the warehouse is up.
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9090/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
+    # Compose otherwise applies no restart policy, so a shared instance would
+    # stay down after a host reboot or an OOM mid-fit.
+    restart: unless-stopped
