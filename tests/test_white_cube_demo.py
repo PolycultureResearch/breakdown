@@ -460,19 +460,23 @@ def test_known_gap_churn_arpu_is_undeclared_and_the_ui_colours_it_green(client):
     with open(TREE) as f:
         declared = {m["name"]: m.get("direction") for m in yaml.safe_load(f)["metrics"]}
     assert declared["churn_arpu"] is None, (
-        "churn_arpu now declares a direction — the UI will colour it correctly, "
-        "so delete the '⚠ known gap' note in knowledge/demo_guided_tour.md"
+        "churn_arpu now declares a direction — the tree is authored, so delete "
+        "the remaining '⚠ known gap' note in knowledge/demo_guided_tour.md"
     )
     # The neighbours that *are* declared, so this reads as one metric missed
     # rather than a tree-wide omission.
     for correct in ("churned_mrr", "churned_subscriptions", "customer_churn_rate"):
         assert declared[correct] == "down_is_good"
 
-    # ...and the silence really does reach the UI as green. `state.defs` is
-    # exactly this payload (app.js ~1945), and `directionOf` (~1272) reads
-    # `up_is_good` from it — not from its own `||` fallback, which never fires.
+    # ...and the silence now survives serialization, so the UI renders it
+    # neutrally instead of claiming "improved". This assertion is the half that
+    # changed: `direction` defaulted to `up_is_good` in the parser, so the
+    # default arrived at the browser indistinguishable from a declaration and
+    # app.js's own `|| "up_is_good"` fallback could never fire. The tree is
+    # still under-authored — that is the known gap the tour flags — but an
+    # absent declaration is no longer a confident wrong one.
     defs = dict(client.get("/dag").json()["nodes"])
-    assert defs["churn_arpu"]["direction"] == "up_is_good"
+    assert defs["churn_arpu"]["direction"] is None
 
 
 def test_known_gap_the_rca_table_cannot_show_the_lag(client):
