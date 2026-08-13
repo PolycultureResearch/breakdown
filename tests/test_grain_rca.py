@@ -107,8 +107,23 @@ def test_window_shorter_than_grain_degrades_not_errors():
     assert node["contributions"] == []
     # Daily ancestors still analyze fine.
     assert result["nodes"]["trial_starts"]["status"] == "ok"
-    # No contributions anywhere -> no ranked causes with weight.
-    assert all(r["score"] == 0.0 for r in result["ranked_causes"])
+
+    # The target was never attributed, so no hop reached an ancestor and none
+    # of them may be credited with influence. This used to read
+    # `all(r["score"] == 0.0 for r in ...)`, which said the right thing until
+    # unreached rows started being dropped — after which the list is empty and
+    # `all()` is vacuously true, so the assertion could no longer fail.
+    #
+    # Both halves are asserted, because "dropped from the ranking" and
+    # "disappeared from the analysis" are different outcomes and only one of
+    # them is correct: the ranking answers "which paths carry influence" and
+    # has nothing to say here, while `nodes` remains the full inventory of what
+    # was in scope, each with its own status.
+    assert result["ranked_causes"] == []
+    assert set(result["nodes"]) == {"conversions", "trial_starts", "trial_conversion_rate"}
+    # The weekly rate is in the same bind as the target; the daily parent is
+    # not. Both are still reported, with the reason each is where it is.
+    assert result["nodes"]["trial_conversion_rate"]["status"] == "window_shorter_than_grain"
 
 
 def test_shapley_endpoint_errors_loudly_on_short_window():
@@ -319,6 +334,17 @@ def test_lagged_identity_rca_recovers_lagged_change():
     }
     assert "lag" not in by_parent["cohort_rate"]
     assert "parent_windows" not in by_parent["cohort_rate"]
+
+    # The other side of the coin from the short-window case above: a parent a
+    # hop *did* reach, which explains none of the gap, stays in the ranking at
+    # 0.0 with the child it was reached through. "We looked at the constant
+    # rate and it moved nothing" is a finding; only a node no hop ever reached
+    # is dropped, and this test would go quiet if the two were conflated.
+    ranked = {r["metric"]: r for r in result["ranked_causes"]}
+    assert set(ranked) == {"starts", "cohort_rate"}
+    assert ranked["starts"]["score"] == pytest.approx(1.0)
+    assert ranked["cohort_rate"]["score"] == 0.0
+    assert ranked["cohort_rate"]["via"] == "conversions"
 
     sh = shapley_attribution(dag, frame, "conversions", **win(ref, an))
     assert abs(sum(sh["attribution"].values()) - sh["gap"]) < 1e-9

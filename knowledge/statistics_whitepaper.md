@@ -3,7 +3,7 @@
 **A white paper on the models behind Bayesian metric trees, why each was chosen,
 and where each one stops being trustworthy.**
 
-> **Written:** 2026-08-04 · **Last updated:** 2026-08-12 ·
+> **Written:** 2026-08-04 · **Last updated:** 2026-08-13 ·
 > **Engine version:** 0.1.0
 >
 > **This is a living document.** The assessment in §3 and the improvements in §4
@@ -659,20 +659,33 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
    one**, and most users will never leave it. This is the single largest gap
    between what the intervals claim and what they deliver — worked through in
    detail in [`advi_vs_nuts_in_breakdown.md`](advi_vs_nuts_in_breakdown.md).
-2. **The short-window block bootstrap is attenuated by construction.** — ○ open
-   ([C4](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend))
-   `_block_bootstrap_indices` caps the effective block length at `n // 2`, which
-   lands on the midpoint of the very degeneracy curve its docstring reasons
-   about: the resampled variance of a window mean is systematically too small,
-   worst on short windows, and not even monotone in `n`. **Formula-node
-   contribution intervals come entirely from this path**, with no offsetting
-   term — and §2.5 sells the bootstrap as the honesty mechanism for exactly the
-   two-to-three-period windows where it is least honest. Separately, the
-   degeneracy guard keys on `n_periods == 1` rather than on the resampled
-   spread, so a window in which a parent is *constant* (an unlaunched feature, a
-   zero-inflated series) ships a **zero-width interval flagged `ci_status:
-   "ok"`**. Until C4 lands, treat short-window formula CIs as a lower bound on
-   the true uncertainty.
+2. **The short-window block bootstrap is attenuated by construction.** — ✅ the
+   two named defects are fixed
+   ([C4](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend),
+   shipped 2026-08-13); **a measured residual is now disclosed under
+   [S6](roadmap.md#statistical-rigor-s--a-standing-workstream)**.
+   `_block_bootstrap_indices` capped the effective block at `n // 2`, which
+   landed on the midpoint of the very degeneracy curve its docstring reasoned
+   about. Measured rather than argued this time: the resampled-to-true variance
+   ratio was **0.46–0.63 for every n ≤ 16** and non-monotone (0.55 at n=13,
+   0.50 at n=14). The cap is now `n // 4` — 0.74–0.90 across all n, monotone,
+   and within 0.03 of the optimum on an AR(1) at ρ=0.6. The degeneracy guard no
+   longer keys on `n_periods == 1`: a *constant parent* is detected on the
+   resampled spread and its interval is withheld rather than shipped
+   zero-width, and no published `ci_95` is zero-width by any route.
+   **What the fix did not retire, and what taking the measurement exposed:**
+   under serial dependence a short window is weakly informative *whatever* the
+   block — 0.17–0.61 of the true sampling variance at ρ=0.6, which is a property
+   of the window, not the estimator. And `BOOT_BLOCK["day"] = 7` **resonates
+   with a weekly cycle**: a 7-day block holds each weekday exactly once, so a
+   weekly seasonal component cancels identically in every replicate, and the
+   shipped default sits at a *local minimum* of the honest interval width —
+   measured on the demo tree at roughly a third of the width at block 3. Every
+   daily-grain interval on a weekday-seasonal metric has therefore been
+   optimistic, by a factor no cap can correct, because the cap chooses how far
+   down from the constant and the constant is what is wrong. That is S6's, and
+   it is why "read a short-window formula CI as a lower bound" survives C4 in a
+   narrower form rather than disappearing.
 3. **Nothing accounts for multiplicity or selection.** — ○ open
    ([S15](roadmap.md#statistical-rigor-s--a-standing-workstream))
    One `run_rca` on a 15-node tree emits 25–30 intervals plus a
@@ -734,18 +747,31 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
    test suite — including its null-case restraint tests, which remain the most
    valuable part — is right; this particular implementation proves less than it
    appears to.
-8. **`ranked_causes` is a heuristic, reads like a result, and inverts on a
-   common input.** — ○ open
-   ([C5](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend),
-   [S12](roadmap.md#statistical-rigor-s--a-standing-workstream))
-   The score propagates |share| products up the tree. It is explicitly
+8. **`ranked_causes` is a heuristic and reads like a result.** — ◑ the inversion
+   is fixed ([C5](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend),
+   shipped 2026-08-13); **the framing problem is open**
+   ([S12](roadmap.md#statistical-rigor-s--a-standing-workstream)).
+   The score propagates share products up the tree. It is explicitly
    documented as triage rather than probability, but it is also the most
    prominent number in the UI, and prominence implies rigor whatever the docs
-   say. Beyond the framing problem there is a defect: the near-zero-gap guard is
-   an absolute `1e-12` rather than relative to node scale, so a node that barely
-   moved with two large offsetting parents produces shares of ±10⁵ that are then
-   *clamped to 1.0* — the metric that most conclusively did not move hands its
-   full influence score upward. C5 fixes the clamp; S12 fixes the prominence.
+   say — that half is untouched and is S12's.
+   The *defect* half is closed. The near-zero-gap guard was an absolute `1e-12`
+   rather than relative to node scale, and the weight saturated at
+   `min(|share|, 1)`, so a node that barely moved with two large offsetting
+   parents handed its full influence score upward. Both are fixed: the guard is
+   relative, and a hop now weights a parent by `min(|s_p|, 1)` divided by the
+   node's **cancellation factor** — the total gross share its parents had to
+   move to net out to the gap — so a share far past 100% lowers the score, which
+   is what it always should have meant. A node's parents' weights sum to at most
+   1, so a hop can no longer inflate influence at all.
+   **One correction this paper owes its own reader**, because the entry above
+   framed the defect as a near-zero-gap edge case and that framing was too
+   narrow: it was reproduced on the **bundled demo tree**, over an ordinary
+   fortnight, on a gap of +$596/day against a $26.4K baseline — nowhere near
+   zero. Shares exceed 100% whenever two parents oppose, which is the common
+   case the unclamped `share_of_gap` design exists to express. Two hostile
+   reviews and a triage pass all had the mechanism in hand and none ran the demo
+   and looked at the top number.
 9. **The trend interval does not grow with the analysis horizon.** — ○ open
    ([S16](roadmap.md#statistical-rigor-s--a-standing-workstream))
    `components.trend` is reported as the last fitted level's posterior, so a
@@ -761,8 +787,9 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
     [C4](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend))
     Composing a frequentist resampling interval with a Bayesian posterior is
     pragmatic and defensible but not a coherent joint posterior; block length is
-    fixed rather than estimated. C4 fixes the block *cap* (a defect); S6
-    estimates the block *length* from the data. The deeper composition question
+    still fixed rather than estimated. C4 fixed the block *cap* (a defect,
+    shipped 2026-08-13); S6 estimates the block *length* from the data and now
+    carries a measured reason to hurry — see #2. The deeper composition question
     is not currently scheduled, and would mean moving window-sampling
     uncertainty inside the model.
 11. **The flat trend forecast understates counterfactual movement** for nodes
@@ -1116,6 +1143,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-08-13 | **C4, C5 and C6 shipped — and taking C4's measurement moved a weakness rather than closing it.** §3.2 #2 (short-window bootstrap) and #8 (`ranked_causes`) both changed status: #2's two named defects are fixed, #8's inversion is fixed and only its S12 framing half remains. But measuring the block cap in order to justify it turned up something nobody had looked for: **`BOOT_BLOCK["day"] = 7` resonates with a weekly cycle** — a 7-day block holds each weekday exactly once, so a weekly seasonal component cancels identically in every replicate and the shipped default sits at a *local minimum* of the honest interval width, roughly a third of the width at block 3 on the demo tree. Every daily-grain interval on a weekday-seasonal metric has been optimistic by a factor no cap can correct, and that now sits under [S6](roadmap.md#statistical-rigor-s--a-standing-workstream), whose row was rewritten from "the current values are reasonable guesses" to a measured indictment of one of them. So the honest summary of C4 is that it closed two defects and *promoted* a third from unsuspected to disclosed — which is what measurement is for, and is why "read a short-window formula CI as a lower bound" survives in a narrower form instead of disappearing. #8 also carries a correction to this paper's own framing: it called the `ranked_causes` inversion a near-zero-gap edge case, and it reproduces on the bundled demo tree over an ordinary fortnight on a gap nowhere near zero. |
 | 2026-08-12 | **A fifth defect at the provider boundary, found by re-checking the review rather than by a new one** — the 2026-08-12 review was frozen at `c18d150`; re-verifying all 33 of its findings against `e433daa` confirmed 28 still live and promoted two into [Horizon 0](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend) that it had filed lower. `C18` is the one this paper owes text: a `flow` metric whose source starts partway into the loaded window was zero-filled back to the window's start **silently**, and the fit trained on the invented periods. §3.3 is updated, and its counting claim with it — this seam has produced five of six, not four of five. The location is the finding: `_align_to_spine` is the shared contract `C1`/`C2` built to end this class, and it warns correctly about *interior* gaps three lines away. `C17` (a zero denominator in a formula reaching the encoder as a NaN, and an agent payload as `null`) is the other promotion; it is an engine defect rather than a boundary one and adds no §3.2 weakness. No weakness changed status. Recorded because a reader comparing editions should see that §3.3's "the failure modes are documented rather than hidden" survived a second audit only after two more exceptions were fixed — and that both were found by re-reading a report, not by a third review. |
 | 2026-08-12 | **Two new provider-boundary defects, found and fixed the same day** — a second hostile review (against `c18d150`, scoped to the first client deployment and PyPI publication) found that a dbt metric's `filter` was silently dropped (`C15`) and that a snapshot survived an edit to the metric's own `sql:`/`bind:` block (`C16`), with `query_provenance` then attesting the new statement for the old numbers. Both shipped. No weakness changed status and none was added to §3.2 — both are engineering defects rather than statistical ones. What changed is §3.3, which said flatly that *the* two provider-boundary defects were fixed; that was true of C1/C2 and would have told a reader this boundary was sound. It now records four of the project's five silent-wrong-number defects at this one seam and draws the inference — treat a number's provenance as the least-tested thing here — rather than reporting each instance as a surprise. C15 also falsified a **roadmap** claim rather than a paper one: 2.10 had listed `filters` among what the dbt binding shipped, and they had never worked; that row now says so and real support is filed as 2.17. |
 | 2026-08-11 | **An outside deployment on a shape this paper had not considered** — a music festival: one product cycle a year, five editions of history, a demand clock in days-to-event, months-long true-zero windows, and revenue that restates backwards. §4 gained `S18` (right-censored metrics), `S19` (partial pooling across cycles) and `S20` (zero-inflated/count likelihoods), with a §4.2 entry explaining why `S19` is not the pooling `S15` declined — S15's objection was to pooling across a node's *heterogeneous parents*, which does not apply to pooling one node's coefficient across repeated instances of its own cycle. No weakness changed status and none was added: `C4`'s degenerate-bootstrap failure was **confirmed in production** rather than newly found, on a parent held identically at zero across a whole reference window, and the roadmap row now records the measured instance. Worth logging that the deployment's own workarounds were sound — an expected-pacing *regressor* is the correct encoding of a non-repeating event clock, not a second-best one, since this engine's seasonality is Fourier in integer time and therefore strictly periodic. |

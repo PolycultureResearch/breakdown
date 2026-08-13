@@ -280,26 +280,31 @@ computed from the survivors or withheld entirely. Treat it the same way: the
 point estimate is exact, the interval around it is not something the engine is
 willing to claim.
 
-> **Caveat (open, roadmap C4).** Two known defects sit in this path today, both
-> in the direction of *overconfidence*, and formula-node contribution intervals
-> come entirely from it.
+A **constant parent** — an unlaunched feature, a stock held flat, a seasonal
+business's off-season — makes every replicate resample the same number, so the
+interval would come out exactly zero-width. That is not certainty, it is the
+absence of information, and it is withheld: `ci_95: null` and
+`prob_same_direction: null` with `ci_status: "degenerate_bootstrap_spread"`.
+More generally, **no published `ci_95` is ever zero-width**; if you see one,
+it is a bug.
+
+> **Short windows are still short.** The block cap that used to halve the
+> resampled variance is fixed, but two limits remain and both live in
+> [S6](../knowledge/roadmap.md#statistical-rigor-s--a-standing-workstream),
+> which will estimate block length from the data rather than taking it from a
+> per-grain constant:
 >
-> - **Short windows are worse than they look.** The bootstrap's effective block
->   length is capped at half the window, which systematically shrinks the
->   resampled variance of a window mean. The shrinkage is largest on the short
->   windows this mechanism exists to be honest about, and it is not monotone in
->   window length — a 14-day daily window is not necessarily better off than a
->   5-day one. Treat a short-window formula CI as a **lower bound** on the true
->   uncertainty until C4 lands. The default reference window's 28-day floor
->   reduces how often a *reference* sits in this regime, but does not fix the
->   defect — short analysis windows and hand-picked short references still hit it.
-> - **The degeneracy guard is keyed on the wrong quantity.** It fires on a
->   single-period window, but the failure it exists to catch is *any* resampling
->   that produces identical replicates. A parent that is constant across the
->   window — an unlaunched feature, an unmoved stock, a zero-inflated series —
->   collapses every replicate to the same value and yields a **zero-width
->   `ci_95` reported with `ci_status: "ok"`**. A zero-width interval is never a
->   real result; read it as a withheld one.
+> - Under serial dependence, a short window simply carries little information
+>   about the series' long-run variance — measured at 0.17–0.61 of the true
+>   sampling variance across every block length tried, on an AR(1) at ρ=0.6.
+>   That is inherent to the window, not a defect in the estimator.
+> - The daily block constant of 7 **resonates with a weekly cycle**: a 7-day
+>   block contains each weekday exactly once, so a weekly seasonal component
+>   cancels identically in every replicate and the interval comes out narrower
+>   than at neighbouring block lengths. Measured on the bundled demo tree, the
+>   published interval width at block 7 is roughly a third of its width at
+>   block 3. Read a daily-grain interval on a weekday-seasonal metric as
+>   optimistic until S6 lands.
 
 ### `components`: trend and seasonal, made explicit
 
@@ -358,19 +363,23 @@ worth seeing. The UI clamps only the *edge width*, never the numbers.
 
 ### `ranked_causes` is a heuristic
 
-The ranking propagates a score from the target upward, weighting each hop by
-the parent's |share| (clamped to 1). It is a triage ordering — "look here
-first" — not a probability. For rigor, read the per-node contributions and
-their credible intervals.
+The ranking propagates a score from the target upward. Each hop weights a
+parent by `min(|share|, 1)` divided by the **total** gross share its siblings
+had to move — so a node whose parents largely cancel passes on less influence
+than one whose parents agree, and a parent explaining 165% of a gap scores
+*below* one explaining a clean 80%. A share far past 100% means the
+decomposition needed a lot of offsetting movement to land on a small net gap,
+which makes the split *less* well-identified, not more. Because a node's
+parents' weights sum to at most 1, a hop can never inflate influence.
 
-> **Caveat (open, roadmap C5).** The clamp misbehaves on a specific and common
-> input: a node whose own gap is near zero while its parents move in opposite
-> directions produces enormous |share| values that are then clamped to 1.0 — so
-> the metric that most conclusively did *not* move hands its full influence
-> score to everything above it. Scores accumulate across children, so a
-> well-connected node with several quiet children can top the ranking on pure
-> offsetting noise. Check the `gap` of a top-ranked cause before acting on its
-> rank.
+It remains a triage ordering — "look here first" — not a probability. For
+rigor, read the per-node contributions and their credible intervals.
+
+Only paths that actually carry influence appear: a node no hop ever reached is
+absent from `ranked_causes` entirely (`via` is never `null`), while a node that
+*was* reached and explains nothing stays, scored 0.0, with the child it was
+reached through. The full inventory of what was in scope — including nodes that
+could not be analyzed at all — is `nodes`, not this ranking.
 
 ### Multiplicity: a ranking is a search
 

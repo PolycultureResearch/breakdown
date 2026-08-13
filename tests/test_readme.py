@@ -386,11 +386,24 @@ TRANSCRIPT_WINDOWS = {
     "analysis_end": "2024-04-09",
 }
 
+# The commentary under the transcript claims that the *same* tree over a
+# four-week pair returns an order-count interval excluding zero, and a
+# different story — and uses that to say why moving the transcript to the
+# longer window would have been window-shopping. That is a claim about a run,
+# so it is a run.
+FOUR_WEEK_WINDOWS = {
+    "reference_start": "2024-02-14",
+    "reference_end": "2024-03-12",
+    "analysis_start": "2024-03-13",
+    "analysis_end": "2024-04-09",
+}
+
 
 @pytest.fixture(scope="module")
 def replayed(tmp_path_factory):
     """One pass over the app: boot the bundled tree, issue every replayable
-    curl against it, run the MCP section's RCA, then boot the slice fixture.
+    curl against it, run the MCP section's two RCAs, then boot the slice
+    fixture.
 
     Module-scoped and single-pass because `app` is a process-wide singleton (two
     TestClient lifespans must not overlap) and because on-demand ADVI fits are
@@ -424,6 +437,9 @@ def replayed(tmp_path_factory):
             resp = client.post("/rca/revenue", params=TRANSCRIPT_WINDOWS)
             assert resp.status_code == 200, resp.text
             transcript = resp.json()
+            resp = client.post("/rca/revenue", params=FOUR_WEEK_WINDOWS)
+            assert resp.status_code == 200, resp.text
+            four_week = resp.json()
 
     tree_file = tmp_path_factory.mktemp("readme") / "slice_fixture.yml"
     tree_file.write_text(SLICE_FIXTURE_TREE)
@@ -435,7 +451,7 @@ def replayed(tmp_path_factory):
             for ex in fixture:
                 results[ex.name] = issue(client, ex)
 
-    return results, transcript
+    return results, transcript, four_week
 
 
 def test_readme_has_the_curl_examples_we_think_it_has():
@@ -487,7 +503,7 @@ def test_every_documented_query_parameter_is_accepted():
 
 
 def test_replayed_curl_examples_return_the_documented_status(replayed):
-    results, _ = replayed
+    results, _, _ = replayed
     failures = []
     for ex in CURL_EXAMPLES:
         if ex.name in NOT_REPLAYED:
@@ -573,17 +589,18 @@ def test_api_reference_table_documents_every_route():
 #                   reproduce to floating point; the tolerance only absorbs the
 #                   rounding in the README's own prose.
 #
-#   bands           The `daily_sessions -> order_count` contribution and the
-#                   bootstrap intervals come from a seeded ADVI fit. Seeded is
-#                   not version-stable — a PyMC/pytensor bump moves the last
-#                   digits — so these are bands wide enough to survive a minor
-#                   upgrade and narrow enough that the README's qualitative
-#                   claims ("a bit over half", "direction not established")
-#                   fail with them.
+#   bands           The `daily_sessions -> order_count` contribution comes from
+#                   a seeded ADVI fit, and every interval from a seeded
+#                   bootstrap. Seeded is not version-stable — a PyMC/pytensor
+#                   or numpy bump moves the last digits — so these are bands
+#                   wide enough to survive a minor upgrade and narrow enough
+#                   that the README's qualitative claims ("about two-thirds",
+#                   "both cross zero", "direction not established") fail with
+#                   them.
 
 
 def test_mcp_section_figures_still_match_a_real_run(replayed):
-    _, rca = replayed
+    _, rca, _ = replayed
     nodes = rca["nodes"]
 
     def q(name, field):
@@ -615,15 +632,26 @@ def test_mcp_section_figures_still_match_a_real_run(replayed):
     assert aov["estimate"] == pytest.approx(-367.1, rel=1e-3)
     assert aov["share_of_gap"] == pytest.approx(-0.616, rel=1e-3)
 
-    # The README calls the AOV drag the confident half of the story and the
-    # order-count lift the unconfident one. Both claims are load-bearing prose.
-    assert aov["prob_same_direction"] == pytest.approx(1.0, abs=0.02)
-    assert aov["ci_95"][0] == pytest.approx(-506, rel=0.05)
-    assert aov["ci_95"][1] == pytest.approx(-207, rel=0.05)
+    # The transcript quotes the pair's sum against the observed gap to argue
+    # that nothing is hiding in the remainder.
+    assert oc["estimate"] + aov["estimate"] == pytest.approx(617.4, rel=1e-3)
+
+    # --- the spine of the narration: exact split, undetermined direction --
+    # Both legs' intervals cross zero over a 14-period window, which is why the
+    # transcript declines to call either one established. If a change ever
+    # makes one of these exclude zero, the section's argument is void and the
+    # prose has to be rewritten — not the number quietly bumped.
     assert oc["ci_95"][0] < 0 < oc["ci_95"][1], (
-        "The README says the order-count lift's interval crosses zero; it no longer does."
+        "The README says the order-count leg's interval crosses zero; it no longer does."
     )
-    assert 0.9 < oc["prob_same_direction"] < 1.0
+    assert aov["ci_95"][0] < 0 < aov["ci_95"][1], (
+        "The README says the AOV leg's interval crosses zero too — the whole point of the "
+        "section is that neither direction is established at this window length."
+    )
+    assert oc["prob_same_direction"] == pytest.approx(0.78, abs=0.04)
+    assert aov["prob_same_direction"] == pytest.approx(0.92, abs=0.04)
+    assert oc["ci_95"] == pytest.approx([-1499, 3365], rel=0.05)
+    assert aov["ci_95"] == pytest.approx([-909, 119], rel=0.05)
 
     # --- `unexplained` is small, which the narration cites ----------------
     unexplained = q("revenue", "unexplained")
@@ -632,20 +660,69 @@ def test_mcp_section_figures_still_match_a_real_run(replayed):
         "The README says `unexplained` is under 4% of the gap."
     )
 
-    # --- the sessions leg: about half, and not established ----------------
+    # --- the sessions leg: about two-thirds, and the least settled --------
     sessions = {c["parent"]: c for c in q("order_count", "contributions")}["daily_sessions"]
-    assert sessions["estimate"] == pytest.approx(3.0, abs=1.0)
-    assert 0.40 < sessions["share_of_gap"] < 0.70, (
-        "The README says sessions explain 'a bit over half' of the order-count gain."
+    assert sessions["estimate"] == pytest.approx(3.7, abs=0.6)
+    assert 0.60 < sessions["share_of_gap"] < 0.76, (
+        "The README says sessions explain 'about two-thirds' of the order-count gain."
     )
+    assert sessions["ci_95"] == pytest.approx([-9.6, 17.4], rel=0.25)
     assert sessions["ci_95"][0] < 0 < sessions["ci_95"][1], (
         "The README says the sessions leg's interval crosses zero."
     )
-    assert 0.7 < sessions["prob_same_direction"] < 0.95
+    assert sessions["prob_same_direction"] == pytest.approx(0.69, abs=0.06)
+    assert sessions["prob_same_direction"] < oc["prob_same_direction"], (
+        "The README calls the sessions leg 'the least settled leg of the three'."
+    )
+    assert sessions["prob_same_direction"] < aov["prob_same_direction"]
 
-    # --- ranked_causes: order_count leads, and the README must not lean on
-    # the clamped 1.0 score (roadmap C5).
-    assert rca["ranked_causes"][0]["metric"] == "order_count"
+    # The README says a node declaring no `seasonality` carries no `seasonal`
+    # key rather than a 0.0 with a zero-width interval. `order_count` declares
+    # none; `revenue` does, but is a formula node with no `components` at all.
+    assert set(q("order_count", "components")) == {"trend"}
+
+    # --- ranked_causes: the three scores the README quotes ---------------
+    ranked = rca["ranked_causes"]
+    assert [r["metric"] for r in ranked] == [
+        "order_count",
+        "daily_sessions",
+        "average_order_value",
+    ]
+    assert [r["via"] for r in ranked] == ["revenue", "order_count", "revenue"]
+    scores = {r["metric"]: r["score"] for r in ranked}
+    # `order_count` and `average_order_value` hang off exact Shapley shares, so
+    # they are arithmetic; `daily_sessions` inherits the fitted sessions share.
+    assert scores["order_count"] == pytest.approx(0.44, abs=0.005)
+    assert scores["average_order_value"] == pytest.approx(0.27, abs=0.005)
+    assert scores["daily_sessions"] == pytest.approx(0.30, abs=0.03)
+    # The claim the README makes *about* the score, rather than its value: a
+    # parent explaining 165% of a gap 62% of which was cancelled ranks below a
+    # lone parent cleanly explaining 80% — which under this weighting would
+    # score 0.8. A clamp that saturated at 1.0 would fail this (roadmap C5).
+    assert scores["order_count"] < 0.8, (
+        "The README says order_count's 165% share scores *below* a clean 80% explainer."
+    )
+
+
+def test_readme_four_week_comparison_is_a_run_we_performed(replayed):
+    """The commentary argues that moving the transcript to a longer window to
+    get a cleaner interval would have been window-shopping — and it can only
+    argue that because the longer window really does come back cleaner, and
+    really does tell a different story. Both halves are claims about a run."""
+    _, _, four_week = replayed
+    revenue = four_week["nodes"]["revenue"]
+
+    assert revenue["gap"] < 0, (
+        "The README says revenue *fell* over the four-week pair — that is what makes "
+        "switching to it a different story rather than a cleaner telling of this one."
+    )
+    oc = {c["parent"]: c for c in revenue["contributions"]}["order_count"]
+    lo, hi = oc["ci_95"]
+    assert lo < hi < 0, (
+        "The README says the four-week order-count interval excludes zero. If it no "
+        "longer does, the point about window-shopping needs restating, not deleting: "
+        f"got [{lo:.1f}, {hi:.1f}]."
+    )
 
 
 def test_readme_report_url_is_the_link_the_mcp_server_actually_mints(monkeypatch):
