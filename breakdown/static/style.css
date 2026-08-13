@@ -613,6 +613,68 @@ details .data-table { margin-top: 8px; }
 .attr-block h4 { font-size: 13px; margin: 12px 0 6px; }
 .attr-block h4 .method { font-weight: 400; font-size: 11px; color: var(--muted); }
 
+/* ---------- degraded RCA nodes ----------
+   The engine reports a node it could not analyze rather than failing the whole
+   tree, and the UI's job is to keep that visibly different from a node that
+   was analyzed and found nothing. Same amber caveat channel as .sign-warning
+   and the ◌ unexplained badge — this is a caveat, not an outage, so it must
+   not shout in the error red reserved for a failed request. */
+.degraded-note {
+  font-size: 12px;
+  color: var(--warn-ink);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: 8px 0 0;
+  line-height: 1.45;
+}
+.degraded-note code {
+  background: rgba(255, 255, 255, 0.65);
+  padding: 0 3px;
+  border-radius: 3px;
+  cursor: help;
+}
+.degraded-why { color: var(--warn); }
+/* The engine's own sentence: it names the offending parent and the dates, so
+   it is shown rather than hidden behind a tooltip. Its own line, because it is
+   a machine-written sentence sitting inside human prose. */
+.degraded-reason {
+  display: block;
+  margin-top: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.attr-block.degraded h4 .method { color: var(--warn-ink); }
+.cause-row.degraded .cause-bar { background: var(--warn); }
+/* The flag is a sibling of the name, and only on these rows does the name give
+   up `flex-shrink: 0` — so a long metric name ellipsizes instead of pushing
+   the flag (or the score bar) out of a 410px sidebar. */
+.cause-row.degraded .cause-name {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cause-flag {
+  font-weight: 400;
+  font-size: 10px;
+  padding: 1px 5px;
+  margin-left: 4px;
+  border-radius: 8px;
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+  white-space: nowrap;
+  cursor: help;
+}
+/* An interval that was withheld or narrowed. Quieter than a warn flag — the
+   point estimate still stands — but never silent. */
+.ci-flag { cursor: help; border-bottom: 1px dotted var(--faint); }
+.swatch.notanalyzed { background: var(--warn-soft); border: 2px dashed var(--warn); }
+
 #rca-setup {
   background: var(--bg);
   border: 1px solid var(--border);

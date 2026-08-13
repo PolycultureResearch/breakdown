@@ -698,6 +698,71 @@ function updateShareMenu() {
   if (save) save.disabled = !location.hash || location.hash.length < 2;
 }
 
+/* ---------- degraded RCA nodes ----------
+   `POST /rca/{name}` degrades a node instead of failing the whole tree: any
+   `status` other than "ok" means that node was reported *without* attribution,
+   with the engine's own sentence in `status_reason`. The cardinal sin this
+   guards against is rendering one of those as an analyzed node that simply
+   found nothing — an empty contributions table plus a null `attribution_method`
+   otherwise reads as "posterior, no drivers". Every consumer (canvas overlay,
+   ranked causes, attribution detail, the exported report) goes through here so
+   the vocabulary is one string, not four.
+
+   `label` is the noun phrase; `short` is the chip; `explains` says which part
+   of the record survived, because that differs and it matters: a fit failure
+   loses the decomposition, a too-short window loses the numbers themselves. */
+const NODE_STATUS = {
+  window_shorter_than_grain: {
+    label: "not analyzed — window shorter than grain",
+    short: "window < grain",
+    explains: "The windows hold no whole period at this metric's grain, so it has no measured movement here at all.",
+  },
+  fit_failed: {
+    label: "not analyzed — model fit failed",
+    short: "fit failed",
+    explains: "Its movement below is measured from the data and stands; what is missing is the decomposition, because this node's model could not be fitted.",
+  },
+  attribution_failed: {
+    label: "not decomposed — attribution failed",
+    short: "attribution failed",
+    explains: "Its movement below is measured from the data and stands; what is missing is the decomposition, because the formula has no finite value over these windows.",
+  },
+};
+
+/* The status entry for a node, or null when it is fine. Unknown statuses are
+   surfaced verbatim rather than swallowed — a status this build has never
+   heard of is still not "ok", and silently treating it as ok is the failure
+   mode this whole block exists to prevent. */
+function nodeStatus(node) {
+  if (!node || !node.status || node.status === "ok") return null;
+  return (
+    NODE_STATUS[node.status] || {
+      label: `not analyzed — ${node.status}`,
+      short: node.status,
+      explains: "",
+    }
+  );
+}
+
+/* `ci_status` is the interval's own health, independent of the node's status.
+   All four values are surfaced: rendering nothing for three of them and a note
+   for the fourth reads as "interval checked and fine" when it means "not
+   said". */
+const CI_STATUS_NOTE = {
+  degenerate_single_period: {
+    text: "single-period window: no bootstrap CI",
+    why: "A single period gives the block bootstrap nothing to resample, so every replicate is identical and the interval would be falsely zero-width. It is withheld instead.",
+  },
+  posterior_only_single_period: {
+    text: "single-period window: posterior-only CI",
+    why: "Intervals here carry the coefficient posterior only — the window-resampling component is absent, because a single period cannot be resampled. Read them as narrower than the truth.",
+  },
+  nonfinite_bootstrap_replicates: {
+    text: "intervals withheld: non-finite bootstrap replicates",
+    why: "Enough bootstrap replicates came out non-finite (a resampled denominator mean landing on zero) that an interval was withheld entirely, or computed only from the replicates that survived. Point estimates are unaffected: they are the exact Shapley values, never bootstrap means.",
+  },
+};
+
 /* ---------- exportable RCA report (roadmap 1.5) ----------
    Self-contained HTML built entirely client-side: the browser already holds
    the full RCA response, Cytoscape snapshots the annotated tree, Plotly
@@ -740,16 +805,35 @@ function buildRcaReportHtml(res, treePng, stripPng) {
       const ew = node.effective_windows;
       bits.push(`${node.grain} grain, snapped to ${ew.reference.n_periods}+${ew.analysis.n_periods} whole ${node.grain}s`);
     }
-    if (node.ci_status === "degenerate_single_period") bits.push("single-period window: no bootstrap CI");
+    if (CI_STATUS_NOTE[node.ci_status]) bits.push(CI_STATUS_NOTE[node.ci_status].text);
     if (node.sign_warnings && node.sign_warnings.length) bits.push("⚠ learned sign contradicts declared expectation");
     return bits.length ? ` · ${esc(bits.join(" · "))}` : "";
   };
 
+  // The movement line: real for every node the engine reached, including the
+  // ones it could not decompose.
+  const gapLine = (node) =>
+    node.gap == null
+      ? ""
+      : `<p class="meta">gap ${fmt(node.gap)} (${node.relative_change == null ? "—" : signedPct(node.relative_change)}) · ${fmt(node.baseline)} → ${fmt(node.actual)} window means${node.grain && node.grain !== "day" ? ` per ${esc(node.grain)}` : ""}</p>`;
+
   const order = [res.target, ...res.ranked_causes.map((c) => c.metric)];
   const blocks = order
-    .filter((name) => res.nodes[name] && res.nodes[name].contributions.length)
+    .filter((name) => res.nodes[name] && (res.nodes[name].contributions.length || nodeStatus(res.nodes[name])))
     .map((name) => {
       const node = res.nodes[name];
+      const st = nodeStatus(node);
+      // A degraded node gets a section of its own rather than being dropped:
+      // an export that omits it is an export that claims the ranked causes
+      // below are the whole story. Reasons print in full — a static report
+      // has no hover to hide them behind.
+      if (st) {
+        return `<section>
+          <h3><code>${esc(name)}</code> <span class="meta">${esc(st.label)}</span></h3>
+          ${gapLine(node)}
+          <p class="warn">⚠ ${esc(st.explains)}${node.status_reason ? ` <em>${esc(node.status_reason)}</em>` : ""}</p>
+        </section>`;
+      }
       const twoLevel = node.contributions.some((c) => c.decomposition);
       const unexpl = node.unexplained !== null
         ? `<tr class="dim"><td>unexplained</td>${num(fmt(node.unexplained))}${num(shareOf(node.unexplained, node.gap))}<td class="num">—</td></tr>`
@@ -780,15 +864,13 @@ function buildRcaReportHtml(res, treePng, stripPng) {
       const signWarn = (node.sign_warnings || []).map((w) => `<p class="warn">⚠ ${esc(w)}</p>`).join("");
       return `<section>
         <h3><code>${esc(name)}</code> <span class="meta">${node.attribution_method === "shapley" ? "Shapley (exact)" : "posterior"}${grainNote(node)}</span></h3>
-        <p class="meta">gap ${fmt(node.gap)} (${node.relative_change == null ? "—" : signedPct(node.relative_change)}) · ${fmt(node.baseline)} → ${fmt(node.actual)} window means${node.grain && node.grain !== "day" ? ` per ${esc(node.grain)}` : ""}</p>
+        ${gapLine(node)}
         ${signWarn}${tables}
       </section>`;
     })
     .join("");
 
-  const skipped = Object.entries(res.nodes)
-    .filter(([, n]) => n.status === "window_shorter_than_grain")
-    .map(([n, node]) => `<code>${esc(n)}</code> (${esc(node.grain)})`);
+  const degraded = Object.entries(res.nodes).filter(([, n]) => nodeStatus(n));
 
   const ranked = res.ranked_causes
     .map((c, i) => `<tr><td>${i + 1}</td><td><code>${esc(c.metric)}</code></td>${num(c.score.toFixed(2))}<td>via ${esc(c.via || "—")}</td></tr>`)
@@ -820,12 +902,19 @@ function buildRcaReportHtml(res, treePng, stripPng) {
 </style></head><body>
   <h1>Root cause analysis — <code>${esc(res.target)}</code></h1>
   <p class="meta">reference ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)} vs analysis ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}${dataThrough ? ` · data through ${esc(dataThrough)}` : ""}${state.meta ? ` · provider: ${esc(state.meta.provider)}` : ""} · generated ${now.toISOString().slice(0, 16).replace("T", " ")} UTC</p>
-  <div class="gap ${goodDir(res.target, target.gap >= 0 ? "up" : "down")}">${target.gap >= 0 ? "+" : ""}${fmt(target.gap)} (${signedPct(target.relative_change)})</div>
+  ${target.gap == null
+    ? `<p class="warn">⚠ ${esc((nodeStatus(target) || {}).label || "not analyzed")} — ${esc(target.status_reason || "")}</p>`
+    : `<div class="gap ${goodDir(res.target, target.gap >= 0 ? "up" : "down")}">${target.gap >= 0 ? "+" : ""}${fmt(target.gap)} (${signedPct(target.relative_change)})</div>
+       ${nodeStatus(target) ? `<p class="warn">⚠ ${esc(nodeStatus(target).label)} — ${esc(target.status_reason || "")} The ranked causes below carry no information about this target: nothing was attributed to it.</p>` : ""}`}
   ${stripPng ? `<img src="${stripPng}" alt="target series with reference and analysis windows shaded">` : ""}
   ${treePng ? `<h3>Metric tree</h3><img src="${treePng}" alt="metric tree with RCA overlay">` : ""}
   <h3>Ranked causes <span class="meta">(triage heuristic, not rigorous multi-hop attribution)</span></h3>
   <table><tr><th>#</th><th>Metric</th><th class="num">score</th><th>via</th></tr>${ranked}</table>
-  ${skipped.length ? `<p class="meta">Not analyzed — window shorter than grain: ${skipped.join(", ")}.</p>` : ""}
+  ${degraded.length
+    ? `<p class="warn">⚠ ${degraded.length} of ${Object.keys(res.nodes).length} metrics in scope could not be analyzed, so this ranking is incomplete — nothing upstream of them was attributed. ${degraded
+        .map(([n, node]) => `<code>${esc(n)}</code> (${esc(nodeStatus(node).short)})`)
+        .join(", ")}. Each is detailed below.</p>`
+    : ""}
   <h3 style="margin-top:24px">Attribution detail</h3>
   ${blocks}
   <div class="footnote">
@@ -1572,6 +1661,21 @@ const CY_STYLE = [
     selector: "node.rca-unexplained",
     style: { "border-style": "dashed", "border-color": COL.warn, "border-width": 3 },
   },
+  {
+    // Analysis was attempted and failed. Same amber caveat channel as the
+    // unexplained badge, but the whole card goes amber rather than keeping an
+    // up/down fill — so at a glance it is distinguishable from a healthy node,
+    // from a node with a genuinely small effect, and from `rca-unexplained`
+    // (which is green/red *inside* an amber outline: analyzed, with a large
+    // residual). Placed after the tint rules so it wins if both ever apply.
+    selector: "node.rca-not-analyzed",
+    style: {
+      "background-color": COL.warnSoft,
+      "border-style": "dashed",
+      "border-color": COL.warn,
+      "border-width": 3,
+    },
+  },
   /* what-if overlay: sign=hue, certainty=background opacity, pinned=heavy border */
   {
     selector: "node.sim-up",
@@ -2210,24 +2314,38 @@ function applyRcaOverlay() {
 
   Object.entries(res.nodes).forEach(([name, node]) => {
     const n = cy.getElementById(name);
-    const tint = goodClass(name, node.gap >= 0 ? "up" : "down", "rca");
-    if (tint) n.addClass(tint);
-    // large-unexplained badge: dashed amber border + ◌ glyph on the card
+    const st = nodeStatus(node);
     let mark = null;
-    if (
-      node.contributions.length &&
-      node.unexplained != null &&
-      Math.abs(node.gap) > 1e-9 &&
-      Math.abs(node.unexplained / node.gap) > 0.35
-    ) {
-      n.addClass("rca-unexplained");
-      mark = "◌";
+    if (st) {
+      // A node the engine could not analyze must not read as one it analyzed
+      // and found quiet, and it must not vanish either — a disappeared node is
+      // as misleading as a green one. Amber fill + dashed amber border + ⚠,
+      // and deliberately NO up/down tint: the good/bad channel is the
+      // *attribution* overlay's, and there is no attribution here. The card's
+      // delta pill still shows the movement, which is real and measured.
+      n.addClass("rca-not-analyzed");
+      mark = "⚠";
+    } else {
+      const tint = goodClass(name, node.gap >= 0 ? "up" : "down", "rca");
+      if (tint) n.addClass(tint);
+      // large-unexplained badge: dashed amber border + ◌ glyph on the card
+      if (
+        node.contributions.length &&
+        node.unexplained != null &&
+        Math.abs(node.gap) > 1e-9 &&
+        Math.abs(node.unexplained / node.gap) > 0.35
+      ) {
+        n.addClass("rca-unexplained");
+        mark = "◌";
+      }
     }
     // the card shows the RCA change (gap over the two windows) while RCA is on
     state.cardOverlay[name] = {
       value: null, // keep the latest value as the big number
       dpct: node.relative_change,
-      dir: node.gap >= 0 ? "up" : "down",
+      // `null >= 0` is true, so a node with no measured gap would tint and
+      // arrow *upward* — check for it rather than letting it read as growth.
+      dir: node.gap == null ? "flat" : node.gap >= 0 ? "up" : "down",
       mark,
     };
     node.contributions.forEach((c) => {
@@ -2245,12 +2363,27 @@ function applyRcaOverlay() {
   });
 
   renderAllCards(); // repaint cards with the RCA overlay folded in
+  ensureRcaLegendExtras();
   document.querySelectorAll(".rca-only").forEach((el) => (el.style.display = "flex"));
+}
+
+/* The ⚠ mark is meaningless without a legend line, and the RCA legend rows are
+   toggled together by `.rca-only` — so this row is inserted once, next to the
+   ◌ row it must be told apart from, and then follows the same toggle. */
+function ensureRcaLegendExtras() {
+  const legend = $("legend");
+  if (!legend || $("legend-not-analyzed")) return;
+  const row = document.createElement("div");
+  row.className = "legend-row rca-only";
+  row.id = "legend-not-analyzed";
+  row.style.display = "none";
+  row.innerHTML = '<span class="swatch notanalyzed"></span> ⚠ not analyzed';
+  legend.appendChild(row);
 }
 
 function clearRcaStyles() {
   const cy = state.cy;
-  cy.elements().removeClass("faded rca-up rca-down pathhl rca-unexplained");
+  cy.elements().removeClass("faded rca-up rca-down pathhl rca-unexplained rca-not-analyzed");
   cy.nodes().forEach((n) => n.data("label", n.id()));
   cy.edges().forEach((e) => {
     e.data("w", 2);
@@ -2562,39 +2695,68 @@ async function toggleSlice(metric, dimension) {
 function renderRcaTab() {
   const res = state.rca;
   const target = res.nodes[res.target];
+  const targetStatus = nodeStatus(target);
 
-  if (target.status === "window_shorter_than_grain") {
+  // The target itself failed. Ranked causes and attribution are computed from
+  // *its* contributions, so with none there is nothing to rank: showing the
+  // usual sections would present a list of zero-score metrics as an answer.
+  if (targetStatus) {
+    const gapBlock =
+      target.gap == null
+        ? ""
+        : `<div class="gap-line ${goodDir(res.target, target.gap >= 0 ? "up" : "down")}">${target.gap >= 0 ? "+" : ""}${fmt(target.gap)} <span style="font-size:14px">(${signedPct(target.relative_change)})</span></div>
+           <div class="sub">${fmt(target.baseline)} → ${fmt(target.actual)} (window means${target.grain && target.grain !== "day" ? ` per ${esc(target.grain)}` : ""})</div>`;
     $("rca-results").innerHTML = `
       <div class="rca-card">
-        <div class="sub">${esc(res.target)}</div>
-        <p class="placeholder">The requested windows contain no whole
-        <strong>${esc(target.grain)}</strong> period, so this
-        ${esc(target.grain)}-grain metric cannot be analyzed. Widen the
-        windows to at least one full ${esc(target.grain)}.</p>
+        <div class="sub">${esc(res.target)} · ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)} vs ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}</div>
+        ${gapBlock}
+        <p class="degraded-note"><strong>⚠ ${esc(targetStatus.label)}.</strong>
+          ${esc(targetStatus.explains)}
+          ${target.status_reason ? `<span class="degraded-reason">${esc(target.status_reason)}</span>` : ""}
+          No causes can be ranked for a target with no attribution.</p>
       </div>`;
     return;
   }
 
   const dirCls = goodDir(res.target, target.gap >= 0 ? "up" : "down");
-  const skipped = Object.entries(res.nodes)
-    .filter(([, n]) => n.status === "window_shorter_than_grain")
-    .map(([name, n]) => `<code>${esc(name)}</code> (${esc(n.grain)})`);
-  const skippedNote = skipped.length
-    ? `<p class="inline-status">Not analyzed — window shorter than grain: ${skipped.join(", ")}.</p>`
+  // Every node in scope the engine could not analyze. Naming the count in the
+  // summary is the point: a reader who scrolls past one otherwise takes the
+  // ranked causes for a complete list, when in fact nothing upstream of a
+  // failed node was attributed at all.
+  const degraded = Object.entries(res.nodes).filter(([, n]) => nodeStatus(n));
+  const degradedNote = degraded.length
+    ? `<p class="degraded-note"><strong>⚠ ${degraded.length} of ${Object.keys(res.nodes).length} metrics in scope could not be analyzed</strong>,
+        so the ranked causes are incomplete — nothing upstream of them was attributed.
+        ${degraded
+          .map(([name, n]) => {
+            const st = nodeStatus(n);
+            const why = `${st.explains}${n.status_reason ? `\n\n${n.status_reason}` : ""}`;
+            return `<code title="${esc(why)}">${esc(name)}</code> <span class="degraded-why">(${esc(st.short)})</span>`;
+          })
+          .join(", ")}. Each is detailed under Attribution detail.</p>`
     : "";
 
   const maxScore = Math.max(...res.ranked_causes.map((c) => c.score), 1e-9);
   const causeRows = res.ranked_causes
-    .map(
-      (c, i) => `
-      <div class="cause-row" data-metric="${esc(c.metric)}">
+    .map((c, i) => {
+      // The score is honest — it comes from the *child's* attribution of this
+      // metric, which succeeded. What failed is this metric's own
+      // decomposition, so the row stays and says so; without the flag a
+      // top-ranked cause looks like a lead the user can follow upward, and it
+      // is a dead end.
+      const st = nodeStatus(res.nodes[c.metric]);
+      const flag = st
+        ? ` <span class="cause-flag" title="${esc(`${st.explains}${res.nodes[c.metric].status_reason ? `\n\n${res.nodes[c.metric].status_reason}` : ""}`)}">⚠ ${esc(st.short)}</span>`
+        : "";
+      return `
+      <div class="cause-row${st ? " degraded" : ""}" data-metric="${esc(c.metric)}">
         <span class="cause-rank">${i + 1}</span>
-        <span class="cause-name">${esc(c.metric)}</span>
+        <span class="cause-name">${esc(c.metric)}</span>${flag}
         <span class="cause-bar-wrap"><span class="cause-bar" style="width:${(100 * c.score) / maxScore}%"></span></span>
         <span class="cause-via">via ${esc(c.via || "—")}</span>
       </div>
-      ${sliceControlsHtml(c.metric)}`,
-    )
+      ${sliceControlsHtml(c.metric)}`;
+    })
     .join("");
 
   // attribution detail: target first, then ranked order
@@ -2607,19 +2769,38 @@ function renderRcaTab() {
     return n && n.contributions.some((c) => c.decomposition);
   });
   const blocks = order
-    .filter((name) => res.nodes[name] && res.nodes[name].contributions.length)
+    .filter((name) => res.nodes[name] && (res.nodes[name].contributions.length || nodeStatus(res.nodes[name])))
     .map((name) => {
       const node = res.nodes[name];
+      const st = nodeStatus(node);
+      // A failed node gets a block of its own rather than being filtered out.
+      // `attribution_method` is null on these, so the old code would have
+      // labelled it "posterior" over an empty table — a node that could not be
+      // analyzed presented as one that was analyzed and found nothing.
+      if (st) {
+        const movement =
+          node.gap == null
+            ? ""
+            : `<p class="inline-status">gap <strong>${fmt(node.gap)}</strong> (${node.relative_change == null ? "—" : signedPct(node.relative_change)}) ·
+                ${fmt(node.baseline)} → ${fmt(node.actual)} (window means${node.grain && node.grain !== "day" ? ` per ${esc(node.grain)}` : ""})</p>`;
+        return `
+        <div class="attr-block degraded">
+          <h4>${esc(name)} <span class="method">· ${esc(st.label)}</span></h4>
+          ${movement}
+          <p class="degraded-note">${esc(st.explains)}
+            ${node.status_reason ? `<span class="degraded-reason">${esc(node.status_reason)}</span>` : ""}</p>
+        </div>`;
+      }
       const method = node.attribution_method === "shapley" ? "Shapley (exact)" : "posterior";
       const ew = node.effective_windows;
       const snapNote =
         node.grain && node.grain !== "day" && ew
           ? ` · ${esc(node.grain)} grain, snapped to ${ew.reference.n_periods}+${ew.analysis.n_periods} whole ${esc(node.grain)}s`
           : "";
-      const ciNote =
-        node.ci_status === "degenerate_single_period"
-          ? ` · single-period window: no bootstrap CI`
-          : "";
+      const ci = CI_STATUS_NOTE[node.ci_status];
+      const ciNote = ci
+        ? ` · <span class="ci-flag" title="${esc(ci.why)}">${esc(ci.text)}</span>`
+        : "";
       const signNote =
         node.sign_warnings && node.sign_warnings.length
           ? ` · <span class="sign-flag" title="${esc(node.sign_warnings.join("\n\n"))}">⚠ learned sign contradicts expectation</span>`
@@ -2728,7 +2909,7 @@ function renderRcaTab() {
       <div class="gap-line ${dirCls}">${target.gap >= 0 ? "+" : ""}${fmt(target.gap)} <span style="font-size:14px">(${signedPct(target.relative_change)})</span></div>
       <div id="rca-strip"></div>
       <div class="sub">${fmt(target.baseline)} → ${fmt(target.actual)} (window means${target.grain && target.grain !== "day" ? ` per ${esc(target.grain)}` : ""})</div>
-      ${skippedNote}
+      ${degradedNote}
     </div>
 
     <section>
