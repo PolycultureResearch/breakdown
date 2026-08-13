@@ -36,7 +36,8 @@ or a structural zero wearing a measurement's clothes.
 
 Treat every one of these as a finding until explained:
 
-- a score of exactly `1.0` or `0.0`
+- a score of exactly `1.0` or `0.0` (C5 sat at exactly `1.0` on the demo tree's
+  top cause through two hostile reviews — a saturated clamp reads as certainty)
 - a share of exactly `100%`
 - `ci_95` of exactly `[0, 0]`, or a bound sitting exactly on `0`
 - `prob_same_direction` of exactly `1.00`, or below `0.5` (impossible: it is a max of complements)
@@ -74,9 +75,10 @@ roughly the right magnitude. `tests/synthetic.py` and
 ## Output
 
 State the numbers you looked at. A review that did not run is otherwise
-invisible.
+invisible. Date it — a dated observation is a record and cannot go stale, an
+undated one drifts into a false claim.
 
-> White Cube `new_mrr`, ref 2026-01-05→2026-02-01, an 2026-02-09→2026-03-08.
+> **2026-08-13** · White Cube `new_mrr`, ref 2026-01-05→2026-02-01, an 2026-02-09→2026-03-08.
 > 1701.5 → 1449.6, gap −251.8 (−14.8%), `unexplained` −0.00 (exact identity,
 > reconciles). `new_subscriptions` −324.8 share +1.290 ci [−534.8, −76.8]
 > psd 0.998; `new_arpu` +73.0 share −0.290 ci [−168.3, 293.1] psd 0.708 —

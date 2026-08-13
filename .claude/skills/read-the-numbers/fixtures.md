@@ -1,9 +1,16 @@
 # Fixtures for `read-the-numbers`
 
-Which tree to run, what each one is *for*, and what is already known to be wrong
-on it. Read the known-bad column before reporting a finding — rediscovering a
-logged defect is noise, and worse, a fixture with an unlabelled known-bad trains
-you to ignore red flags.
+Per-tree operational reference: what each tree can surface, how to run it, the
+**shape** a correct run has, and what is already known-wrong on it.
+
+Deliberately not here: exact expected values (they live in the tests that pin
+them, which go red when they move — a number restated here would drift
+silently), defect descriptions (the roadmap row is the source of truth), and the
+tells for reading output (`SKILL.md`).
+
+Read the known-bad line before reporting a finding. Rediscovering a logged
+defect is noise; worse, a fixture with an unlabelled known-bad trains you to
+ignore red flags.
 
 | Tree | Metrics | Grain | Provider | What it is for |
 |---|---|---|---|---|
@@ -12,7 +19,7 @@ you to ignore red flags.
 | **Jaffle** `breakdown/examples/jaffle_shop_tree.yml` | 4 | day | mock | Fast sanity check only. Too small to surface much. |
 
 Two trees is the current standard — White Cube plus one other. As more demo
-trees are built for prospects, add them here.
+trees are built for prospects, add a section here.
 
 ---
 
@@ -29,21 +36,22 @@ uv run breakdown serve --tree demo/white_cube_tree.yml \
   --start-date 2024-06-01 --end-date 2026-07-30
 ```
 
-Snapshots are committed (`demo/.breakdown/snapshots`, 53 files), so this needs
-no warehouse and no `mf`. If they are missing, `make -C demo snapshots`.
-
 **Both env vars are required and the second one looks wrong on purpose.** The
-tree declares a `dbt` provider whose `project_path` is `${WHITE_CUBE_DBT_PROJECT}`,
-so parsing fails outright without it — the tree shows as errored and every route
-503s. Pointing it at a nonexistent path is what `tests/test_white_cube_demo.py`
-does deliberately: if anything reaches a provider instead of a snapshot, it fails
-loudly rather than quietly working on a machine that happens to have the dbt
-project. Copy the command; do not "fix" the path.
+tree declares a `dbt` provider whose `project_path` is
+`${WHITE_CUBE_DBT_PROJECT}`, so parsing fails outright without it — the tree
+shows as errored and every route 503s. Pointing it at a nonexistent path is what
+`tests/test_white_cube_demo.py` does deliberately: if anything reaches a
+provider instead of a snapshot, it fails loudly rather than quietly working on a
+machine that happens to have the dbt project. Copy the command; do not "fix" the
+path.
 
-**Four planted stories**, each with a known cause. Full script with the expected
-narrative in [`knowledge/demo_guided_tour.md`](../../../knowledge/demo_guided_tour.md);
-the numbers are asserted in `tests/test_white_cube_demo.py`, so if one stops
-matching, that test should already be red.
+Snapshots are committed (`demo/.breakdown/snapshots`, 53 files). If missing,
+`make -C demo snapshots`.
+
+**Four planted stories**, each with a known cause. Full script and the expected
+narrative: [`knowledge/demo_guided_tour.md`](../../../knowledge/demo_guided_tour.md),
+which is authoritative for the windows; `tests/test_white_cube_demo.py` pins
+them and their numbers.
 
 | Story | Target | Reference | Analysis |
 |---|---|---|---|
@@ -52,24 +60,19 @@ matching, that test should already be red.
 | C — something good happened in spring | `signups` | 2025-02-03 → 2025-03-02 | see tour |
 | D — did the onboarding revamp work | `new_mrr` | 2025-07-07 → 2025-08-03 | see tour |
 
-**Story A, measured 2026-08-13** — the anchor to compare against:
+**Shape of a correct Story A run** — properties, so they survive a re-seed or a
+sampler change that moves the values:
 
-```
-new_mrr           1701.5 → 1449.6   gap -251.8 (-14.8%)   unexplained -0.00
-  new_subscriptions   -324.8   share +1.290   ci [-534.8, -76.8]   psd 0.998
-  new_arpu             +73.0   share -0.290   ci [-168.3, 293.1]   psd 0.708
-ranked[0] new_subscriptions 0.633 via new_mrr
-```
+- `new_mrr` is an exact identity over two parents, so `unexplained` is ~0 and
+  the two shares sum to 1.000.
+- The gap is negative and double-digit percent.
+- **Volume is established, rate is not**: the `new_subscriptions` interval
+  excludes zero with `prob_same_direction` ≈ 1; `new_arpu`'s spans zero. Shares
+  exceed 100% because the two parents offset — correct, not a defect.
+- `ranked_causes[0]` is `new_subscriptions`, reached via `new_mrr`.
 
-Read it the way the practice asks: `unexplained` is −0.00 because `new_mrr` is
-an exact identity over the two parents, shares sum to 1.000, volume is
-established (psd 0.998, interval excludes zero) and rate is not (psd 0.708,
-interval spans zero). Shares exceeding 100% are correct here — the two parents
-offset.
-
-**Use it for:** does the engine still recover the planted cause? If the top
-cause moves off `new_subscriptions`, that is a finding regardless of what the
-tests say.
+If the top cause moves off `new_subscriptions`, that is a finding regardless of
+what the tests say — the planted cause is a volume story.
 
 **Known-bad:** none currently logged.
 
@@ -77,10 +80,10 @@ tests say.
 
 ## B2B MRR — the scale and shape fixture
 
-The worked reference tree. Mock provider, so data is deterministic but *not*
-ground truth — do not check specific values against a story here. Run it to see
-whether anything breaks structurally: mixed day/month grain, three documented
-day→month handoffs, 46 rates, 6 stocks, dimensions on 26 nodes.
+The worked reference tree. Mock provider: deterministic, but **not** ground
+truth — do not check specific values against a narrative here. Run it to see
+whether anything breaks structurally at 106 metrics: mixed day/month grain,
+three documented day→month handoffs, 46 rates, 6 stocks, dimensions on 26 nodes.
 
 ```bash
 uv run breakdown serve --tree knowledge/b2b_mrr_tree.yml \
@@ -88,46 +91,31 @@ uv run breakdown serve --tree knowledge/b2b_mrr_tree.yml \
 ```
 
 **Use it for:** grain handoffs, wide formula nodes, slicing, and anything that
-scales with metric count. Also the only tree where a monthly node's fit window
-is realistically short.
+scales with metric count. It is also the only tree where a monthly node's fit
+window is realistically short.
 
-### Known-bad: `controllable_attrition` is negative in every period
+**Known-bad: `controllable_attrition`** — negative in every period, because the
+mock draws its two leaves independently at unrelated scales. Roadmap
+[**C13**](../../../knowledge/roadmap.md), open; the row carries the measurements
+and the blast radius. Do not report it as new.
 
-Roadmap **C13**, open. Measured 2026-08-13 over 2024-01-01 → 2024-12-31:
-
-```
-controllable_attrition   min = -3,043.0   max = -2,471.7   ← never positive
-cancel_requests          min    924.8     max  1,220.2
-saved_cancel_requests    min  3,357.4     max  4,214.8     ← always exceeds requests
-```
-
-`controllable_attrition = cancel_requests − saved_cancel_requests`, and the mock
-draws both leaves independently at unrelated scales, so "saved" always exceeds
-"requested" — semantically impossible, and negative in 100% of periods rather
-than occasionally.
-
-**Two corrections to C13's roadmap row, from running it:** the row says the
-defect makes the difference "go negative", implying sometimes; it is *always*.
-And the row says `churned_customers` / `churned_mrr` inherit it — they do not.
-`churned_customers = controllable_attrition + uncontrollable_attrition` stays
-positive (1,467.8 → 2,413.6) because the uncontrollable term is larger. Blast
-radius is one node, not three.
-
-Do not report this as new. Do treat any *other* negative flow or stock as a
-finding: one known-bad node is the calibration, and a second means something
-changed.
+That is the only node with impossible values. Treat any *other* negative flow or
+stock as a finding: one labelled known-bad is the calibration, and a second
+means something changed.
 
 ---
 
-## Anchors worth knowing
+## Jaffle — the fast sanity check
 
-**Jaffle**, ref `2024-03-13 → 2024-03-26`, analysis `2024-03-27 → 2024-04-09` —
-the README's MCP transcript, pinned by `tests/test_readme.py`. `revenue`
-26,386.52 → 26,982.07, gap +595.55. `order_count` share 1.6532, `average_order_value`
-−0.6165. Neither leg's direction is established at 14 periods, deliberately —
-that is C4's wider intervals, not a regression.
+Four metrics, day grain, mock. Runs in seconds. Use it when you want to confirm
+a change did not break the basic path, not to find anything subtle.
 
-**A useful trap:** `ranked_causes[0]` on that run scores 0.4406, not 1.0. Before
-C5 it was exactly 1.0 — a saturated clamp on the most prominent number in the
-product, on the first tree a new user opens, missed by two hostile reviews. If a
-change ever puts an exact 1.0 back there, that is the same defect returning.
+Its one useful window is the README's MCP transcript — reference
+`2024-03-13 → 2024-03-26`, analysis `2024-03-27 → 2024-04-09`, target `revenue`
+— pinned by `tests/test_readme.py`.
+
+**Shape:** `revenue = order_count × average_order_value` is an exact identity,
+so `unexplained` is ~0; the two shares offset well past 100%; and **neither
+leg's direction is established** over 14 periods. That last one is deliberate —
+it is C4's corrected intervals, not a regression. A run here that reports a
+confident direction on a fortnight is a finding.
