@@ -219,6 +219,7 @@ def _filtered(*predicates):
 
 
 def test_a_reference_to_the_bindings_own_dimension_becomes_a_where():
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
     metric = _filtered("{{ Dimension('order__region') }} = 'US'")
     r = translate(_manifest([_filtered_model()], [metric]))
     assert not r.skipped
@@ -228,6 +229,7 @@ def test_a_reference_to_the_bindings_own_dimension_becomes_a_where():
 def test_the_dimensions_expr_is_substituted_not_its_name():
     # A MetricFlow dimension is a *name* over an `expr`; the column is the expr.
     # Storing the name would name a column that need not exist.
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
     r = translate(
         _manifest([_filtered_model()], [_filtered("{{ Dimension('order__is_paid') }} = TRUE")])
     )
@@ -238,6 +240,7 @@ def test_an_expression_dimension_is_parenthesised_when_it_is_spliced_in():
     # `paid_at IS NOT NULL = TRUE` is not the same expression as
     # `(paid_at IS NOT NULL) = TRUE`; sqlglot generates from the tree and adds
     # no parentheses of its own, so the splice has to.
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
     r = translate(
         _manifest([_filtered_model()], [_filtered("{{ Dimension('order__is_paid') }} = TRUE")])
     )
@@ -248,6 +251,7 @@ def test_an_expression_dimension_is_parenthesised_when_it_is_spliced_in():
 def test_a_bare_dimension_name_with_no_entity_link_resolves_too():
     # MetricFlow normally writes the link; the bare form is unambiguous within
     # one semantic model and costs nothing to accept.
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
     r = translate(_manifest([_filtered_model()], [_filtered("{{ Dimension('region') }} = 'US'")]))
     assert r.bindings["revenue"].where == ["region = 'US'"]
 
@@ -255,6 +259,7 @@ def test_a_bare_dimension_name_with_no_entity_link_resolves_too():
 def test_the_metric_filter_and_the_measure_inputs_filter_are_both_carried():
     # dbt's flattening transform merges the second into the first, and manifests
     # exist in both states — so both are read, and ANDed as separate predicates.
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
     metric = _filtered("{{ Dimension('order__region') }} = 'US'")
     metric["type_params"]["measure"]["filter"] = _filter("{{ Dimension('order__is_paid') }}")
     r = translate(_manifest([_filtered_model()], [metric]))
@@ -264,6 +269,7 @@ def test_the_metric_filter_and_the_measure_inputs_filter_are_both_carried():
 def test_every_conjunct_of_an_intersection_survives_as_its_own_predicate():
     # A list rather than a joined string, so a skip reason, a `doctor` line or a
     # *show query* panel can quote the one predicate that matters.
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
     r = translate(
         _manifest(
             [_filtered_model()],
@@ -295,6 +301,7 @@ def test_every_serialisation_a_filter_has_ever_had_is_recognised(shape):
     # written by older dbt versions still carry the legacy ones. A shape we did
     # not recognise would parse as *no filter* — which now shows up as an empty
     # `where` on a binding that is served, the exact C15 shape.
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
     metric = _classic()
     metric["filter"] = shape
     r = translate(_manifest([_filtered_model()], [metric]))
@@ -306,6 +313,7 @@ def test_the_predicate_is_emitted_in_the_target_dialect():
     # translate into it. A predicate parsed generically may mean something else
     # where it runs — a quoted `"date"` is an identifier on DuckDB and a string
     # literal on BigQuery.
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
     metric = _filtered('{{ Dimension("order__region") }} = "US"')
     r = translate(_manifest([_filtered_model()], [metric]), dialect="bigquery")
     assert r.bindings["revenue"].where == ["region = 'US'"]
@@ -315,6 +323,7 @@ def test_the_predicate_is_emitted_in_the_target_dialect():
 
 
 def _refusal(predicate, model=None):
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
     r = translate(_manifest([model or _filtered_model()], [_filtered(predicate)]))
     assert not r.bindings, "expected this predicate to refuse the whole metric"
     return r.skipped[0].reason
@@ -386,6 +395,7 @@ def test_a_statement_separator_cannot_smuggle_a_second_statement():
 def test_one_unresolvable_conjunct_refuses_the_whole_metric():
     # The invariant, stated as a test: there is no partial translation. A
     # dropped conjunct is a larger number under the governed metric's name.
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
     r = translate(
         _manifest(
             [_filtered_model()],
@@ -403,11 +413,13 @@ def test_one_unresolvable_conjunct_refuses_the_whole_metric():
 
 
 def test_a_refused_filter_is_reported_under_the_metrics_own_name():
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
     r = translate(_manifest([_filtered_model()], [_filtered("amount > 0")]))
     assert [s.name for s in r.skipped] == ["revenue"]
 
 
 def test_a_filter_refusal_names_the_measure_input_when_that_is_where_it_lives():
+    pytest.importorskip("sqlglot", reason="needs the dbt-bridge extra")
     metric = _classic()
     metric["type_params"]["measure"]["filter"] = _filter("amount > 0")
     r = translate(_manifest([_filtered_model()], [metric]))
