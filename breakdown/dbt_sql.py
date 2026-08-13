@@ -66,8 +66,35 @@ _TRUNC = {
 }
 
 # Per-(dialect, grain) overrides where the portable form is wrong or unsupported.
+#
+# **BigQuery reverses the arguments.** Its signature is
+# `DATE_TRUNC(date_expression, date_part)` — expression first, part as a bare
+# keyword rather than a quoted string — the mirror of everyone else's
+# `DATE_TRUNC('PART', expr)`. Since `_parse_dialect` reads in the *target*
+# dialect, sqlglot never rewrote the portable form, so day and month grain
+# emitted `DATE_TRUNC('DAY', col)` and BigQuery rejected the whole query with
+# "No matching signature for function DATE_TRUNC". Week was usable only because
+# its ISOWEEK override happened to be written the right way round. Every grain
+# is therefore spelled out here, not just the ones whose *date part* differs.
+#
+# **The CAST is load-bearing, not decoration.** BigQuery's `DATE_TRUNC` takes a
+# DATE; a TIMESTAMP needs `TIMESTAMP_TRUNC` and a DATETIME `DATETIME_TRUNC`, and
+# a dbt `agg_time_dimension` is very often a TIMESTAMP — so the week override
+# was wrong for the common case too. Choosing the right function would need the
+# column's SQL type, and nothing on this path has it: `BindingSpec.time_column`
+# is a bare string, the manifest's time dimension carries a `time_granularity`
+# but no data type, and the value may be an arbitrary `expr` rather than a
+# column name at all. `CAST(… AS DATE)` is correct for DATE, TIMESTAMP and
+# DATETIME alike and needs nothing we do not have. It is also free of the two
+# costs one might fear: partition pruning is unaffected, because the window
+# predicates compare the *raw* column and not this expression; and UTC is the
+# reference zone either way, since BigQuery's TIMESTAMP->DATE cast and
+# `TIMESTAMP_TRUNC` both default to UTC, so no bucket differs from what the
+# type-aware form would have produced.
 _TRUNC_OVERRIDES = {
-    ("bigquery", "week"): "DATE_TRUNC({col}, ISOWEEK)",
+    ("bigquery", "day"): "DATE_TRUNC(CAST({col} AS DATE), DAY)",
+    ("bigquery", "week"): "DATE_TRUNC(CAST({col} AS DATE), ISOWEEK)",
+    ("bigquery", "month"): "DATE_TRUNC(CAST({col} AS DATE), MONTH)",
     ("snowflake", "week"): ("DATEADD(DAY, -(DAYOFWEEKISO({col}) - 1), CAST({col} AS DATE))"),
 }
 
