@@ -11,7 +11,7 @@ version = "0.1.0"
 description = "Bayesian metric trees: root cause analysis for business metrics over the dbt Semantic Layer"
 readme = "README.md"
 requires-python = ">=3.11"
-license = "Apache-2.0"
+license = "FSL-1.1-ALv2"
 license-files = ["LICENSE"]
 authors = [{ name = "Polyculture Research" }]
 keywords = [
