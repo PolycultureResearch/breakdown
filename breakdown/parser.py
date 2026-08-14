@@ -668,8 +668,9 @@ class MetricDefinition(BaseModel):
     # aggregates over time, not what causes it. Derived where unambiguous (a
     # `num / den` formula, an agreeing `dimensions[].weight`, a `bind` ratio
     # naming a tree metric); a rate that declares one nowhere is **warned**
-    # about, never refused — 43 of the 52 rate metrics in this repo's trees
-    # have none, and no name tells you what a rate is over.
+    # about, never refused — some rates genuinely have no denominator (a median
+    # page-load time is not `Σnum / Σden` for any pair of series), and no name
+    # tells you which.
     denominator: Optional[str] = None
     sql: Optional[str] = None
     # How this node gets its series, when it does not inherit the tree-level
@@ -1316,11 +1317,17 @@ class Parser:
           formed over exactly the rate's periods.
 
         A rate that resolves to nothing is **warned**, once, with the whole
-        list — not refused. Making it mandatory would break 43 of the 52 rate
-        metrics in this repo's own trees, and the fix is an authoring decision
-        nobody can make from a metric's name. The returned list is what
-        `breakdown doctor` and the startup log report, so the work is visible
-        rather than merely logged.
+        list — not refused. It cannot be mandatory, and the reason survived the
+        2026-08-13 sweep that took this repo's own trees from 43 rates without
+        a denominator to 8: those 8 are ones that legitimately have none, not a
+        backlog. Four are mean durations whose cohort the tree does not carry,
+        three are ratios over a base that is not a metric there, and
+        `page_speed` is a **median**, which is not `Σnum / Σden` for any pair of
+        series at all. Refusing them would force an author to invent a
+        denominator, and a wrong denominator computes a confident wrong number
+        where none computes a disclosed fallback. The returned list is what
+        `breakdown doctor` and the startup log report, so the work stays
+        visible rather than merely logged.
         """
         missing: List[str] = []
         for name in G.nodes:

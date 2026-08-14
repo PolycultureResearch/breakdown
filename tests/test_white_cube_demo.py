@@ -231,14 +231,14 @@ def ui_localized(s):
 
 
 def test_the_tree_is_the_size_the_script_says():
-    """Section 0 of the tour is read aloud: "18 metrics in 273 lines, of which
-    209 are actual configuration". Pinned exactly rather than as a band — if you
+    """Section 0 of the tour is read aloud: "18 metrics in 284 lines, of which
+    211 are actual configuration". Pinned exactly rather than as a band — if you
     edit the tree, the sentence a presenter says about it needs editing too, and
     that is precisely the drift this module exists to catch."""
     with open(TREE) as f:
         lines = f.read().splitlines()
-    assert len(lines) == 273
-    assert len([ln for ln in lines if ln.strip() and not ln.strip().startswith("#")]) == 209
+    assert len(lines) == 284
+    assert len([ln for ln in lines if ln.strip() and not ln.strip().startswith("#")]) == 211
     assert len([ln for ln in lines if ln.startswith("  - name:")]) == 18
 
 

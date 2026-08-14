@@ -56,6 +56,32 @@ anyone installing from an index, all of this is new.
     old average-of-ratios was 0.75% off. A rate with no declared denominator
     keeps the old average, over its *defined* periods.
 
+  **The three shipped trees now declare their denominators** (roadmap 1.11b's
+  follow-through). 43 of the 52 rates across them declared none when 1.11
+  landed; **8 do now**, and all eight are in the reference tree, deliberate, and
+  recorded with their reason in the YAML — four mean durations whose cohort the
+  tree does not carry (`time_to_lead_response`, `time_to_trial_activation`,
+  `time_to_sent_new_business_proposal`,
+  `new_business_opportunity_sales_cycle`), three ratios over a base that is not
+  a metric there (`prospect_coverage`, `time_on_site`, `website_bounce_rate`),
+  and `page_speed`, which is a **median** and so is not `Σnum / Σden` for any
+  pair of series at all. Every declaration is established from evidence rather
+  than a name: White Cube's five come from the dbt project's semantic manifest,
+  which defines them as `ratio` metrics or as `num / nullif(den, 0)`; jaffle's
+  `average_order_value` and 32 of the reference tree's come from the tree's own
+  arithmetic, where `count = base * rate` makes `base` the denominator.
+
+  **Numbers this moved.** On White Cube — the one tree whose data is generated
+  from a real dbt project, so its identities genuinely hold — all five rates'
+  window values now close their identity to machine precision (≤5.5e-15),
+  against 0.35%–10.9% error for the average-of-ratios they replace. That is the
+  evidence the denominators are right, not merely present. In the README's MCP
+  transcript, jaffle's `average_order_value` moved +0.17% ($184.68 → $185.00
+  baseline, $182.15 → $182.46 actual); its *relative* change and every Shapley
+  figure in that section are unchanged, because `revenue` decomposes
+  `per_period` rather than from its parents' window aggregates. No percentage in
+  the guided tour moved, for the same reason.
+
   An undefined period survives the whole pipeline with a stated policy at each
   step (documented in [`docs/model.md`](docs/model.md#rates-over-undefined-periods)):
   it drops out of window aggregates, keeps its row in the grain frame so

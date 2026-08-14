@@ -60,6 +60,10 @@ metrics:
     description: "Share of sessions that become signups"
     source: white_cube.metrics.visit_signup_rate
     kind: rate
+    # Upstream defines this metric as `signups / sessions` (a MetricFlow
+    # `ratio` metric — see the dbt project's semantic manifest), so a window's
+    # rate is Σsignups / Σsessions, not the mean of the daily rates.
+    denominator: sessions
     format:
       style: percent
       decimals: 2
@@ -107,6 +111,13 @@ metrics:
     source: white_cube.metrics.trial_conversion_rate
     grain: week
     kind: rate
+    # Upstream defines this metric as `trial_conversions / trials_started` (a
+    # MetricFlow `ratio` metric), and both sides are cohort-dated by trial
+    # start — so the daily `trials_started` sums into exactly this node's week.
+    # That is a temporal weight, which resamples; it is *not* a slicing weight,
+    # which would need the daily series cut by a dimension it does not carry
+    # at week grain. Hence a denominator here and still no dimensions below.
+    denominator: trials_started
     format:
       style: percent
       decimals: 1
