@@ -1,14 +1,12 @@
 # Contributing to breakdown
 
 We welcome feedback and contributions — bug reports, docs fixes, new
-providers, statistical improvements, whatever you've got. Open an issue or a
+providers, statistical improvements, whatever you've got. Please, come on in and open an issue or a
 pull request.
 
 You're also welcome to just use breakdown. Run it, point it at your own
-metric trees, and use it as part of your company's internal tooling — that's
-squarely what the [license](LICENSE) permits. Fork it, extend it, adapt it to
-what you need. We hope you'll contribute improvements back, but you don't owe
-us that to use the project.
+metric trees, and use it as part of your company's internal tooling. Our FSL [license](LICENSE) permits any use, commercial or otherwise, exept selling it as part of a competing product. Fork it, extend it, adapt it to
+what you need. We hope you'll contribute improvements back if you're so inclined.
 
 ## Before you open a pull request
 
@@ -27,4 +25,7 @@ by replying with a fixed phrase. You only need to do this once.
 
 See [AGENTS.md](AGENTS.md) for how the codebase is organized and
 [`README.md`](README.md#run--test) for how to install dependencies and run
-the test suite.
+the test suite. If you're working on attribution, intervals, or fitting,
+read [`knowledge/statistics_whitepaper.md`](knowledge/statistics_whitepaper.md)
+first — it's the living record of what the engine's statistics do and don't
+guarantee.
