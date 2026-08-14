@@ -65,25 +65,29 @@ def test_every_rate_is_declared_not_inherited(defs, caplog):
 
 
 def test_the_rates_without_a_denominator_are_the_eight_that_cannot_have_one(parser, caplog):
-    """Roadmap 1.11b's "report the list", asserted rather than logged and lost.
+    """Roadmap 1.11's "report the list", asserted rather than logged and lost.
 
     A rate with no `denominator` aggregates over a window as the plain average
     of its per-period ratios — the pre-1.11 number, which is wrong whenever the
     denominators differ. 40 of the 46 rates here declared none when 1.11b
     landed, so it warns rather than refuses.
 
-    **The list is now pinned by name, not by count, because it stopped being a
-    backlog.** 38 rates declare a denominator read off the tree's own
-    arithmetic (`count = base * rate` makes `base` the denominator). The eight
-    below are the ones where no denominator can be *established*: four mean
-    durations whose cohort this tree does not carry, three ratios over a base
-    that is not a metric here, and one median, which is not `Σnum / Σden` for
-    any pair of series at all. Each carries its reason in the YAML.
+    **The list is pinned by name, not by count, because it stopped being a
+    backlog** — and it has now moved from the lint to the *answers*. 38 rates
+    declare a denominator read off the tree's own arithmetic (`count = base *
+    rate` makes `base` the denominator). The eight below are the ones where no
+    denominator can be established: four mean durations whose cohort this tree
+    does not carry, three ratios over a base that is not a metric here, and one
+    median, which is not `Σnum / Σden` for any pair of series at all. Each
+    states its reason in `no_denominator:` — in the field, where the payload
+    and `doctor` can read it, rather than in a comment where only a person can.
 
     So a name appearing here is a claim about the metric, not a to-do. Adding
-    one means the tree grew a rate nobody can say what it is over — which is
-    worth failing over. Removing one means someone established a denominator,
-    which is worth reading the evidence for. Both should be deliberate.
+    one means someone decided a rate has no denominator — worth reading the
+    argument for. Removing one means someone established one — worth reading
+    the evidence for. A name appearing in `rates_denominator_unanswered`
+    instead means the tree grew a rate nobody has said anything about, and that
+    is the one that should fail: this tree answers for every rate it has.
     """
     rates = [
         n
@@ -91,7 +95,12 @@ def test_the_rates_without_a_denominator_are_the_eight_that_cannot_have_one(pars
         if d.kind == "rate"
     ]
     assert len(rates) == 46
-    assert parser.rates_without_denominator == [
+    assert parser.rates_denominator_unanswered == [], (
+        "every rate in this tree either declares a denominator or declares "
+        "`no_denominator` with the reason. A name here is a new rate that has "
+        "not been asked the question."
+    )
+    assert sorted(parser.rates_denominator_none) == [
         # Mean durations: the cohort averaged over is not a metric in the tree.
         "new_business_opportunity_sales_cycle",  # opportunities closed
         # A median — not Σnum / Σden for any pair of series.
@@ -107,20 +116,22 @@ def test_the_rates_without_a_denominator_are_the_eight_that_cannot_have_one(pars
         "the reference tree's rate inventory moved. These eight are deliberate "
         "— a denominator that cannot be established from the tree, its "
         "descriptions or its formulas. See the DENOMINATORS block in the YAML "
-        "header and roadmap 1.11b before changing this list."
+        "header and roadmap 1.11 before changing this list."
     )
-    assert set(parser.rates_without_denominator) <= set(rates)
-    # And the warning still names them, which is what `doctor` and the startup
-    # log surface. The inventory being short is not the same as it being silent.
-    # Re-parsed here because the module-scoped `parser` fixture warned long
-    # before this test's caplog started listening.
+    assert set(parser.rates_denominator_none) <= set(rates)
+    # Each reason is real prose, not a placeholder: the field exists so the
+    # argument survives to the next reader, and `"n/a"` would defeat that while
+    # passing every check above.
+    for name, why in parser.rates_denominator_none.items():
+        assert len(why.split()) >= 8, f"{name}'s `no_denominator` reason is too thin: {why!r}"
+    # And nothing warns any more, because nothing is outstanding. The warning
+    # naming these eight was, for `page_speed`, advice that could not be
+    # followed. Re-parsed here because the module-scoped `parser` fixture warned
+    # long before this test's caplog started listening.
     with caplog.at_level(logging.WARNING, logger="breakdown.parser"):
         with open(TREE) as fh:
             Parser(fh.read())
-    assert any(
-        "declare no `denominator`" in r.getMessage() and "page_speed" in r.getMessage()
-        for r in caplog.records
-    )
+    assert not [r for r in caplog.records if "declare no `denominator`" in r.getMessage()]
 
 
 def test_stocks_are_declared_as_stocks(defs):

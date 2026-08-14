@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from breakdown.parser import Parser
@@ -1475,7 +1477,8 @@ def test_a_derived_node_refuses_fetch_instructions_by_name(extra):
 def test_denominator_defaults_from_a_simple_ratio_formula():
     parser = Parser(_derived_tree())
     assert parser.dag.nodes["conversion_rate"]["definition"].denominator == "sessions"
-    assert parser.rates_without_denominator == []
+    assert parser.rates_denominator_unanswered == []
+    assert parser.rates_denominator_none == {}
 
 
 def test_denominator_is_promoted_from_a_dimension_weight():
@@ -1540,8 +1543,144 @@ metrics:
     source: dbt.metric.mystery_rate
     kind: rate
 """)
-    assert parser.rates_without_denominator == ["mystery_rate"]
+    assert parser.rates_denominator_unanswered == ["mystery_rate"]
+    assert parser.rates_denominator_none == {}
     assert "mystery_rate" in caplog.text and "denominator" in caplog.text
+
+
+# --- ...and the third state: asked and answered (roadmap 1.11) ----------------
+
+
+def _rate_tree(field_line: str = "") -> str:
+    return f"""
+metrics:
+  - name: base
+    source: dbt.metric.base
+  - name: page_speed
+    source: dbt.metric.page_speed
+    kind: rate
+{field_line}"""
+
+
+def test_a_rate_may_declare_that_it_has_no_denominator(caplog):
+    """The third state, and the whole point of the field: `page_speed` is a
+    median, so no pair of series makes it — that is a finding, not a to-do."""
+    import logging
+
+    reason = "a median — not Σnum / Σden for any pair of series"
+    with caplog.at_level(logging.WARNING, logger="breakdown.parser"):
+        parser = Parser(_rate_tree(f'    no_denominator: "{reason}"\n'))
+    defn = parser.dag.nodes["page_speed"]["definition"]
+    assert defn.denominator is None and defn.no_denominator == reason
+    # Answered, so it is not in the lint — and it is in the inventory of
+    # answers, with the reason, which is what `doctor` reports.
+    assert parser.rates_denominator_unanswered == []
+    assert parser.rates_denominator_none == {"page_speed": reason}
+    # And nothing warns: a warning on a settled question is how a log stops
+    # being read.
+    assert "declare no `denominator`" not in caplog.text
+
+
+def test_the_answer_survives_serialization():
+    """`/dag` serializes with `model_dump()`, which is where `model_fields_set`
+    would have died — and where C21's `direction` default reached the browser
+    indistinguishable from a declaration. Absent stays absent, answered stays
+    answered, and both are readable by a consumer that never sees the YAML."""
+    parser = Parser(_rate_tree('    no_denominator: "a median"\n'))
+    answered = parser.dag.nodes["page_speed"]["definition"].model_dump()
+    assert answered["denominator"] is None and answered["no_denominator"] == "a median"
+    unanswered = Parser(_rate_tree()).dag.nodes["page_speed"]["definition"].model_dump()
+    assert unanswered["denominator"] is None and unanswered["no_denominator"] is None
+
+
+@pytest.mark.parametrize(
+    "field_line,message",
+    [
+        # Both answers to one question.
+        ('    denominator: base\n    no_denominator: "a median"\n', "opposite answers"),
+        # An assertion with no evidence behind it is not worth more than silence.
+        ('    no_denominator: ""\n', "empty `no_denominator`"),
+        ('    no_denominator: "   "\n', "empty `no_denominator`"),
+    ],
+)
+def test_a_contradictory_or_empty_answer_is_refused(field_line, message):
+    with pytest.raises(ValueError, match=message):
+        Parser(_rate_tree(field_line))
+
+
+def test_no_denominator_is_refused_on_a_non_rate():
+    """Refused exactly as `denominator` is: a flow sums and a stock takes its
+    last value, so neither has a denominator *or* a stated absence of one."""
+    with pytest.raises(ValueError, match="declares `no_denominator` but `kind: flow`"):
+        Parser("""
+metrics:
+  - name: orders
+    source: dbt.metric.orders
+    no_denominator: "orders is not a rate"
+""")
+
+
+@pytest.mark.parametrize(
+    "tree,source",
+    [
+        (
+            """
+metrics:
+  - name: sessions
+    source: dbt.metric.sessions
+  - name: orders
+    source: dbt.metric.orders
+  - name: cvr
+    kind: rate
+    formula: "orders / sessions"
+    parents: [orders, sessions]
+    no_denominator: "there isn't one"
+""",
+            "the `formula: orders / sessions`",
+        ),
+        (
+            """
+metrics:
+  - name: subs
+    source: dbt.metric.subs
+  - name: arpu
+    source: dbt.metric.arpu
+    kind: rate
+    no_denominator: "there isn't one"
+    dimensions:
+      plan: { source: p, weight: subs }
+""",
+            "a `dimensions[].weight`",
+        ),
+    ],
+)
+def test_an_answer_contradicted_by_the_tree_is_refused(tree, source):
+    """The derivation sources are evidence; `no_denominator` is a claim about
+    the evidence. Believing the claim would compute the disclosed fallback while
+    the tree holds everything needed for the real aggregate; adopting the
+    evidence would overrule the author. Exactly one of them is wrong and only
+    the author knows which, so the error names the source."""
+    with pytest.raises(ValueError, match="declares `no_denominator`"):
+        Parser(tree)
+    with pytest.raises(ValueError, match=re.escape(source)):
+        Parser(tree)
+
+
+def test_a_rate_that_has_no_denominator_cannot_be_sliced():
+    """A sliced rate blends its slices by the denominator's shares. A rate that
+    genuinely has none has nothing to blend by — so the refusal that already
+    covers "declared nowhere" covers this too, and says so rather than
+    repeating advice the author has already answered."""
+    with pytest.raises(ValueError, match="does not stand in for one"):
+        Parser("""
+metrics:
+  - name: page_speed
+    source: dbt.metric.page_speed
+    kind: rate
+    no_denominator: "a median"
+    dimensions:
+      region: customer__region
+""")
 
 
 @pytest.mark.parametrize(

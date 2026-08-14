@@ -118,32 +118,56 @@ def _check_tree(tree_path: str) -> _TreeCheck:
 
 
 def _check_rate_denominators(parser) -> CheckResult:
-    """Which rates cannot be aggregated from their components (roadmap 1.11b).
+    """Which rates cannot be aggregated from their components (roadmap 1.11).
 
     A warning in the startup log is where this fact goes to be ignored, so
     `doctor` names the nodes: a rate with no `denominator` reports a window
     value that is the plain average of its per-period ratios, which is not what
-    a window's rate is. Deliberately a `skip`, not a `fail` — the tree works,
-    and demanding the field would mean guessing what 43 of this repo's own 52
-    rate metrics are ratios of.
+    a window's rate is.
+
+    **Three states, not two.** A rate that declares `no_denominator: "<why>"`
+    has been *asked and answered* — it is not outstanding work, and the old
+    message told its author to "Add `denominator: <metric>`", which for a median
+    is impossible advice. So an answered rate passes, with its reason quoted:
+    the point of that field is that the argument travels to the next reader,
+    and this is one of the places the next reader is standing. Only the
+    unanswered ones `skip` — still not a `fail`, because the tree works and the
+    fallback is disclosed rather than wrong-in-secret.
     """
     rates = [m.name for m in parser.config.metrics if getattr(m, "kind", "flow") == "rate"]
-    missing = list(getattr(parser, "rates_without_denominator", []))
+    unanswered = list(getattr(parser, "rates_denominator_unanswered", []))
+    answered = dict(getattr(parser, "rates_denominator_none", {}))
     if not rates:
         return CheckResult.skip("rate denominators", "no `kind: rate` metrics in this tree")
-    if not missing:
+    # Quoted rather than counted: "3 rates declare `no_denominator`" is a number
+    # nobody can check, and the reason is the whole content of the declaration.
+    reasons = "".join(f"\n    {name}: {why}" for name, why in sorted(answered.items()))
+    if not unanswered:
+        declared = len(rates) - len(answered)
+        if not answered:
+            return CheckResult.ok(
+                "rate denominators",
+                f"all {len(rates)} rate(s) declare one — window values recompute from components",
+            )
         return CheckResult.ok(
             "rate denominators",
-            f"all {len(rates)} rate(s) declare one — window values recompute from components",
+            f"all {len(rates)} rate(s) answered — {declared} declare one (window values "
+            f"recompute from components); {len(answered)} declare `no_denominator`, so their "
+            f"window value is the average of the defined periods and there is no component "
+            f"aggregate to compute:{reasons}",
         )
-    shown = ", ".join(missing[:6]) + (" …" if len(missing) > 6 else "")
-    return CheckResult.skip(
-        "rate denominators",
-        f"{len(missing)} of {len(rates)} rate(s) declare none: {shown}. Their "
+    shown = ", ".join(unanswered[:6]) + (" …" if len(unanswered) > 6 else "")
+    remedy = (
+        f"{len(unanswered)} of {len(rates)} rate(s) say nothing either way: {shown}. Their "
         "window values are the average of the per-period ratios, not "
         "Σnumerator / Σdenominator, and an undefined period cannot be told "
-        "from a missing one. Add `denominator: <metric>` to each.",
+        "from a missing one. Add `denominator: <metric>` to each — or, where "
+        'the rate genuinely has none, `no_denominator: "<why>"`, which records '
+        "the reason instead of leaving the question open."
     )
+    if answered:
+        remedy += f" ({len(answered)} other rate(s) already answer with `no_denominator`:{reasons})"
+    return CheckResult.skip("rate denominators", remedy)
 
 
 # The `dbt` chain, in the order a failure actually cascades: the manifest has to

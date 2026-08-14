@@ -29,6 +29,12 @@ RCA_HOW_TO_READ = (
     "means it reconciled) or `definitional` (the node is derived — its series *is* the "
     "formula — so zero means nothing was checked; never narrate that as 'the identity "
     "holds').\n"
+    "- `window_aggregate` (rate nodes only): `components` = the window value is "
+    "Σnumerator / Σdenominator; any `period_mean_*` = the mean of the per-period ratios "
+    "instead, with the why: `_none_exists` (no denominator exists — a median, say; that "
+    "mean is the only number there is, not a misconfiguration), `_undeclared` (nobody has "
+    "declared one), `_weights_unavailable` (declared, unusable here). "
+    "`window_aggregate_reason` gives the author's words.\n"
     "- `ranked_causes` is a triage order ('look here first'), not a probability that a "
     "metric is the cause.\n"
     "- `share_of_gap` is unclamped: opposing parents can legitimately sum past 100% or go negative.\n"
@@ -201,7 +207,18 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
             degraded = {"status": node["status"], "grain": node["grain"]}
             if node.get("status_reason"):
                 degraded["status_reason"] = node["status_reason"]
-            for field in ("baseline", "actual", "gap", "relative_change"):
+            for field in (
+                "baseline",
+                "actual",
+                "gap",
+                "relative_change",
+                # A degraded rate still says how its numbers were formed — and
+                # `undefined_over_window`, the status a rate reaches most often,
+                # is precisely where "there is no denominator, by nature" and
+                # "nobody declared one" suggest different next moves.
+                "window_aggregate",
+                "window_aggregate_reason",
+            ):
                 if node.get(field) is not None:
                     degraded[field] = node[field]
             nodes[name] = degraded
@@ -232,6 +249,11 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
             # checked), and an agent reading the first as the second reports a
             # verified identity that was never verified. One field, five bytes.
             "unexplained_status": node.get("unexplained_status"),
+            # Rate nodes only (null elsewhere, and null fields are dropped
+            # below): how `baseline`/`actual` were formed, and why, when the
+            # answer is not the real component aggregate.
+            "window_aggregate": node.get("window_aggregate"),
+            "window_aggregate_reason": node.get("window_aggregate_reason"),
             "components": (
                 {k: v["estimate"] for k, v in node["components"].items()}
                 if node["components"]

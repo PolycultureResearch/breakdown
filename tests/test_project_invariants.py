@@ -943,6 +943,61 @@ def test_a_weighted_rate_aggregate_is_not_the_average_of_the_ratios():
     assert math.isnan(rate_window_value(np.array([float("nan")]), np.array([0.0])))
 
 
+def test_the_payload_says_which_of_the_two_aggregates_a_rate_reports():
+    """A period mean and a component aggregate must not read alike either.
+
+    The scan above stops anything from *computing* the wrong number. This is the
+    other half, and the one the fifth rule is about: the two arithmetics produce
+    one field called `actual`, and a reader given no label will assume the right
+    one. Worse, the fallback has two causes — a metric that has no denominator
+    (a median: this mean is the only number there is) and a tree nobody has
+    declared one on — and the remedy for the second is nonsense advice for the
+    first, which is what `doctor` used to give.
+    """
+    from breakdown.engine.rca import (
+        node_window_value,
+        rate_window_method,
+        rate_window_method_reason,
+    )
+    from breakdown.grains import build_grained
+
+    dates = pd.date_range("2024-01-01", periods=4, freq="D")
+    frames = {
+        "den": pd.DataFrame({"date": dates, "den": [10.0, 30.0, 10.0, 30.0]}),
+        "declared": pd.DataFrame({"date": dates, "declared": [1.0, 3.0, 1.0, 3.0]}),
+        "answered": pd.DataFrame({"date": dates, "answered": [1.0, 3.0, 1.0, 3.0]}),
+        "silent": pd.DataFrame({"date": dates, "silent": [1.0, 3.0, 1.0, 3.0]}),
+    }
+    kinds = {"den": "flow", "declared": "rate", "answered": "rate", "silent": "rate"}
+    data = build_grained(
+        frames,
+        dict.fromkeys(frames, "day"),
+        kinds,
+        {"declared": "den"},
+        {"answered": "a median — not Σnum / Σden for any pair of series"},
+    )
+    start, end = dates[0], dates[-1]
+    method = {n: rate_window_method(data, n, start, end) for n in frames}
+    assert method == {
+        "den": None,  # a flow has one aggregation and it is not in question
+        "declared": "components",
+        "answered": "period_mean_none_exists",
+        "silent": "period_mean_undeclared",
+    }
+    # The two fallbacks compute the identical number and mean different things,
+    # which is the entire reason they are labelled.
+    assert node_window_value(data, "answered", start, end) == node_window_value(
+        data, "silent", start, end
+    )
+    assert node_window_value(data, "declared", start, end) != node_window_value(
+        data, "silent", start, end
+    )
+    # And the answered one carries the author's own words, not a generic label.
+    assert "median" in rate_window_method_reason(data, "answered", method["answered"])
+    assert rate_window_method_reason(data, "declared", "components") is None
+    assert "no `denominator`" in rate_window_method_reason(data, "silent", method["silent"])
+
+
 def test_an_undefined_period_is_never_filled_and_never_dropped():
     """The representation itself, at the boundary and in the frame.
 
@@ -965,6 +1020,83 @@ def test_an_undefined_period_is_never_filled_and_never_dropped():
     # And the contiguity check agrees: a NaN is not a hole.
     _check_contiguous(kept, "day", ["m"], widest=3)
     assert len(frame) == 2  # the source really did return two rows
+
+
+# --- Every shipped rate has been asked what it is a rate of (roadmap 1.11) ---
+
+
+def _shipped_trees():
+    """Every tree this repo ships, wherever it lives.
+
+    `demo/` and `knowledge/` are excluded from the sdist, so the suite running
+    against the built artifact sees one tree — the bundled example. A test that
+    *demands* the reference tree be present therefore fails on the packaging
+    rather than on the code, which has happened here before (see the direction
+    invariant above). So: enumerate what is there, assert the property on each,
+    and gate any assertion about the *distribution* on both kinds being
+    reachable.
+    """
+    os.environ.setdefault("WHITE_CUBE_DBT_PROJECT", "/nonexistent/white-cube-has-no-provider")
+    return (
+        sorted((PACKAGE.parent / "knowledge").glob("*_tree.yml"))
+        + sorted((PACKAGE / "examples").glob("*.yml"))
+        + sorted((PACKAGE.parent / "demo").glob("*_tree.yml"))
+    )
+
+
+def test_every_shipped_rate_either_declares_a_denominator_or_answers_that_it_has_none():
+    """The ratchet on 1.11: the unanswered count is zero and may not drift back.
+
+    A rate with neither is not a bug — the window value is the mean of its
+    per-period ratios and the fallback is disclosed — but it is an *open
+    question*, and the whole argument of 1.11 is that an open question and a
+    settled one must not look alike. The trees have all been swept; this is what
+    stops the 44th rate arriving with nobody having asked.
+
+    It is deliberately not a parser rule. Making the field mandatory is a
+    breaking schema change and the author's call; making it an invariant of
+    *this repo's own trees* costs a stranger nothing and holds the line here.
+    """
+    trees = _shipped_trees()
+    assert trees, "expected to find the shipped trees"
+    rates = answered = declared = 0
+    for path in trees:
+        parser = Parser(path.read_text())
+        rates += sum(1 for m in parser.config.metrics if m.kind == "rate")
+        answered += len(parser.rates_denominator_none)
+        declared += sum(1 for m in parser.config.metrics if m.denominator)
+        assert parser.rates_denominator_unanswered == [], (
+            f"{path.name} has rate(s) nobody has said anything about: "
+            f"{parser.rates_denominator_unanswered}. Declare `denominator: "
+            '<metric>`, or `no_denominator: "<why>"` where there genuinely is '
+            "none — the two are different facts and both are readable."
+        )
+    assert rates and declared, "expected the shipped trees to contain declared rates"
+    # The distribution assertion is gated: only the reference tree carries an
+    # answered-none rate, and it is not in the sdist.
+    if answered:
+        assert declared > answered, (
+            "expected most shipped rates to establish a denominator rather than "
+            f"declare none (declared={declared}, none={answered})"
+        )
+
+
+def test_an_answered_none_survives_serialization_distinguishably():
+    """The C21 rule applied to this field: `/dag` serializes with
+    `model_dump()`, so a fact the payload does not carry is a fact no renderer
+    can act on. "Nobody has said" and "asked and answered" must be two different
+    payloads, not one payload plus a convention.
+    """
+    for path in _shipped_trees():
+        parser = Parser(path.read_text())
+        for name in parser.dag.nodes:
+            defn = parser.dag.nodes[name]["definition"]
+            dumped = defn.model_dump()
+            assert dumped["no_denominator"] == defn.no_denominator
+            assert dumped["denominator"] == defn.denominator
+            # Never both, on any node, in any shipped tree: they are opposite
+            # answers to one question.
+            assert not (dumped["denominator"] and dumped["no_denominator"])
 
 
 # --- A fetched identity is checked at load, not only inside a window ---------

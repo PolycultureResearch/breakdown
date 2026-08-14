@@ -88,8 +88,10 @@
 # rate's denominator, and the comment on each declaration cites the identity.
 #
 # **Eight rates deliberately declare none, and that is not an omission to fix.**
-# Seven fall in two groups, both recorded on the node so the question is settled
-# rather than re-opened:
+# Each says so in its own `no_denominator: "<reason>"`, which is the field's
+# third state — *asked and answered*, as against "nobody has said" — so the
+# question is settled in the tree rather than in a comment no code can read.
+# Seven fall in two groups:
 #
 #   * Mean durations whose cohort this tree does not carry —
 #     `time_to_trial_activation` (trials that activated),
@@ -108,7 +110,10 @@
 #
 # A rate with no denominator falls back to the plain average over its defined
 # periods — the disclosed, pre-1.11 number. That is the correct outcome here: a
-# wrong denominator computes a confident wrong number, which is worse.
+# wrong denominator computes a confident wrong number, which is worse. Because
+# these eight *answer*, the payload says so too: their window value carries
+# `window_aggregate: "period_mean_none_exists"` and the reason below it, rather
+# than looking like a rate somebody forgot to configure.
 # =============================================================================
 
 provider:
@@ -301,12 +306,13 @@ metrics:
     source: b2b_saas.metrics.time_to_trial_activation
     grain: day
     kind: rate # a mean duration — not summable across days
-    # No `denominator`, deliberately. The cohort this mean is taken over is
-    # *trials that activated*, which this tree does not carry: `new_trials` and
-    # `true_trials` both count trials that started, and a trial that never
-    # activates contributes no days to the mean while still counting in either.
-    # Weighting by one of them would be a confident wrong number; the disclosed
-    # average-over-periods fallback is the honest one.
+    no_denominator: >-
+      None, deliberately. The cohort this mean is taken over is *trials that
+      activated*, which this tree does not carry: `new_trials` and
+      `true_trials` both count trials that started, and a trial that never
+      activates contributes no days to the mean while still counting in either.
+      Weighting by one of them would be a confident wrong number; the disclosed
+      average-over-periods fallback is the honest one.
     direction: down_is_good
     format:
       style: number
@@ -834,10 +840,11 @@ metrics:
     source: b2b_saas.metrics.new_business_opportunity_sales_cycle
     grain: month
     kind: rate # a mean duration
-    # No `denominator`: the mean is over opportunities *closed* in the month,
-    # won and lost alike. The tree has `accepted_opportunities` (opened, not
-    # closed) and `new_business_deals` (closed-won only); neither is the
-    # cohort, and the gap between them is the loss rate.
+    no_denominator: >-
+      The mean is over opportunities *closed* in the month, won and lost alike.
+      The tree has `accepted_opportunities` (opened, not closed) and
+      `new_business_deals` (closed-won only); neither is the cohort, and the
+      gap between them is the loss rate.
     direction: down_is_good
     format:
       style: number
@@ -849,10 +856,11 @@ metrics:
     source: b2b_saas.metrics.time_to_sent_new_business_proposal
     grain: month
     kind: rate # a mean duration
-    # No `denominator`: the mean is over proposals *sent*, and this tree counts
-    # opportunities opened and accepted but never proposals. Not every opened
-    # opportunity reaches a proposal, so `opened_new_business_opportunities`
-    # is a superset, not the cohort.
+    no_denominator: >-
+      The mean is over proposals *sent*, and this tree counts opportunities
+      opened and accepted but never proposals. Not every opened opportunity
+      reaches a proposal, so `opened_new_business_opportunities` is a superset,
+      not the cohort.
     direction: down_is_good
     format:
       style: number
@@ -962,10 +970,11 @@ metrics:
     source: b2b_saas.metrics.time_to_lead_response
     grain: month
     kind: rate # a mean duration
-    # No `denominator`: the mean is over leads *responded to*, which sits
-    # upstream of `sales_accepted_leads` (acceptance happens after the
-    # response). The tree's first lead-shaped count is already downstream of
-    # the quantity being averaged.
+    no_denominator: >-
+      The mean is over leads *responded to*, which sits upstream of
+      `sales_accepted_leads` (acceptance happens after the response). The
+      tree's first lead-shaped count is already downstream of the quantity
+      being averaged.
     direction: down_is_good
     format:
       style: number
@@ -994,8 +1003,9 @@ metrics:
     source: b2b_saas.metrics.prospect_coverage
     grain: month
     kind: rate
-    # No `denominator`: this is covered prospects over the *target prospect
-    # list*, and neither side of that ratio is a metric in this tree.
+    no_denominator: >-
+      This is covered prospects over the *target prospect list*, and neither
+      side of that ratio is a metric in this tree.
     format: percent
 
   - name: sales_accepted_leads
@@ -1534,10 +1544,11 @@ metrics:
     source: b2b_saas.metrics.page_speed
     grain: day
     kind: rate # a median duration — not summable
-    # No `denominator`, and this one could not have had one: a **median** is
-    # not Σnumerator / Σdenominator for any pair of series. Weighting it by
-    # page views would produce a weighted mean of daily medians, which is
-    # neither the median nor the mean of the underlying load times.
+    no_denominator: >-
+      None, and this one could not have had one: a **median** is not
+      Σnumerator / Σdenominator for any pair of series. Weighting it by page
+      views would produce a weighted mean of daily medians, which is neither
+      the median nor the mean of the underlying load times.
     direction: down_is_good
     format:
       style: number
@@ -1549,11 +1560,11 @@ metrics:
     source: b2b_saas.metrics.time_on_site
     grain: day
     kind: rate # a mean duration
-    # No `denominator`: seconds *per session*, and this tree has no sessions
-    # metric. It carries per-channel visitor counts (organic / paid / email /
-    # referral / social), and this node drives the organic *and* paid
-    # conversion rates — so no one of them is the cohort and their sum is not
-    # in the tree either.
+    no_denominator: >-
+      Seconds *per session*, and this tree has no sessions metric. It carries
+      per-channel visitor counts (organic / paid / email / referral / social),
+      and this node drives the organic *and* paid conversion rates — so no one
+      of them is the cohort and their sum is not in the tree either.
     format:
       style: number
       unit: seconds
@@ -1564,8 +1575,9 @@ metrics:
     source: b2b_saas.metrics.website_bounce_rate
     grain: day
     kind: rate
-    # No `denominator`, for the same reason as `time_on_site` above: bounces
-    # over *sessions*, and the tree has only per-channel visitor counts while
-    # this node drives both the organic and the paid conversion rate.
+    no_denominator: >-
+      None, for the same reason as `time_on_site` above: bounces over
+      *sessions*, and the tree has only per-channel visitor counts while this
+      node drives both the organic and the paid conversion rate.
     direction: down_is_good
     format: percent

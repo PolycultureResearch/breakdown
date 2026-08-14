@@ -981,6 +981,52 @@ function unexplainedRow(node) {
   };
 }
 
+/* What "→" is between, for a node whose two numbers are not window means.
+
+   Every surface used to print "window means" under a baseline → actual pair,
+   which is true of a flow or a stock and true of no rate at all: a rate's
+   window value is `Σnumerator / Σdenominator` (the *component aggregate*), and
+   where there is no denominator it is the mean of the per-period ratios — a
+   different number, wearing the same words.
+
+   The three fallbacks are not one thing either, which is the whole of roadmap
+   1.11's third state. "No component aggregate exists" is a fact about the
+   metric — a median is not Σnum/Σden for any pair of series, so this mean is
+   the only number there is. "No denominator declared" is a fact about the
+   *tree*, and it is fixable. A reader who cannot tell them apart either
+   distrusts a number that is fine or trusts a tree that is unfinished.
+
+   So the distinction goes in the label, like `unexplainedRow` and for the same
+   reason: a label survives a screenshot, a copy-paste and the export, where a
+   tooltip does not. `title` carries the author's own reason for the live
+   surfaces; the export prints it as text. */
+function windowBasis(node) {
+  const agg = node.window_aggregate;
+  if (!agg) return { label: "window means", title: "" };
+  if (agg === "components")
+    return {
+      label: "component aggregate",
+      title:
+        "Σnumerator / Σdenominator over the window's defined periods — what a " +
+        "window's rate is. Not the average of the per-period ratios, which is a " +
+        "different number whenever the denominators differ.",
+    };
+  const why =
+    {
+      period_mean_none_exists: "no component aggregate exists",
+      period_mean_undeclared: "no denominator declared",
+      period_mean_weights_unavailable: "denominator unusable over these windows",
+    }[agg] || "not a component aggregate";
+  return { label: `period means — ${why}`, title: node.window_aggregate_reason || "" };
+}
+
+/* The inline form for the live surfaces: label, grain, reason on hover. */
+function windowBasisHtml(node) {
+  const w = windowBasis(node);
+  const per = node.grain && node.grain !== "day" ? ` per ${esc(node.grain)}` : "";
+  return `<span${w.title ? ` title="${esc(w.title)}"` : ""}>${esc(w.label)}${per}</span>`;
+}
+
 function componentRowsHtml(node, nCols, shareOf, ciCell) {
   const comps = node.components;
   if (!comps || nCols !== 5) return "";
@@ -1111,7 +1157,7 @@ function buildRcaReportHtml(res, treePng, stripPng) {
   const gapLine = (node) =>
     node.gap == null
       ? ""
-      : `<p class="meta">gap ${fmt(node.gap)} (${node.relative_change == null ? "—" : signedPct(node.relative_change)}) · ${fmt(node.baseline)} → ${fmt(node.actual)} window means${node.grain && node.grain !== "day" ? ` per ${esc(node.grain)}` : ""}</p>`;
+      : `<p class="meta">gap ${fmt(node.gap)} (${node.relative_change == null ? "—" : signedPct(node.relative_change)}) · ${fmt(node.baseline)} → ${fmt(node.actual)} ${esc(windowBasis(node).label)}${node.grain && node.grain !== "day" ? ` per ${esc(node.grain)}` : ""}${windowBasis(node).title && node.window_aggregate !== "components" ? ` <em>${esc(windowBasis(node).title)}</em>` : ""}</p>`;
 
   const order = [res.target, ...res.ranked_causes.map((c) => c.metric)];
   const blocks = order
@@ -2300,7 +2346,13 @@ function renderMetricTab(name, data) {
       ${def.denominator
         ? `<tr><td>Denominator</td><td><code>${esc(def.denominator)}</code> <span class="muted">— a window's rate is Σnumerator / Σ${esc(def.denominator)}, so a period with none drops out</span></td></tr>`
         : def.kind === "rate"
-          ? `<tr><td>Denominator</td><td><span class="muted" title="Without a denominator, a window's value here is the plain average of the per-period ratios — which is not what a window's rate is. Declare denominator: on this metric.">not declared — window values average the per-period ratios</span></td></tr>`
+          ? def.no_denominator
+            // Asked and answered (roadmap 1.11): the reason is shown, not
+            // hidden behind a hover, and no remedy is offered — there is
+            // nothing to fix. Advising "declare a denominator" here is what
+            // this state exists to stop, since for a median it cannot be done.
+            ? `<tr><td>Denominator</td><td><span class="muted">none — the mean of the defined periods is the only aggregate there is. <em>${esc(def.no_denominator)}</em></span></td></tr>`
+            : `<tr><td>Denominator</td><td><span class="muted" title="Without a denominator, a window's value here is the plain average of the per-period ratios — which is not what a window's rate is. Declare denominator: on this metric, or no_denominator: with the reason if it genuinely has none.">not declared — window values average the per-period ratios</span></td></tr>`
           : ""}
       ${def.baseline
         ? `<tr><td>Baseline</td><td>${
@@ -3146,7 +3198,7 @@ function renderRcaTab() {
       target.gap == null
         ? ""
         : `<div class="gap-line ${gp.cls}">${gp.sign}${fmt(target.gap)} <span style="font-size:14px">(${signedPct(target.relative_change)})</span></div>
-           <div class="sub">${fmt(target.baseline)} → ${fmt(target.actual)} (window means${target.grain && target.grain !== "day" ? ` per ${esc(target.grain)}` : ""})</div>`;
+           <div class="sub">${fmt(target.baseline)} → ${fmt(target.actual)} (${windowBasisHtml(target)})</div>`;
     $("rca-results").innerHTML = `
       <div class="rca-card">
         <div class="sub">${esc(res.target)} · ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)} vs ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}</div>
@@ -3232,7 +3284,7 @@ function renderRcaTab() {
           node.gap == null
             ? ""
             : `<p class="inline-status">gap <strong>${fmt(node.gap)}</strong> (${node.relative_change == null ? "—" : signedPct(node.relative_change)}) ·
-                ${fmt(node.baseline)} → ${fmt(node.actual)} (window means${node.grain && node.grain !== "day" ? ` per ${esc(node.grain)}` : ""})</p>`;
+                ${fmt(node.baseline)} → ${fmt(node.actual)} (${windowBasisHtml(node)})</p>`;
         return `
         <div class="attr-block degraded">
           <h4>${esc(name)} <span class="method">· ${esc(st.label)}</span></h4>
@@ -3384,7 +3436,7 @@ function renderRcaTab() {
       <div class="sub">${esc(res.target)} · ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)}${res.reference_defaulted ? " (auto)" : ""} vs ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}</div>
       <div class="gap-line ${targetGap.cls}">${targetGap.sign}${fmt(target.gap)} <span style="font-size:14px">(${signedPct(target.relative_change)})</span></div>
       <div id="rca-strip"></div>
-      <div class="sub">${fmt(target.baseline)} → ${fmt(target.actual)} (window means${target.grain && target.grain !== "day" ? ` per ${esc(target.grain)}` : ""})</div>
+      <div class="sub">${fmt(target.baseline)} → ${fmt(target.actual)} (${windowBasisHtml(target)})</div>
       ${windowNote}
       ${degradedNote}
     </div>

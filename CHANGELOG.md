@@ -82,6 +82,26 @@ anyone installing from an index, all of this is new.
   `per_period` rather than from its parents' window aggregates. No percentage in
   the guided tour moved, for the same reason.
 
+  **And a rate can now say it has none: `no_denominator: "<reason>"`.** Leaving
+  `denominator` off said two things at once — *nobody has looked at this metric*
+  and *this metric has no denominator* — and they want opposite responses, so
+  `breakdown doctor` was telling the author of a **median** to "Add
+  `denominator: <metric>`", advice that cannot be followed. The answer is its
+  own field: its presence settles the question, its value is the reason (an
+  empty one is refused), and it survives `model_dump()` so `/dag` and every
+  consumer can tell "answered: none" from "nobody said". It is refused beside a
+  declared `denominator`, on a non-rate, when a `dimensions` block needs weights
+  to blend, and when anything else in the tree names a denominator anyway. The
+  reference tree's eight now carry their reasons in the field rather than in a
+  comment; `doctor` passes and quotes them. Every rate node in an RCA response
+  also reports **`window_aggregate`** — `components` (the real `Σnum / Σden`),
+  or `period_mean_none_exists` / `period_mean_undeclared` /
+  `period_mean_weights_unavailable`: the same arithmetic, three different facts,
+  with the author's reason in `window_aggregate_reason`. The UI prints the
+  distinction as a label under the number, and the export carries the reason in
+  full. **Not mandatory** — making the field required is a breaking schema
+  change, and it is the tree author's call, not the engine's.
+
   An undefined period survives the whole pipeline with a stated policy at each
   step (documented in [`docs/model.md`](docs/model.md#rates-over-undefined-periods)):
   it drops out of window aggregates, keeps its row in the grain frame so

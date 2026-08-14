@@ -386,9 +386,10 @@ def rate_window_value(values: np.ndarray, weights: Optional[np.ndarray]) -> floa
     time is not `Σnum / Σden` for any pair of series, and a mean duration whose
     cohort the tree does not carry has no weight to offer. It is disclosed at
     load (`Parser._validate_denominators` names every node reaching this path)
-    rather than passed off as the real thing. It skips undefined periods too:
-    averaging over the periods that exist is at least not averaging over
-    invented ones.
+    and in the payload (`rate_window_method`, which says *why* there were no
+    weights) rather than passed off as the real thing. It skips undefined
+    periods too: averaging over the periods that exist is at least not
+    averaging over invented ones.
 
     Returns `nan` when no period survives — an undefined window, which callers
     report as such rather than publishing.
@@ -428,6 +429,12 @@ class GrainedData:
     # the DAG at each call site so that every consumer of a window aggregate —
     # RCA, what-if, the node cards — is weighting by the same declared fact.
     denominator_of: Dict[str, str] = field(default_factory=dict)
+    # `kind: rate` metric -> the author's stated reason it has **no**
+    # denominator (roadmap 1.11). Carried beside `denominator_of` because the
+    # absence of a key there has two meanings — "nobody has said" and "asked and
+    # answered" — and every consumer of a fallback aggregate has to be able to
+    # tell them apart. A name here is a finding, not a configuration gap.
+    no_denominator_of: Dict[str, str] = field(default_factory=dict)
 
     def weights_for(self, metric: str, grain: Optional[str] = None) -> Optional[pd.Series]:
         """The per-period weights for a rate, indexed by period start, or None.
@@ -572,6 +579,7 @@ def build_grained(
     grain_of: Dict[str, str],
     kind_of: Dict[str, str],
     denominator_of: Optional[Dict[str, str]] = None,
+    no_denominator_of: Optional[Dict[str, str]] = None,
 ) -> GrainedData:
     """Assemble per-grain frames from per-metric `["date", name]` frames,
     inner-joining within each grain only. Each metric's `last_observed` is
@@ -611,6 +619,7 @@ def build_grained(
         kind_of=dict(kind_of),
         last_observed=last_observed,
         denominator_of=dict(denominator_of or {}),
+        no_denominator_of=dict(no_denominator_of or {}),
     )
 
 
