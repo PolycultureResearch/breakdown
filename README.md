@@ -1,6 +1,6 @@
 # breakdown
 
-**An open engine for Bayesian metric tree construction and root cause analysis**
+**An open engine for metric tree construction and root cause analysis**
 
 Metrics trees model causal relationships between business metrics and assist in diagnosing the root causes of changes in KPIs. Breakdown models your business metrics as a causal graph and uses Bayesian inference to learn the probabilistic relationships between them. Instead of asking "did revenue drop?", you can ask "which upstream metric drove it, and how confident are we?"
 
@@ -93,9 +93,8 @@ uv sync
 uv run breakdown serve            # or: uv run python main.py serve
 ```
 
-> **Installed as `metric-breakdown`, used as `breakdown`.** The name `breakdown`
-> was already taken on PyPI, so that is the distribution name — but the command,
-> the import package and everything in this documentation are `breakdown`.
+> **Install as `metric-breakdown` (`breakdown`
+> was already taken on PyPI), use it as `breakdown`.** 
 
 Once it is published, either of these will work:
 
