@@ -42,8 +42,8 @@ reason, and it is not a bug.
 
 `https://<demo-host>/ui`
 
-Say: *this picture is a YAML file* — **18 metrics** in **273 lines**, of which
-209 are actual configuration and the rest comments and blanks.
+Say: *this picture is a YAML file* — **18 metrics** in **284 lines**, of which
+211 are actual configuration and the rest comments and blanks.
 `net_new_mrr` at the top decomposes into new, expansion, contraction and churned
 MRR: an exact arithmetic identity, so attribution across it is exact Shapley
 rather than a regression. Below that the funnel edges are probabilistic and carry

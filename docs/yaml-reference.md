@@ -546,10 +546,28 @@ The rules:
   sliced rate and its window aggregate are the same fact. A rate with a
   dimension still needs one, from wherever.
 - A rate that declares one nowhere is **warned about, not refused** — the
-  startup log names every such node — and its window aggregate falls back to
-  the plain average of the defined periods. That fallback is the old behaviour
-  and is wrong whenever the denominators differ; it survives only because
-  requiring the field would break trees that predate it.
+  startup log and `breakdown doctor` name every such node — and its window
+  aggregate falls back to the plain average of the defined periods. That
+  fallback is wrong whenever the denominators differ, so declare one wherever
+  you can establish it.
+
+**But some rates genuinely have none, and inventing one is worse than leaving
+it off.** A wrong denominator computes a confident wrong number; no denominator
+computes a disclosed fallback. Three shapes to leave undeclared:
+
+- **A mean duration whose cohort you do not have as a metric.** Mean days-to-
+  activation is over *trials that activated*; if the tree only counts trials
+  *started*, no series in it is the denominator. A near-miss is still wrong.
+- **A ratio whose base is not in the tree.** Bounce rate is over sessions; if
+  the tree carries only per-channel visitor counts, leave it.
+- **A median, or any other non-linear summary.** `Σnumerator / Σdenominator`
+  reconstructs a *mean*. A median page-load time is not that quantity for any
+  pair of series, so no denominator is correct.
+
+The test for a candidate denominator is arithmetic, not linguistic: does
+`window_rate × mean(denominator) == mean(numerator)`? If the tree names that
+numerator and the identity closes, the denominator is right. If it does not
+close, the denominator is wrong — treat that as evidence, not as tolerance.
 
 **Data freshness.** Each metric's true data edge is tracked as it is fetched and exposed as `data_through` in `GET /meta` — the inclusive last date its last observed period covers. When sources disagree (one mart lags the others), the UI anchors every card's headline number, delta, and sparkline at the tree-wide edge via the **As of** selector (toolbar), which defaults to the oldest `data_through` across metrics and counts only periods *fully completed* by that date — so a calendar week the data edge cuts in half never becomes a headline number. The one case this cannot catch is a partially loaded most-recent period (the mart wrote *some* rows for it): detecting that needs load-completeness metadata on the mart side.
 

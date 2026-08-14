@@ -64,17 +64,26 @@ def test_every_rate_is_declared_not_inherited(defs, caplog):
     assert [r.message for r in caplog.records if "denominator" not in r.message] == []
 
 
-def test_the_rates_still_needing_a_denominator_are_counted_and_named(parser, caplog):
+def test_the_rates_without_a_denominator_are_the_eight_that_cannot_have_one(parser, caplog):
     """Roadmap 1.11b's "report the list", asserted rather than logged and lost.
 
     A rate with no `denominator` aggregates over a window as the plain average
     of its per-period ratios — the pre-1.11 number, which is wrong whenever the
-    denominators differ. Requiring one would have broken 40 nodes here, so it
-    warns; this is what keeps the warning from becoming wallpaper.
+    denominators differ. 40 of the 46 rates here declared none when 1.11b
+    landed, so it warns rather than refuses.
 
-    The count is pinned so it can only go **down**. Declaring a denominator on
-    a rate fails this test, which is the moment to lower the number — and when
-    it reaches zero, the moment to make the field mandatory.
+    **The list is now pinned by name, not by count, because it stopped being a
+    backlog.** 38 rates declare a denominator read off the tree's own
+    arithmetic (`count = base * rate` makes `base` the denominator). The eight
+    below are the ones where no denominator can be *established*: four mean
+    durations whose cohort this tree does not carry, three ratios over a base
+    that is not a metric here, and one median, which is not `Σnum / Σden` for
+    any pair of series at all. Each carries its reason in the YAML.
+
+    So a name appearing here is a claim about the metric, not a to-do. Adding
+    one means the tree grew a rate nobody can say what it is over — which is
+    worth failing over. Removing one means someone established a denominator,
+    which is worth reading the evidence for. Both should be deliberate.
     """
     rates = [
         n
@@ -82,23 +91,36 @@ def test_the_rates_still_needing_a_denominator_are_counted_and_named(parser, cap
         if d.kind == "rate"
     ]
     assert len(rates) == 46
-    assert len(parser.rates_without_denominator) == 40, (
-        "the reference tree's rate inventory moved; if a denominator was "
-        "declared, lower this number (and see roadmap 1.11b)"
+    assert parser.rates_without_denominator == [
+        # Mean durations: the cohort averaged over is not a metric in the tree.
+        "new_business_opportunity_sales_cycle",  # opportunities closed
+        # A median — not Σnum / Σden for any pair of series.
+        "page_speed",
+        # Ratios whose base is not a metric in the tree.
+        "prospect_coverage",  # the target prospect list
+        "time_on_site",  # sessions
+        "time_to_lead_response",  # leads responded to
+        "time_to_sent_new_business_proposal",  # proposals sent
+        "time_to_trial_activation",  # trials that activated
+        "website_bounce_rate",  # sessions
+    ], (
+        "the reference tree's rate inventory moved. These eight are deliberate "
+        "— a denominator that cannot be established from the tree, its "
+        "descriptions or its formulas. See the DENOMINATORS block in the YAML "
+        "header and roadmap 1.11b before changing this list."
     )
     assert set(parser.rates_without_denominator) <= set(rates)
-    # The six that do declare one got it from a `dimensions[].weight` — the
-    # near-miss 1.11b is built on: the fact was already collected, filed under
-    # slicing, and invisible to the fetch and aggregation paths.
-    declared = sorted(set(rates) - set(parser.rates_without_denominator))
-    assert declared == [
-        "average_churned_mrr",
-        "average_new_mrr",
-        "contract_renewal_rate",
-        "organic_traffic_conversion_rate",
-        "paid_traffic_conversion_rate",
-        "true_trial_conversion_rate",
-    ]
+    # And the warning still names them, which is what `doctor` and the startup
+    # log surface. The inventory being short is not the same as it being silent.
+    # Re-parsed here because the module-scoped `parser` fixture warned long
+    # before this test's caplog started listening.
+    with caplog.at_level(logging.WARNING, logger="breakdown.parser"):
+        with open(TREE) as fh:
+            Parser(fh.read())
+    assert any(
+        "declare no `denominator`" in r.getMessage() and "page_speed" in r.getMessage()
+        for r in caplog.records
+    )
 
 
 def test_stocks_are_declared_as_stocks(defs):

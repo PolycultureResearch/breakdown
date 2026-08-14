@@ -382,11 +382,13 @@ def rate_window_value(values: np.ndarray, weights: Optional[np.ndarray]) -> floa
 
     Without weights there is no honest aggregate to compute, only the plain
     average of the ratios. That fallback is the pre-1.11 behaviour and stays,
-    because requiring a denominator would break 43 of the 52 rate metrics in
-    this repo's trees — but it is disclosed at load (`Parser._validate_
-    denominators` names every node that needs one) rather than passed off as
-    the real thing. It skips undefined periods too: averaging over the periods
-    that exist is at least not averaging over invented ones.
+    because some rates genuinely have no denominator — a *median* page-load
+    time is not `Σnum / Σden` for any pair of series, and a mean duration whose
+    cohort the tree does not carry has no weight to offer. It is disclosed at
+    load (`Parser._validate_denominators` names every node reaching this path)
+    rather than passed off as the real thing. It skips undefined periods too:
+    averaging over the periods that exist is at least not averaging over
+    invented ones.
 
     Returns `nan` when no period survives — an undefined window, which callers
     report as such rather than publishing.

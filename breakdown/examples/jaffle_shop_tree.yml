@@ -34,6 +34,10 @@ metrics:
     # An average, so it never auto-aggregates: the mean of a week of daily
     # AOVs is not the week's AOV, which must be recomputed from its components.
     kind: rate
+    # An order value is revenue *per order*, so a window's AOV is
+    # Σrevenue / Σorder_count. `revenue = order_count * average_order_value`
+    # below says the same thing from the other side.
+    denominator: order_count
     format: currency
 
   - name: revenue

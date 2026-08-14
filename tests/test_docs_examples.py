@@ -752,8 +752,15 @@ def test_mcp_section_figures_still_match_a_real_run(replayed):
     assert q("order_count", "actual") == pytest.approx(148.0, rel=1e-3)
     assert q("order_count", "relative_change") == pytest.approx(0.0376, rel=5e-3)
 
-    assert q("average_order_value", "baseline") == pytest.approx(184.68, rel=1e-4)
-    assert q("average_order_value", "actual") == pytest.approx(182.15, rel=1e-4)
+    # Both moved +0.17% when `average_order_value` declared `denominator:
+    # order_count`: a window's AOV is Σrevenue / Σorder_count, and it had been
+    # the plain mean of the daily AOVs. The *relative* change barely moved
+    # (-0.013693 -> -0.013698) because both windows shifted by the same 0.17%,
+    # so the narration's "-1.4%" and every Shapley figure below are unchanged
+    # to the digit — `revenue` decomposes `per_period`, not from the parents'
+    # window aggregates.
+    assert q("average_order_value", "baseline") == pytest.approx(185.00, rel=1e-4)
+    assert q("average_order_value", "actual") == pytest.approx(182.46, rel=1e-4)
     assert q("average_order_value", "relative_change") == pytest.approx(-0.0137, rel=5e-3)
 
     assert q("daily_sessions", "relative_change") == pytest.approx(0.0224, rel=5e-3)
