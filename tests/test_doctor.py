@@ -733,3 +733,53 @@ def test_doctor_history_headroom(tmp_path):
     # headroom) is skipped.
     results = {r.name: r for r in run_doctor(str(tree))}
     assert "history headroom" not in results
+
+
+# --- The three states of a rate's denominator (roadmap 1.11) ------------------
+
+_RATE_TREE = """
+provider:
+  type: mock
+metrics:
+  - name: sessions
+    source: my.metrics.sessions
+  - name: conversion_rate
+    source: my.metrics.conversion_rate
+    kind: rate
+{extra}"""
+
+
+def _rate_check(tmp_path, extra=""):
+    tree = tmp_path / "rates.yml"
+    tree.write_text(_RATE_TREE.format(extra=extra))
+    return by_name(run_doctor(str(tree)))["rate denominators"]
+
+
+def test_an_unanswered_rate_is_reported_with_both_remedies(tmp_path):
+    check = _rate_check(tmp_path)
+    assert check.status == "skip"
+    assert "conversion_rate" in check.detail
+    # Both, because the old message offered only the one that a median cannot
+    # take.
+    assert "`denominator: <metric>`" in check.detail
+    assert "no_denominator" in check.detail
+
+
+def test_an_answered_rate_passes_and_quotes_the_reason(tmp_path):
+    """The honesty defect this fixes: `doctor` told the author of a median to
+    "Add `denominator: <metric>`", which for a median cannot be done. An
+    answered rate is not outstanding work, so it passes — and the reason is
+    quoted rather than counted, because "1 rate declares no_denominator" is a
+    number nobody can check."""
+    reason = "a median — not Σnum / Σden for any pair of series"
+    check = _rate_check(tmp_path, extra=f'    no_denominator: "{reason}"\n')
+    assert check.status == "pass"
+    assert reason in check.detail
+    assert "Add `denominator:" not in check.detail
+
+
+def test_a_declared_denominator_still_reads_as_before(tmp_path):
+    check = _rate_check(tmp_path, extra="    denominator: sessions\n")
+    assert check.status == "pass"
+    assert "recompute from components" in check.detail
+    assert "no_denominator" not in check.detail

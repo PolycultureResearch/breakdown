@@ -427,7 +427,9 @@ def node_window_value(
       out, so a window containing an undefined period still has a defined rate.
       A rate that declares no `denominator` falls back to the plain average of
       its defined periods, which is the pre-1.11 number and is disclosed at
-      load rather than silently presented as the aggregate.
+      load rather than silently presented as the aggregate. Which of the two
+      arithmetics ran — and, for the fallback, *why* — is `rate_window_method`,
+      which every payload carrying one of these numbers reports beside it.
 
     Returns `nan` when the window holds no defined period; callers report that
     as a status rather than publishing it. Raises when the window holds no
@@ -440,18 +442,107 @@ def node_window_value(
     values = _window_values(source, node, start, end)
     if kind != "rate":
         return float(values.mean())
+    return rate_window_value(values, _window_weights(grained, node, source, start, end, at))
+
+
+def _window_weights(
+    grained, node: str, source: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp, at: str
+) -> Optional[np.ndarray]:
+    """The denominator's per-period values over this window, or None.
+
+    Aligned **on the dates**, never on position or length. `source` may be a fit
+    frame whose inner join dropped a period (a finer parent's partial coarse
+    period), so two arrays of equal length can still be describing different
+    weeks — a misalignment nobody could see. A denominator that cannot cover the
+    window's periods weights nothing, and the disclosed fallback is better than
+    a silent mis-weighting.
+
+    One implementation, two callers: the value (`node_window_value`) and the
+    label for how it was formed (`rate_window_method`). If those two ever
+    disagreed the payload would describe an arithmetic it did not perform, which
+    is the defect class this whole item is about.
+    """
     weights = grained.weights_for(node, at)
-    if weights is not None:
-        # Aligned **on the dates**, never on position or length. `frame` may be
-        # a fit frame whose inner join dropped a period (a finer parent's
-        # partial coarse period), so two arrays of equal length can still be
-        # describing different weeks — a misalignment nobody could see. A
-        # denominator that cannot cover the window's periods weights nothing,
-        # and the disclosed fallback is better than a silent mis-weighting.
-        dates = pd.DatetimeIndex(source.loc[_window_mask(source, start, end), "date"])
-        aligned = weights.reindex(dates)
-        weights = None if aligned.isna().any() else aligned.to_numpy(dtype=float)
-    return rate_window_value(values, weights)
+    if weights is None:
+        return None
+    dates = pd.DatetimeIndex(source.loc[_window_mask(source, start, end), "date"])
+    aligned = weights.reindex(dates)
+    return None if aligned.isna().any() else aligned.to_numpy(dtype=float)
+
+
+def rate_window_method(
+    data,
+    node: str,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    grain: Optional[str] = None,
+    *,
+    frame: Optional[pd.DataFrame] = None,
+) -> Optional[str]:
+    """How `node_window_value` formed this window's number, for the payload.
+
+    `None` for a flow or a stock — they have one aggregation and it is not in
+    question. For a rate, one of:
+
+    - `"components"` — `Σ(rate·den) / Σden` over the declared denominator. The
+      real thing.
+    - `"period_mean_none_exists"` — the node declares `no_denominator`: there is
+      no pair of series whose sums make this quantity, so the mean of the
+      defined periods is not a fallback from something better, it is the only
+      number there is. The reason travels beside it.
+    - `"period_mean_undeclared"` — nobody has said what this rate is a rate of.
+      Same arithmetic as above, completely different meaning: the tree could
+      compute the real aggregate once someone declares the denominator.
+    - `"period_mean_weights_unavailable"` — a denominator *is* declared, but its
+      series does not cover this window's periods, so this particular window
+      fell back. Rare, and worth seeing rather than reading as `components`.
+
+    The first three are the three states of `denominator` (roadmap 1.11); the
+    fourth exists because labelling a window `components` while averaging its
+    ratios would be a payload that misdescribes its own arithmetic.
+    """
+    grained = ensure_grained(data)
+    if grained.kind_of.get(node, "flow") != "rate":
+        return None
+    at = grain or grained.grain_of.get(node, "day")
+    if node not in grained.denominator_of:
+        return (
+            "period_mean_none_exists"
+            if node in grained.no_denominator_of
+            else "period_mean_undeclared"
+        )
+    source = frame if frame is not None else grained.series(node, at)
+    if _window_weights(grained, node, source, start, end, at) is None:
+        return "period_mean_weights_unavailable"
+    return "components"
+
+
+def rate_window_method_reason(data, node: str, method: Optional[str]) -> Optional[str]:
+    """The sentence that goes beside `rate_window_method`, in prose.
+
+    The status is what a consumer branches on; this is what a *person* reads,
+    and for `period_mean_none_exists` it is the author's own words, carried from
+    the tree's `no_denominator:` without editing. That is the point of writing
+    the reason there rather than in a comment: the argument reaches whoever is
+    looking at the number, which is where the question actually gets re-opened.
+    """
+    if method is None or method == "components":
+        return None
+    grained = ensure_grained(data)
+    if method == "period_mean_none_exists":
+        return grained.no_denominator_of.get(node)
+    if method == "period_mean_weights_unavailable":
+        return (
+            f"'{node}' declares denominator '{grained.denominator_of.get(node)}', but its "
+            "series does not cover every period of these windows, so this value is the "
+            "mean of the per-period ratios rather than Σnumerator / Σdenominator."
+        )
+    return (
+        f"'{node}' declares no `denominator` and no `no_denominator`, so this value is "
+        "the mean of its defined per-period ratios rather than Σnumerator / "
+        "Σdenominator — which is a different number whenever the denominators differ. "
+        "Nobody has said which of the two this metric is; declaring either settles it."
+    )
 
 
 def _window_mask(data: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> pd.Series:
@@ -661,6 +752,19 @@ def _node_out(**fields) -> Dict[str, Any]:
         #   measurement; it is the absence of one.
         # - `null` — no attribution ran, so there is no residual either.
         "unexplained_status": None,
+        # How `baseline`/`actual` were formed for a `kind: rate` node, and null
+        # for anything else — see `rate_window_method`. A rate whose window
+        # value is the mean of its per-period ratios must not read like one
+        # whose value is Σnumerator / Σdenominator, and a rate that *has* no
+        # denominator must not read like one nobody has configured yet: same
+        # arithmetic, different facts about the world, exactly like the
+        # definitional and measured zeros above.
+        "window_aggregate": None,
+        # For the two `period_mean_*` states that have an author behind them,
+        # the reason in the author's own words (`no_denominator:`) or the
+        # consequence of the silence. Null when the aggregate is `components` —
+        # there is nothing to explain about the right answer.
+        "window_aggregate_reason": None,
         "components": None,
         "interaction": None,
         "contributions": [],
@@ -1111,6 +1215,21 @@ def run_rca(
         # otherwise turn into an unhandled 500.
         baseline = node_window_value(data, node, ref_start, ref_end, grain, frame=frame)
         actual = node_window_value(data, node, an_start, an_end, grain, frame=frame)
+        # …and what that arithmetic *was*, said out loud. Both windows are asked
+        # because only one of the four answers is window-dependent (a declared
+        # denominator whose series does not reach this window), and a payload
+        # claiming `components` when one of its two numbers is a period mean
+        # would misdescribe itself.
+        methods = {
+            rate_window_method(data, node, s, e, grain, frame=frame)
+            for s, e in ((ref_start, ref_end), (an_start, an_end))
+        }
+        window_aggregate = "period_mean_weights_unavailable" if len(methods) > 1 else methods.pop()
+        window_aggregate_reason = rate_window_method_reason(data, node, window_aggregate)
+        rate_fields = {
+            "window_aggregate": window_aggregate,
+            "window_aggregate_reason": window_aggregate_reason,
+        }
         if not (np.isfinite(baseline) and np.isfinite(actual)):
             which = "reference" if not np.isfinite(baseline) else "analysis"
             reason = (
@@ -1125,6 +1244,7 @@ def run_rca(
                 status_reason=reason,
                 grain=grain,
                 effective_windows=effective_windows,
+                **rate_fields,
             )
             continue
         gap = actual - baseline
@@ -1149,6 +1269,7 @@ def run_rca(
                 actual=actual,
                 gap=gap,
                 relative_change=relative_change,
+                **rate_fields,
             )
             continue
 
@@ -1195,6 +1316,7 @@ def run_rca(
                     gap=gap,
                     relative_change=relative_change,
                     attribution_method=attribution_method,
+                    **rate_fields,
                 )
                 continue
 
@@ -1625,6 +1747,7 @@ def run_rca(
             components=components,
             interaction=interaction,
             contributions=contributions,
+            **rate_fields,
         )
 
     return {

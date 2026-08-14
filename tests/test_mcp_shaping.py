@@ -295,8 +295,16 @@ def test_how_to_read_guides():
         # cannot reconstruct from the payload — read wrong, it narrates a
         # verified identity that was never verified. Raise it again only for
         # something with that shape.
-        assert 400 < len(guide) < 2800
+        #
+        # Raised to 3200 for `window_aggregate`, which is that shape twice
+        # over. Without it an agent reading a rate's window value cannot know
+        # whether it is Σnumerator / Σdenominator or the mean of the ratios,
+        # and cannot tell a metric that has no denominator *by nature* from a
+        # tree nobody has finished configuring — so its remedy for a median
+        # would be "declare a denominator", advice that cannot be followed.
+        assert 400 < len(guide) < 3200
     assert "unexplained" in RCA_HOW_TO_READ
+    assert "window_aggregate" in RCA_HOW_TO_READ
     assert "prob_direction" in WHATIF_HOW_TO_READ
     assert "excess" in SLICE_HOW_TO_READ
     assert "reconciliation" in SLICE_HOW_TO_READ

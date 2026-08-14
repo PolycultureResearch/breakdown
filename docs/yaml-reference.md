@@ -569,6 +569,40 @@ The test for a candidate denominator is arithmetic, not linguistic: does
 numerator and the identity closes, the denominator is right. If it does not
 close, the denominator is wrong — treat that as evidence, not as tolerance.
 
+**When the answer is "there is none", say so: `no_denominator`.** Leaving the
+field off says two things at once — *nobody has looked at this metric yet* and
+*this metric has no denominator* — and they want opposite responses. So the
+answer is its own field, and its value is the reason:
+
+```yaml
+- name: page_speed
+  source: my.metrics.page_speed
+  kind: rate
+  no_denominator: "a median — not Σnum / Σden for any pair of series"
+```
+
+- **The presence of the field is the answer; the value is the argument.** An
+  empty reason is refused: the reason is what stops the question being re-opened
+  by the next reader, and it is what `breakdown doctor` and the payload quote.
+- **It is refused alongside a `denominator`**, and refused when anything else in
+  the tree names one anyway (a `num / den` formula, a `dimensions[].weight`, a
+  `bind:` ratio over a tree metric). Exactly one of the two statements is wrong
+  and only you know which. It is refused on a `flow` or a `stock` for the same
+  reason `denominator` is.
+- **A rate with `no_denominator` cannot declare `dimensions`.** Blending slices
+  needs a weight per slice, and there is none.
+- **Nothing changes about the number.** The window value is still the mean of
+  the defined periods — for a median it is the only number there is. What
+  changes is that it stops looking like an unfinished tree: `breakdown doctor`
+  passes and quotes your reason instead of advising a denominator you cannot
+  supply, and the payload carries
+  `window_aggregate: "period_mean_none_exists"` with
+  `window_aggregate_reason` — as against `"period_mean_undeclared"` for a rate
+  nobody has answered for. The UI labels the difference under the number.
+
+Declaring it is not mandatory. It is worth doing on any rate you have already
+thought about, because the alternative is thinking about it again next quarter.
+
 **Data freshness.** Each metric's true data edge is tracked as it is fetched and exposed as `data_through` in `GET /meta` — the inclusive last date its last observed period covers. When sources disagree (one mart lags the others), the UI anchors every card's headline number, delta, and sparkline at the tree-wide edge via the **As of** selector (toolbar), which defaults to the oldest `data_through` across metrics and counts only periods *fully completed* by that date — so a calendar week the data edge cuts in half never becomes a headline number. The one case this cannot catch is a partially loaded most-recent period (the mart wrote *some* rows for it): detecting that needs load-completeness metadata on the mart side.
 
 **Data-length guidance.** Fits need at least 10 whole periods at the node's grain — coarser grains need proportionally longer windows (a monthly node wants roughly a year of history). Seasonality periods and lags are in grain steps: `period: 7` means weekly on a daily node and seven *months* on a monthly one (the parser warns about that).

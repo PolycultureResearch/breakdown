@@ -672,6 +672,34 @@ class MetricDefinition(BaseModel):
     # page-load time is not `Σnum / Σden` for any pair of series), and no name
     # tells you which.
     denominator: Optional[str] = None
+    # The third state of the field above (roadmap 1.11): **asked and answered —
+    # this rate has no denominator.** `denominator: None` alone cannot say that;
+    # it is also what "nobody has looked at this node yet" looks like, and the
+    # two want opposite things from a reader. One is a gap to close, the other
+    # is a finding to respect.
+    #
+    # So the answer is a *separate field whose presence is the answer and whose
+    # value is the reason*: `no_denominator: "a median — not Σnum/Σden for any
+    # pair of series"`. Two shapes were considered and rejected:
+    #
+    # - **A sentinel on `denominator` itself.** Against PyYAML, `denominator:
+    #   none` is the string `'none'`, `denominator: null`/`~`/empty is `None`
+    #   (indistinguishable from unset), and `denominator: no` is the *boolean*
+    #   `False` — three near-identical spellings, three meanings. This repo is
+    #   already scarred by that: the binding join key is `key` and not `on`
+    #   because `on:` parses as `True` (see `_UniqueKeyLoader`).
+    # - **`model_fields_set` to tell an explicit null from an absent one.** It
+    #   does not survive `model_dump()`, and `/dag` serializes that way — which
+    #   is exactly how `direction`'s default reached the browser as a
+    #   declaration (C21). A plain field survives serialization, so every
+    #   consumer can tell the two apart.
+    #
+    # The reason is required and may not be blank: an unexplained "there is
+    # none" is an assertion nobody can check, and the whole value of the field
+    # is that it carries the evidence to the next reader. It travels — into the
+    # payload's `window_aggregate_reason`, into `breakdown doctor` — so the
+    # argument is made once, in the tree, and read everywhere.
+    no_denominator: Optional[str] = None
     sql: Optional[str] = None
     # How this node gets its series, when it does not inherit the tree-level
     # `provider`. A node is *bound* (this is set, or the tree provider serves
@@ -832,29 +860,55 @@ class MetricDefinition(BaseModel):
         Then the node-level fact flows *down* into `dimensions[].weight`, so
         the blend weights and the window aggregate cannot disagree about the
         same ratio. A rate that resolves to nothing is left alone and warned
-        about tree-wide — see `Parser._validate_denominators`.
+        about tree-wide — see `Parser._validate_denominators` — unless it
+        declares `no_denominator`, which is the author saying the search is
+        over. That claim is checked against the same three sources: if any of
+        them *does* name a denominator, the node is refused rather than
+        silently believed, because one of the two statements is wrong and the
+        parser cannot know which.
         """
+        if self.no_denominator is not None and not self.no_denominator.strip():
+            raise ValueError(
+                f"Metric '{self.name}' declares an empty `no_denominator`. The "
+                "field's value is the *reason* this rate has none, and it is "
+                "the whole point of writing it: it is what stops the question "
+                "being re-opened by the next reader, and it is what the "
+                "payload and `breakdown doctor` report in place of a "
+                'denominator. Give the reason, e.g. `no_denominator: "a '
+                'median — not Σnum / Σden for any pair of series"`.'
+            )
         if self.kind != "rate":
-            if self.denominator is not None:
-                raise ValueError(
-                    f"Metric '{self.name}' declares `denominator` but "
-                    f"`kind: {self.kind}`. A denominator says how a *rate* "
-                    "aggregates over time (a window's rate is Σnumerator / "
-                    "Σdenominator); a flow sums and a stock takes its last "
-                    "value, so neither has one. Declare `kind: rate`, or drop "
-                    "the denominator."
-                )
+            for field in ("denominator", "no_denominator"):
+                if getattr(self, field) is not None:
+                    raise ValueError(
+                        f"Metric '{self.name}' declares `{field}` but "
+                        f"`kind: {self.kind}`. A denominator says how a *rate* "
+                        "aggregates over time (a window's rate is Σnumerator / "
+                        "Σdenominator); a flow sums and a stock takes its last "
+                        f"value, so neither has one — nor a stated absence of "
+                        f"one. Declare `kind: rate`, or drop the `{field}`."
+                    )
             return self
+
+        if self.denominator is not None and self.no_denominator is not None:
+            raise ValueError(
+                f"Rate metric '{self.name}' declares both `denominator: "
+                f"{self.denominator}` and `no_denominator`. They are opposite "
+                "answers to one question — what this rate is a rate *of* — and "
+                "the second one is not a comment on the first. Keep the "
+                "denominator if it can be established, or drop it and keep the "
+                "reason it cannot."
+            )
 
         if self.denominator is None:
             m = _SIMPLE_RATIO.match(self.formula or "")
             if m and m.group(2) in self.parents:
-                self.denominator = m.group(2)
+                self._adopt_denominator(m.group(2), f"the `formula: {self.formula}`")
 
         if self.denominator is None:
             weights = sorted({s.weight for s in self.dimensions.values() if s.weight})
             if len(weights) == 1:
-                self.denominator = weights[0]
+                self._adopt_denominator(weights[0], "a `dimensions[].weight`")
             elif len(weights) > 1:
                 raise ValueError(
                     f"Rate metric '{self.name}' has dimensions declaring "
@@ -885,6 +939,27 @@ class MetricDefinition(BaseModel):
                     "Declare it once, on the metric."
                 )
         return self
+
+    def _adopt_denominator(self, den: str, source: str) -> None:
+        """Take a derived denominator, unless the node already said it has none.
+
+        The derivation sources are *evidence*, and `no_denominator` is a claim
+        about that evidence — so evidence that contradicts the claim is a parse
+        error rather than a winner. Silently adopting would overrule the author;
+        silently believing would compute the disclosed fallback while the tree
+        holds everything needed for the real aggregate. Naming the source is
+        what makes the error actionable: exactly one of the two is wrong, and
+        the author is the only one who can say which.
+        """
+        if self.no_denominator is not None:
+            raise ValueError(
+                f"Rate metric '{self.name}' declares `no_denominator` "
+                f"({self.no_denominator!r}), but {source} already says its "
+                f"denominator is '{den}'. One of the two is wrong: drop the "
+                "`no_denominator` if the ratio is real, or drop what names the "
+                "denominator if it is not."
+            )
+        self.denominator = den
 
     @model_validator(mode="after")
     def check_unique_parents(self) -> "MetricDefinition":
@@ -1087,9 +1162,11 @@ class MetricDefinition(BaseModel):
                 # they are the same fact as the node's `denominator` —
                 # `check_rate_denominator` has already run and pushed it down,
                 # so reaching here means the rate declares its denominator
-                # nowhere at all. A *sliced* rate cannot proceed without one:
-                # blending slices needs a weight per slice, and there is
-                # nothing to guess from.
+                # nowhere at all — including the case where it declares
+                # `no_denominator`, which is an answer to the *aggregation*
+                # question and no help at all to this one. A *sliced* rate
+                # cannot proceed without a real denominator: blending slices
+                # needs a weight per slice, and there is nothing to guess from.
                 raise ValueError(
                     f"Dimension '{key}' on rate metric '{self.name}' needs a "
                     "`denominator` on the metric (the tree metric whose sliced "
@@ -1097,6 +1174,13 @@ class MetricDefinition(BaseModel):
                     "aggregate the rate over a window). It defaults from a "
                     "`num / den` formula's denominator, which this metric does "
                     "not have."
+                    + (
+                        " `no_denominator` does not stand in for one: a rate "
+                        "that genuinely has no denominator has nothing to blend "
+                        "its slices by, so it cannot declare dimensions."
+                        if self.no_denominator is not None
+                        else ""
+                    )
                 )
         return self
 
@@ -1289,15 +1373,30 @@ class Parser:
             raise ValueError(f"Metric tree contains cycles: {cycles}")
 
         self._validate_grains(G)
-        self.rates_without_denominator = self._validate_denominators(G)
+        # Two inventories, because they are two different facts and one list
+        # could only be read as the weaker of them (roadmap 1.11):
+        # `rates_denominator_unanswered` is the lint — nobody has said what
+        # these rates are rates *of* — and `rates_denominator_none` is the
+        # settled finding, name -> the author's reason. A node in the second is
+        # not work outstanding, and nothing may report it as though it were.
+        self.rates_denominator_unanswered, self.rates_denominator_none = (
+            self._validate_denominators(G)
+        )
         self._validate_dimension_weights(G)
         self._validate_shapley_parents(G)
         self._validate_goal(G)
         return G
 
     @staticmethod
-    def _validate_denominators(G: nx.DiGraph) -> List[str]:
-        """Resolve and check every rate's denominator; return the rates with none.
+    def _validate_denominators(G: nx.DiGraph) -> Tuple[List[str], Dict[str, str]]:
+        """Resolve and check every rate's denominator; inventory the rest.
+
+        Returns `(unanswered, answered_none)` — the rates nobody has said
+        anything about, and the rates whose author has said there is no
+        denominator and why. **They are returned separately because they are
+        different facts**: the first is a gap in the tree, the second is a
+        finding about the world. Handing back one list would leave every
+        consumer to re-derive the distinction or, more likely, not to.
 
         The last derivation source lives here rather than on `MetricDefinition`
         because it needs the full node set: a `bind:` ratio names its
@@ -1325,11 +1424,16 @@ class Parser:
         `page_speed` is a **median**, which is not `Σnum / Σden` for any pair of
         series at all. Refusing them would force an author to invent a
         denominator, and a wrong denominator computes a confident wrong number
-        where none computes a disclosed fallback. The returned list is what
-        `breakdown doctor` and the startup log report, so the work stays
-        visible rather than merely logged.
+        where none computes a disclosed fallback.
+
+        Those eight now say so on the node (`no_denominator: "<reason>"`), and
+        that is why the warning below only counts the *unanswered* ones: a
+        warning that fires on a settled question trains its reader to ignore it,
+        and it was telling the author of a median to add a denominator — advice
+        that cannot be followed.
         """
         missing: List[str] = []
+        answered: Dict[str, str] = {}
         for name in G.nodes:
             defn = G.nodes[name]["definition"]
             if defn.kind != "rate":
@@ -1338,13 +1442,29 @@ class Parser:
                 # A `bind` ratio's denominator is a column; adopt it only when
                 # it is also a metric here, which makes it unambiguous.
                 if defn.bind.agg == "ratio" and defn.bind.denominator in G:
+                    if defn.no_denominator is not None:
+                        # Same rule as the node-level derivations, for the same
+                        # reason: the binding is evidence, `no_denominator` is a
+                        # claim about the evidence, and a contradiction is the
+                        # author's to resolve rather than the parser's.
+                        raise ValueError(
+                            f"Rate metric '{name}' declares `no_denominator` "
+                            f"({defn.no_denominator!r}), but its `bind` is a "
+                            f"ratio over '{defn.bind.denominator}', which is a "
+                            "metric in this tree — so a denominator does exist. "
+                            "Drop the `no_denominator`, or bind the rate some "
+                            "other way if that ratio is not what it measures."
+                        )
                     defn.denominator = defn.bind.denominator
                     for spec in defn.dimensions.values():
                         if spec.weight is None:
                             spec.weight = defn.denominator
             den = defn.denominator
             if den is None:
-                missing.append(name)
+                if defn.no_denominator is not None:
+                    answered[name] = defn.no_denominator
+                else:
+                    missing.append(name)
                 continue
             if den not in G:
                 raise ValueError(
@@ -1383,11 +1503,13 @@ class Parser:
                 "than Σnumerator / Σdenominator, and a period whose denominator is "
                 "zero cannot be told from one the source never returned: %s. "
                 "Declare `denominator: <metric>` on each (it is what a "
-                "`dimensions[].weight` already says, where one exists).",
+                "`dimensions[].weight` already says, where one exists) — or, if "
+                'this rate genuinely has none, `no_denominator: "<why>"`, which '
+                "settles the question rather than leaving it open.",
                 len(missing),
                 ", ".join(sorted(missing)),
             )
-        return sorted(missing)
+        return sorted(missing), dict(sorted(answered.items()))
 
     @staticmethod
     def _validate_shapley_parents(G: nx.DiGraph) -> None:

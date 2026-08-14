@@ -165,6 +165,12 @@ def _fetch_all_metrics(parser, fetcher, provider_type, start_date, end_date) -> 
     denominator_of: Dict[str, str] = {
         m.name: m.denominator for m in parser.config.metrics if m.denominator
     }
+    # The other two states of the same question travel together: a name absent
+    # from `denominator_of` and present here has been asked and answered, and
+    # one absent from both has not been asked (roadmap 1.11).
+    no_denominator_of: Dict[str, str] = {
+        m.name: m.no_denominator for m in parser.config.metrics if m.no_denominator
+    }
     series: Dict[str, pd.DataFrame] = {}
     for metric in parser.config.metrics:
         if metric.derived:
@@ -185,7 +191,7 @@ def _fetch_all_metrics(parser, fetcher, provider_type, start_date, end_date) -> 
     # Declaration order, which is the frame's column order and therefore what
     # every caller reading `frame.columns` has always seen.
     per_metric = {m.name: series[m.name] for m in parser.config.metrics}
-    data = build_grained(per_metric, grain_of, kind_of, denominator_of)
+    data = build_grained(per_metric, grain_of, kind_of, denominator_of, no_denominator_of)
     _report_undefined_periods(parser, data)
     _check_identities(parser, data)
     return data
@@ -248,16 +254,29 @@ def _report_undefined_periods(parser, data: GrainedData) -> None:
             continue
         weights = data.weights_for(name)
         if weights is None:
+            # Same missing classification, two different things to say about
+            # it. A rate that declares `no_denominator` has already answered
+            # this question, and telling its author to "declare it to find out"
+            # is advice that cannot be followed — the reason they wrote is the
+            # answer, so quote it back instead of asking again.
+            answered = data.no_denominator_of.get(name)
             logger.warning(
-                "Metric '%s': %d of %d %s period(s) have no value (%s%s). It "
-                "declares no `denominator`, so breakdown cannot tell an "
-                "undefined rate from a missing one — declare it to find out.",
+                "Metric '%s': %d of %d %s period(s) have no value (%s%s). %s",
                 name,
                 len(undefined),
                 len(series),
                 grain,
                 ", ".join(str(d.date()) for d in undefined[:5]),
                 ", …" if len(undefined) > 5 else "",
+                (
+                    "It declares `no_denominator` (%s), so no series can "
+                    "classify these: an undefined value and a missing one are "
+                    "indistinguishable here by construction, not by omission." % answered
+                    if answered
+                    else "It declares no `denominator`, so breakdown cannot tell "
+                    "an undefined rate from a missing one — declare it to find "
+                    'out, or `no_denominator: "<why>"` if there is none.'
+                ),
             )
             continue
         den = weights.reindex(undefined)

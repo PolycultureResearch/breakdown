@@ -49,6 +49,10 @@ metrics:
     source: assumed
     grain: month
     kind: rate
+    # Σnumerator / Σdenominator: mrr = paying_customers * this, so a window's
+    # average price is the customer-weighted mean of the monthly prices, not
+    # the plain mean of them.
+    denominator: paying_customers
     baseline: { low: 30, high: 80 }
     plausible: { min: 0 }
     format: currency
