@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import networkx as nx
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 from breakdown.formula import referenced_names, validate_formula
 from breakdown.grains import GRAINS, is_finer, nests_in
@@ -284,7 +284,15 @@ class DimensionSpec(BaseModel):
     values: Optional[List[str]] = None
     # Blend-weight metric for rate metrics: the shares of this metric's sliced
     # series weight each slice's rate when recomposing the blended rate.
-    # Defaults to the denominator when the rate's formula is `num / den`.
+    #
+    # Defaults to the node-level `denominator` (roadmap 1.11b), which is the
+    # single source of truth for what a rate is a rate *of*. It used to be the
+    # other way round — the fact was filed under slicing and existed only on
+    # rates that happened to be sliceable, so the fetch and aggregation paths
+    # could not see it. A `weight` that disagrees with the node's
+    # `denominator` is refused rather than silently preferred: the blend
+    # weights and the window aggregate would then be built from two different
+    # beliefs about the same ratio.
     weight: Optional[str] = None
     # Reserved for the warehouse provider's sliced-SQL contract (a SELECT
     # returning `date, slice, value` with :start_date/:end_date). Not yet
@@ -628,13 +636,41 @@ class MetricFormat(BaseModel):
 class MetricDefinition(BaseModel):
     name: str
     description: Optional[str] = None
-    source: str
+    # Where this node's own series comes from. **Optional on a `formula` node,
+    # and only there** (roadmap 1.11a): its presence is the switch between two
+    # genuinely different nodes.
+    #
+    # - **With a source** the node is *measured*. It is fetched like any other
+    #   metric, the fit runs on the residual `y - formula(parents)`, the
+    #   identity is checked against the fetched series at load, and
+    #   `unexplained` means *the identity missed reality by this much*.
+    # - **Without one** the node is *derived*: its series is computed from its
+    #   parents at load, and `unexplained` is 0 **by construction** — nobody
+    #   checked anything, because there was nothing to check it against.
+    #
+    # Those two zeros must never render alike, so `derived` below travels in
+    # every payload and RCA labels the zero it publishes (`unexplained_status`).
+    source: Optional[str] = None
     # Natural grain of the series: it is fetched, fitted, and attributed at
     # this grain, never below it. Finer flow/stock parents resample up to it.
     grain: str = "day"
     # Temporal aggregation kind: flows sum over time, stocks take the last
     # value, rates can never be auto-aggregated (recompute from components).
     kind: str = "flow"
+    # What a `kind: rate` node is a rate *of*: the tree metric whose per-period
+    # values weight it (roadmap 1.11b). Load-bearing, not decoration — a
+    # window's rate is `Σnumerator / Σdenominator`, so this is what makes the
+    # window aggregate `Σ(rate·den) / Σden` instead of an average of per-period
+    # ratios, and what lets a period with a zero denominator drop out of both
+    # sums rather than poisoning them.
+    #
+    # It is **not** a parent and adds no DAG edge: it says how the series
+    # aggregates over time, not what causes it. Derived where unambiguous (a
+    # `num / den` formula, an agreeing `dimensions[].weight`, a `bind` ratio
+    # naming a tree metric); a rate that declares one nowhere is **warned**
+    # about, never refused — 43 of the 52 rate metrics in this repo's trees
+    # have none, and no name tells you what a rate is over.
+    denominator: Optional[str] = None
     sql: Optional[str] = None
     # How this node gets its series, when it does not inherit the tree-level
     # `provider`. A node is *bound* (this is set, or the tree provider serves
@@ -683,6 +719,21 @@ class MetricDefinition(BaseModel):
     # like `neutral` — arrow and sign, no good/bad colour.
     direction: Optional[str] = None
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def derived(self) -> bool:
+        """This node's series is computed from its parents, not fetched.
+
+        A *computed* field rather than a plain one so it cannot drift from
+        `source`, and so it survives `model_dump()` — which is exactly the
+        point. `/dag` serializes definitions with `model_dump()`, and a fact the
+        payload does not carry is a fact no renderer can act on: that is how an
+        absent `direction` used to reach the browser as a confident claim. A
+        derived node's `unexplained` is zero because nothing was measured, and
+        every surface has to be able to say so.
+        """
+        return self.source is None
+
     @field_validator("grain")
     @classmethod
     def check_grain(cls, v: str) -> str:
@@ -705,6 +756,134 @@ class MetricDefinition(BaseModel):
                 f"direction must be one of ['up_is_good', 'down_is_good', 'neutral'], got '{v}'"
             )
         return v
+
+    @model_validator(mode="after")
+    def check_source_is_optional_only_on_a_formula(self) -> "MetricDefinition":
+        """`source` may be omitted, and only to declare a **derived** node.
+
+        Everything refused here is refused because it would be a fetch
+        instruction on a node nothing fetches — an author writing one has the
+        wrong model of what omitting `source` did, and silently ignoring it is
+        how a tree ends up with a `bind:` block nobody ever executes.
+
+        `lags` is the one refusal that is not about fetching. A lagged identity
+        reads its parents from `lag` whole periods *before* the period it
+        defines, so the first `lag` periods of the loaded window have no
+        parent history to derive from. A fetched node simply has values there;
+        a derived one would have to invent them or start short, and both are
+        worse than saying so. Give such a node a `source`.
+        """
+        if self.source is not None:
+            return self
+        if self.formula is None:
+            raise ValueError(
+                f"Metric '{self.name}' declares no `source` and no `formula`, so "
+                "there is no way for it to have a series at all. `source` may be "
+                "omitted only on a formula node, which then derives its series "
+                "from its parents."
+            )
+        offenders = [f for f in ("bind", "sql") if getattr(self, f) is not None]
+        if offenders:
+            raise ValueError(
+                f"Metric '{self.name}' declares `{'`/`'.join(offenders)}` but no "
+                "`source`. Those describe how to fetch a series, and a node with "
+                "no `source` is derived from its parents and never fetched. Add a "
+                "`source` to fetch it (and have the identity checked against the "
+                f"fetched series), or drop `{'`/`'.join(offenders)}`."
+            )
+        if self.dimensions:
+            raise ValueError(
+                f"Metric '{self.name}' declares `dimensions` but no `source`. "
+                "Slicing asks the provider for this metric grouped by a dimension, "
+                "and a derived node has nothing to ask for. Slice its parents "
+                "instead, or give it a `source`."
+            )
+        if self.lags:
+            raise ValueError(
+                f"Metric '{self.name}' declares `lags` but no `source`. A lagged "
+                "identity defines period t from parents at t-lag, so the first "
+                "lag period(s) of any loaded window have no parent history to "
+                "derive from — the series would have to begin with invented "
+                "values. Give it a `source`."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def check_rate_denominator(self) -> "MetricDefinition":
+        """Resolve what this rate is a rate *of*, from whatever already says so.
+
+        One fact, three existing spellings, none of them authoritative — so
+        this makes the node-level field authoritative and derives it where the
+        answer is unambiguous. The near-miss is the argument: `churn_arpu`
+        already declared `weight: churned_subscriptions`, its denominator, and
+        the fetch path could not see it because the fact was filed under
+        slicing.
+
+        Derivation order, most explicit first:
+
+        1. the author's own `denominator:`;
+        2. the denominator of a `formula: "num / den"`;
+        3. an existing `dimensions[].weight`, when every dimension agrees.
+
+        (A `bind:` ratio naming a tree metric is the fourth, and lives in
+        `Parser._validate_denominators` because it needs the full node set.)
+
+        Then the node-level fact flows *down* into `dimensions[].weight`, so
+        the blend weights and the window aggregate cannot disagree about the
+        same ratio. A rate that resolves to nothing is left alone and warned
+        about tree-wide — see `Parser._validate_denominators`.
+        """
+        if self.kind != "rate":
+            if self.denominator is not None:
+                raise ValueError(
+                    f"Metric '{self.name}' declares `denominator` but "
+                    f"`kind: {self.kind}`. A denominator says how a *rate* "
+                    "aggregates over time (a window's rate is Σnumerator / "
+                    "Σdenominator); a flow sums and a stock takes its last "
+                    "value, so neither has one. Declare `kind: rate`, or drop "
+                    "the denominator."
+                )
+            return self
+
+        if self.denominator is None:
+            m = _SIMPLE_RATIO.match(self.formula or "")
+            if m and m.group(2) in self.parents:
+                self.denominator = m.group(2)
+
+        if self.denominator is None:
+            weights = sorted({s.weight for s in self.dimensions.values() if s.weight})
+            if len(weights) == 1:
+                self.denominator = weights[0]
+            elif len(weights) > 1:
+                raise ValueError(
+                    f"Rate metric '{self.name}' has dimensions declaring "
+                    f"different `weight`s ({', '.join(weights)}), so what the "
+                    "rate is a rate *of* is ambiguous. One ratio has one "
+                    "denominator: declare `denominator:` on the metric and drop "
+                    "the disagreeing weights."
+                )
+
+        if self.denominator == self.name:
+            raise ValueError(
+                f"Rate metric '{self.name}' declares itself as its own "
+                "`denominator`. The denominator is the metric a window's rate is "
+                "weighted by (Σnumerator / Σdenominator); a rate divided by "
+                "itself weights nothing."
+            )
+
+        for key, spec in self.dimensions.items():
+            if spec.weight is None:
+                spec.weight = self.denominator
+            elif self.denominator is not None and spec.weight != self.denominator:
+                raise ValueError(
+                    f"Dimension '{key}' on rate metric '{self.name}' declares "
+                    f"`weight: {spec.weight}`, but the metric's `denominator` is "
+                    f"'{self.denominator}'. They are the same fact — what the "
+                    "rate is a rate of — and disagreeing would blend the slices "
+                    "with one belief and aggregate the window with another. "
+                    "Declare it once, on the metric."
+                )
+        return self
 
     @model_validator(mode="after")
     def check_unique_parents(self) -> "MetricDefinition":
@@ -903,19 +1082,21 @@ class MetricDefinition(BaseModel):
                     "blend shares of the sliced rate)."
                 )
             if self.kind == "rate" and spec.weight is None:
-                # A blended rate needs weights to recompose from slices. Default
-                # to the denominator of a simple `num / den` formula; otherwise
-                # the author must say what the rate is weighted by.
-                m = _SIMPLE_RATIO.match(self.formula or "")
-                if m and m.group(2) in self.parents:
-                    spec.weight = m.group(2)
-                else:
-                    raise ValueError(
-                        f"Dimension '{key}' on rate metric '{self.name}' needs a "
-                        "`weight` (the tree metric whose sliced shares weight each "
-                        "slice's rate). It defaults from a `num / den` formula's "
-                        "denominator, which this metric does not have."
-                    )
+                # A blended rate needs weights to recompose from slices, and
+                # they are the same fact as the node's `denominator` —
+                # `check_rate_denominator` has already run and pushed it down,
+                # so reaching here means the rate declares its denominator
+                # nowhere at all. A *sliced* rate cannot proceed without one:
+                # blending slices needs a weight per slice, and there is
+                # nothing to guess from.
+                raise ValueError(
+                    f"Dimension '{key}' on rate metric '{self.name}' needs a "
+                    "`denominator` on the metric (the tree metric whose sliced "
+                    "shares weight each slice's rate, and whose per-period values "
+                    "aggregate the rate over a window). It defaults from a "
+                    "`num / den` formula's denominator, which this metric does "
+                    "not have."
+                )
         return self
 
     @model_validator(mode="after")
@@ -1107,10 +1288,99 @@ class Parser:
             raise ValueError(f"Metric tree contains cycles: {cycles}")
 
         self._validate_grains(G)
+        self.rates_without_denominator = self._validate_denominators(G)
         self._validate_dimension_weights(G)
         self._validate_shapley_parents(G)
         self._validate_goal(G)
         return G
+
+    @staticmethod
+    def _validate_denominators(G: nx.DiGraph) -> List[str]:
+        """Resolve and check every rate's denominator; return the rates with none.
+
+        The last derivation source lives here rather than on `MetricDefinition`
+        because it needs the full node set: a `bind:` ratio names its
+        denominator as a provider-side *column*, which is authoritative about
+        the ratio but says nothing about the tree — unless the column happens
+        to be the name of a metric in this tree, in which case it is
+        unambiguous and free.
+
+        Then the checks. A denominator has to be a metric this engine can
+        actually sum over the rate's own periods, so:
+
+        - it must exist in the tree (a typo would silently disable the
+          weighting rather than fail);
+        - it may not be a rate itself (rates do not sum — that is the whole
+          reason this field exists);
+        - it may not be coarser than the rate, and must nest, so `Σ den` can be
+          formed over exactly the rate's periods.
+
+        A rate that resolves to nothing is **warned**, once, with the whole
+        list — not refused. Making it mandatory would break 43 of the 52 rate
+        metrics in this repo's own trees, and the fix is an authoring decision
+        nobody can make from a metric's name. The returned list is what
+        `breakdown doctor` and the startup log report, so the work is visible
+        rather than merely logged.
+        """
+        missing: List[str] = []
+        for name in G.nodes:
+            defn = G.nodes[name]["definition"]
+            if defn.kind != "rate":
+                continue
+            if defn.denominator is None and defn.bind is not None:
+                # A `bind` ratio's denominator is a column; adopt it only when
+                # it is also a metric here, which makes it unambiguous.
+                if defn.bind.agg == "ratio" and defn.bind.denominator in G:
+                    defn.denominator = defn.bind.denominator
+                    for spec in defn.dimensions.values():
+                        if spec.weight is None:
+                            spec.weight = defn.denominator
+            den = defn.denominator
+            if den is None:
+                missing.append(name)
+                continue
+            if den not in G:
+                raise ValueError(
+                    f"Rate metric '{name}' declares denominator '{den}', which is "
+                    "not a metric in the tree. The denominator names the metric "
+                    "whose per-period values weight this rate over a window "
+                    "(Σnumerator / Σdenominator), so it has to be one this tree "
+                    "carries a series for."
+                )
+            dfn = G.nodes[den]["definition"]
+            if dfn.kind == "rate":
+                raise ValueError(
+                    f"Rate metric '{name}' declares denominator '{den}', which is "
+                    "itself `kind: rate`. Rates cannot be summed, and a window's "
+                    "rate is Σnumerator / Σdenominator — so a rate's denominator "
+                    "must be a flow or a stock."
+                )
+            if is_finer(defn.grain, dfn.grain):
+                raise ValueError(
+                    f"Rate metric '{name}' (grain '{defn.grain}') declares "
+                    f"denominator '{den}' at coarser grain '{dfn.grain}'. The "
+                    "denominator supplies one weight per period of the rate, and "
+                    "a coarser series cannot be split down to them."
+                )
+            if is_finer(dfn.grain, defn.grain) and not nests_in(dfn.grain, defn.grain):
+                raise ValueError(
+                    f"Rate metric '{name}' (grain '{defn.grain}') declares "
+                    f"denominator '{den}' at grain '{dfn.grain}', which does not "
+                    f"nest in '{defn.grain}' (weeks straddle month boundaries), so "
+                    "its per-period weights cannot be formed."
+                )
+        if missing:
+            logger.warning(
+                "%d rate metric(s) declare no `denominator`, so a window over them "
+                "is reported as the plain average of the per-period ratios rather "
+                "than Σnumerator / Σdenominator, and a period whose denominator is "
+                "zero cannot be told from one the source never returned: %s. "
+                "Declare `denominator: <metric>` on each (it is what a "
+                "`dimensions[].weight` already says, where one exists).",
+                len(missing),
+                ", ".join(sorted(missing)),
+            )
+        return sorted(missing)
 
     @staticmethod
     def _validate_shapley_parents(G: nx.DiGraph) -> None:

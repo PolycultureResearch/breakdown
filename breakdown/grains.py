@@ -360,6 +360,49 @@ def resample_up(
     return agg
 
 
+def rate_window_value(values: np.ndarray, weights: Optional[np.ndarray]) -> float:
+    """The single number a window of a `kind: rate` series reports.
+
+    **The whole of roadmap 1.11c, in four lines.** A window's rate is
+    `Σnumerator / Σdenominator`, and `numerator_i = rate_i · denominator_i`, so
+    it is the *denominator-weighted* mean of the per-period rates:
+
+        Σ(rate_i · den_i) / Σ den_i
+
+    Two things follow, and both are the point:
+
+    - **A period whose denominator is zero drops out of both sums**, so it
+      contributes nothing rather than poisoning everything. That is exactly the
+      period whose own rate is undefined (`0/0` — nobody churned that week), so
+      the window rate stays well-defined precisely where the per-period rate is
+      not. It is not a special case bolted on; it is what the arithmetic does.
+    - **An average of per-period ratios is a different number**, and a wrong
+      one whenever the denominators differ — which is why `resample_up` refuses
+      to compute one and why nothing in this engine may.
+
+    Without weights there is no honest aggregate to compute, only the plain
+    average of the ratios. That fallback is the pre-1.11 behaviour and stays,
+    because requiring a denominator would break 43 of the 52 rate metrics in
+    this repo's trees — but it is disclosed at load (`Parser._validate_
+    denominators` names every node that needs one) rather than passed off as
+    the real thing. It skips undefined periods too: averaging over the periods
+    that exist is at least not averaging over invented ones.
+
+    Returns `nan` when no period survives — an undefined window, which callers
+    report as such rather than publishing.
+    """
+    values = np.asarray(values, dtype=float)
+    if weights is None:
+        defined = values[np.isfinite(values)]
+        return float(defined.mean()) if defined.size else float("nan")
+    weights = np.asarray(weights, dtype=float)
+    usable = np.isfinite(values) & np.isfinite(weights)
+    total = float(weights[usable].sum())
+    if not usable.any() or total == 0.0:
+        return float("nan")
+    return float((values[usable] * weights[usable]).sum() / total)
+
+
 @dataclass
 class GrainedData:
     """Per-grain metric frames replacing the single tree-wide daily frame.
@@ -378,6 +421,27 @@ class GrainedData:
     # actually returned (before any within-grain join). Providers trim
     # trailing unloaded periods, so this is the honest data edge per metric.
     last_observed: Dict[str, pd.Timestamp] = field(default_factory=dict)
+    # `kind: rate` metric -> the metric whose per-period values weight it over
+    # a window (roadmap 1.11b). Carried on the data rather than looked up from
+    # the DAG at each call site so that every consumer of a window aggregate —
+    # RCA, what-if, the node cards — is weighting by the same declared fact.
+    denominator_of: Dict[str, str] = field(default_factory=dict)
+
+    def weights_for(self, metric: str, grain: Optional[str] = None) -> Optional[pd.Series]:
+        """The per-period weights for a rate, indexed by period start, or None.
+
+        None means "this rate declares no denominator", which is a different
+        statement from "its weights are all equal" — the caller discloses it
+        rather than substituting one for the other.
+        """
+        den = self.denominator_of.get(metric)
+        if den is None or den not in self.grain_of:
+            return None
+        at = grain or self.grain_of[metric]
+        frame = self.series(den, at)
+        return pd.Series(
+            frame[den].to_numpy(dtype=float), index=pd.DatetimeIndex(frame["date"]), name=den
+        )
 
     def data_through(self, metric: str) -> Optional[pd.Timestamp]:
         """Inclusive last covered date for `metric`: the END of its last
@@ -461,6 +525,15 @@ def _check_contiguous(frame: pd.DataFrame, grain: str, names: list, widest: int)
     The inner join is the usual culprit — a date present for only some metrics
     is dropped from the shared frame — so a drop count is logged even when the
     survivors happen to stay contiguous.
+
+    **Contiguity is a property of the dates, not of the values** (roadmap
+    1.11c). An undefined rate period is a row carrying `NaN`, so it is not a
+    hole and nothing here fires: `t`, the lag shifts and the bootstrap blocks
+    all stay aligned to the calendar. That is the stated policy and the reason
+    undefined periods are represented in place rather than dropped — the fit
+    refuses such a window (`_validate_columns`) and window aggregates exclude
+    the period (`rate_window_value`), which costs one period's information;
+    deleting the row would instead move every date after it.
     """
     dates = pd.DatetimeIndex(frame["date"])
     dropped = widest - len(frame)
@@ -496,11 +569,20 @@ def build_grained(
     per_metric: Dict[str, pd.DataFrame],
     grain_of: Dict[str, str],
     kind_of: Dict[str, str],
+    denominator_of: Optional[Dict[str, str]] = None,
 ) -> GrainedData:
     """Assemble per-grain frames from per-metric `["date", name]` frames,
     inner-joining within each grain only. Each metric's `last_observed` is
     captured from its own frame BEFORE the join, so freshness survives even
-    when a less-fresh sibling trims the shared grain frame."""
+    when a less-fresh sibling trims the shared grain frame.
+
+    **Undefined values keep their row.** A rate with no value for a period
+    (roadmap 1.11) is `NaN` *in* the frame, never a missing date — which is
+    what keeps `_check_contiguous`'s guarantee intact: positional indexing
+    (model time, lags, bootstrap blocks) assumes a gap-free spine, and dropping
+    the row to "clean up" the NaN would shift every downstream date. An
+    undefined value costs one period's information; a missing period silently
+    relabels the calendar."""
     last_observed = {m: pd.to_datetime(df["date"]).max() for m, df in per_metric.items() if len(df)}
     frames: Dict[str, pd.DataFrame] = {}
     for grain in GRAINS:
@@ -526,6 +608,7 @@ def build_grained(
         grain_of=dict(grain_of),
         kind_of=dict(kind_of),
         last_observed=last_observed,
+        denominator_of=dict(denominator_of or {}),
     )
 
 

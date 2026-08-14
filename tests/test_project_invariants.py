@@ -761,3 +761,259 @@ def test_an_undeclared_direction_serializes_as_undeclared():
         "expected the shipped trees to contain both declared and undeclared "
         f"directions (declared={seen_declared}, undeclared={seen_undeclared})"
     )
+
+
+# --- A definitional zero is not a measured one (roadmap 1.11a) ----------------
+
+
+def _derived_rate_tree():
+    """The smallest tree exercising both halves of 1.11: a derived rate over
+    two flows, beside a fetched formula node."""
+    return """
+provider: {type: mock}
+metrics:
+  - name: sessions
+    source: t.metrics.sessions
+  - name: orders
+    source: t.metrics.orders
+  - name: conversion_rate
+    kind: rate
+    formula: "orders / sessions"
+    parents: [orders, sessions]
+  - name: revenue
+    source: t.metrics.revenue
+    formula: "orders * conversion_rate"
+    parents: [orders, conversion_rate]
+"""
+
+
+def test_a_derived_nodes_zero_is_distinguishable_from_a_measured_one():
+    """The defect class this project keeps finding, in its newest shape.
+
+    `unexplained: 0` means "the decomposition reconciled with the node's own
+    fetched series" for a measured node, and "nobody checked anything" for a
+    derived one. Rendered identically they are indistinguishable, exactly like
+    `null >= 0` painting an unanalyzed node green, an absent `direction`
+    becoming a claim, and a structurally-absent component published with a
+    zero-width interval.
+
+    So: the *payload* must carry the difference, on every surface that carries
+    the number at all. This checks the engine and the MCP shaping; the UI is
+    checked by `test_every_surface_that_prints_unexplained_labels_which_zero`.
+    """
+    from breakdown.engine.rca import run_rca
+    from breakdown.mcp.shaping import compact_rca
+
+    parser = Parser(_derived_rate_tree())
+    fetcher = data_fetch.MockDataFetcher(dag=parser.dag)
+    frames, grains, kinds, denoms = {}, {}, {}, {}
+    for m in parser.config.metrics:
+        grains[m.name], kinds[m.name] = m.grain, m.kind
+        if m.denominator:
+            denoms[m.name] = m.denominator
+        if not m.derived:
+            frames[m.name] = fetcher.fetch_metric(m.name, "2024-01-01", "2024-03-31")
+    # The derived node is computed, not fetched — the whole point of 1.11a.
+    assert "conversion_rate" not in frames
+    frames["conversion_rate"] = pd.DataFrame(
+        {
+            "date": frames["orders"]["date"],
+            "conversion_rate": frames["orders"]["orders"].to_numpy(float)
+            / frames["sessions"]["sessions"].to_numpy(float),
+        }
+    )
+    from breakdown.grains import build_grained as _bg
+
+    data = _bg(frames, grains, kinds, denoms)
+    out = run_rca(
+        parser.dag,
+        data,
+        {},
+        "revenue",
+        reference_start="2024-01-01",
+        reference_end="2024-01-28",
+        analysis_start="2024-02-01",
+        analysis_end="2024-02-28",
+    )
+    derived = out["nodes"]["conversion_rate"]
+    measured = out["nodes"]["revenue"]
+
+    assert derived["unexplained"] == 0.0
+    assert derived["unexplained_status"] == "definitional"
+    assert measured["unexplained_status"] == "measured", (
+        "a node with its own `source` was compared against its identity; its "
+        "residual is a measurement whatever its value"
+    )
+    # And the two zeros stay distinguishable after compaction for an agent,
+    # which is where a field dropped 'for token economy' would erase them.
+    compact = compact_rca(out)
+    assert compact["nodes"]["conversion_rate"]["unexplained_status"] == "definitional"
+    assert compact["nodes"]["revenue"]["unexplained_status"] == "measured"
+
+
+def test_every_surface_that_prints_unexplained_labels_which_zero():
+    """The fifth rule, which has no runner — so it is enumerated in the source.
+
+    There is no JS test runner here (MVP-first, deliberately), and the export
+    is what circulates without its author, so a label present in the live table
+    and absent from the export is exactly the drift this checks for. Every
+    place `app.js` writes an `unexplained` row must build its label through
+    `unexplainedRow`, never from a string literal.
+    """
+    app_js = (PACKAGE / "static" / "app.js").read_text()
+    literal_rows = [
+        line
+        for line in app_js.splitlines()
+        if "unexplained</td>" in line and "unexplainedRow" not in line
+    ]
+    assert not literal_rows, (
+        "an `unexplained` row is built from a string literal instead of "
+        f"`unexplainedRow(node)`, so it cannot distinguish a definitional zero "
+        f"from a measured one: {literal_rows}"
+    )
+    # Both surfaces must actually call it: the live RCA table and the export.
+    assert app_js.count("unexplainedRow(") >= 3, (
+        "expected `unexplainedRow` to be defined and used by both the live "
+        "table and the exported report"
+    )
+    assert "definitional" in app_js, "the UI never mentions a definitional zero"
+
+
+# --- No rate aggregate is an average of per-period ratios (roadmap 1.11c) -----
+
+
+def test_no_rate_window_aggregate_is_computed_by_averaging_ratios():
+    """Enumerate the package for anything that reduces a metric's window to a
+    scalar, and require it to go through the one kind-aware entry point.
+
+    `resample_up` has always refused to average a rate over *time*; the window
+    aggregate is the same operation under a different name, and it did average
+    them — every rate's `baseline`/`actual` in RCA and every rate's what-if
+    baseline. Pinning today's two call sites would not catch the third, so this
+    scans for the call instead: `window_mean` is flow/stock-only, and its only
+    legitimate caller is `node_window_value`, which routes a rate to
+    `grains.rate_window_value`.
+    """
+    offenders = []
+    for path in sorted(PACKAGE.rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if node.name in ("node_window_value", "window_mean"):
+                continue
+            for call in ast.walk(node):
+                if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "window_mean":
+                    offenders.append(f"{path.name}:{node.name}")
+    assert not offenders, (
+        f"{offenders} call `window_mean` directly. It is the arithmetic mean of "
+        "a window and is wrong for a `kind: rate` metric — a window's rate is "
+        "Σnumerator / Σdenominator. Call `node_window_value`, which applies the "
+        "node's kind."
+    )
+
+
+def test_a_weighted_rate_aggregate_is_not_the_average_of_the_ratios():
+    """The property behind the scan: the two answers genuinely differ, and the
+    weighted one is the one that reconciles with the components.
+
+    Without this the scan above could be satisfied by a `node_window_value`
+    that quietly averaged anyway.
+    """
+    from breakdown.grains import rate_window_value
+
+    numerator = np.array([10.0, 90.0])
+    denominator = np.array([10.0, 30.0])
+    rates = numerator / denominator  # 1.0 and 3.0
+
+    weighted = rate_window_value(rates, denominator)
+    assert weighted == pytest.approx(numerator.sum() / denominator.sum())  # 2.5
+    assert weighted != pytest.approx(rates.mean())  # 2.0 — the wrong answer
+
+    # An undefined period contributes to neither sum, so it drops out rather
+    # than poisoning the aggregate: `0/0` is not `0`.
+    with_undefined = rate_window_value(
+        np.array([1.0, 3.0, float("nan")]), np.array([10.0, 30.0, 0.0])
+    )
+    assert with_undefined == pytest.approx(2.5)
+
+    # No weights at all: the disclosed fallback, over the *defined* periods.
+    assert rate_window_value(np.array([1.0, 3.0, float("nan")]), None) == pytest.approx(2.0)
+    # Nothing defined at all is no value, never a zero.
+    assert math.isnan(rate_window_value(np.array([float("nan")]), np.array([0.0])))
+
+
+def test_an_undefined_period_is_never_filled_and_never_dropped():
+    """The representation itself, at the boundary and in the frame.
+
+    Two failure modes bracket the right answer. Filling asserts a value the
+    source never gave (the C18 shape). Dropping the row silently re-dates every
+    later period, because model time, lags and bootstrap blocks are all
+    positional — so the frame keeps the row and carries `NaN`.
+    """
+    from breakdown.grains import _check_contiguous, build_grained
+
+    rows = [("2024-01-01", 0.5), ("2024-01-03", 0.7)]
+    out = _spine_call("rate", rows, start="2024-01-01", end="2024-01-03")
+    assert len(out) == 3
+    assert out["m"].isna().tolist() == [False, True, False]
+
+    frame = pd.DataFrame({"date": pd.to_datetime([d for d, _ in rows]), "m": [v for _, v in rows]})
+    grained = build_grained({"m": out}, {"m": "day"}, {"m": "rate"})
+    kept = grained.frame("day")
+    assert len(kept) == 3, "an undefined value must not remove its period from the spine"
+    # And the contiguity check agrees: a NaN is not a hole.
+    _check_contiguous(kept, "day", ["m"], widest=3)
+    assert len(frame) == 2  # the source really did return two rows
+
+
+# --- A fetched identity is checked at load, not only inside a window ---------
+
+
+def test_a_fetched_formula_node_has_its_identity_checked_at_load(caplog, tmp_path, monkeypatch):
+    """Roadmap 1.11a's cheap addition, asserted because nothing else reaches it.
+
+    `unexplained` already reports an identity's drift — but only for the windows
+    somebody happens to analyse, so an identity that has been wrong since March
+    is invisible until an RCA lands on March. The load-time check runs once over
+    the whole loaded window. A derived node is skipped, and the skip is the
+    point: there is nothing to check it against, which is exactly what
+    `unexplained_status: "definitional"` reports downstream.
+    """
+    tree = tmp_path / "drift.yml"
+    tree.write_text("""
+provider: {type: mock}
+metrics:
+  - name: a
+    source: t.metrics.a
+  - name: b
+    source: t.metrics.b
+  - name: measured_sum
+    source: t.metrics.measured_sum
+    formula: "a + b"
+    parents: [a, b]
+  - name: derived_sum
+    formula: "a + b"
+    parents: [a, b]
+""")
+    monkeypatch.setenv("BREAKDOWN_TREE", str(tree))
+    monkeypatch.setenv("BREAKDOWN_START_DATE", "2024-01-01")
+    monkeypatch.setenv("BREAKDOWN_END_DATE", "2024-03-31")
+    from fastapi.testclient import TestClient
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="breakdown.api.main"):
+        with TestClient(app) as client:
+            assert client.get("/health").json()["status"] == "ok"
+    drift = [r.getMessage() for r in caplog.records if "identity" in r.getMessage()]
+    # The mock synthesizes every metric independently, so `measured_sum` really
+    # does depart from `a + b` — and the whole point is that the engine says so
+    # at load rather than waiting for someone to analyse the right window.
+    assert any("measured_sum" in m for m in drift), (
+        f"the fetched identity was not checked at load; warnings were {drift}"
+    )
+    assert not any("derived_sum" in m for m in drift), (
+        "a derived node was 'checked' against an identity it is defined by — "
+        "there is nothing to compare, and reporting one would be the "
+        "definitional zero wearing a measurement's clothes"
+    )

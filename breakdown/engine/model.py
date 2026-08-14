@@ -343,12 +343,52 @@ def _advi_diagnostics(approx: Any) -> Dict[str, Any]:
 
 
 def _validate_columns(data: pd.DataFrame, cols: List[str]) -> None:
+    """Refuse a fit frame the model cannot train on, naming what is wrong.
+
+    The NaN branch is the fit's stated policy for an **undefined period**
+    (roadmap 1.11c): a rate whose denominator was legitimately zero has no
+    value there, and there is no imputation of it that is not a fabricated
+    observation — a zero, a forward-fill and an interpolation each assert
+    something the data does not say, and the model would then report posterior
+    uncertainty that does not include the invention. Dropping the row is worse
+    still: `t = arange(len(y))`, the lag shifts and the seasonal design are all
+    positional, so deleting a period silently re-dates every period after it.
+
+    So the node is **unfittable over a window containing one**, and says so.
+    `run_rca` turns this `ValueError` into that node's `fit_failed` status with
+    the message attached, so one undefined period costs one node's attribution
+    and nothing else; `POST /analyze/{name}` turns it into a 422 naming the
+    periods and the remedy (a later `--start-date`, or a `fit_end` before them).
+    """
     missing = [c for c in cols if c not in data.columns]
     if missing:
         raise ValueError(f"Columns missing from data: {missing}")
     with_nan = [c for c in cols if data[c].isna().any()]
-    if with_nan:
-        raise ValueError(f"NaN values found in columns: {with_nan}")
+    if not with_nan:
+        return
+    detail = []
+    for c in with_nan:
+        bad = pd.DatetimeIndex(data.loc[data[c].isna(), "date"]) if "date" in data else None
+        when = (
+            ""
+            if bad is None
+            else " ("
+            + ", ".join(str(d.date()) for d in bad[:5])
+            + (", …" if len(bad) > 5 else "")
+            + ")"
+        )
+        n = int(data[c].isna().sum())
+        detail.append(f"'{c}' on {n} period(s){when}")
+    raise ValueError(
+        "Cannot fit over undefined periods: "
+        + "; ".join(detail)
+        + ". A period with no value cannot be trained on and cannot be imputed "
+        "without inventing an observation the source never made — and dropping "
+        "it would re-date every later period, since model time, lags and the "
+        "seasonal design are all positional. Narrow the fit window to defined "
+        "periods (a later --start-date, or an earlier fit_end), or give the "
+        "metric a source that covers them."
+    )
 
 
 def _normalize(series: pd.Series) -> Tuple[np.ndarray, float, float]:

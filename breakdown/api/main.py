@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from importlib.resources import files
 from typing import Annotated, Any, Dict, MutableMapping, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -36,7 +37,8 @@ from breakdown.engine.model import fit_metric, summarize_trace, warm_inference_i
 from breakdown.engine.rca import resolve_reference_window, run_rca, shapley_attribution
 from breakdown.engine.simulate import ScenarioRequest, run_scenario, validate_cold_start
 from breakdown.engine.slices import entity_flows, slice_attribution
-from breakdown.grains import GrainedData, build_grained, next_start
+from breakdown.formula import eval_formula
+from breakdown.grains import GrainedData, build_grained, next_start, resample_up
 from breakdown.mcp.server import mcp
 from breakdown.snapshots import SnapshotFetcher, SnapshotStore
 
@@ -86,7 +88,9 @@ def _build_fetcher(provider_cfg, dag, metrics=None):
         # without editing the dbt project.
         from breakdown.dbt_provider import fetcher_from_project
 
-        overrides = {m.source.split(".")[-1]: m.bind for m in (metrics or []) if m.bind}
+        overrides = {
+            m.source.split(".")[-1]: m.bind for m in (metrics or []) if m.bind and m.source
+        }
         return fetcher_from_project(
             provider_cfg.project_path,
             target=provider_cfg.target,
@@ -95,7 +99,10 @@ def _build_fetcher(provider_cfg, dag, metrics=None):
         )
     if provider_cfg.type == "warehouse":
         metric_sql = {m.name: m.sql for m in (metrics or []) if m.sql}
-        missing = [m.name for m in (metrics or []) if not m.sql]
+        # A derived node is never fetched, so it owes no `sql` — the same
+        # exemption `_fetch_all_metrics` applies, said at build time so the
+        # error cannot name a metric nobody will ask for.
+        missing = [m.name for m in (metrics or []) if not m.sql and not m.derived]
         if missing:
             raise RuntimeError(
                 f"warehouse provider requires `sql` on every metric; missing for: {missing}"
@@ -140,22 +147,206 @@ def _wrap_snapshots(fetcher, provider_type: str, tree_path: str, slice_span=None
 
 
 def _fetch_all_metrics(parser, fetcher, provider_type, start_date, end_date) -> GrainedData:
-    """Fetch every metric at its native grain and assemble per-grain frames
-    (metrics inner-join on date only against series at the same grain)."""
-    per_metric: Dict[str, pd.DataFrame] = {}
-    grain_of: Dict[str, str] = {}
-    kind_of: Dict[str, str] = {}
+    """Fetch every *sourced* metric at its native grain, derive the rest, and
+    assemble per-grain frames (metrics inner-join on date only against series
+    at the same grain).
+
+    **`source` is the switch** (roadmap 1.11a). A formula node with a source is
+    fetched exactly as before, and `_check_identities` then compares the
+    identity against what came back — cheap, and it catches drift no analysis
+    window ever looks at. A formula node *without* one is derived here from its
+    parents, in topological order, and is never asked of the provider: that is
+    what makes the documented remedy for a rate over true-zero periods actually
+    work, since the derived node is precisely the one the provider would have
+    refused to gap-fill.
+    """
+    grain_of: Dict[str, str] = {m.name: m.grain for m in parser.config.metrics}
+    kind_of: Dict[str, str] = {m.name: m.kind for m in parser.config.metrics}
+    denominator_of: Dict[str, str] = {
+        m.name: m.denominator for m in parser.config.metrics if m.denominator
+    }
+    series: Dict[str, pd.DataFrame] = {}
     for metric in parser.config.metrics:
+        if metric.derived:
+            continue
         query_name = provider_query_name(provider_type, metric)
         df = fetcher.fetch_metric(
             query_name, start_date, end_date, grain=metric.grain, kind=metric.kind
         )
         df = df.rename(columns={query_name: metric.name})
-        per_metric[metric.name] = df[["date", metric.name]]
-        grain_of[metric.name] = metric.grain
-        kind_of[metric.name] = metric.kind
+        series[metric.name] = df[["date", metric.name]]
 
-    return build_grained(per_metric, grain_of, kind_of)
+    # Derived nodes second, in topological order so a derived node whose parent
+    # is itself derived still finds its inputs.
+    for name in parser.get_topological_order():
+        if parser.dag.nodes[name]["definition"].derived:
+            series[name] = _derive_series(parser.dag, name, series, grain_of, kind_of)
+
+    # Declaration order, which is the frame's column order and therefore what
+    # every caller reading `frame.columns` has always seen.
+    per_metric = {m.name: series[m.name] for m in parser.config.metrics}
+    data = build_grained(per_metric, grain_of, kind_of, denominator_of)
+    _report_undefined_periods(parser, data)
+    _check_identities(parser, data)
+    return data
+
+
+def _derive_series(dag, name: str, per_metric, grain_of, kind_of) -> pd.DataFrame:
+    """One derived node's series: `formula(parents)`, period by period, at the
+    node's own grain.
+
+    Parents are resampled up by their own kind, exactly as a fit would see
+    them, and the periods are the ones every parent covers — an inner join, so
+    a period one parent is missing is a period the identity cannot speak about
+    rather than one it guesses at. Where the formula is undefined (a zero
+    denominator) the result is `NaN`, which is the honest value and travels
+    through the rest of the pipeline as an undefined period.
+    """
+    parents = list(dag.predecessors(name))
+    grain = grain_of[name]
+    frames = None
+    for p in parents:
+        s = pd.Series(
+            per_metric[p][p].to_numpy(dtype=float),
+            index=pd.DatetimeIndex(per_metric[p]["date"]),
+            name=p,
+        )
+        if grain_of[p] != grain:
+            s = resample_up(s, grain_of[p], grain, kind_of[p], label=f"'{p}'")
+        frames = s.to_frame() if frames is None else frames.join(s, how="inner")
+    if frames is None or frames.empty:
+        raise RuntimeError(
+            f"Derived metric '{name}' has no periods its parents "
+            f"{parents} all cover at grain '{grain}', so its series cannot be "
+            "computed. Check each parent's date coverage."
+        )
+    defn = dag.nodes[name]["definition"]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        values = eval_formula(defn.formula, {p: frames[p].to_numpy(dtype=float) for p in parents})
+    values = np.asarray(values, dtype=float)
+    # An infinity is not a value either (`x / 0` with a non-zero numerator).
+    # Reported as undefined so exactly one representation reaches the pipeline.
+    values = np.where(np.isfinite(values), values, np.nan)
+    return pd.DataFrame({"date": frames.index, name: values})
+
+
+def _report_undefined_periods(parser, data: GrainedData) -> None:
+    """Say which periods have no value, and — where the tree knows enough —
+    whether that is a fact or a gap.
+
+    The provider boundary cannot tell the two apart: an undefined rate and an
+    unloaded one both arrive as an absent row. Here the denominator's series is
+    in hand, so a period whose denominator is **zero** is a genuinely undefined
+    rate (`0/0` — nobody churned that week), while one whose denominator is
+    non-zero is a *missing* value, which is an ETL question and gets its own,
+    louder line. Neither is invented; both are named.
+    """
+    for name, grain in data.grain_of.items():
+        series = data.series(name)
+        undefined = pd.DatetimeIndex(series.loc[series[name].isna(), "date"])
+        if not len(undefined):
+            continue
+        weights = data.weights_for(name)
+        if weights is None:
+            logger.warning(
+                "Metric '%s': %d of %d %s period(s) have no value (%s%s). It "
+                "declares no `denominator`, so breakdown cannot tell an "
+                "undefined rate from a missing one — declare it to find out.",
+                name,
+                len(undefined),
+                len(series),
+                grain,
+                ", ".join(str(d.date()) for d in undefined[:5]),
+                ", …" if len(undefined) > 5 else "",
+            )
+            continue
+        den = weights.reindex(undefined)
+        genuinely = pd.DatetimeIndex(den.index[den.fillna(1.0) == 0.0])
+        missing = undefined.difference(genuinely)
+        logger.info(
+            "Metric '%s': %d of %d %s period(s) are genuinely undefined — its "
+            "denominator '%s' is zero there, so there is no rate to report. "
+            "They are excluded from window aggregates (which recompute from "
+            "components) and make the metric unfittable over any window "
+            "containing them.",
+            name,
+            len(genuinely),
+            len(series),
+            grain,
+            data.denominator_of[name],
+        )
+        if len(missing):
+            logger.warning(
+                "Metric '%s': %d %s period(s) have no value even though its "
+                "denominator '%s' is non-zero there (%s%s) — that is a missing "
+                "value, not an undefined one. Check the source.",
+                name,
+                len(missing),
+                grain,
+                data.denominator_of[name],
+                ", ".join(str(d.date()) for d in missing[:5]),
+                ", …" if len(missing) > 5 else "",
+            )
+
+
+# A fetched formula node whose identity misses the fetched series by more than
+# this share of the node's own level, on average, is worth saying so about.
+# Generous on purpose: it is a drift alarm, not a tolerance — rounding in a
+# warehouse, a late-arriving row, a rate stored to two decimals all move an
+# identity by fractions of a percent, and an alarm that fires on those is one
+# nobody reads.
+_IDENTITY_DRIFT = 0.01
+
+
+def _check_identities(parser, data: GrainedData) -> None:
+    """Check every fetched formula node against its own identity, at **load**.
+
+    `unexplained` already reports this, but only for the windows somebody
+    happens to analyse — an identity that has been drifting since March is
+    invisible until an RCA lands on March. This runs once over the whole loaded
+    window and costs one vectorized formula evaluation per node.
+
+    Derived nodes are skipped, and the skip is the point: there is nothing to
+    check them against. That asymmetry is exactly what `unexplained_status`
+    reports downstream.
+    """
+    for name in parser.get_topological_order():
+        defn = parser.dag.nodes[name]["definition"]
+        if not defn.formula or defn.derived or defn.lags:
+            continue
+        parents = list(parser.dag.predecessors(name))
+        try:
+            frame = data.fit_frame(name, parents, data.grain_of[name])
+        except (ValueError, RuntimeError, KeyError) as e:
+            logger.info("identity check skipped for '%s': %s", name, e)
+            continue
+        with np.errstate(divide="ignore", invalid="ignore"):
+            implied = np.asarray(
+                eval_formula(defn.formula, {p: frame[p].to_numpy(dtype=float) for p in parents}),
+                dtype=float,
+            )
+        observed = frame[name].to_numpy(dtype=float)
+        usable = np.isfinite(implied) & np.isfinite(observed)
+        if not usable.any():
+            continue
+        scale = float(np.abs(observed[usable]).mean())
+        residual = np.abs(observed[usable] - implied[usable])
+        drift = float(residual.mean()) / scale if scale else float(residual.mean())
+        if drift <= _IDENTITY_DRIFT:
+            continue
+        worst = np.argsort(residual)[::-1][:3]
+        dates = pd.DatetimeIndex(frame.loc[usable, "date"].to_numpy())
+        logger.warning(
+            "Metric '%s': the fetched series departs from its own identity "
+            "'%s' by %.1f%% of its level on average over the loaded window "
+            "(worst periods: %s). The identity and the warehouse disagree — "
+            "every RCA on this node will report that difference as "
+            "`unexplained`.",
+            name,
+            defn.formula,
+            100 * drift,
+            ", ".join(f"{dates[i].date()} (Δ{residual[i]:.4g})" for i in worst),
+        )
 
 
 def _validate_date(value: str, label: str) -> str:
@@ -700,6 +891,10 @@ async def _discover_earliest(tree: TreeState) -> None:
     take the app down with it."""
     provider_type = tree.parser.config.provider.type
     for metric in tree.parser.config.metrics:
+        if metric.derived:
+            # Nothing to ask a provider about: the series is computed from
+            # parents, whose own history is what bounds it.
+            continue
         query_name = provider_query_name(provider_type, metric)
         try:
             earliest = await asyncio.to_thread(tree.fetcher.earliest_date, query_name, metric.grain)
@@ -1215,9 +1410,23 @@ async def get_metric(name: str, request: Request):
         time_series = []
     else:
         try:
-            time_series = data.series(name).to_dict(orient="records")
+            series = data.series(name)
         except KeyError:
             raise HTTPException(status_code=404, detail=f"No data found for metric '{name}'")
+        # An undefined period is `null`, never a NaN and never a 0 (rule 3:
+        # no engine result reaches an encoder unsanitized). `/series` has
+        # always done this; this route did not, so one undefined rate period
+        # was an unhandled 500 on the whole metric — which is exactly how the
+        # White Cube demo's `churn_arpu` behaved before roadmap 1.11.
+        time_series = [
+            {
+                "date": row["date"],
+                name: None
+                if (row[name] is None or (isinstance(row[name], float) and math.isnan(row[name])))
+                else float(row[name]),
+            }
+            for row in series.to_dict(orient="records")
+        ]
 
     summary = None
     diagnostics = None

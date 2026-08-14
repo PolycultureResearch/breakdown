@@ -52,6 +52,12 @@ build: generate
 
 ## Fetch every metric once through MetricFlow and freeze it as parquet.
 ## This is the only step that touches the warehouse; the deployed image replays it.
+##
+## Two halves, and the second is not optional. The startup fetch writes one
+## snapshot per metric; `prewarm.py --slices` touches every declared
+## (metric, dimension) pair so the *sliced* snapshots exist too. Without it this
+## target deletes 34 committed files and writes 19 back — a "rebuild" that
+## silently removes the demo's ability to slice, which is half the guided tour.
 snapshots: build
 	rm -rf $(SNAPSHOTS)
 	$(ENV) $(BREAKDOWN)/.venv/bin/breakdown serve --tree $(TREE) \
@@ -60,6 +66,9 @@ snapshots: build
 	  echo $$! > /tmp/white_cube_snap.pid
 	@echo "waiting for the startup fetch to finish..."
 	@until curl -fsS http://127.0.0.1:$(PORT)/health 2>/dev/null | grep -q '"ok"'; do sleep 3; done
+	@echo "warming sliced snapshots (one touch per metric x dimension)..."
+	@$(ENV) $(BREAKDOWN)/.venv/bin/python $(CURDIR)/prewarm.py --slices \
+	  --url http://127.0.0.1:$(PORT)
 	@kill $$(cat /tmp/white_cube_snap.pid) && rm -f /tmp/white_cube_snap.pid
 	@echo "snapshots written to $(SNAPSHOTS)"
 	@ls $(SNAPSHOTS) | wc -l | xargs echo "  files:"

@@ -276,8 +276,8 @@ DOCS = [
     ),
     DocFile(
         "docs/yaml-reference.md",
-        yaml_blocks=18,
-        parsable_yaml_blocks=13,
+        yaml_blocks=19,
+        parsable_yaml_blocks=14,
         skipped_yaml=[
             "bind",  # the count_distinct entity-grain binding excerpt
             "priors",  # the shared-coefficient prior example
@@ -349,12 +349,15 @@ def _stub_for(name: str) -> dict:
 
 
 def _referenced_elsewhere(metrics: list) -> list:
-    """Names an excerpt leans on that it does not itself define — parents, and
-    the `weight` metric a rate dimension blends by."""
+    """Names an excerpt leans on that it does not itself define — parents, the
+    `denominator` a rate aggregates by, and the `weight` metric a rate
+    dimension blends by (the same fact, in its older spelling)."""
     defined = {m["name"] for m in metrics}
     referenced = set()
     for m in metrics:
         referenced.update(m.get("parents") or [])
+        if m.get("denominator"):
+            referenced.add(m["denominator"])
         for spec in (m.get("dimensions") or {}).values():
             if isinstance(spec, dict) and spec.get("weight"):
                 referenced.add(spec["weight"])

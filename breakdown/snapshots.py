@@ -356,13 +356,15 @@ def _realign_snapshot(
     try:
         aligned = _align_to_spine(df, metric_name, grain, kind, start_date, end_date, metric_name)
     except RuntimeError as e:
-        # The contract can *refuse* as well as reshape — a `rate` with a gap is
-        # an error, because a rate cannot be invented. Refusing here would take
-        # down a deployment that was serving, in order to repair a file the
-        # operator may not be able to refetch (a snapshot-only deployment has no
-        # provider behind it). So: say so, loudly, and serve what is stored. The
-        # frame is no worse than it was a release ago; the difference is that it
-        # is now disclosed rather than silent.
+        # The contract can *refuse* as well as reshape — a `stock` with a
+        # leading gap has nothing to carry backwards. (A `rate` no longer
+        # reaches here: since roadmap 1.11 its gaps are left undefined rather
+        # than refused.) Refusing here would take down a deployment that was
+        # serving, in order to repair a file the operator may not be able to
+        # refetch (a snapshot-only deployment has no provider behind it). So:
+        # say so, loudly, and serve what is stored. The frame is no worse than
+        # it was a release ago; the difference is that it is now disclosed
+        # rather than silent.
         logger.warning(
             "Metric '%s': snapshot could not be re-aligned on read and is served as "
             "stored — %s This file predates the shared date contract (roadmap C2); "

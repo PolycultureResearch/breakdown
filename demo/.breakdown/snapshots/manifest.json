@@ -1,261 +1,301 @@
 {
   "active_subscriptions__by-subscription_day__plan__week-stock__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:36.119403+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:58:04.543523+00:00",
     "provider": "LocalDataFetcher",
     "rows": 226
   },
   "active_subscriptions__by-user__country__week-stock__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:37.984260+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:58:06.203102+00:00",
     "provider": "LocalDataFetcher",
     "rows": 1342
   },
   "active_subscriptions__week-stock__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:45:46.440159+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:14.962428+00:00",
     "provider": "LocalDataFetcher",
-    "rows": 113
+    "rows": 112
   },
   "churn_arpu__by-mrr_movement__plan__week-rate__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:45.630000+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:58:13.096902+00:00",
     "provider": "LocalDataFetcher",
     "rows": 226
   },
   "churn_arpu__week-rate__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:45:52.150331+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:20.005012+00:00",
     "provider": "LocalDataFetcher",
-    "rows": 113
+    "rows": 112
   },
   "churned_mrr__by-mrr_movement__plan__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:47.528640+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:58:14.739898+00:00",
     "provider": "LocalDataFetcher",
     "rows": 226
   },
   "churned_mrr__by-user__country__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:49.426110+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:58:16.488132+00:00",
     "provider": "LocalDataFetcher",
     "rows": 1282
   },
   "churned_mrr__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:45:54.010066+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:21.686712+00:00",
     "provider": "LocalDataFetcher",
-    "rows": 113
+    "rows": 112
   },
   "churned_subscriptions__by-mrr_movement__plan__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:41.832999+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:58:09.688820+00:00",
     "provider": "LocalDataFetcher",
     "rows": 226
   },
   "churned_subscriptions__by-user__country__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:43.716918+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:58:11.393181+00:00",
     "provider": "LocalDataFetcher",
     "rows": 1282
   },
   "churned_subscriptions__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:45:50.282425+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:18.348925+00:00",
     "provider": "LocalDataFetcher",
-    "rows": 113
+    "rows": 112
   },
   "contraction_mrr__by-mrr_movement__plan__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:55.055982+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:58:21.828746+00:00",
     "provider": "LocalDataFetcher",
     "rows": 226
   },
   "contraction_mrr__by-user__country__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:56.936585+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:58:23.599568+00:00",
     "provider": "LocalDataFetcher",
     "rows": 1282
   },
   "contraction_mrr__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:45:57.800506+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:25.040105+00:00",
     "provider": "LocalDataFetcher",
-    "rows": 113
+    "rows": 112
   },
   "customer_churn_rate__by-user__country__week-rate__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:39.950991+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:58:07.990087+00:00",
     "provider": "LocalDataFetcher",
     "rows": 1342
   },
   "customer_churn_rate__week-rate__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:45:48.359166+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:16.671604+00:00",
     "provider": "LocalDataFetcher",
-    "rows": 113
+    "rows": 112
   },
   "expansion_mrr__by-mrr_movement__plan__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:51.343621+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:58:18.242183+00:00",
     "provider": "LocalDataFetcher",
     "rows": 226
   },
   "expansion_mrr__by-user__country__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:53.245672+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:58:19.954708+00:00",
     "provider": "LocalDataFetcher",
     "rows": 1282
   },
   "expansion_mrr__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:45:55.896784+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:23.351052+00:00",
     "provider": "LocalDataFetcher",
-    "rows": 113
+    "rows": 112
   },
   "marketing_spend__by-spend__channel__day-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:52:50.257860+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:30.409489+00:00",
     "provider": "LocalDataFetcher",
     "rows": 2370
   },
   "marketing_spend__day-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:45:27.467820+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:56:58.188527+00:00",
     "provider": "LocalDataFetcher",
     "rows": 790
   },
   "net_new_mrr__by-mrr_movement__plan__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:58.796946+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:58:25.320166+00:00",
     "provider": "LocalDataFetcher",
     "rows": 226
   },
   "net_new_mrr__by-user__country__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:54:00.692772+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:58:27.020581+00:00",
     "provider": "LocalDataFetcher",
     "rows": 1282
   },
   "net_new_mrr__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:45:59.729814+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:26.729553+00:00",
     "provider": "LocalDataFetcher",
-    "rows": 113
+    "rows": 112
   },
   "new_arpu__by-mrr_movement__plan__week-rate__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:30.436509+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:57.693494+00:00",
     "provider": "LocalDataFetcher",
     "rows": 226
   },
   "new_arpu__week-rate__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:45:42.646717+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:11.620104+00:00",
     "provider": "LocalDataFetcher",
-    "rows": 113
+    "rows": 112
   },
   "new_mrr__by-mrr_movement__plan__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:32.297347+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:58:01.182722+00:00",
     "provider": "LocalDataFetcher",
     "rows": 226
   },
   "new_mrr__by-user__country__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:34.157661+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:58:02.846886+00:00",
     "provider": "LocalDataFetcher",
     "rows": 1282
   },
   "new_mrr__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:45:44.541652+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:13.331156+00:00",
     "provider": "LocalDataFetcher",
-    "rows": 113
+    "rows": 112
   },
   "new_subscriptions__by-mrr_movement__plan__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:26.555813+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-14T00:03:59.900428+00:00",
     "provider": "LocalDataFetcher",
     "rows": 226
   },
   "new_subscriptions__by-user__country__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:28.526384+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:55.869365+00:00",
     "provider": "LocalDataFetcher",
     "rows": 1282
   },
   "new_subscriptions__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:45:40.714258+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:09.942628+00:00",
     "provider": "LocalDataFetcher",
-    "rows": 113
+    "rows": 112
   },
   "sessions__by-session__channel__day-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:52:52.141819+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-14T00:03:23.721445+00:00",
     "provider": "LocalDataFetcher",
     "rows": 5530
   },
   "sessions__by-session__country__day-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:52:54.082802+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:34.174539+00:00",
     "provider": "LocalDataFetcher",
     "rows": 9483
   },
   "sessions__by-session__device__day-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:52:55.930904+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-14T00:03:43.159566+00:00",
     "provider": "LocalDataFetcher",
     "rows": 2370
   },
-  "sessions__by-user__country__day-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:52:59.891169+00:00",
-    "provider": "LocalDataFetcher",
-    "rows": 9823
-  },
-  "sessions__by-user__device__day-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:03.702962+00:00",
-    "provider": "LocalDataFetcher",
-    "rows": 3158
-  },
   "sessions__day-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:45:29.393768+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:56:59.870345+00:00",
     "provider": "LocalDataFetcher",
     "rows": 790
   },
   "signups__by-user__country__day-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:05.746480+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-14T00:04:32.231586+00:00",
     "provider": "LocalDataFetcher",
     "rows": 9033
   },
   "signups__by-user__device__day-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:07.631367+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-14T00:04:34.015243+00:00",
     "provider": "LocalDataFetcher",
     "rows": 2368
   },
   "signups__by-user__signup_channel__day-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:09.544009+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-14T00:03:48.821538+00:00",
     "provider": "LocalDataFetcher",
     "rows": 5190
   },
   "signups__day-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:45:33.200668+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:03.196952+00:00",
     "provider": "LocalDataFetcher",
     "rows": 790
   },
   "trial_conversion_rate__week-rate__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:45:36.959894+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:06.598204+00:00",
     "provider": "LocalDataFetcher",
-    "rows": 114
+    "rows": 112
   },
   "trial_conversions__by-trial__country__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:20.904234+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-14T00:03:56.282652+00:00",
     "provider": "LocalDataFetcher",
     "rows": 1365
   },
   "trial_conversions__by-trial__device__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:22.790148+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-14T00:03:58.083565+00:00",
     "provider": "LocalDataFetcher",
     "rows": 342
   },
   "trial_conversions__by-trial__plan__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:24.668873+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:52.127643+00:00",
     "provider": "LocalDataFetcher",
     "rows": 342
   },
   "trial_conversions__week-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:45:38.812330+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:08.270799+00:00",
     "provider": "LocalDataFetcher",
-    "rows": 114
+    "rows": 112
   },
   "trials_started__by-trial__country__day-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:11.543220+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-14T00:03:50.784557+00:00",
     "provider": "LocalDataFetcher",
     "rows": 7597
   },
   "trials_started__by-trial__device__day-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:13.448505+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-14T00:03:52.581688+00:00",
     "provider": "LocalDataFetcher",
     "rows": 2312
   },
   "trials_started__by-trial__signup_channel__day-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:53:15.348872+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-14T00:03:54.386941+00:00",
     "provider": "LocalDataFetcher",
     "rows": 4701
   },
   "trials_started__day-flow__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:45:35.123219+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:04.906188+00:00",
     "provider": "LocalDataFetcher",
     "rows": 790
   },
   "visit_signup_rate__day-rate__2024-06-01__2026-07-30.parquet": {
-    "fetched_at": "2026-08-03T22:45:31.297844+00:00",
+    "definition_sha": null,
+    "fetched_at": "2026-08-13T23:57:01.536809+00:00",
     "provider": "LocalDataFetcher",
     "rows": 790
   }

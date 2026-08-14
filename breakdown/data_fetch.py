@@ -42,6 +42,15 @@ def provider_query_name(provider_type: str, metric) -> str:
     had to be found and edited in all three to add a provider — the kind of
     duplication that ships a provider working at startup and broken on slice.
     """
+    if metric.source is None:
+        # A derived node has no provider-side name because nothing fetches it
+        # (roadmap 1.11a). Reaching here means a caller skipped the `derived`
+        # check, which would otherwise surface as an opaque AttributeError.
+        raise ValueError(
+            f"Metric '{metric.name}' is derived (no `source`), so it has no "
+            "provider-side name — its series is computed from its parents and "
+            "is never fetched."
+        )
     if provider_type in _NAME_KEYED_PROVIDERS:
         return metric.name
     return metric.source.split(".")[-1]
@@ -230,11 +239,25 @@ def _align_to_spine(
       source returned mean "not loaded yet" far more often than "genuinely
       zero", and filling them bakes a lying tail into every headline number.
     - **Interior** gaps are filled by kind — flow → 0, stock → forward-fill
-      (a leading gap is an error), rate → an error, because a rate cannot be
-      invented. Filling one is a judgement call rather than a fact, so it is
-      logged: a three-day ETL outage becomes three zero days otherwise, which
-      is indistinguishable from a real collapse and which RCA will happily name
-      as the root cause.
+      (a leading gap is an error), rate → **left undefined**, because a rate
+      cannot be invented. Filling one is a judgement call rather than a fact,
+      so it is logged: a three-day ETL outage becomes three zero days
+      otherwise, which is indistinguishable from a real collapse and which RCA
+      will happily name as the root cause.
+
+      A rate's missing period stays `NaN` and is warned about by name (roadmap
+      1.11). It used to raise, which was the right *judgement* — filling `0`
+      asserts "the average was zero", forward-filling asserts last period's
+      rate applied — attached to the wrong *remedy*: a metric whose
+      denominator is legitimately zero in some periods (nobody churned that
+      week; the canonical MetricFlow idiom `num / nullif(den, 0)` returns NULL,
+      exactly right) then could not be served at all, and took its whole tree
+      down with it. `NaN` invents nothing: it is the source's own answer,
+      carried through, and every consumer downstream has a stated policy for it
+      (`docs/model.md`, "Rates over undefined periods"). Note this boundary
+      cannot tell an undefined period from an unloaded one — both arrive as an
+      absent row — so `_undefined_rate_report` classifies them after the fetch,
+      where the denominator's series is in hand.
     - **Leading** gaps — periods before the source's first row — are filled on
       the same terms as interior ones, and warned on the same terms too. They
       used to be silent, which is the worse half of the same defect: a metric
@@ -299,9 +322,42 @@ def _align_to_spine(
             "…" if len(interior) > 5 else "that is all of them",
         )
 
-    # Only flows reach a fill here: `stock` raises just below (nothing to
-    # forward-fill from) and `rate` raises on any gap, so warning for those
-    # kinds would only precede their own clearer error.
+    if len(interior) and kind == "rate":
+        shown = [str(d.date()) for d in interior[:5]]
+        logger.warning(
+            "Metric '%s': %d interior %s period(s) had no row and are left "
+            "UNDEFINED (%s); %s. A rate is not gap-filled — filling 0 would "
+            "assert the average was zero and forward-filling would assert the "
+            "previous period's rate applied. These periods carry no value, are "
+            "excluded from every window aggregate, and make the metric unfittable "
+            "over any window containing them.",
+            metric_name,
+            len(interior),
+            grain,
+            ", ".join(shown),
+            "…" if len(interior) > 5 else "that is all of them",
+        )
+
+    # Only flows reach a *fill* here: `stock` raises just below (nothing to
+    # forward-fill from) and `rate` leaves its gaps undefined, warned about
+    # just above and again for the leading run.
+    if len(leading) and kind == "rate":
+        shown = [str(d.date()) for d in leading[:5]]
+        logger.warning(
+            "Metric '%s': %d leading %s period(s) before the source's first row "
+            "on %s are left UNDEFINED (%s → %s): %s; %s. Start the window at %s "
+            "to carry only defined periods.",
+            metric_name,
+            len(leading),
+            grain,
+            first.date(),
+            leading[0].date(),
+            leading[-1].date(),
+            ", ".join(shown),
+            "…" if len(leading) > 5 else "that is all of them",
+            first.date(),
+        )
+
     if len(leading) and kind == "flow":
         shown = [str(d.date()) for d in leading[:5]]
         logger.warning(
@@ -331,15 +387,19 @@ def _align_to_spine(
                 f"Stock metric '{metric_name}' has no value at or before the "
                 f"first {grain} period ({spine[0].date()}) of the window."
             )
-    else:  # rate
-        if s.isna().any():
-            missing = [str(d.date()) for d in s.index[s.isna()][:5]]
-            raise RuntimeError(
-                f"Rate metric '{metric_name}' is missing {grain} periods "
-                f"{missing}; a rate cannot be gap-filled — fix the source or "
-                "narrow the window."
-            )
+    # else: rate — the NaNs stay. Nothing is filled and nothing is refused;
+    # the periods are undefined and travel that way (warned above).
     return s.rename(metric_name).rename_axis("date").reset_index()
+
+
+def undefined_periods(series: pd.Series) -> pd.DatetimeIndex:
+    """The period-start labels at which `series` carries no value.
+
+    One helper so "which periods are undefined" is asked the same way
+    everywhere — the fetch warning, the load-time classification, the fit
+    refusal and the RCA status all mean the same thing by it.
+    """
+    return pd.DatetimeIndex(series.index[series.isna()])
 
 
 class SliceNotSupported(RuntimeError):
@@ -758,7 +818,7 @@ class WarehouseDataFetcher(BaseDataFetcher):
     start Monday, months on the 1st). Returned series are reindexed onto the
     spine of whole periods inside the window; **interior** gaps are filled by
     `kind` — flow → 0, stock → forward-fill (a leading gap is an error),
-    rate → any missing period is an error (a rate cannot be invented) — while
+    rate → left undefined and warned about (a rate cannot be invented) — while
     **trailing** gaps are trimmed, not filled: periods after the last row the
     SQL returned are treated as not-yet-loaded, so a lagging mart ends the
     series early instead of manufacturing fake zeros at the tail. **Leading**

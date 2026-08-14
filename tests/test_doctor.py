@@ -676,7 +676,7 @@ def _migration(tree_yaml):
 def test_a_fully_translatable_tree_is_told_it_can_move(tmp_path):
     r = _migration(_local_tree(_dbt_project(tmp_path)))
     assert r.status == "pass"
-    assert "all 1 metric(s) translate" in r.detail
+    assert "all 1 fetched metric(s) translate" in r.detail
     assert "drop the `mf` binary" in r.detail
 
 
@@ -700,7 +700,7 @@ def test_a_tree_needing_metricflow_is_told_to_stay(tmp_path):
     r = _migration(tree)
     # Skip, not fail: needing MetricFlow is a supported state, not a defect.
     assert r.status == "skip"
-    assert "1 of 2 metric(s) need MetricFlow" in r.detail
+    assert "1 of 2 fetched metric(s) need MetricFlow" in r.detail
     assert "wau" in r.detail and "trailing window" in r.detail
     assert "Stay on `local`" in r.detail
 

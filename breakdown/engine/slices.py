@@ -52,7 +52,7 @@ from breakdown.engine.rca import (
     _window_info,
     direction_fields,
 )
-from breakdown.grains import BOOT_BLOCK, period_spine, snap_window
+from breakdown.grains import BOOT_BLOCK, period_spine, rate_window_value, snap_window
 
 # More distinct fetched values than this is an authoring problem, not an
 # analysis input — the response would localize nothing.
@@ -854,10 +854,18 @@ def _rate_attribution(
             "treat slice attributions as approximate."
         )
 
-    # The tree's node gap is the unweighted window-mean difference; the sliced
-    # gap is weight-blended. Surface a material difference rather than letting
-    # the two headline numbers silently disagree.
-    node_gap = float(u_vals[in_an].mean() - u_vals[in_ref].mean())
+    # The node's own window gap, computed the way the tree computes it, so the
+    # two headline numbers can be compared at all. Before roadmap 1.11c the
+    # tree used the *unweighted* window mean here while the slice path used the
+    # weight blend, and this caveat fired routinely to explain a disagreement
+    # that was really the tree averaging per-period ratios. Both sides now
+    # aggregate as Σnumerator / Σdenominator, so a difference that survives is
+    # a genuine one: the slices' weights are not the node's denominator.
+    # `w_totals` is the denominator summed across slices — the same per-period
+    # weights the node aggregates by, read off the data already in hand.
+    node_ref = rate_window_value(u_vals[in_ref], w_totals[in_ref])
+    node_an = rate_window_value(u_vals[in_an], w_totals[in_an])
+    node_gap = float(node_an - node_ref)
     if abs(gap - node_gap) > 0.02 * max(abs(node_gap), 1e-12):
         caveats.append(
             f"Weight-blended gap ({gap:.4g}) differs from the node's unweighted "

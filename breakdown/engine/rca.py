@@ -48,9 +48,18 @@ lets the rest of the tree through, with the reason in `status_reason`:
 - `"fit_failed"` — the node's own BSTS fit raised (a parent held flat for the
   whole fit window has zero variance and cannot be normalized);
 - `"attribution_failed"` — the node's formula does not produce a finite value
-  over these windows (a zero denominator). The exception is the RCA *target*:
-  the whole response is about that node, so its failure is raised rather than
-  buried in a status.
+  over these windows (a zero denominator, or an undefined rate parent). The
+  exception is the RCA *target*: the whole response is about that node, so its
+  failure is raised rather than buried in a status.
+- `"undefined_over_window"` — every period of one of the node's windows is
+  undefined, so the node has no value there to compare (roadmap 1.11c). A rate
+  aggregates as `Σnumerator / Σdenominator`, so a window merely *containing*
+  undefined periods is still fine; this is the case where nothing survives.
+
+`unexplained` is accompanied by `unexplained_status`, which says what the
+number is: `"measured"` (the node's own fetched series was compared against
+the decomposition) or `"definitional"` (the node is **derived** — its series is
+the formula, so the zero means nothing was checked).
 """
 
 from typing import Any, Dict, Optional, Tuple
@@ -70,11 +79,13 @@ from breakdown.grains import (
     ensure_grained,
     fit_grain,
     next_start,
+    rate_window_value,
     shift_periods,
     snap_window,
     steps_between,
     to_date,
 )
+from breakdown.parser import _SIMPLE_RATIO
 
 # Bootstrap replicates per window; fixed so contribution CIs are comparable
 # across nodes and runs.
@@ -369,12 +380,83 @@ def _validate_coverage(
             )
 
 
+class UndefinedOverWindow(ValueError):
+    """A node has no value over one of the windows it was asked about.
+
+    Its own subclass for the same reason `NonFiniteAttribution` is one: the
+    condition degrades to a per-node status inside `run_rca` and must not
+    swallow the unrelated `ValueError`s the same calls raise. A `ValueError`
+    still, so the API turns it into a 422 carrying the message when it is the
+    target that has no value.
+    """
+
+
 def window_mean(data: pd.DataFrame, col: str, start: pd.Timestamp, end: pd.Timestamp) -> float:
     """Mean of `col` over rows whose date is within [start, end] (inclusive).
 
     `data["date"]` must already be datetime. Raises if the window is empty.
+
+    **Flows and stocks only.** A rate's window value is not the mean of its
+    per-period ratios — see `node_window_value`, which is the entry point every
+    caller uses and which routes a rate to `grains.rate_window_value`. Calling
+    this on a rate column is the defect `resample_up` already refuses in the
+    time direction, and `tests/test_project_invariants.py` enumerates the
+    package to keep this function from acquiring a caller that does.
     """
     return float(_window_values(data, col, start, end).mean())
+
+
+def node_window_value(
+    data,
+    node: str,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    grain: Optional[str] = None,
+    *,
+    frame: Optional[pd.DataFrame] = None,
+) -> float:
+    """The single number `node` reports for the window [start, end], by kind.
+
+    The one place a metric's window becomes a scalar, so the kind rules cannot
+    be applied in one caller and forgotten in its neighbour:
+
+    - **flow / stock** — the mean per period, unchanged.
+    - **rate** — `Σ(rate·denominator) / Σdenominator` over the window's defined
+      periods (`grains.rate_window_value`), which is what a window's rate *is*.
+      A period whose denominator is zero contributes to neither sum and drops
+      out, so a window containing an undefined period still has a defined rate.
+      A rate that declares no `denominator` falls back to the plain average of
+      its defined periods, which is the pre-1.11 number and is disclosed at
+      load rather than silently presented as the aggregate.
+
+    Returns `nan` when the window holds no defined period; callers report that
+    as a status rather than publishing it. Raises when the window holds no
+    period at all — a different failure, and one the caller chose.
+    """
+    grained = ensure_grained(data)
+    kind = grained.kind_of.get(node, "flow")
+    at = grain or grained.grain_of.get(node, "day")
+    source = frame if frame is not None else grained.series(node, at)
+    values = _window_values(source, node, start, end)
+    if kind != "rate":
+        return float(values.mean())
+    weights = grained.weights_for(node, at)
+    if weights is not None:
+        # Aligned **on the dates**, never on position or length. `frame` may be
+        # a fit frame whose inner join dropped a period (a finer parent's
+        # partial coarse period), so two arrays of equal length can still be
+        # describing different weeks — a misalignment nobody could see. A
+        # denominator that cannot cover the window's periods weights nothing,
+        # and the disclosed fallback is better than a silent mis-weighting.
+        dates = pd.DatetimeIndex(source.loc[_window_mask(source, start, end), "date"])
+        aligned = weights.reindex(dates)
+        weights = None if aligned.isna().any() else aligned.to_numpy(dtype=float)
+    return rate_window_value(values, weights)
+
+
+def _window_mask(data: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> pd.Series:
+    """Rows of `data` whose date is within [start, end] (inclusive)."""
+    return (data["date"] >= start) & (data["date"] <= end)
 
 
 def _window_values(
@@ -382,7 +464,7 @@ def _window_values(
 ) -> np.ndarray:
     """Per-period values of `col` over rows whose date is within [start, end]
     (inclusive). Raises if the window is empty."""
-    mask = (data["date"] >= start) & (data["date"] <= end)
+    mask = _window_mask(data, start, end)
     if not mask.any():
         raise ValueError(f"No data for '{col}' in window [{start.date()}, {end.date()}]")
     return data.loc[mask, col].values.astype(float)
@@ -566,6 +648,19 @@ def _node_out(**fields) -> Dict[str, Any]:
         "seasonality_warnings": None,
         "ci_status": None,
         "unexplained": None,
+        # What the number in `unexplained` *is*. Never omit it while
+        # `unexplained` is present: a 0.0 that was measured and a 0.0 that
+        # exists by construction are the same character on screen and
+        # completely different facts about the world (roadmap 1.11a).
+        #
+        # - `"measured"` — the node's own series was fetched and the identity
+        #   (or the fitted model) was compared against it. Zero means the
+        #   decomposition reconciled with reality.
+        # - `"definitional"` — the node is **derived**: its series *is* the
+        #   formula, so zero means nothing was checked. This is not a weaker
+        #   measurement; it is the absence of one.
+        # - `null` — no attribution ran, so there is no residual either.
+        "unexplained_status": None,
         "components": None,
         "interaction": None,
         "contributions": [],
@@ -609,18 +704,26 @@ def _nonfinite_diagnosis(
             )
             sub = frame.loc[mask, ["date", p]]
             vals = sub[p].to_numpy(dtype=float)
-            bad = (vals == 0.0) | ~np.isfinite(vals)
-            if not bad.any():
-                continue
-            dates = [str(d.date()) for d in sub.loc[bad, "date"]]
-            shown = ", ".join(dates[:_MAX_SHOWN_DATES])
-            if len(dates) > _MAX_SHOWN_DATES:
-                shown += ", …"
-            via = f" (read at lag {lag})" if lag else ""
-            clauses.append(
-                f"parent '{p}'{via} is zero or non-finite on {len(dates)} of "
-                f"{len(vals)} {label}-window {grain}(s) ({shown})"
-            )
+            # An **undefined** period and a zero are reported separately: they
+            # have different remedies. A zero denominator is a data fact to
+            # narrow the window around; an undefined rate period is a period
+            # the source had no value for, and the node it feeds cannot be
+            # decomposed over any window containing one (roadmap 1.11c).
+            for kind_label, bad in (
+                ("undefined on", np.isnan(vals)),
+                ("zero or non-finite on", (vals == 0.0) | (~np.isfinite(vals) & ~np.isnan(vals))),
+            ):
+                if not bad.any():
+                    continue
+                dates = [str(d.date()) for d in sub.loc[bad, "date"]]
+                shown = ", ".join(dates[:_MAX_SHOWN_DATES])
+                if len(dates) > _MAX_SHOWN_DATES:
+                    shown += ", …"
+                via = f" (read at lag {lag})" if lag else ""
+                clauses.append(
+                    f"parent '{p}'{via} is {kind_label} {len(dates)} of "
+                    f"{len(vals)} {label}-window {grain}(s) ({shown})"
+                )
 
     detail = (
         "; ".join(clauses)
@@ -635,9 +738,33 @@ def _nonfinite_diagnosis(
     return (
         f"Formula attribution for '{target}' ('{formula}') is not a finite number "
         f"(baseline={baseline}, actual={actual}{bad_note}): {detail}. A period "
-        "whose denominator is zero has no finite decomposition — narrow the "
-        "window to exclude those periods, or fix the series at the source."
+        "whose denominator is zero — or whose rate parent is undefined there — "
+        "has no finite decomposition: narrow the window to exclude those "
+        "periods, or fix the series at the source."
     )
+
+
+def aggregates_from_components(defn, parents) -> bool:
+    """Whether this node's window value is `formula(parent window means)`
+    exactly, rather than the mean of the per-period formula.
+
+    True for the shape roadmap 1.11 documents as the remedy for a rate over
+    true-zero periods: `kind: rate` with `formula: "num / den"` where `den` is
+    the node's declared `denominator`. There
+
+        Σnum / Σden  =  mean(num) / mean(den)
+
+    over the same periods — the window rate *is* the formula of the window
+    aggregates — so the decomposition is the window-means bridge and nothing
+    else. The within-window co-movement games exist only to bridge from
+    `f(means)` to `mean(f(per period))`, which is not this node's quantity, so
+    they are not merely zero here: they are **absent**, and the payload omits
+    them rather than publishing a 0.0 with a zero-width interval.
+    """
+    if defn.kind != "rate" or not defn.formula or defn.denominator is None:
+        return False
+    m = _SIMPLE_RATIO.match(defn.formula)
+    return bool(m and m.group(2) == defn.denominator and set(m.groups()) <= set(parents))
 
 
 def shapley_attribution(
@@ -723,35 +850,63 @@ def shapley_attribution(
 
     ref_daily = {p: lagged_window(p, ref_start, ref_end) for p in parents}
     an_daily = {p: lagged_window(p, an_start, an_end) for p in parents}
-    ref_means = {p: float(ref_daily[p].mean()) for p in parents}
-    an_means = {p: float(an_daily[p].mean()) for p in parents}
 
-    # Both windows are evaluated per-day, so an exact identity reconstructs
-    # the node's own window means on both sides and the attributions'
-    # efficiency holds against the node's own gap.
-    baseline = float(eval_formula(defn.formula, ref_daily).mean())
-    actual = float(eval_formula(defn.formula, an_daily).mean())
+    from_components = aggregates_from_components(defn, parents)
+    if from_components:
+        # The window rate is Σnum / Σden over the periods where it is defined,
+        # which is `formula(parent means over those same periods)`. Masking to
+        # the defined periods is what makes the two identical rather than
+        # merely close: a period whose denominator is zero contributes to
+        # neither sum, so it must not contribute to either mean.
+        def _means(daily):
+            defined = np.isfinite(eval_formula(defn.formula, daily))
+            if not defined.any():
+                return {p: float("nan") for p in parents}
+            return {p: float(daily[p][defined].mean()) for p in parents}
+
+        ref_means = _means(ref_daily)
+        an_means = _means(an_daily)
+        baseline = float(eval_formula(defn.formula, ref_means))
+        actual = float(eval_formula(defn.formula, an_means))
+    else:
+        ref_means = {p: float(ref_daily[p].mean()) for p in parents}
+        an_means = {p: float(an_daily[p].mean()) for p in parents}
+        # Both windows are evaluated per-day, so an exact identity reconstructs
+        # the node's own window means on both sides and the attributions'
+        # efficiency holds against the node's own gap.
+        baseline = float(eval_formula(defn.formula, ref_daily).mean())
+        actual = float(eval_formula(defn.formula, an_daily).mean())
 
     # Three exact games that telescope to actual - baseline: the window-means
     # bridge, plus each parent's share of the within-window co-movement term
     # (mean_w f(daily) - f(window means)) of each window. Windows may have
     # different lengths — no per-day pairing is ever needed.
     phi_means = compute_shapley(defn.formula, parents, ref_means, an_means, node=target)
-    phi_cov_an = compute_shapley(defn.formula, parents, an_means, an_daily, node=target)
-    phi_cov_ref = compute_shapley(defn.formula, parents, ref_means, ref_daily, node=target)
 
     attribution: Dict[str, float] = {}
     decomposition: Dict[str, Dict[str, float]] = {}
-    for p in parents:
-        means_part = float(phi_means[p])
-        cov_an_part = float(phi_cov_an[p].mean())
-        cov_ref_part = float(phi_cov_ref[p].mean())
-        attribution[p] = means_part + cov_an_part - cov_ref_part
-        decomposition[p] = {
-            "means": means_part,
-            "covariance_analysis": cov_an_part,
-            "covariance_reference": cov_ref_part,
-        }
+    if from_components:
+        # No co-movement games at all: the node's quantity is the formula of
+        # the aggregates, so the bridge from `f(means)` to `mean(f(daily))`
+        # that those games compute is not part of this gap. Omitted, not
+        # zeroed — a term the decomposition does not contain must not be
+        # reported as a term measured to be zero.
+        for p in parents:
+            attribution[p] = float(phi_means[p])
+            decomposition[p] = {"means": float(phi_means[p])}
+    else:
+        phi_cov_an = compute_shapley(defn.formula, parents, an_means, an_daily, node=target)
+        phi_cov_ref = compute_shapley(defn.formula, parents, ref_means, ref_daily, node=target)
+        for p in parents:
+            means_part = float(phi_means[p])
+            cov_an_part = float(phi_cov_an[p].mean())
+            cov_ref_part = float(phi_cov_ref[p].mean())
+            attribution[p] = means_part + cov_an_part - cov_ref_part
+            decomposition[p] = {
+                "means": means_part,
+                "covariance_analysis": cov_an_part,
+                "covariance_reference": cov_ref_part,
+            }
 
     # A non-finite number here is not an answer, and every field downstream
     # (gap, shares, CIs, unexplained, every ranked-cause score) inherits it.
@@ -781,6 +936,17 @@ def shapley_attribution(
         "target": target,
         "formula": defn.formula,
         "grain": grain,
+        # Which quantity was decomposed: `per_period` is the mean over the
+        # window's periods of `formula(parents that period)`; `components` is
+        # `formula(parent window aggregates)`, which is what a rate's window
+        # value is (Σnumerator / Σdenominator). The two differ, so the payload
+        # says which one the numbers are about.
+        "aggregation": "components" if from_components else "per_period",
+        # Whether the node's own series was fetched and compared against this
+        # identity, or derived from it. A derived node's `unexplained` is zero
+        # because there was nothing to check against, never because a check
+        # passed (roadmap 1.11a).
+        "derived": bool(defn.derived),
         "reference_window": {"start": reference_start, "end": reference_end},
         "analysis_window": {"start": analysis_start, "end": analysis_end},
         "reference_defaulted": reference_defaulted,
@@ -936,8 +1102,31 @@ def run_rca(
             "reference": _window_info(snapped_ref),
             "analysis": _window_info(snapped_an),
         }
-        baseline = window_mean(frame, node, ref_start, ref_end)
-        actual = window_mean(frame, node, an_start, an_end)
+        # The node's own window values, by kind — a rate aggregates from its
+        # components rather than averaging its per-period ratios (1.11c), so a
+        # window containing an undefined period is still defined. A window with
+        # *no* defined period has no value at all: report the node without
+        # numbers rather than publishing a NaN, which is rule 3 (no engine
+        # result reaches an encoder unsanitized) and which Starlette would
+        # otherwise turn into an unhandled 500.
+        baseline = node_window_value(data, node, ref_start, ref_end, grain, frame=frame)
+        actual = node_window_value(data, node, an_start, an_end, grain, frame=frame)
+        if not (np.isfinite(baseline) and np.isfinite(actual)):
+            which = "reference" if not np.isfinite(baseline) else "analysis"
+            reason = (
+                f"'{node}' has no value over the {which} window: every period in "
+                f"it is undefined (a rate whose denominator is zero has no rate). "
+                f"Choose a window that contains at least one defined period."
+            )
+            if node == target:
+                raise UndefinedOverWindow(reason)
+            nodes_out[node] = _node_out(
+                status="undefined_over_window",
+                status_reason=reason,
+                grain=grain,
+                effective_windows=effective_windows,
+            )
+            continue
         gap = actual - baseline
         # Everything the node publishes that asks "is this number zero?" — the
         # relative change, the shares, the width of an interval — is judged
@@ -971,6 +1160,7 @@ def run_rca(
         fit_window = None
         seasonality_warnings = None
         interaction = None
+        unexplained_status = None
         if not parents:
             attribution_method = None
             unexplained = None
@@ -1033,6 +1223,21 @@ def run_rca(
                 )
                 for p in parents
             }
+            from_components = sh["aggregation"] == "components"
+            if from_components:
+                # Resample the periods the window aggregate is actually made
+                # of. An undefined period contributes to neither Σnum nor Σden,
+                # so including it in the resampling would let replicates
+                # disagree with the exact value about which periods exist. The
+                # blocks then run over the defined subsequence, which is the
+                # same compromise `_block_bootstrap_indices` already makes
+                # about serial dependence, applied to a shorter series.
+                def _defined(vals):
+                    keep = np.isfinite(eval_formula(defn.formula, vals))
+                    return {p: vals[p][keep] for p in parents}
+
+                ref_vals = _defined(ref_vals)
+                an_vals = _defined(an_vals)
             n_an = len(next(iter(an_vals.values())))
             n_ref = len(next(iter(ref_vals.values())))
             ref_idx = _block_bootstrap_indices(n_ref, _N_BOOT, rng, block=block)
@@ -1043,19 +1248,28 @@ def run_rca(
             phi_means = compute_shapley(
                 defn.formula, parents, boot_ref_means, boot_an_means, node=node
             )
-            phi_cov_an = compute_shapley(
-                defn.formula,
-                parents,
-                {p: np.repeat(boot_an_means[p], n_an) for p in parents},
-                {p: an_vals[p][an_idx].reshape(-1) for p in parents},
-                node=node,
+            zero_b = np.zeros(_N_BOOT * max(n_an, n_ref))
+            phi_cov_an = (
+                {p: zero_b[: _N_BOOT * n_an] for p in parents}
+                if from_components
+                else compute_shapley(
+                    defn.formula,
+                    parents,
+                    {p: np.repeat(boot_an_means[p], n_an) for p in parents},
+                    {p: an_vals[p][an_idx].reshape(-1) for p in parents},
+                    node=node,
+                )
             )
-            phi_cov_ref = compute_shapley(
-                defn.formula,
-                parents,
-                {p: np.repeat(boot_ref_means[p], n_ref) for p in parents},
-                {p: ref_vals[p][ref_idx].reshape(-1) for p in parents},
-                node=node,
+            phi_cov_ref = (
+                {p: zero_b[: _N_BOOT * n_ref] for p in parents}
+                if from_components
+                else compute_shapley(
+                    defn.formula,
+                    parents,
+                    {p: np.repeat(boot_ref_means[p], n_ref) for p in parents},
+                    {p: ref_vals[p][ref_idx].reshape(-1) for p in parents},
+                    node=node,
+                )
             )
 
             # The published point is the **exact** Shapley value; the bootstrap
@@ -1148,10 +1362,16 @@ def run_rca(
 
                 # The same three parts as the bootstrap replicates, evaluated
                 # once on the observed windows: attribution = means +
-                # covariance_analysis - covariance_reference.
+                # covariance_analysis - covariance_reference. A node whose
+                # window value is the formula of the aggregates has no
+                # co-movement part at all (`aggregates_from_components`).
                 parts = sh["decomposition"][p]
                 means_exact = parts["means"]
-                comovement_exact = parts["covariance_analysis"] - parts["covariance_reference"]
+                comovement_exact = (
+                    0.0
+                    if from_components
+                    else (parts["covariance_analysis"] - parts["covariance_reference"])
+                )
                 estimate = float(sh["attribution"][p])
                 interaction_exact += comovement_exact
 
@@ -1167,15 +1387,21 @@ def run_rca(
                     "share_of_gap": _share_of_gap(estimate, gap, ci_scale),
                     "ci_95": ci,
                     **direction_fields(phi_b_finite),
-                    # Two-level view: the window-means bridge part and the
-                    # co-movement (covariance/Jensen) shift part. They sum to
-                    # `estimate` exactly — as exact values, not just in
-                    # expectation over replicates.
-                    "decomposition": {
+                }
+                # Two-level view: the window-means bridge part and the
+                # co-movement (covariance/Jensen) shift part. They sum to
+                # `estimate` exactly — as exact values, not just in expectation
+                # over replicates. **Absent** when the node's window value is
+                # the formula of the aggregates: there is no second level, and
+                # reporting `comovement: {estimate: 0.0}` would claim a term
+                # was measured to be zero when the decomposition does not
+                # contain one. Same absent-means-no-such-term idiom as `lag`
+                # and `components.seasonal`.
+                if not from_components:
+                    contribution["decomposition"] = {
                         "means": _summary(means_exact, means_b),
                         "comovement": _summary(comovement_exact, comovement_b),
-                    },
-                }
+                    }
                 # Lagged parents were measured over their own earlier windows;
                 # surface which ones. Keys absent entirely when unlagged.
                 if defn.lags.get(p, 0):
@@ -1188,8 +1414,9 @@ def run_rca(
             # within-window co-movement shift across parents, shown as its own
             # line instead of silently folded into the factors. Note it is
             # already *inside* each contribution's `estimate` — it is a
-            # readout of the same quantity, never a term to add on top.
-            interaction = _summary(interaction_exact, interaction_b)
+            # readout of the same quantity, never a term to add on top. Absent
+            # (not 0.0) when the decomposition contains no co-movement term.
+            interaction = None if from_components else _summary(interaction_exact, interaction_b)
             # One status per node, most specific cause first:
             #
             # - `degenerate_single_period` — a one-period window, the special
@@ -1213,7 +1440,18 @@ def run_rca(
                 if withheld_nonfinite
                 else "ok"
             )
-            unexplained = gap - sh["gap"]
+            if defn.derived:
+                # A derived node's series *is* `formula(parents)`, so the
+                # decomposition cannot miss it: the residual is zero because
+                # there was nothing to compare against, not because a
+                # comparison came out clean. Published as exactly 0.0 (rather
+                # than the float residue of subtracting a number from itself)
+                # and labelled, so no reader can mistake it for the other zero.
+                unexplained = 0.0
+                unexplained_status = "definitional"
+            else:
+                unexplained = gap - sh["gap"]
+                unexplained_status = "measured"
         else:
             attribution_method = "posterior"
             fit = traces[(node, analysis_start)]
@@ -1353,6 +1591,9 @@ def run_rca(
                     )
                 contributions.append(contribution)
             unexplained = gap - estimate_sum - sum(c["estimate"] for c in components.values())
+            # A probabilistic node is always fetched (there is no derived
+            # regression), so its residual is always a measurement.
+            unexplained_status = "measured"
             # The beta_raw posterior still carries real uncertainty on a
             # single-period window; the flag says the window-sampling
             # component of the CI is absent.
@@ -1380,6 +1621,7 @@ def run_rca(
             seasonality_warnings=seasonality_warnings,
             ci_status=ci_status,
             unexplained=unexplained,
+            unexplained_status=unexplained_status,
             components=components,
             interaction=interaction,
             contributions=contributions,

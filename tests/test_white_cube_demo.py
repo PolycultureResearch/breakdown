@@ -402,7 +402,12 @@ def test_story_b_churn_spike_is_offset_and_plan_localized(client):
         ("net_new_mrr", -0.321),
         ("churned_mrr", 0.874),
         ("churned_subscriptions", 0.593),
-        ("customer_churn_rate", 0.452),
+        # 0.4479, not the 0.4523 an average of the four weekly ratios gives:
+        # a window's rate is Σnumerator / Σdenominator, so the weeks are
+        # weighted by `active_subscriptions` (roadmap 1.11c). The check that
+        # this is the right number, not merely a different one, is the
+        # identity assertion below.
+        ("customer_churn_rate", 0.4479),
         ("new_mrr", 0.117),
         ("new_subscriptions", 0.223),
     ):
@@ -454,7 +459,10 @@ def test_known_gap_churn_arpu_is_undeclared_and_the_ui_colours_it_green(client):
     d = rca(client, "net_new_mrr", ("2026-03-16", "2026-04-12"), ("2026-05-11", "2026-06-07"))
     node = d["nodes"]["churn_arpu"]
     assert node["gap"] > 0  # up, and up is bad for a churn ARPU
-    assert node["relative_change"] == pytest.approx(0.185, **TOUR)
+    # 0.1770 — `churn_arpu` aggregates over the window as
+    # Σchurned_mrr / Σchurned_subscriptions, weighting each week by the
+    # cancellations it actually had, rather than averaging four weekly ARPUs.
+    assert node["relative_change"] == pytest.approx(0.1770, **TOUR)
 
     yaml = pytest.importorskip("yaml")
     with open(TREE) as f:
@@ -635,10 +643,17 @@ def test_what_if_cutting_churn_lifts_net_new_mrr(client):
     # rises by exactly that amount — +$179/week, +15.5% — with P(direction) 1.0
     # and a zero-width 95% interval."
     assert churn["baseline"] == pytest.approx(885.46, rel=1e-3)
-    assert churn["simulated"] == pytest.approx(706.24, rel=1e-3)
-    assert churn["relative_delta"] == pytest.approx(-0.202, **TOUR)
-    assert net["delta"]["estimate"] == pytest.approx(179.21, rel=1e-3)
-    assert net["relative_delta"] == pytest.approx(0.155, **TOUR)
+    # 708.37 = 885.46 x 0.8, exactly — which is the point. The propagation
+    # multiplies the intervened rate through two identities, and it lands on
+    # the arithmetic answer only because each rate's baseline is now its
+    # denominator-weighted window value (roadmap 1.11c). The old 706.24 was
+    # 0.3% short of a linear response to a linear intervention, and nothing
+    # in the model explained the difference: it was the averaged-ratio error.
+    assert churn["simulated"] == pytest.approx(708.37, rel=1e-3)
+    assert churn["simulated"] == pytest.approx(0.8 * churn["baseline"], rel=1e-9)
+    assert churn["relative_delta"] == pytest.approx(-0.200, **TOUR)
+    assert net["delta"]["estimate"] == pytest.approx(177.09, rel=1e-3)
+    assert net["relative_delta"] == pytest.approx(0.153, **TOUR)
     assert net["prob_direction"] == 1.0
     # The zero width is the claim the tour defends out loud ("not false
     # confidence — the churn edge is an identity"), so it is asserted, not

@@ -580,7 +580,7 @@ metrics:
     dimensions:
       region: customer__region
 """
-    with pytest.raises(ValueError, match="needs a `weight`"):
+    with pytest.raises(ValueError, match="needs a `denominator` on the metric"):
         Parser(yaml_content)
 
 
@@ -612,7 +612,9 @@ metrics:
     dimensions:
       region: { source: customer__region, weight: trial_starts }
 """
-    with pytest.raises(ValueError, match="weight 'trial_starts', which is not a metric"):
+    # The weight *is* the denominator (roadmap 1.11b), so it is checked as one
+    # — one fact, one error, wherever the author spelled it.
+    with pytest.raises(ValueError, match="denominator 'trial_starts', which is not a metric"):
         Parser(yaml_content)
 
 
@@ -1412,3 +1414,182 @@ def test_the_cap_is_only_for_formula_nodes():
         + f"  - name: total\n    source: w.total\n    parents: [{', '.join(parents)}]\n"
     )
     assert len(list(Parser(tree).dag.predecessors("total"))) == n
+
+
+# --- `source` is optional on a formula node (roadmap 1.11a) ------------------
+
+
+def _derived_tree() -> str:
+    return """
+metrics:
+  - name: orders
+    source: dbt.metric.orders
+  - name: sessions
+    source: dbt.metric.sessions
+  - name: conversion_rate
+    kind: rate
+    formula: "orders / sessions"
+    parents: [orders, sessions]
+"""
+
+
+def test_a_formula_node_may_omit_its_source_and_is_marked_derived():
+    parser = Parser(_derived_tree())
+    defn = parser.dag.nodes["conversion_rate"]["definition"]
+    assert defn.source is None
+    assert defn.derived is True
+    # It has to survive serialization, or no renderer can act on it — the same
+    # reason `direction` is Optional (see test_project_invariants).
+    assert defn.model_dump()["derived"] is True
+    # And a fetched node is not derived, whatever else it declares.
+    assert parser.dag.nodes["orders"]["definition"].derived is False
+
+
+def test_a_node_with_neither_source_nor_formula_is_refused():
+    with pytest.raises(ValueError, match="no `source` and no `formula`"):
+        Parser("metrics:\n  - name: mystery\n")
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "    dimensions:\n      region: customer__region\n",
+        "    lags: { orders: 2 }\n",
+        "    sql: SELECT 1\n",
+    ],
+)
+def test_a_derived_node_refuses_fetch_instructions_by_name(extra):
+    """Each refusal names the field. Silently ignoring a `sql:` on a node
+    nothing fetches leaves an author with the wrong model of what they wrote."""
+    tree = _derived_tree().replace(
+        "    parents: [orders, sessions]\n",
+        "    parents: [orders, sessions]\n" + extra,
+    )
+    with pytest.raises(ValueError, match="but no `source`"):
+        Parser(tree)
+
+
+# --- a rate declares its denominator (roadmap 1.11b) -------------------------
+
+
+def test_denominator_defaults_from_a_simple_ratio_formula():
+    parser = Parser(_derived_tree())
+    assert parser.dag.nodes["conversion_rate"]["definition"].denominator == "sessions"
+    assert parser.rates_without_denominator == []
+
+
+def test_denominator_is_promoted_from_a_dimension_weight():
+    """The near-miss 1.11b is built on: `churn_arpu` already declared its
+    denominator, filed under slicing where the fetch path could not see it."""
+    parser = Parser("""
+metrics:
+  - name: churned_subscriptions
+    source: dbt.metric.churned_subscriptions
+  - name: churn_arpu
+    source: dbt.metric.churn_arpu
+    kind: rate
+    dimensions:
+      plan: { source: mrr_movement__plan, weight: churned_subscriptions }
+""")
+    assert parser.dag.nodes["churn_arpu"]["definition"].denominator == "churned_subscriptions"
+
+
+def test_a_dimension_weight_may_not_contradict_the_denominator():
+    with pytest.raises(ValueError, match="They are the same fact"):
+        Parser("""
+metrics:
+  - name: a
+    source: dbt.metric.a
+  - name: b
+    source: dbt.metric.b
+  - name: r
+    source: dbt.metric.r
+    kind: rate
+    denominator: a
+    dimensions:
+      plan: { source: p, weight: b }
+""")
+
+
+def test_the_node_level_denominator_flows_down_into_dimension_weights():
+    parser = Parser("""
+metrics:
+  - name: subs
+    source: dbt.metric.subs
+  - name: arpu
+    source: dbt.metric.arpu
+    kind: rate
+    denominator: subs
+    dimensions:
+      plan: p
+      country: c
+""")
+    defn = parser.dag.nodes["arpu"]["definition"]
+    assert {d.weight for d in defn.dimensions.values()} == {"subs"}
+
+
+def test_a_rate_without_a_denominator_warns_rather_than_failing(caplog):
+    """43 of this repo's 52 rate metrics declare one nowhere, and no name tells
+    you what a rate is over — so this reports, it does not refuse."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="breakdown.parser"):
+        parser = Parser("""
+metrics:
+  - name: mystery_rate
+    source: dbt.metric.mystery_rate
+    kind: rate
+""")
+    assert parser.rates_without_denominator == ["mystery_rate"]
+    assert "mystery_rate" in caplog.text and "denominator" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "denominator,message",
+    [
+        ("nope", "not a metric in the tree"),
+        ("other_rate", "itself `kind: rate`"),
+    ],
+)
+def test_an_unusable_denominator_is_refused(denominator, message):
+    with pytest.raises(ValueError, match=message):
+        Parser(f"""
+metrics:
+  - name: other_rate
+    source: dbt.metric.other_rate
+    kind: rate
+    denominator: base
+  - name: base
+    source: dbt.metric.base
+  - name: r
+    source: dbt.metric.r
+    kind: rate
+    denominator: {denominator}
+""")
+
+
+def test_a_denominator_may_not_be_coarser_than_its_rate():
+    with pytest.raises(ValueError, match="at coarser grain"):
+        Parser("""
+metrics:
+  - name: monthly_base
+    source: dbt.metric.monthly_base
+    grain: month
+  - name: weekly_rate
+    source: dbt.metric.weekly_rate
+    grain: week
+    kind: rate
+    denominator: monthly_base
+""")
+
+
+def test_a_denominator_on_a_non_rate_is_refused():
+    with pytest.raises(ValueError, match=r"A denominator says how a \*rate\*"):
+        Parser("""
+metrics:
+  - name: base
+    source: dbt.metric.base
+  - name: total
+    source: dbt.metric.total
+    denominator: base
+""")

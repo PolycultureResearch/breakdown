@@ -48,7 +48,8 @@ metrics:
 
   - name: average_order_value
     source: jaffle_shop.metrics.average_order_value
-    kind: rate   # an average is a ratio — never summed when resampled
+    kind: rate                   # an average is a ratio — never summed when resampled
+    denominator: order_count     # ...and a window's average is Σrevenue / Σorders
 
   - name: revenue
     description: "Arithmetic identity — Shapley attribution available"
@@ -199,7 +200,7 @@ decided by whether the child carries a `formula`.
 ```yaml
 metrics:
   - name: daily_sessions
-    source: jaffle_shop.metrics.sessions          # required on every metric
+    source: jaffle_shop.metrics.sessions          # required, except on a derived formula node
 
   - name: order_count
     source: jaffle_shop.metrics.order_count

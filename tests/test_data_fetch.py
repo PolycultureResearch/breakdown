@@ -435,8 +435,16 @@ def test_warehouse_stock_leading_gap_raises():
         _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week", kind="stock")
 
 
-def test_warehouse_rate_missing_interior_period_raises():
+def test_warehouse_rate_missing_interior_period_is_undefined_not_invented(caplog):
+    """An interior gap in a rate is left **undefined**, and said so (1.11).
+
+    It used to raise, which took the whole tree down for a metric whose
+    denominator is legitimately zero in a few periods. Nothing is invented
+    either way — the difference is that the metric can now be served, with the
+    periods it has no value for carrying no value.
+    """
     import datetime
+    import logging
 
     # Interior gap (Jan 8) between returned rows: a rate cannot be invented.
     # (A trailing gap is trimmed like any other kind — data not loaded yet.)
@@ -444,8 +452,13 @@ def test_warehouse_rate_missing_interior_period_raises():
         (datetime.date(2024, 1, 1), 0.5),
         (datetime.date(2024, 1, 15), 0.6),
     ]
-    with pytest.raises(RuntimeError, match="Rate metric 'm' is missing week periods"):
-        _wh_fetcher(rows).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week", kind="rate")
+    with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
+        df = _wh_fetcher(rows).fetch_metric(
+            "m", "2024-01-01", "2024-01-28", grain="week", kind="rate"
+        )
+    assert df["m"].tolist()[0] == 0.5
+    assert df["m"].isna().tolist() == [False, True, False]
+    assert "UNDEFINED" in caplog.text and "2024-01-08" in caplog.text
 
 
 def test_warehouse_misaligned_labels_raise():
@@ -832,10 +845,15 @@ def test_empty_result_full_fill_draws_no_leading_warning(caplog):
     assert caplog.text == ""
 
 
-def test_leading_gap_still_raises_for_stock_and_rate(caplog):
-    """`stock` has nothing to forward-fill from and `rate` cannot be invented:
-    both already refused to fabricate, and a warning must not soften either
-    into a log line."""
+def test_a_leading_gap_is_never_filled_for_a_stock_or_a_rate(caplog):
+    """Neither kind fabricates a leading value; they differ in how they say so.
+
+    `stock` has nothing to forward-fill from and refuses outright. `rate` has
+    no value to invent either, and leaves the periods undefined with a warning
+    naming them (roadmap 1.11) — the metric is served, the periods are not.
+    What must never happen for either is the C18 shape: a value appearing where
+    the source returned none.
+    """
     import datetime
     import logging
 
@@ -845,13 +863,14 @@ def test_leading_gap_still_raises_for_stock_and_rate(caplog):
             _wh_fetcher(rows).fetch_metric(
                 "m", "2024-01-01", "2024-01-28", grain="week", kind="stock"
             )
-        with pytest.raises(RuntimeError, match="Rate metric 'm' is missing week periods"):
-            _wh_fetcher(rows).fetch_metric(
-                "m", "2024-01-01", "2024-01-28", grain="week", kind="rate"
-            )
+        rate = _wh_fetcher(rows).fetch_metric(
+            "m", "2024-01-01", "2024-01-28", grain="week", kind="rate"
+        )
 
-    # The error is the disclosure for these kinds; no leading-fill line.
-    assert "leading" not in caplog.text.lower()
+    # Two leading weeks with no value, and the third carrying the only row.
+    assert rate["m"].isna().tolist() == [True, True, False]
+    assert "UNDEFINED" in caplog.text
+    assert "filled with 0.0" not in caplog.text
 
 
 def test_leading_and_interior_gaps_are_reported_separately(caplog):
@@ -936,14 +955,14 @@ def test_cloud_fetcher_stock_forward_fills_interior_gap():
     assert df["m"].tolist() == [100.0, 100.0, 250.0]
 
 
-def test_local_fetcher_rate_missing_period_raises(monkeypatch):
-    """A rate cannot be gap-filled — the same rule the warehouse path already
-    enforced, now shared."""
+def test_local_fetcher_rate_missing_period_is_undefined(monkeypatch):
+    """A rate is never gap-filled — the same rule the warehouse path enforces,
+    through the same shared contract."""
     frame = _sl_frame([pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-15")], [0.5, 0.6])
-    with pytest.raises(RuntimeError, match="Rate metric 'm' is missing week periods"):
-        _local_fetcher(frame, monkeypatch).fetch_metric(
-            "m", "2024-01-01", "2024-01-28", grain="week", kind="rate"
-        )
+    df = _local_fetcher(frame, monkeypatch).fetch_metric(
+        "m", "2024-01-01", "2024-01-28", grain="week", kind="rate"
+    )
+    assert df["m"].isna().tolist() == [False, True, False]
 
 
 def test_cloud_fetcher_tz_aware_dates_do_not_become_zeros():
@@ -1380,14 +1399,17 @@ def test_local_zero_row_flow_fills_the_spine_with_a_warning(monkeypatch, tmp_pat
     assert "unlaunched_stream" in caplog.text
 
 
-def test_local_zero_row_rate_still_errors(monkeypatch, tmp_path):
-    # A rate cannot be invented — that rule is deliberate and survives the fix.
+def test_local_zero_row_rate_is_entirely_undefined(monkeypatch, tmp_path):
+    # A rate is never invented — that rule is deliberate and survives 1.11.
+    # A window the source returned nothing for is a window with no rate in it,
+    # not a window of zeros, and every period says so.
     fetcher = _mf_writing("", monkeypatch, tmp_path)
 
-    with pytest.raises(RuntimeError):
-        fetcher.fetch_metric(
-            "conversion_rate", "2024-01-01", "2024-01-05", grain="day", kind="rate"
-        )
+    df = fetcher.fetch_metric(
+        "conversion_rate", "2024-01-01", "2024-01-05", grain="day", kind="rate"
+    )
+    assert len(df) == 5
+    assert df["conversion_rate"].isna().all()
 
 
 def test_local_zero_row_sliced_fetch_returns_no_slices(monkeypatch, tmp_path):

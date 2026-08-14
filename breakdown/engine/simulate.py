@@ -58,7 +58,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from breakdown.engine.model import fit_metric
 from breakdown.engine.progress import ProgressFn
 from breakdown.engine.progress import report as _report
-from breakdown.engine.rca import direction_fields, window_mean
+from breakdown.engine.rca import direction_fields, node_window_value
 from breakdown.formula import eval_formula
 from breakdown.grains import ensure_grained, fit_grain, snap_window, to_date
 
@@ -370,7 +370,21 @@ def run_scenario(
                     f"{scenario.baseline_end}] contains no whole '{g}' period for "
                     f"metric '{n}' (grain '{g}')."
                 )
-            base_mu[n] = window_mean(data.series(n), n, snapped.first_start, snapped.last_start)
+            # Same window-aggregation rules as RCA, through the same entry
+            # point: a rate's baseline is Σnumerator / Σdenominator over the
+            # window, never the average of its per-period ratios (roadmap
+            # 1.11c). A baseline that is undefined — every period of the window
+            # undefined — cannot be simulated from, and unlike RCA's per-node
+            # degrade every node here is needed, so it errors loudly.
+            base_mu[n] = node_window_value(data, n, snapped.first_start, snapped.last_start, g)
+            if not np.isfinite(base_mu[n]):
+                raise ValueError(
+                    f"Metric '{n}' has no value over the baseline window "
+                    f"[{scenario.baseline_start}, {scenario.baseline_end}]: every "
+                    f"whole '{g}' period in it is undefined (a rate whose "
+                    "denominator is zero has no rate). Choose a baseline window "
+                    "containing at least one defined period."
+                )
             base_draws[n] = np.full(n_draws, base_mu[n])
 
     # Resolve interventions to per-draw steady-state deltas, plus the point

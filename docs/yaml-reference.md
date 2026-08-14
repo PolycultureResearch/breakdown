@@ -307,15 +307,16 @@ Formulas express exact arithmetic relationships between a metric and its parents
   formula: "order_count * average_order_value"
   parents: [order_count, average_order_value]
 
-- name: conversion_rate
+- name: conversion_rate       # `denominator` defaults from the `num / den` formula
   source: my.metrics.conversion_rate
   kind: rate
   formula: "order_count / daily_sessions"
   parents: [order_count, daily_sessions]
 ```
 
-Every metric needs a `source`, formula nodes included — see the note under
-[Grains](#grains) on why a formula node is still fetched.
+Every metric needs a `source` **except** a formula node, which may omit it to be
+*derived* from its parents instead — see [Rates over true-zero
+periods](#kinds) for what that changes, including what `unexplained` then means.
 
 When a formula is defined, the BSTS model fits the **residual** (`y - formula(parents)`) rather than using parent regressors. This correctly captures the structural relationship and surfaces unexplained variance in the residual.
 
@@ -354,6 +355,7 @@ Some causal effects show up with a delay — the README's motivating example is 
 - name: churn_rate
   source: my.metrics.churn_rate
   kind: rate
+  denominator: active_customers   # a window's churn rate is Σchurned / Σactive
   parents: [support_tickets]
   lags: { support_tickets: 21 }   # churn responds to tickets from 3 weeks earlier (daily node)
 ```
@@ -386,6 +388,7 @@ Metrics have different natural time grains: signups are daily events, a cohort c
   source: my.metrics.trial_conversion_rate
   grain: week
   kind: rate
+  denominator: trial_starts     # the cohort it is a share of
 
 - name: conversions             # weekly identity over a daily flow and a weekly rate
   source: my.metrics.conversions
@@ -450,38 +453,103 @@ rest of the tree needs, the alternative is to split it into its own tree with it
 own window.
 
 **Rates over true-zero periods.** A seasonal business has stretches where the
-denominator is genuinely zero — nothing on sale, no sessions, no sends — and a
-rate is undefined there rather than low. Because a missing rate period is an
-error and a rate can never be invented, do not fetch such a metric as a rate.
-Declare the numerator and denominator as their own `flow` nodes, which fill to
-zero honestly, and make the rate a `formula` node over them:
+denominator is genuinely zero — nothing on sale, no sessions, no sends, nobody
+churned — and a rate is **undefined** there rather than low. breakdown carries
+that through rather than inventing a number: a rate period with no value stays
+undefined all the way to the payload, where it is `null`, and the UI draws a
+break in the line rather than a dip to zero. Filling `0` would assert the
+average was zero; forward-filling would assert last period's rate applied.
+Neither is a fact.
+
+What an undefined period costs, stated once so you can plan around it:
+
+| Consumer | Policy for an undefined period |
+|---|---|
+| The window aggregate | Drops out of `Σnumerator / Σdenominator`, so the window rate stays defined. A window where *every* period is undefined has no value, and the node reports `undefined_over_window` instead of a number. |
+| The fit (`POST /analyze`, RCA's on-demand fits) | **Refused.** The node is unfittable over any window containing one, and reports `fit_failed` with the periods named — nothing is imputed, and the row is not dropped (that would re-date every later period). |
+| A formula node that reads the rate | Refused over that window, with `attribution_failed` and the dates. A factor with no value has no decomposition. |
+| The grain frame | The period keeps its row. Contiguity is about dates, not values. |
+
+The most useful thing you can do about it is **declare the rate's
+`denominator`**, below: it is what makes the window aggregate correct, and it
+is what lets breakdown tell an undefined period (denominator zero — a fact)
+from a missing one (denominator non-zero — an ETL problem), which it says in
+the startup log.
+
+The stronger remedy, when the numerator and denominator are themselves metrics
+worth having, is to declare them as `flow` nodes — which fill to zero honestly
+— and make the rate a **derived** node over them:
 
 ```yaml
 - name: orders            # flow: 0 in the dark window is a fact
   source: my.metrics.orders
 - name: sessions          # flow
   source: my.metrics.sessions
-- name: conversion_rate   # the rate is now an exact identity over the two flows
-  source: my.metrics.conversion_rate
+- name: conversion_rate   # derived: no `source`, so nothing is fetched
   kind: rate
   formula: "orders / sessions"
   parents: [orders, sessions]
+  denominator: sessions
 ```
 
-This also buys exact Shapley attribution on the rate, and it keeps the dark
-window visible as what it was — no traffic — instead of an error or an invented
-number. Coarsening the grain until every period has a denominator is the other
-option, and the worse one: it throws away resolution everywhere to fix a
-problem that exists in a few windows.
+This buys exact Shapley attribution on the rate, and it keeps the dark window
+visible as what it was — no traffic — instead of an invented number. Coarsening
+the grain until every period has a denominator is the other option, and the
+worse one: it throws away resolution everywhere to fix a problem that exists in
+a few windows.
 
-**A `formula:` node is still fetched.** `source` is required on every metric,
-formula nodes included, and startup asks the provider for each one exactly like
-any other — the formula says how the node *decomposes*, not where its number
-comes from. That is deliberate: fetching the node independently is what makes
-`unexplained` meaningful (it is the measured series' own departure from the
-identity), and it is what lets breakdown tell you your identity has drifted from
-what the warehouse reports. So point `source` at the governed metric even when
-you could compute it, and keep `kind: rate` on a ratio-shaped one.
+**`source` is optional on a formula node, and only there.** Its presence is a
+real choice, not a formality:
+
+- **With a `source`** the node is *measured*. breakdown fetches it like any
+  other metric, checks the identity against what came back **at load** (a
+  warning names the drift and the worst periods), fits the residual
+  `y − formula(parents)`, and `unexplained` means *the identity missed reality
+  by this much*. Point `source` at the governed metric even when you could
+  compute it — that check is the whole value.
+- **Without one** the node is *derived*: its series is computed from its
+  parents, period by period, and nothing is ever fetched for it. `unexplained`
+  is then **0 by construction**, which is a different fact from a measured
+  zero, and every surface says so — the API sends `unexplained_status:
+  "definitional"` and `derived: true`, the RCA table labels the row *unexplained
+  — none by definition*, and the exported report spells out that nothing was
+  reconciled.
+
+A derived node may not declare `bind`, `sql`, `dimensions` (there is nothing to
+ask the provider to slice) or `lags` (deriving period *t* from parents at
+*t−lag* leaves the first periods of any window underivable). Each is refused by
+name at parse time.
+
+**A rate declares its `denominator`.** A window's rate is
+`Σnumerator / Σdenominator`, never the average of the per-period ratios, so
+breakdown needs to know what the rate is a rate *of*:
+
+```yaml
+- name: churned_subscriptions
+  source: my.metrics.churned_subscriptions
+- name: churn_arpu
+  source: my.metrics.churn_arpu
+  kind: rate
+  denominator: churned_subscriptions   # weights each period; zero -> undefined
+```
+
+The rules:
+
+- It names **a metric in this tree**, and it is *not* a parent — no DAG edge is
+  created. It says how the series aggregates over time, not what causes it.
+- It must be a `flow` or a `stock` (rates do not sum) at a grain that is not
+  coarser than the rate's own.
+- It is **derived where unambiguous**: from a `formula: "num / den"`, from an
+  agreeing `dimensions[].weight`, or from a `bind:` ratio whose denominator
+  names a tree metric. Declaring it twice and differently is an error.
+- `dimensions[].weight` now **defaults from it**, so the blend weights for a
+  sliced rate and its window aggregate are the same fact. A rate with a
+  dimension still needs one, from wherever.
+- A rate that declares one nowhere is **warned about, not refused** — the
+  startup log names every such node — and its window aggregate falls back to
+  the plain average of the defined periods. That fallback is the old behaviour
+  and is wrong whenever the denominators differ; it survives only because
+  requiring the field would break trees that predate it.
 
 **Data freshness.** Each metric's true data edge is tracked as it is fetched and exposed as `data_through` in `GET /meta` — the inclusive last date its last observed period covers. When sources disagree (one mart lags the others), the UI anchors every card's headline number, delta, and sparkline at the tree-wide edge via the **As of** selector (toolbar), which defaults to the oldest `data_through` across metrics and counts only periods *fully completed* by that date — so a calendar week the data edge cuts in half never becomes a headline number. The one case this cannot catch is a partially loaded most-recent period (the mart wrote *some* rows for it): detecting that needs load-completeness metadata on the mart side.
 

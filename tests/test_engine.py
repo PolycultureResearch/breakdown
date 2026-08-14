@@ -133,7 +133,7 @@ def test_nan_column_raises():
     data = generate_mock_data(n_days=50)
     data.loc[5, "daily_sessions"] = float("nan")
 
-    with pytest.raises(ValueError, match="NaN values found"):
+    with pytest.raises(ValueError, match="Cannot fit over undefined periods"):
         fit_metric(parser.dag, data, "order_count", draws=100, tune=100)
 
 
