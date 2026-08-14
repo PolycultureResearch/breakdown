@@ -53,7 +53,8 @@ The three node types use this differently:
 
 Every node declares a natural `grain` (`day`, `week`, `month`; default day)
 and a `kind` (`flow` sums over time, `stock` takes the last value, `rate`
-recomputes from components). **A node is fetched, fitted, and attributed at
+recomputes from its components — `Σnumerator / Σdenominator`, never an average
+of per-period ratios). **A node is fetched, fitted, and attributed at
 its own grain, never below it.** This is a statistical statement, not a
 formatting one: a monthly snapshot forced onto a daily spine is 30 identical
 rows carrying one observation of information — the posterior it produces is
@@ -108,8 +109,33 @@ Consequences to keep in mind when reading results:
   periods, which gives the node a level shift and a trend it never had, and RCA
   can then rank it as a cause. If a node launched mid-window, the honest fix is
   a later `--start-date` for the tree, or a window that begins where the metric
-  does. (`stock` and `rate` refuse instead: a stock has nothing to carry
-  backwards, and a rate cannot be invented at all.)
+  does. (`stock` refuses instead — it has nothing to carry backwards. `rate`
+  neither fills nor refuses: see below.)
+
+### Rates over undefined periods
+
+A rate whose denominator is genuinely zero in a period — nobody churned that
+week, nothing was on sale that day — has **no value** there. It is not low, and
+it is not zero: `0/0` is undefined, and the canonical semantic-layer idiom
+(`num / nullif(den, 0)`) returns NULL for exactly this reason. breakdown carries
+that through rather than inventing a number, and the same representation stands
+for a period the source simply never returned, because a provider cannot tell
+the two apart. What it *can* do, once the rate declares its `denominator`, is
+classify them after the fetch — denominator zero is a fact, denominator
+non-zero is a missing value — and it says which in the startup log.
+
+The policy at each consumer, stated once:
+
+| Consumer | Policy |
+|---|---|
+| **The window aggregate** | A window's rate is `Σnumerator / Σdenominator`, which equals the *denominator-weighted* mean of the per-period rates. A period with a zero denominator contributes to neither sum, so it drops out and the window rate stays well-defined where the per-period rate is not. This is the same rule `resample_up` has always enforced in the time direction ("recompute from components, never average daily ratios"), now applied to the window. |
+| **A rate with no declared `denominator`** | Falls back to the plain average of its *defined* periods. That is the pre-1.11 number and it is wrong whenever the denominators differ; it survives only because requiring the field would break existing trees. Every such node is named in the startup log. Declare `denominator:`. |
+| **A window with no defined period at all** | The node has no value: `status: "undefined_over_window"`, with `baseline`/`actual`/`gap` all null rather than a fabricated number. |
+| **The fit** | **Refused.** A period with no value cannot be trained on, and every imputation of it (zero, forward-fill, interpolation) is a fabricated observation the posterior would not know to widen for. Dropping the row is worse — model time, lags and the seasonal design are positional, so deleting a period silently re-dates every later one. The node reports `fit_failed` with the periods named, and only that node's attribution is lost. |
+| **A formula node reading the rate** | Refused over any window containing an undefined period, with `attribution_failed` and the dates: a factor with no value has no decomposition. |
+| **`_check_contiguous`** | Unaffected. Contiguity is a property of the *dates*, and an undefined period keeps its row — which is precisely why the value is carried in place rather than dropped. |
+| **The block bootstrap** | Nothing new. Replicates that come out non-finite are dropped and the interval is withheld or computed from the survivors, under the existing `ci_status: "nonfinite_bootstrap_replicates"`. Where the rate's own aggregate is decomposed (`aggregation: "components"`), the resampling runs over the window's *defined* periods, so replicates and the exact value agree about which periods exist. |
+| **`snap_window` / coverage validation** | Unaffected. Both ask whether the window's periods lie inside the node's data; an undefined period is inside it. |
 
 ## What data the fit sees
 
@@ -367,6 +393,19 @@ remainder is reported as `unexplained`.
   exact identity has `unexplained = 0` up to floating point, and anything
   nonzero means the target's own series genuinely disagrees with
   `formula(parents)` inside one of the windows.
+- For a **derived** node — a formula node with no `source` of its own, whose
+  series *is* `formula(parents)` — `unexplained` is `0` **by construction**, and
+  the response says so with `unexplained_status: "definitional"`. That zero is
+  not a reconciliation: nothing was compared, because there is no independently
+  measured series to compare against. Read it as *we did not check*, and if you
+  want the check, give the node a `source`. (breakdown then verifies the
+  identity against the fetched series at **load**, over the whole window, and
+  warns with the worst periods — so drift is reported even where no RCA looks.)
+
+`unexplained_status` is `"measured"` everywhere else, including on every
+probabilistic node. The distinction exists because a zero that was measured and
+a zero that was assumed look identical on a screen, and reading the second as
+the first reports a verified identity nobody verified.
 
 A large `unexplained` is a finding, not an error — it says "neither the parents
 you modeled nor the fitted trend/seasonality account for this move."

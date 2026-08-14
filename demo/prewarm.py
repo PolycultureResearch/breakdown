@@ -52,6 +52,18 @@ def call(url: str, method: str = "GET", timeout: int = 900):
         return json.loads(r.read())
 
 
+# How many times a sliced fetch is attempted before it counts as a failure.
+#
+# Measured 2026-08-13 rebuilding the demo from scratch: `mf query` returned a
+# non-zero exit with **empty stderr** on 12 of 32 pairs, and every one of them
+# succeeded on the next pass with the same command and the same data. So the
+# failure is transient in the MetricFlow/DuckDB path, not in the query — and a
+# whole rebuild aborting on it (the target is `snapshots: build`, so a retry is
+# minutes of dbt) is a worse answer than asking twice. A pair that fails every
+# attempt is still a hard failure: this retries, it does not tolerate.
+_ATTEMPTS = 3
+
+
 def warm_slices(base: str) -> list[str]:
     """One touch per declared (metric, dimension) — the widened fetch does the rest.
 
@@ -70,12 +82,22 @@ def warm_slices(base: str) -> list[str]:
             f"&reference_start={rs}&reference_end={re}"
             f"&analysis_start={as_}&analysis_end={ae}"
         )
-        try:
-            call(url, method="POST")
-            print(f"  ok   {metric} by {dim}")
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
-            detail = e.read().decode()[:200] if isinstance(e, urllib.error.HTTPError) else str(e)
-            print(f"  FAIL {metric} by {dim}: {detail}")
+        detail = None
+        for attempt in range(1, _ATTEMPTS + 1):
+            try:
+                call(url, method="POST")
+                note = "" if attempt == 1 else f" (attempt {attempt})"
+                print(f"  ok   {metric} by {dim}{note}")
+                detail = None
+                break
+            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
+                detail = (
+                    e.read().decode()[:200] if isinstance(e, urllib.error.HTTPError) else str(e)
+                )
+                if attempt < _ATTEMPTS:
+                    print(f"  retry {metric} by {dim}: {detail}")
+        if detail is not None:
+            print(f"  FAIL {metric} by {dim} after {_ATTEMPTS} attempts: {detail}")
             failures.append(f"slice {metric} by {dim}")
     return failures
 

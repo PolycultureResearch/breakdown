@@ -59,7 +59,46 @@ def test_every_rate_is_declared_not_inherited(defs, caplog):
     with caplog.at_level(logging.WARNING, logger="breakdown.parser"):
         with open(TREE) as fh:
             Parser(fh.read())
-    assert [r.message for r in caplog.records] == []
+    # Everything except the standing denominator inventory below, which is a
+    # different lint about a different field and has its own test.
+    assert [r.message for r in caplog.records if "denominator" not in r.message] == []
+
+
+def test_the_rates_still_needing_a_denominator_are_counted_and_named(parser, caplog):
+    """Roadmap 1.11b's "report the list", asserted rather than logged and lost.
+
+    A rate with no `denominator` aggregates over a window as the plain average
+    of its per-period ratios — the pre-1.11 number, which is wrong whenever the
+    denominators differ. Requiring one would have broken 40 nodes here, so it
+    warns; this is what keeps the warning from becoming wallpaper.
+
+    The count is pinned so it can only go **down**. Declaring a denominator on
+    a rate fails this test, which is the moment to lower the number — and when
+    it reaches zero, the moment to make the field mandatory.
+    """
+    rates = [
+        n
+        for n, d in ((n, parser.dag.nodes[n]["definition"]) for n in parser.dag)
+        if d.kind == "rate"
+    ]
+    assert len(rates) == 46
+    assert len(parser.rates_without_denominator) == 40, (
+        "the reference tree's rate inventory moved; if a denominator was "
+        "declared, lower this number (and see roadmap 1.11b)"
+    )
+    assert set(parser.rates_without_denominator) <= set(rates)
+    # The six that do declare one got it from a `dimensions[].weight` — the
+    # near-miss 1.11b is built on: the fact was already collected, filed under
+    # slicing, and invisible to the fetch and aggregation paths.
+    declared = sorted(set(rates) - set(parser.rates_without_denominator))
+    assert declared == [
+        "average_churned_mrr",
+        "average_new_mrr",
+        "contract_renewal_rate",
+        "organic_traffic_conversion_rate",
+        "paid_traffic_conversion_rate",
+        "true_trial_conversion_rate",
+    ]
 
 
 def test_stocks_are_declared_as_stocks(defs):

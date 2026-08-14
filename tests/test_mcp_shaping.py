@@ -289,7 +289,13 @@ def test_compact_scenario():
 def test_how_to_read_guides():
     for guide in (RCA_HOW_TO_READ, SLICE_HOW_TO_READ, WHATIF_HOW_TO_READ):
         assert guide.startswith("How to read")
-        assert 400 < len(guide) < 2500  # substantial but token-bounded
+        # Substantial but token-bounded. Raised from 2500 to 2800 for
+        # roadmap 1.11's `unexplained_status` line: the guide was 9 characters
+        # under the old ceiling, and this is the one distinction an agent
+        # cannot reconstruct from the payload — read wrong, it narrates a
+        # verified identity that was never verified. Raise it again only for
+        # something with that shape.
+        assert 400 < len(guide) < 2800
     assert "unexplained" in RCA_HOW_TO_READ
     assert "prob_direction" in WHATIF_HOW_TO_READ
     assert "excess" in SLICE_HOW_TO_READ

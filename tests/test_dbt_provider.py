@@ -86,7 +86,10 @@ def test_partial_edge_periods_are_dropped_at_week_grain(fetcher):
     assert df.empty
 
 
-def test_a_rate_refuses_to_be_gap_filled(con):
+def test_a_rate_is_never_gap_filled(con):
+    """A period the ratio has no rows for carries no value — not a zero, not
+    the previous day's rate (roadmap 1.11). The refusal to *invent* is the
+    invariant; refusing to serve the metric at all was the collateral damage."""
     bind = BindingSpec(
         relation="fct_orders",
         grain_key="order_id",
@@ -96,8 +99,9 @@ def test_a_rate_refuses_to_be_gap_filled(con):
         denominator="amount",
     )
     f = DbtDataFetcher({"r": bind}, connect=lambda: con, dialect="duckdb")
-    with pytest.raises(RuntimeError, match="cannot be gap-filled"):
-        f.fetch_metric("r", "2024-01-01", "2024-01-04", grain="day", kind="rate")
+    df = f.fetch_metric("r", "2024-01-01", "2024-01-04", grain="day", kind="rate")
+    assert df["r"].isna().any()
+    assert not (df["r"] == 0.0).any()
 
 
 # --- slicing ----------------------------------------------------------------

@@ -113,7 +113,37 @@ def _check_tree(tree_path: str) -> _TreeCheck:
     out.results.append(
         CheckResult.ok("tree parses", f"{n} metrics, provider '{out.config.provider.type}'")
     )
+    out.results.append(_check_rate_denominators(out.parser))
     return out
+
+
+def _check_rate_denominators(parser) -> CheckResult:
+    """Which rates cannot be aggregated from their components (roadmap 1.11b).
+
+    A warning in the startup log is where this fact goes to be ignored, so
+    `doctor` names the nodes: a rate with no `denominator` reports a window
+    value that is the plain average of its per-period ratios, which is not what
+    a window's rate is. Deliberately a `skip`, not a `fail` — the tree works,
+    and demanding the field would mean guessing what 43 of this repo's own 52
+    rate metrics are ratios of.
+    """
+    rates = [m.name for m in parser.config.metrics if getattr(m, "kind", "flow") == "rate"]
+    missing = list(getattr(parser, "rates_without_denominator", []))
+    if not rates:
+        return CheckResult.skip("rate denominators", "no `kind: rate` metrics in this tree")
+    if not missing:
+        return CheckResult.ok(
+            "rate denominators",
+            f"all {len(rates)} rate(s) declare one — window values recompute from components",
+        )
+    shown = ", ".join(missing[:6]) + (" …" if len(missing) > 6 else "")
+    return CheckResult.skip(
+        "rate denominators",
+        f"{len(missing)} of {len(rates)} rate(s) declare none: {shown}. Their "
+        "window values are the average of the per-period ratios, not "
+        "Σnumerator / Σdenominator, and an undefined period cannot be told "
+        "from a missing one. Add `denominator: <metric>` to each.",
+    )
 
 
 # The `dbt` chain, in the order a failure actually cascades: the manifest has to
@@ -182,7 +212,9 @@ def check_warehouse(config: MetricTreeConfig, start_date: str, end_date: str) ->
     results: List[CheckResult] = []
 
     metric_sql = {m.name: m.sql for m in config.metrics if m.sql}
-    missing_sql = [m.name for m in config.metrics if not m.sql]
+    # Derived nodes are computed from parents and never fetched, so they owe
+    # no `sql` (roadmap 1.11a).
+    missing_sql = [m.name for m in config.metrics if not m.sql and not m.derived]
     if missing_sql:
         results.append(
             CheckResult.fail(
@@ -349,7 +381,9 @@ def check_cloud(config: MetricTreeConfig) -> List[CheckResult]:
         results.extend(_skip_rest(["tree metrics exist"], "semantic layer unreachable"))
         return results
 
-    missing_metrics = sorted({m.source.split(".")[-1] for m in config.metrics} - available)
+    missing_metrics = sorted(
+        {m.source.split(".")[-1] for m in config.metrics if m.source} - available
+    )
     if missing_metrics:
         results.append(
             CheckResult.fail(
@@ -460,15 +494,18 @@ def _check_local_migration(config: MetricTreeConfig) -> CheckResult:
 
     servable = set(bridged.bindings) | set(bridged.formulas)
     reasons = {s.name: s.reason for s in bridged.skipped}
+    # Derived nodes (no `source`) are computed from their parents and never
+    # fetched, so they neither need nor can have a manifest entry.
+    fetched = [m for m in config.metrics if m.source]
     blocked = [
         (m.source.split(".")[-1], m.name)
-        for m in config.metrics
+        for m in fetched
         if m.source.split(".")[-1] not in servable
     ]
     if not blocked:
         return CheckResult.ok(
             name,
-            f"all {len(config.metrics)} metric(s) translate — this tree can move to "
+            f"all {len(fetched)} fetched metric(s) translate — this tree can move to "
             "`provider: {type: dbt}` and drop the `mf` binary",
         )
     detail = ", ".join(
@@ -476,7 +513,7 @@ def _check_local_migration(config: MetricTreeConfig) -> CheckResult:
     )
     return CheckResult.skip(
         name,
-        f"{len(blocked)} of {len(config.metrics)} metric(s) need MetricFlow: {detail}"
+        f"{len(blocked)} of {len(fetched)} fetched metric(s) need MetricFlow: {detail}"
         + (" …" if len(blocked) > 3 else "")
         + ". Stay on `local` for these, or express them with a node-level `bind:` "
         "block and move the rest.",
@@ -545,7 +582,11 @@ def check_dbt(
         # validates a binding the server will never use. Mirrors _build_fetcher.
         from breakdown.data_fetch import provider_query_name
 
-        overrides = {provider_query_name("dbt", m): m.bind for m in config.metrics if m.bind}
+        overrides = {
+            provider_query_name("dbt", m): m.bind
+            for m in config.metrics
+            if m.bind and not m.derived
+        }
         bridged = fetcher_from_project(
             project,
             target=cfg.target,
@@ -600,7 +641,7 @@ def check_dbt(
     # 3. every tree metric resolves to a binding
     from breakdown.data_fetch import provider_query_name
 
-    wanted = {provider_query_name("dbt", m): m.name for m in config.metrics}
+    wanted = {provider_query_name("dbt", m): m.name for m in config.metrics if not m.derived}
     unbound = sorted(q for q in wanted if q not in bridged.bindings)
     if unbound:
         return stop(
@@ -855,6 +896,9 @@ def check_fit_readiness(parser, start_date: str, end_date: str) -> List[CheckRes
     lines, short = [], []
     headroom = []  # (metric, earliest) where history exists before start_date
     for m in parser.config.metrics:
+        if m.derived:
+            lines.append(f"{m.name}: derived from parents — nothing to fetch")
+            continue
         query_name = provider_query_name(cfg.type, m)
         earliest = fetcher.earliest_date(query_name, m.grain)
         if earliest is not None and earliest < start_date:

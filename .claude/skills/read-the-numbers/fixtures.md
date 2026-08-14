@@ -45,8 +45,11 @@ provider instead of a snapshot, it fails loudly rather than quietly working on a
 machine that happens to have the dbt project. Copy the command; do not "fix" the
 path.
 
-Snapshots are committed (`demo/.breakdown/snapshots`, 53 files). If missing,
-`make -C demo snapshots`.
+Snapshots are committed (`demo/.breakdown/snapshots`, 51 files: 18 metrics + 32
+sliced + the manifest). If missing, `make -C demo snapshots` — which regenerates
+both halves and, since roadmap 1.11, actually completes: it had been unable to
+finish since C2 landed on 2026-08-05, invisibly, because the snapshots were
+committed.
 
 **Four planted stories**, each with a known cause. Full script and the expected
 narrative: [`knowledge/demo_guided_tour.md`](../../../knowledge/demo_guided_tour.md),
@@ -78,6 +81,22 @@ sampler change that moves the values:
 
 If the top cause moves off `new_subscriptions`, that is a finding regardless of
 what the tests say — the planted cause is a volume story.
+
+**`churn_arpu` is the undefined-rate fixture.** Nine of its 113 weeks have no
+value — every one of them a week in which nobody churned, so the rate is `0/0`
+(the tree declares `denominator: churned_subscriptions`, which is what lets the
+engine say *undefined* rather than *missing*). Use it to exercise roadmap 1.11:
+
+- `2024-06-03` → `2024-06-24` and `2024-07-08` → `2024-07-29` are each **four
+  consecutive** undefined weeks, so a window inside either is entirely
+  undefined and `churn_arpu` reports `undefined_over_window`;
+- `2024-09-02` is a lone undefined week — a good single-period analysis window;
+- a window merely *containing* one still has a defined rate, because the window
+  aggregate is `Σchurned_mrr / Σchurned_subscriptions`;
+- any window containing one makes `churned_mrr` (which multiplies by it)
+  `attribution_failed`, and leaves every other node in scope reporting.
+
+Every tour window is well clear of all nine, so the four stories are unaffected.
 
 **Known-bad:** none currently logged.
 

@@ -25,6 +25,10 @@ RCA_HOW_TO_READ = (
     "unmodeled factors land in `unexplained` or get misattributed.\n"
     "- `unexplained` is a first-class finding: when it is large, the honest story is "
     "'the modeled drivers don't account for this move' — do not force the gap onto the parents.\n"
+    "- `unexplained_status`: `measured` (the node's own fetched series was compared, so zero "
+    "means it reconciled) or `definitional` (the node is derived — its series *is* the "
+    "formula — so zero means nothing was checked; never narrate that as 'the identity "
+    "holds').\n"
     "- `ranked_causes` is a triage order ('look here first'), not a probability that a "
     "metric is the cause.\n"
     "- `share_of_gap` is unclamped: opposing parents can legitimately sum past 100% or go negative.\n"
@@ -223,6 +227,11 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
             "seasonality_warnings": node.get("seasonality_warnings"),
             "ci_status": node["ci_status"],
             "unexplained": node["unexplained"],
+            # Never dropped for token economy: `unexplained: 0` means two
+            # opposite things (a reconciliation, or a derived node nobody
+            # checked), and an agent reading the first as the second reports a
+            # verified identity that was never verified. One field, five bytes.
+            "unexplained_status": node.get("unexplained_status"),
             "components": (
                 {k: v["estimate"] for k, v in node["components"].items()}
                 if node["components"]

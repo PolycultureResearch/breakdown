@@ -193,7 +193,7 @@ Trimmed response:
       "baseline": 25000.0, "actual": 27000.0, "gap": 2000.0, "relative_change": 0.08,
       "attribution_method": "shapley",
       "ci_status": "ok",
-      "unexplained": 12.0,
+      "unexplained": 12.0, "unexplained_status": "measured",
       "components": null,
       "contributions": [
         {"parent": "order_count", "estimate": 1600.0, "share_of_gap": 0.8,
@@ -212,7 +212,7 @@ Trimmed response:
       "baseline": 500.0, "actual": 540.0, "gap": 40.0, "relative_change": 0.08,
       "attribution_method": "posterior",
       "ci_status": "ok",
-      "unexplained": 1.4,
+      "unexplained": 1.4, "unexplained_status": "measured",
       "components": {
         "trend": {"estimate": 0.5, "ci_95": [-1.1, 2.2]},
         "seasonal": {"estimate": 0.1, "ci_95": [-0.6, 0.8]}
@@ -270,13 +270,18 @@ than buried in a status nobody would find useful.
 | `posterior_only_single_period` | The same for a posterior node — coefficient uncertainty remains, but the window-sampling component is absent, so the interval is narrower than the truth. |
 | `nonfinite_bootstrap_replicates` | At least one interval on this node was computed from a **subset** of the bootstrap replicates, or withheld because too few survived. A resampled denominator can land on ~0 even when no single period is zero. **The point estimates are unaffected** — they are the exact Shapley values, never bootstrap means; only the intervals lost resolution. |
 
-**Two-level attribution (formula nodes).** Each formula-node contribution also carries a `decomposition` — `{"means": {estimate, ci_95}, "comovement": {estimate, ci_95}}` with `means + comovement = estimate` exactly per bootstrap replicate — and the node carries an `interaction` summary (the summed co-movement shift across parents, with its own CI). The UI's default **Headline** view is the classic price/volume/mix bridge built from these: one row per parent showing its means-bridge contribution, plus one explicit *co-movement shift* row, plus unexplained — rows total to the gap. The **Detailed** toggle expands each parent to its full split. The interaction is shown as its own labeled row rather than silently folded into the factors; for products it is exactly the parents' covariance delta, for other formulas the full within-window co-movement/Jensen shift.
+**Two-level attribution (formula nodes).** Each formula-node contribution *usually* carries a `decomposition` — `{"means": {estimate, ci_95}, "comovement": {estimate, ci_95}}` with `means + comovement = estimate` exactly per bootstrap replicate — and the node carries an `interaction` summary (the summed co-movement shift across parents, with its own CI). The UI's default **Headline** view is the classic price/volume/mix bridge built from these: one row per parent showing its means-bridge contribution, plus one explicit *co-movement shift* row, plus unexplained — rows total to the gap. The **Detailed** toggle expands each parent to its full split. The interaction is shown as its own labeled row rather than silently folded into the factors; for products it is exactly the parents' covariance delta, for other formulas the full within-window co-movement/Jensen shift.
+
+The exception is a `kind: rate` node whose `formula` is `num / den` over its own declared `denominator`. Its window value *is* the formula of the window aggregates (`Σnum / Σden = mean(num) / mean(den)`), so the decomposition is the window-means bridge and nothing else: `aggregation: "components"` on `GET /shapley`, and both the per-contribution `decomposition` and the node's `interaction` are **absent** rather than reported as zero. A term the decomposition does not contain must not be published as a term measured to be zero.
 
 ## Root cause analysis
 
 `POST /rca/{name}` combines the two attribution methods across a metric tree:
 
 - **Formula nodes** get `attribution_method: "shapley"` — exact symmetric per-day Shapley values (a window-means bridge plus each parent's share of the within-window co-movement term of each window, analysis added and reference subtracted), so shifts in the parents' within-window co-movement are attributed to parents. `unexplained` is only the target's own measurement noise around the formula — for an exact identity it is zero.
+- **`unexplained_status`** says what that number is, because `0` means two opposite things. `"measured"` — the node has its own `source`, it was fetched, and the decomposition was compared against it; zero means it reconciled. `"definitional"` — the node is [derived](yaml-reference.md#kinds) (no `source`, so its series *is* the formula); zero means nothing was checked. `null` when no attribution ran. The UI labels the second case *unexplained — none by definition* and the exported report spells it out; never read a definitional zero as a passed identity check.
+- **A node whose window value does not exist** reports `status: "undefined_over_window"` with `baseline`/`actual`/`gap` all `null`: every period of one of its windows was undefined (a rate whose denominator is zero has no rate). A window merely *containing* undefined periods is fine — rates aggregate as `Σnumerator / Σdenominator`, so those periods drop out of both sums.
+- **A rate's `baseline`/`actual`** are `Σnumerator / Σdenominator` over the window whenever the metric declares a [`denominator`](yaml-reference.md#kinds), not the average of its per-period ratios. A rate that declares none falls back to that average over its defined periods, and the startup log names every such node.
 - **Probabilistic nodes** get `attribution_method: "posterior"` — each contribution is the posterior over the parent's raw-scale coefficient (`beta_raw`) times the parent's window-over-window change. Lagged parents are compared over windows shifted back by the lag, and each lagged contribution reports `lag` and `parent_windows` — the parent's own shifted `{reference, analysis}` windows — so you can see (and reuse, e.g. for `POST /rca/{parent}/slices`) exactly which parent periods were examined. These nodes also report a `components` block: the fitted model's own trend and seasonal terms as window-over-window deltas with CIs, so they no longer hide inside `unexplained`. `components` carries only the terms the model actually contains — every fit has a local level, so `trend` is always there, but a node that declares no [`seasonality`](yaml-reference.md#seasonality) has no `seasonal` key at all rather than a 0.0 with a zero-width interval.
 
 Every contribution is reported as an `estimate` (mean), a 95% interval (`ci_95`), and `prob_same_direction` (mass on the dominant side of zero). The intervals combine coefficient uncertainty (probabilistic nodes) with **window-sampling uncertainty** — the window means themselves are resampled with a circular moving-block bootstrap (≤7-day blocks, jointly across metrics, seeded so responses are deterministic). This is what keeps a 3-day analysis window honest: its CIs are visibly wider than a 4-week window's.

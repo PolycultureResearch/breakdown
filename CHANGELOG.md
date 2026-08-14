@@ -26,6 +26,45 @@ anyone installing from an index, all of this is new.
 
 ### Added
 
+- **Rates that are undefined, not zero** (roadmap 1.11). A rate whose
+  denominator is legitimately zero in some periods — nobody churned that week —
+  has no value there, and the engine can now say so instead of refusing to load
+  the tree. Three parts:
+  - **`source` is optional on a `formula` node.** With one, the node is fetched
+    and *measured*: the identity is now checked against the fetched series at
+    **load**, over the whole window, with a warning naming the drift and the
+    worst periods. Without one, the node is **derived** from its parents and
+    `unexplained` is `0` by construction — a completely different fact from a
+    measured zero, so it is labelled everywhere it appears
+    (`unexplained_status: "measured" | "definitional"` in the payload and over
+    MCP, *unexplained — none by definition* in the RCA table, and a spelled-out
+    caveat in the exported report). A derived node may not declare `bind`,
+    `sql`, `dimensions` or `lags`; each is refused by name.
+  - **A rate declares its `denominator`** — the tree metric its per-period
+    values are weighted by. Derived where unambiguous (a `num / den` formula, an
+    agreeing `dimensions[].weight`, a `bind:` ratio naming a tree metric), and
+    `dimensions[].weight` now defaults *from* it, so there is one source of
+    truth. A rate that declares one nowhere is **warned** about by name at
+    startup and reported by `breakdown doctor`, never refused.
+  - **A window's rate recomputes from its components** — `Σnumerator /
+    Σdenominator`, the denominator-weighted mean of the per-period rates,
+    wherever a denominator is declared. **This changes published numbers** for
+    every such rate's `baseline`, `actual`, `relative_change` and what-if
+    baseline. It is also what makes a tree's own identities reconcile at window
+    level: on the White Cube demo, `mean(churned_mrr)` now equals
+    `mean(churned_subscriptions) × churn_arpu`'s window value exactly, where the
+    old average-of-ratios was 0.75% off. A rate with no declared denominator
+    keeps the old average, over its *defined* periods.
+
+  An undefined period survives the whole pipeline with a stated policy at each
+  step (documented in [`docs/model.md`](docs/model.md#rates-over-undefined-periods)):
+  it drops out of window aggregates, keeps its row in the grain frame so
+  positional indexing stays aligned, makes its node **unfittable** over any
+  window containing it (`fit_failed`, with the periods named) rather than
+  imputed, and makes a formula node reading it `attribution_failed` over that
+  window. A node with no defined period at all in a window reports the new
+  `undefined_over_window` status instead of a number.
+
 - **Engine.** Per-node Bayesian Structural Time Series with contemporaneous and
   lagged regressors and business-unit priors. Root-cause analysis over the
   ancestor DAG combining exact per-day Shapley attribution on `formula` nodes
@@ -90,6 +129,16 @@ anyone installing from an index, all of this is new.
 - **Two new per-node RCA statuses, `fit_failed` and `attribution_failed`**, each with a `status_reason`, plus a `ci_status` value `nonfinite_bootstrap_replicates`. A node that cannot be fitted or attributed is now reported as such and the rest of the tree still answers, where previously either condition failed the whole analysis or produced a 500.
 
 ### Fixed
+
+- **`GET /metrics/{name}` no longer 500s on an undefined period.** It serialized
+  its `time_series` unsanitized, so a single `NaN` reached Starlette's
+  `allow_nan=False` encoder as an unhandled 500 for the whole metric — which is
+  exactly how the White Cube demo's `churn_arpu` behaved. Undefined values are
+  `null`, as `GET /series` has always done (rule 3).
+- **`demo/` is rebuildable again.** `make -C demo snapshots` could not complete
+  after C2 landed, because the startup fetch refused `churn_arpu`'s nine
+  genuinely-undefined weeks and `/health` never reported `ok`. Invisible while
+  the snapshots stayed committed.
 
 - **No direction probability is published at exactly 1.00.** `prob_same_direction` is a proportion over 500 bootstrap replicates, so its representable values are `k/500` — there is **nothing between 0.998 and 1**, and a saturated count is the estimator running out of resolution, not a measurement of certainty. It was published as `1.0` and rendered `P(dir) 100.0%` with no qualifier on 4 of 8 contributions in one demo story and 21 of the reference tree's 105 nodes, exactly where the evidence is thinnest — C5's defect (a saturated clamp reading as certainty) on the probability side. A saturated estimate now publishes the resolution ceiling with `prob_same_direction_censored: true`, and every surface renders the bound (`>99.8%`); rendering also truncates rather than rounds, so a value below 1 can never print as `100.0%`. One estimator (`rca.prob_same_direction`) now serves `prob_concentrated` on slices and `prob_direction` in what-if too, each with its own sample size — a what-if delta with no spread at all is exact arithmetic and keeps its honest `1.0`.
 - **The exported report carries the fit window, and both attribution tables disclose a lag.** The live header has said `fitted on 87 weeks (2024-06-10 → 2026-02-02)` since 2.14; the export said only `posterior · week grain, snapped to 4+4 whole weeks · ⚠ suspect fit` — so the one node flagged suspect shipped that verdict with no way to see what the fit was made of, in the surface that circulates without its author. Separately, a contribution carrying `lag` and `parent_windows` was **measured over a different window than the header names**, and neither the live table nor the export said so: the live table now carries a `lag 1 week` chip with the shifted windows in its tooltip, and the export prints them in full.

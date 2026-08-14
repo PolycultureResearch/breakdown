@@ -142,7 +142,7 @@ Analysis **2026-05-11 → 2026-06-07**.
 
 **What it says.** Net new MRR is down **−32.1%**, and the graph splits in two
 colours: the churn branch is red (`churned_mrr` **+87.4%**,
-`churned_subscriptions` **+59.3%**, `customer_churn_rate` **+45.2%**) while
+`churned_subscriptions` **+59.3%**, `customer_churn_rate` **+44.8%**) while
 acquisition is green (`new_mrr` **+11.7%**, `new_subscriptions` **+22.3%**).
 Acquisition was having a good month and partly hid the problem.
 
@@ -151,7 +151,7 @@ Inside `churned_mrr`, the split is **73.5%** `churned_subscriptions` /
 cancelling were worth more than average.
 
 > **⚠ Known gap — one node on the churn branch is the wrong colour.**
-> `churn_arpu` is up **+18.5%** and carries **27.3%** of the churn damage, and
+> `churn_arpu` is up **+17.7%** and carries **27.3%** of the churn damage, and
 > it renders **green, with an up arrow**. `demo/white_cube_tree.yml` declares no
 > `direction` on it; the parser defaults `direction` to `up_is_good` and `/dag`
 > serializes that default indistinguishably from a declared one, so the UI has
@@ -239,8 +239,8 @@ Open the **What-if** tab after story B.
 
 1. Baseline window: **2026-06-29 → 2026-07-26** (a recent clean stretch).
 2. Intervene on `customer_churn_rate`: **−20%**.
-3. Run. `churned_mrr` falls from **$885/week to $706/week (−20.2%)**, and
-   `net_new_mrr` rises by exactly that amount — **+$179/week, +15.5%** — with
+3. Run. `churned_mrr` falls from **$885/week to $708/week (−20.0%)**, and
+   `net_new_mrr` rises by exactly that amount — **+$177/week, +15.3%** — with
    `P(direction)` **1.0** and a zero-width 95% interval. That last part is not
    false confidence: the churn edge is an arithmetic identity, so once you
    assume the rate, there is nothing left downstream to be uncertain about.

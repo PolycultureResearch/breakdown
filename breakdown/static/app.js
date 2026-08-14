@@ -847,6 +847,11 @@ const NODE_STATUS = {
     short: "attribution failed",
     explains: "Its movement below is measured from the data and stands; what is missing is the decomposition, because the formula has no finite value over these windows.",
   },
+  undefined_over_window: {
+    label: "no value — every period undefined",
+    short: "undefined over window",
+    explains: "This metric has no value over one of the windows: every period in it is undefined. A rate whose denominator is zero has no rate — nothing happened for it to be an average of — so there is no number to compare, and none is shown. Choose a window containing at least one defined period.",
+  },
 };
 
 /* The status entry for a node, or null when it is fine. Unknown statuses are
@@ -938,6 +943,44 @@ function ciStatusNote(status) {
    Shared by the live table and the exported report so the two cannot drift —
    the export carried these rows and the live view did not, which is how the
    discrepancy survived. */
+/* What the `unexplained` row is called, and whether it needs saying twice.
+
+   `unexplained: 0` has two completely different meanings and one appearance
+   (roadmap 1.11a):
+
+   - **measured** — the node's own series was fetched and compared against the
+     decomposition, and the two reconciled. That is a *result*, and a good one.
+   - **definitional** — the node is derived: its series *is* the formula, so
+     there was never anything to check. That is the *absence* of a result.
+
+   Rendering them identically is the defect this project keeps finding — an
+   absence wearing a measurement's clothes, like `null >= 0` painting a node
+   green. So the row is renamed rather than annotated: a label is in the export,
+   in a screenshot and in a copy-paste, where a tooltip is not.
+
+   Returns `null` when there is no `unexplained` to show at all. */
+function unexplainedRow(node) {
+  if (node.unexplained == null) return null;
+  if (node.unexplained_status === "definitional") {
+    return {
+      label: "unexplained — none by definition",
+      title:
+        "This node is derived: its series is computed from the formula, so the " +
+        "decomposition cannot miss it. Zero here means nothing was checked, not " +
+        "that a check passed. Give the node a `source` to have its identity " +
+        "measured against the warehouse.",
+      definitional: true,
+    };
+  }
+  return {
+    label: "unexplained",
+    title:
+      "The part of the gap the decomposition did not account for, measured " +
+      "against this node's own fetched series.",
+    definitional: false,
+  };
+}
+
 function componentRowsHtml(node, nCols, shareOf, ciCell) {
   const comps = node.components;
   if (!comps || nCols !== 5) return "";
@@ -1041,6 +1084,17 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     const out = [];
     const ci = ciStatusNote(node.ci_status);
     if (ci) out.push(`<strong>${esc(ci.text)}.</strong> ${esc(ci.why)}`);
+    // A static report has no hover, and the export is what circulates without
+    // its author — so the reason a zero is not a reconciliation is written out.
+    if (node.unexplained_status === "definitional") {
+      out.push(
+        "<strong>Derived node: nothing was reconciled.</strong> This metric has no " +
+        "<code>source</code> of its own — its series is computed from the formula below — " +
+        "so the row reading zero says the decomposition cannot miss it, not that it was " +
+        "checked against the warehouse and agreed. Give the node a source to have that " +
+        "checked.",
+      );
+    }
     if (node.fit_quality === "suspect") {
       out.push(
         "<strong>Suspect fit.</strong> The engine's own fit check failed for this node's model " +
@@ -1077,8 +1131,14 @@ function buildRcaReportHtml(res, treePng, stripPng) {
         </section>`;
       }
       const twoLevel = node.contributions.some((c) => c.decomposition);
-      const unexpl = node.unexplained != null
-        ? `<tr class="dim"><td>unexplained</td>${num(fmt(node.unexplained))}${num(shareOf(node.unexplained, node.gap))}<td class="num">—</td></tr>`
+      // Same row, same words as the live table — through the same function, so
+      // a definitional zero cannot be labelled in one surface and not the
+      // other. The export is what circulates without its author, so the
+      // distinction is in the label rather than a hover.
+      const ux = unexplainedRow(node);
+      const uxShare = ux && !ux.definitional ? shareOf(node.unexplained, node.gap) : "—";
+      const unexpl = ux
+        ? `<tr class="dim"><td>${esc(ux.label)}</td>${num(fmt(node.unexplained))}${num(uxShare)}<td class="num">—</td></tr>`
         : "";
       let tables;
       if (twoLevel) {
@@ -1097,8 +1157,8 @@ function buildRcaReportHtml(res, treePng, stripPng) {
         // Same rows, same rule as the live table — via one function, so the two
         // cannot disagree about whether trend and seasonal are part of the sum.
         const comps = componentRowsHtml(node, 5, shareOf, ciCell);
-        const unexpl5 = node.unexplained != null
-          ? `<tr class="dim"><td>unexplained</td>${num(fmt(node.unexplained))}${num(shareOf(node.unexplained, node.gap))}<td class="num">—</td><td class="num">—</td></tr>`
+        const unexpl5 = ux
+          ? `<tr class="dim"><td>${esc(ux.label)}</td>${num(fmt(node.unexplained))}${num(uxShare)}<td class="num">—</td><td class="num">—</td></tr>`
           : "";
         tables = `<table><tr><th>Parent</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>${rows}${comps}${unexpl5}</table>`;
       }
@@ -1170,7 +1230,8 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     <strong>Methods.</strong> Changes are window-mean differences at each node's grain, over the whole periods inside the
     requested windows. Formula (identity) nodes use exact symmetric per-period Shapley attribution — a window-means bridge
     plus each parent's share of each window's within-window co-movement term — so attributions sum exactly to the gap and
-    <em>unexplained</em> is measurement residual only. Probabilistic nodes multiply the fitted <code>beta_raw</code>
+    <em>unexplained</em> is measurement residual only — and where a node is <em>derived</em> (no source of its own,
+    so its series is the formula) there is no measurement, which the row says instead of reading zero. Probabilistic nodes multiply the fitted <code>beta_raw</code>
     posterior (BSTS, fit strictly before the analysis window) by the parent's window delta, with trend and seasonal
     components reported separately. Intervals combine coefficient posteriors with a circular moving-block bootstrap of
     the window rows; fits and bootstraps are seeded, so identical requests reproduce identical numbers. Full assumptions:
@@ -2231,7 +2292,16 @@ function renderMetricTab(name, data) {
           }</td></tr>`
         : ""}
       <tr><td>Parents</td><td>${parentChips}</td></tr>
-      ${def.formula ? `<tr><td>Formula</td><td><code>${esc(def.formula)}</code></td></tr>` : ""}
+      ${def.formula ? `<tr><td>Formula</td><td><code>${esc(def.formula)}</code>${
+        def.derived
+          ? ` <span class="chip lag" title="This node has no source of its own: its series is computed from the formula at load, and nothing was fetched to check the identity against. Its RCA 'unexplained' is zero by definition, not by measurement.">derived</span>`
+          : ` <span class="chip lag" title="This node is fetched independently and the identity is checked against the fetched series, so its RCA 'unexplained' is a real measurement of how far the identity missed.">measured</span>`
+      }</td></tr>` : ""}
+      ${def.denominator
+        ? `<tr><td>Denominator</td><td><code>${esc(def.denominator)}</code> <span class="muted">— a window's rate is Σnumerator / Σ${esc(def.denominator)}, so a period with none drops out</span></td></tr>`
+        : def.kind === "rate"
+          ? `<tr><td>Denominator</td><td><span class="muted" title="Without a denominator, a window's value here is the plain average of the per-period ratios — which is not what a window's rate is. Declare denominator: on this metric.">not declared — window values average the per-period ratios</span></td></tr>`
+          : ""}
       ${def.baseline
         ? `<tr><td>Baseline</td><td>${
             def.baseline.low < def.baseline.high
@@ -2389,9 +2459,14 @@ function renderTimeSeries(name, series) {
       { type: "rect", xref: "x", yref: "paper", x0: win.analysis_start, x1: win.analysis_end, y0: 0, y1: 1, fillcolor: COL.accent, opacity: 0.10, line: { width: 0 } },
     );
   }
+  // `connectgaps: false` is Plotly's default, and it is stated here rather than
+  // inherited because the honesty of this chart depends on it: an undefined
+  // rate period (roadmap 1.11) arrives as `null`, and a line drawn straight
+  // through it would assert a value nobody measured. Same on the RCA tab's
+  // chart below.
   Plotly.newPlot(
     "ts-chart",
-    [{ x, y, mode: "lines", line: { color: COL.accent, width: 1.8 }, hovertemplate: "%{x|%b %d}: %{y:,.1f}<extra></extra>" }],
+    [{ x, y, mode: "lines", connectgaps: false, line: { color: COL.accent, width: 1.8 }, hovertemplate: "%{x|%b %d}: %{y:,.1f}<extra></extra>" }],
     {
       margin: { l: 45, r: 8, t: 6, b: 22 },
       height: 200,
@@ -3270,13 +3345,18 @@ function renderRcaTab() {
       const componentRows = componentRowsHtml(node, nCols, shareOf, ciCell);
 
       let unexplained = "";
-      if (node.unexplained != null) {
+      const ux = unexplainedRow(node);
+      if (ux) {
         const dash = '<td class="num">—</td>';
+        const cell = `<td title="${esc(ux.title)}">${esc(ux.label)}</td>`;
         if (nCols === 6) {
           // Detailed view: unexplained sits in the "total Δ" column.
-          unexplained = `<tr class="dim"><td>unexplained</td>${dash}${dash}<td class="num">${fmt(node.unexplained)}</td>${dash}${dash}</tr>`;
+          unexplained = `<tr class="dim">${cell}${dash}${dash}<td class="num">${fmt(node.unexplained)}</td>${dash}${dash}</tr>`;
         } else {
-          unexplained = `<tr class="dim"><td>unexplained</td><td class="num">${fmt(node.unexplained)}</td><td class="num">${shareOf(node.unexplained, node.gap)}</td>${dash.repeat(nCols - 3)}</tr>`;
+          // A definitional zero has no share of the gap either — dividing an
+          // absence by the gap would print "0.0%", which reads as measured.
+          const share = ux.definitional ? "—" : shareOf(node.unexplained, node.gap);
+          unexplained = `<tr class="dim">${cell}<td class="num">${fmt(node.unexplained)}</td><td class="num">${share}</td>${dash.repeat(nCols - 3)}</tr>`;
         }
       }
       return `
@@ -3375,7 +3455,7 @@ async function renderRcaStrip(res) {
   ];
   Plotly.newPlot(
     el,
-    [{ x, y, mode: "lines", line: { color: COL.accent, width: 1.6 }, hovertemplate: "%{x|%b %d}: %{y:,.1f}<extra></extra>" }],
+    [{ x, y, mode: "lines", connectgaps: false, line: { color: COL.accent, width: 1.6 }, hovertemplate: "%{x|%b %d}: %{y:,.1f}<extra></extra>" }],
     {
       margin: { l: 38, r: 6, t: 4, b: 18 },
       height: 120,
