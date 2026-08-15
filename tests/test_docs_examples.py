@@ -10,9 +10,9 @@ mock generator. Every one of them was the same failure — the examples were
 prose, and prose does not run.
 
 The guard is parameterized over `DOCS` below, one entry per documentation file,
-because the reference material has been split out of the README once already
-(`docs/yaml-reference.md`, `docs/api-reference.md`) and will be again
-(`docs/deploying.md`). A move that carried the content out from under a
+because the reference material has been split out of the README more than once
+now (`docs/yaml-reference.md`, `docs/api-reference.md`, and most recently
+`docs/deploying.md`). A move that carried the content out from under a
 README-only test would silently delete the guard, so the file list — not any
 single path — is what this module scans. Adding a page is one entry.
 
@@ -260,13 +260,22 @@ DOCS = [
         yaml_blocks=2,
         parsable_yaml_blocks=2,
         skipped_yaml=[],
-        curl_examples=5,
+        curl_examples=2,
         not_replayed={
             "POST /analyze/order_count": (
                 "the bare form runs the NUTS default (4 chains x 500 draws after 500 tune) "
                 "and takes minutes; the documented ADVI form on the same route is replayed "
                 "from docs/api-reference.md"
             ),
+        },
+    ),
+    DocFile(
+        "docs/deploying.md",
+        yaml_blocks=0,
+        parsable_yaml_blocks=0,
+        skipped_yaml=[],
+        curl_examples=3,
+        not_replayed={
             "POST /trees/marketing/rca/paid_signups"
             "?analysis_start=2026-08-01&analysis_end=2026-08-07": (
                 "names the `marketing` tree and its `paid_signups` metric from the "
@@ -898,7 +907,7 @@ def test_readme_does_not_call_the_mcp_example_an_unedited_transcript():
     written prose, so the label cannot claim a captured model response.
     Relabelling was the whole point of touching that section."""
     section = README.text[README.text.index("### What it looks like") :]
-    section = section[: section.index("\n### ")].lower()
+    section = section[: section.index("\n## ")].lower()
     for forbidden in ("unedited", "verbatim"):
         assert forbidden not in section, (
             f"The MCP example section calls itself {forbidden!r}. Its figures are "

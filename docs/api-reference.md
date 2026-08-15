@@ -15,7 +15,7 @@ YAML the tree behind these routes is written in see the
 [the model and its assumptions](model.md).
 
 The **tree-scoped** routes below also answer at **`/trees/{tree_id}/…`** when the
-process serves [several trees](../README.md#serving-several-trees); the bare
+process serves [several trees](deploying.md#serving-several-trees); the bare
 paths are aliases for the default tree. The process-wide routes have one form
 only — a `run_id` is already unique, and the index and the health probe are
 about the whole process rather than one tree.
@@ -25,7 +25,7 @@ about the whole process rather than one tree.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), per-metric `grains`/`kinds`/`data_through`, fitted models, per-metric `earliest_available` history discovery (UI bootstrap) |
-| `GET` | `/dag` | Full metric DAG (nodes + edges), each node carrying its whole definition. `sql` and `bind` come back `null` to a caller that presents no token when one is configured — see [Authentication](../README.md#authentication) |
+| `GET` | `/dag` | Full metric DAG (nodes + edges), each node carrying its whole definition. `sql` and `bind` come back `null` to a caller that presents no token when one is configured — see [Authentication](deploying.md#authentication) |
 | `GET` | `/series` | Every metric's series at its native grain, `{name: {grain, dates, values}}` — one call, hydrates the UI's node cards. Mixed-grain trees have no shared date axis, so dates are per metric |
 | `GET` | `/metrics/{name}` | Metric definition, time series, posterior summary and fit diagnostics |
 | `GET` | `/metrics/{name}/query` | **The query behind a metric's numbers**, when the provider knows it — the provenance surface. Optional `dimension` for the sliced form |

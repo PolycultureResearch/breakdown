@@ -30,10 +30,13 @@ between them. The stance is **probabilistic and causal**, never frequentist:
 
 **Using breakdown** — author trees, run analyses, interpret output:
 
-- [`README.md`](README.md) — what breakdown is, quickstart, UI walkthrough, serving several trees, deploying, MCP
+- [`README.md`](README.md) — what breakdown is, quickstart, MCP
 - [`docs/yaml-reference.md`](docs/yaml-reference.md) — **the canonical tree-authoring reference**: every field the parser accepts and the rules on each
 - [`docs/api-reference.md`](docs/api-reference.md) — every route the server answers, its parameters, and its response shape
 - [`docs/model.md`](docs/model.md) — statistical assumptions and how to read results; **read this before trusting output**
+- [`docs/ui-guide.md`](docs/ui-guide.md) — driving the UI: fitting a model, running an RCA, slicing, what-if
+- [`docs/deploying.md`](docs/deploying.md) — serving several trees, authentication, Docker, `breakdown doctor`, snapshots, environment variables
+- [`docs/why-breakdown.md`](docs/why-breakdown.md) — the problem breakdown exists to solve
 - [`breakdown/examples/`](breakdown/examples/), [`knowledge/b2b_mrr_tree.yml`](knowledge/b2b_mrr_tree.yml) — the bundled runnable example and a full worked-reference tree
 
 **Building breakdown** — contributing to the code:
@@ -42,6 +45,52 @@ between them. The stance is **probabilistic and causal**, never frequentist:
 - [`docs/ai-context/frontend-ui.md`](docs/ai-context/frontend-ui.md) — frontend architecture (canvas, tabs, overlays, node cards)
 - `breakdown/` (engine) · `breakdown/static/` (UI) · `tests/`
 - [`knowledge/`](knowledge/) — product & design specs, roadmap, and historical design docs
+
+### Project structure
+
+```
+AGENTS.md            # Orientation for contributors (human or AI) — start here to build
+breakdown/
+  parser.py          # YAML → Pydantic models → NetworkX DAG
+  formula.py         # Shared formula validation / safe evaluation
+  grains.py          # All grain arithmetic: period snapping, kind-aware resampling
+  data_fetch.py      # BaseDataFetcher + Mock / Local / Cloud / Warehouse implementations
+  snapshots.py       # Parquet read-through cache at the fetcher boundary
+  dbt_manifest.py    # In-tree models for dbt's semantic_manifest.json
+  dbt_bridge.py      # semantic_manifest.json → BindingSpec per node (no dbt Cloud)
+  dbt_sql.py         # BindingSpec + grain + window (+ dimension) → dialect SQL
+  dbt_provider.py    # The `dbt` provider: profiles.yml → connection → generated SQL
+  engine/
+    model.py         # fit_metric() — BSTS via PyMC; compute_shapley()
+    rca.py           # run_rca() + shapley_attribution() — root cause analysis
+    slices.py        # slice_attribution() — dimensional slicing of a metric's gap
+    simulate.py      # run_scenario() — do-operator what-if (fitted or cold start)
+    progress.py      # Progress callbacks for long-running analyses
+  api/
+    main.py          # FastAPI app
+    trees.py         # TreeState — one per metric tree served by the process
+  mcp/
+    server.py        # MCP tools for AI assistants (list_trees, get_tree, explain_metric, run_rca, slice_metric, run_whatif)
+    shaping.py       # MCP response compaction + how_to_read caveats + UI deep links
+  cli.py             # `breakdown serve` / `breakdown doctor` console entry point
+  doctor.py          # Provider connectivity checks with copy-paste remediation
+  static/
+    index.html       # UI: Cytoscape DAG + RCA workflow (app.js, style.css)
+  examples/
+    jaffle_shop_tree.yml   # The bundled default (mock) tree
+docs/
+  model.md           # Model assumptions & how to interpret results — start here
+  yaml-reference.md  # Every field a tree may declare, and the rules on each
+  api-reference.md   # Every route the server answers, and what comes back
+  ui-guide.md        # Driving the UI
+  deploying.md       # Serving several trees, auth, Docker, doctor, snapshots
+  why-breakdown.md   # The problem breakdown exists to solve
+  ai-context/        # Architecture deep-dives (backend, frontend) for contributors
+knowledge/           # Product & design specs, roadmap, reference trees
+tests/
+Dockerfile           # Container image (see docs/deploying.md)
+compose.yaml
+```
 
 ## Run & test
 
@@ -63,7 +112,7 @@ or at a **directory** of trees (roadmap 2.16 — one `*.yml` per tree, id = file
 stem; `--default-tree <id>` picks the one the unprefixed routes mean).
 `--reload` is opt-in (the installed CLI defaults to no reload, loopback bind);
 `breakdown doctor --tree …` checks provider connectivity. Deployment (uvx, Docker)
-is covered in the [README](README.md#deploying).
+is covered in [docs/deploying.md](docs/deploying.md).
 
 ## Working agreements
 

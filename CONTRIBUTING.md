@@ -23,9 +23,8 @@ by replying with a fixed phrase. You only need to do this once.
 
 ## Getting set up
 
-See [AGENTS.md](AGENTS.md) for how the codebase is organized and
-[`README.md`](README.md#run--test) for how to install dependencies and run
-the test suite. If you're working on attribution, intervals, or fitting,
+See [AGENTS.md](AGENTS.md) for how the codebase is organized, including
+[how to install dependencies and run the test suite](AGENTS.md#run--test). If you're working on attribution, intervals, or fitting,
 read [`knowledge/statistics_whitepaper.md`](knowledge/statistics_whitepaper.md)
 first — it's the living record of what the engine's statistics do and don't
 guarantee.
