@@ -70,6 +70,48 @@ provider:
 | `warehouse` | Runs each metric's own `sql` directly against a warehouse (currently Databricks SQL). Use when the semantic layer isn't queryable — the analyst mirrors governed definitions in SQL. Requires `http_path` plus **one of**: a PAT `token` (with `host`), or a Databricks CLI OAuth `profile` created by `databricks auth login --profile <name>` (host is read from the profile). |
 | `none` | No data is ever fetched — a **cold-start tree** of declared beliefs (`assumed` is an accepted alias). Only what-if simulation is available; every non-formula node needs a `baseline` and every probabilistic edge an explicit prior. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
 
+**Installing the extra.** The base install is the whole product — engine, API,
+UI, MCP server — with the **`mock` provider**, which is enough to run the
+bundled example tree and every analysis in the README. Connecting to real data
+pulls in a vendor SDK, and those are **extras** you opt into:
+
+| You want to use | Install | Brings in |
+|---|---|---|
+| `mock`, or cold-start `none` | `pip install metric-breakdown` | — |
+| `local` (MetricFlow CLI) or `cloud` (dbt Cloud Semantic Layer) | `pip install 'metric-breakdown[dbt]'` | `dbt-metricflow`, `dbt-sl-sdk` |
+| `warehouse` (direct SQL) | `pip install 'metric-breakdown[databricks]'` | `databricks-sdk`, `databricks-sql-connector` |
+| reading a dbt project's own metric definitions (the `dbt` provider) | `pip install 'metric-breakdown[dbt-bridge]'` | `sqlglot` |
+| running that generated SQL on **BigQuery** | `pip install 'metric-breakdown[bigquery]'` | `google-cloud-bigquery` |
+| all of them | `pip install 'metric-breakdown[all]'` | all of the above — **except on Python 3.14**, where it installs `databricks` and `dbt-bridge` and omits `dbt` (see below) |
+
+`dbt-bridge` is deliberately not part of `dbt`, and depends on nothing from dbt
+Labs: reading the semantic manifest `dbt parse` already wrote needs neither
+dbt-core, a warehouse adapter, nor the `mf` binary. The manifest is a resolved
+JSON artifact, so breakdown models the subset it reads itself and the extra is
+one package. That is what keeps the `dbt` provider free of anyone else's Python
+ceiling.
+
+This is not cosmetic: the extras are ~66 packages and ~120 MB that most installs
+never touch, and dbt-core in particular drags in a large tree of its own.
+Selecting a provider without its extra fails with the exact command to run —
+and `breakdown doctor --tree …` reports it as its own check — rather than an
+`ImportError` traceback.
+
+> **Python 3.14 and the `dbt` extra.** `dbt-metricflow` and `dbt-sl-sdk` both
+> declare `requires-python < 3.14`, so **`pip install 'metric-breakdown[dbt]'`
+> fails to resolve on 3.14** — use 3.13 or earlier for the `local` and `cloud`
+> providers. `[all]` degrades rather than failing there: it installs
+> `databricks` and `dbt-bridge`, which work on 3.14, and omits `dbt`. The
+> **`dbt` provider is unaffected** and is the one to reach for on 3.14 — it
+> needs neither dbt-core nor the `mf` binary.
+
+A tree that names `local` but is served entirely from committed snapshots (see
+[Snapshots](deploying.md#snapshots-fetch-once-refit-forever)) needs neither the
+extra nor a dbt project: the extra is only required when a query actually
+reaches the provider. Until breakdown is published to PyPI, a checkout's
+`uv sync` already installs every extra, because its dev group asks for `[all]`
+— see the README's [Installation](../README.md#installation) section.
+
 **Your dbt filters come across.** Most real dbt metrics narrow their measure
 with `filter:` — regional revenue, paid signups, orders excluding test accounts
 — and breakdown imports the predicate along with everything else. There is
@@ -111,7 +153,7 @@ The rule is all-or-nothing per metric. If one conjunct of one filter does not
 resolve, the whole metric is skipped — there is no partial filter, because a
 dropped conjunct is a larger number wearing the right name. `breakdown doctor`
 lists what was skipped and why, counts the metrics that did import a filter, and
-[proves each one actually narrows](../README.md#checking-connectivity-breakdown-doctor)
+[proves each one actually narrows](deploying.md#checking-connectivity-breakdown-doctor)
 against your warehouse.
 
 > **A filtered node is smaller than the dashboard tile of the same name**, by

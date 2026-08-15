@@ -276,6 +276,26 @@ split evenly; for ratios and other formulas it is each window's full
 within-window Jensen term, so read it as "co-movement", not strictly
 "covariance".
 
+**Closed form for a 2-parent product.** The three games above are general —
+they hold for any formula, evaluated per day — but for the common case of a
+formula `A × B` with exactly two parents, they collapse to a closed form
+worth having memorized:
+
+```
+φ(A) = Δmean(A) × (mean_ref(B) + mean_an(B)) / 2  +  (cov_an(A,B) − cov_ref(A,B)) / 2
+φ(B) = Δmean(B) × (mean_ref(A) + mean_an(A)) / 2  +  (cov_an(A,B) − cov_ref(A,B)) / 2
+```
+
+Each parent's share is its own mean shift, valued at the *average* of the
+other parent's reference- and analysis-window means (the means-bridge term),
+plus half of however much the two parents' within-window covariance shifted
+between the two windows (the co-movement term, split evenly since a product is
+symmetric in its two factors). The two `φ`s sum exactly to
+`mean(A×B over analysis) − mean(A×B over reference)`, with no remainder —
+which is also why a real behavioral change like "the large orders disappeared"
+(an orders–AOV covariance shift) shows up in the attribution instead of
+draining into `unexplained`.
+
 Every contribution is summarized as an `estimate` (mean), a 95% interval
 (`ci_95`), and `prob_same_direction` (the probability mass on the dominant side
 of zero). These intervals reflect **two** sources of uncertainty:
