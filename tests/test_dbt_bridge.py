@@ -436,26 +436,66 @@ def test_an_empty_filter_intersection_is_not_a_filter():
     assert "revenue" in r.bindings and not r.skipped
 
 
-@pytest.mark.parametrize("fill", [0, 5])
-def test_fill_nulls_with_is_refused_including_the_falsy_zero(fill):
-    # `fill_nulls_with: 0` is both the commonest value and falsy: a truthiness
-    # check would let the most common case straight through.
-    r = translate(_manifest([_model(measures=())], [_new_spec("revenue")]))
-    assert r.bindings  # same metric without the flag translates
+# --- `fill_nulls_with: 0` on a flow-shaped `simple` metric (roadmap 2.20) ---
+#
+# `data_fetch.fetch_metric_data` already zero-fills every missing period of a
+# `kind: flow` node unconditionally (`breakdown/data_fetch.py`,
+# `if kind == "flow": s = s.fillna(0.0)`), so a MetricFlow metric that resolves
+# to `kind: flow` and declares `fill_nulls_with: 0` produces the identical
+# final series whether the bridge accepts or refuses it. That is the one
+# provable case; everything else below stays refused exactly as before.
+
+
+def test_fill_nulls_with_zero_on_a_flow_metric_is_accepted_as_the_proven_coincidence():
+    metric = _new_spec("revenue")  # agg="sum" -> kind: flow
+    metric["type_params"]["fill_nulls_with"] = 0
+    r = translate(_manifest([_model(measures=())], [metric]))
+    assert "revenue" in r.bindings
+    assert not r.skipped
+    assert r.kinds["revenue"] == "flow"
+
+
+def test_fill_nulls_with_nonzero_is_still_refused():
+    # A non-zero fill has no home in `BindingSpec` at all, regardless of kind.
     metric = _new_spec("revenue")
-    metric["type_params"]["fill_nulls_with"] = fill
+    metric["type_params"]["fill_nulls_with"] = 5
     r = translate(_manifest([_model(measures=())], [metric]))
     assert not r.bindings
-    assert f"`fill_nulls_with: {fill}`" in r.skipped[0].reason
+    assert "`fill_nulls_with: 5`" in r.skipped[0].reason
     assert "gap-fills from the node's `kind`" in r.skipped[0].reason
 
 
-def test_fill_nulls_with_on_the_measure_input_is_refused_too():
-    metric = _classic()
+def test_fill_nulls_with_zero_on_the_measure_input_is_accepted_too():
+    # Same safe case, the other manifest-spec location: the classic spec's
+    # measure input carries the same two flags, and `_translate_simple`
+    # checks both locations symmetrically.
+    metric = _classic()  # measure "revenue", agg="sum" -> kind: flow
     metric["type_params"]["measure"]["fill_nulls_with"] = 0
     r = translate(_manifest([_model()], [metric]))
+    assert "revenue" in r.bindings
+    assert not r.skipped
+    assert r.kinds["revenue"] == "flow"
+
+
+def test_fill_nulls_with_nonzero_on_the_measure_input_is_refused_too():
+    metric = _classic()
+    metric["type_params"]["measure"]["fill_nulls_with"] = 5
+    r = translate(_manifest([_model()], [metric]))
     assert not r.bindings
-    assert "its measure input declares `fill_nulls_with: 0`" in r.skipped[0].reason
+    assert "its measure input declares `fill_nulls_with: 5`" in r.skipped[0].reason
+
+
+def test_fill_nulls_with_zero_on_a_rate_shaped_metric_is_still_refused():
+    # The landmine roadmap 1.11 exists to prevent: an `average` aggregation
+    # resolves to `kind: rate`, whose missing period is undefined, not zero.
+    # Accepting a zero fill here would reintroduce that defect through a side
+    # door, so this must stay refused even though the fill value is zero.
+    metric = _new_spec("avg_order_value", agg="average")
+    metric["type_params"]["fill_nulls_with"] = 0
+    r = translate(_manifest([_model(measures=())], [metric]))
+    assert not r.bindings
+    assert r.skipped[0].name == "avg_order_value"
+    assert "fill_nulls_with: 0" in r.skipped[0].reason
 
 
 def test_join_to_timespine_is_refused_because_the_empty_periods_are_the_analysis():
@@ -465,6 +505,56 @@ def test_join_to_timespine_is_refused_because_the_empty_periods_are_the_analysis
     assert not r.bindings
     assert "`join_to_timespine`" in r.skipped[0].reason
     assert "time spine" in r.skipped[0].reason
+
+
+def test_join_to_timespine_with_fill_nulls_zero_is_the_canonical_accepted_idiom():
+    # `join_to_timespine: true` paired with `fill_nulls_with: 0` is
+    # MetricFlow's own idiom for "explicit zero at gaps." On a flow-shaped
+    # simple metric that coincides with breakdown's own default fill, so
+    # `join_to_timespine`'s value must not gate the decision either way here.
+    metric = _classic()
+    metric["type_params"]["measure"]["join_to_timespine"] = True
+    metric["type_params"]["measure"]["fill_nulls_with"] = 0
+    r = translate(_manifest([_model()], [metric]))
+    assert "revenue" in r.bindings
+    assert not r.skipped
+
+
+def test_fill_nulls_with_zero_on_a_ratio_metric_is_refused_unconditionally():
+    # Scope restriction: only `simple` metrics are in scope for the new
+    # acceptance. A `ratio` metric has no aggregation of its own and is always
+    # `kind: rate`, so this stays refused regardless of the fill value.
+    models = [
+        _model(
+            measures=(
+                {"name": "signups", "agg": "sum", "expr": "1"},
+                {"name": "sessions", "agg": "sum", "expr": "1"},
+            )
+        )
+    ]
+    ratio = _ratio("signup_rate", "signups", "sessions")
+    ratio["type_params"]["fill_nulls_with"] = 0
+    r = translate(_manifest(models, [ratio]))
+    assert not r.formulas
+    skipped = {s.name: s.reason for s in r.skipped}
+    assert "signup_rate" in skipped
+    assert "`fill_nulls_with: 0`" in skipped["signup_rate"]
+
+
+def test_fill_nulls_with_zero_on_a_derived_metric_is_refused_unconditionally():
+    metric = {
+        "name": "arr",
+        "type": "derived",
+        "type_params": {
+            "expr": "mrr * 12",
+            "metrics": [{"name": "mrr"}],
+            "fill_nulls_with": 0,
+        },
+    }
+    r = translate(_manifest([_model()], [metric]))
+    assert not r.formulas
+    assert "arr" not in r.kinds
+    assert "`fill_nulls_with: 0`" in r.skipped[0].reason
 
 
 def test_a_measure_alias_is_not_a_reason_to_refuse_a_simple_metric():

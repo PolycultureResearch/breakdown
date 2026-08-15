@@ -314,18 +314,24 @@ def _unsupported_semantics(metric: Any) -> Optional[str]:
     """Why `metric` must be refused outright, or None if nothing forbids it.
 
     Two MetricFlow constructs change *which periods* a metric covers, and
-    `BindingSpec` can express neither:
+    `BindingSpec` can express neither directly:
 
     - `join_to_timespine` / `fill_nulls_with` — what the metric reports for
       periods its measure has no rows in. breakdown fills gaps from the node's
-      `kind`, which is its own rule and agrees with dbt's only by coincidence.
+      `kind` instead, which is its own rule and agrees with dbt's only by
+      coincidence — except in the one case that turns out to be a *provable*
+      coincidence rather than an accidental one, which is not this function's
+      concern: see `_spine_fill_reason`, called from `_translate_simple`.
 
-    Filters are the third such construct and are no longer refused wholesale
-    (roadmap 2.17): on a `simple` metric they are resolved against the measure's
-    own semantic model by `_translate_simple`, which refuses by name whatever it
-    cannot resolve totally. What stays refused *here* is a filter on a metric
-    that becomes a formula edge, where there is no single relation to resolve
-    against, and a per-input filter on a ratio or derived metric.
+    That split follows the same shape 2.17 already drew for filters, and for
+    the same reason: a `simple` metric has a single relation and (once
+    `_translate_simple` resolves its aggregation) a known `kind`, so it can be
+    reasoned about precisely; a `ratio` or `derived` metric is a formula edge
+    over other metrics by name, with no aggregation and no `kind` of its own to
+    resolve one from — every one of them is refused unconditionally, here,
+    before any per-type translator runs. On a `simple` metric, both filters
+    and the spine-fill flags are instead deferred to `_translate_simple`,
+    which refuses by name whatever it cannot resolve or accept.
 
     dbt writes these in four places (metric, `type_params`, the measure input,
     and each metric input) depending on spec version and whether the manifest
@@ -339,30 +345,37 @@ def _unsupported_semantics(metric: Any) -> Optional[str]:
             if sql is not None:
                 return _formula_filter_reason(where, sql)
 
-    # `type_params` (new spec) and the measure input (classic spec) carry the
-    # same two flags; dbt lifts the latter to the former when it flattens.
-    for holder, where in ((tp, ""), (getattr(tp, "measure", None), "its measure input ")):
-        if holder is None:
-            continue
-        if getattr(holder, "join_to_timespine", False):
-            return (
-                f"{where}declares `join_to_timespine`, which emits a row for every "
-                "period in dbt's time spine rather than only the periods the "
-                "measure has rows in; that join is not built here, so the series "
-                "would differ from the governed metric at exactly the empty "
-                "periods a gap analysis is about"
-            )
-        # `fill_nulls_with: 0` is both the commonest value and falsy, so this
-        # tests presence rather than truth.
-        fill = getattr(holder, "fill_nulls_with", None)
-        if fill is not None:
-            return (
-                f"{where}declares `fill_nulls_with: {fill}`, which substitutes a "
-                "value on every period the measure has no rows in; breakdown "
-                "gap-fills from the node's `kind` instead of from a value on the "
-                "metric, so the two agree only by coincidence and would differ at "
-                "exactly the periods the flag exists to control"
-            )
+        # `type_params` (new spec) and the measure input (classic spec) carry
+        # the same two flags; dbt lifts the latter to the former when it
+        # flattens. Refused unconditionally here, for `ratio` and `derived`
+        # metrics only — both are always rate-shaped in breakdown's terms (a
+        # `ratio` is always `kind: rate`; a `derived` metric matching
+        # `_SIMPLE_RATIO` is too), so the "a rate's missing period is
+        # undefined, not zero" landmine that `_spine_fill_reason` guards
+        # against for `simple` metrics applies here unconditionally, and there
+        # is no per-metric aggregation to check it against anyway.
+        for holder, where in ((tp, ""), (getattr(tp, "measure", None), "its measure input ")):
+            if holder is None:
+                continue
+            if getattr(holder, "join_to_timespine", False):
+                return (
+                    f"{where}declares `join_to_timespine`, which emits a row for every "
+                    "period in dbt's time spine rather than only the periods the "
+                    "measure has rows in; that join is not built here, so the series "
+                    "would differ from the governed metric at exactly the empty "
+                    "periods a gap analysis is about"
+                )
+            # `fill_nulls_with: 0` is both the commonest value and falsy, so this
+            # tests presence rather than truth.
+            fill = getattr(holder, "fill_nulls_with", None)
+            if fill is not None:
+                return (
+                    f"{where}declares `fill_nulls_with: {fill}`, which substitutes a "
+                    "value on every period the measure has no rows in; breakdown "
+                    "gap-fills from the node's `kind` instead of from a value on the "
+                    "metric, so the two agree only by coincidence and would differ at "
+                    "exactly the periods the flag exists to control"
+                )
 
     # A ratio's sides and a derived metric's inputs are references to other
     # metrics, and a filter on one re-scopes that side alone — `signups (US
@@ -585,6 +598,95 @@ def _resolve_filters(model: Any, metric: Any, dialect: str) -> Tuple[List[str], 
     return predicates, None
 
 
+def _is_zero_fill(fill: Any) -> bool:
+    """Whether a `fill_nulls_with` value is numeric zero — not merely `== 0`.
+
+    The manifest schema types the field `Optional[int]` (`dbt_manifest.py`), so
+    it should never actually hold a `bool`. But Python's `bool` is a subclass
+    of `int` — `False == 0` is `True` — and `_unsupported_semantics` a few
+    lines up is already careful about the falsy-zero failure mode once, for
+    this same field. Guarding against a schema detail that could change costs
+    nothing, and a `False` must never be read as the safe zero-fill case.
+    """
+    return isinstance(fill, (int, float)) and not isinstance(fill, bool) and fill == 0
+
+
+def _spine_fill_reason(metric: Any, binding_agg: str) -> Optional[str]:
+    """Whether `metric`'s `join_to_timespine` / `fill_nulls_with` declarations
+    block translation, now that its resolved aggregation (`binding_agg`) is
+    known — or None if they don't.
+
+    `_unsupported_semantics` refuses both constructs unconditionally for every
+    `ratio` and `derived` metric, because there breakdown has no aggregation to
+    resolve a node `kind` from. For a `simple` metric the aggregation is known
+    by the time `_translate_simple` calls this, and one combination turns out
+    to be *provably* safe rather than merely typically safe: `data_fetch.py`
+    (`fetch_metric_data`) already zero-fills every missing period of a
+    `kind: flow` node, unconditionally, regardless of what the source system
+    says (`if kind == "flow": s = s.fillna(0.0)`). So a MetricFlow metric that
+    resolves to `kind: flow` (every translatable aggregation except `average`,
+    per `KIND_MAP`) and declares `fill_nulls_with: 0` produces the identical
+    final series whether this bridge accepts or refuses it — refusing buys
+    nothing. `join_to_timespine`'s own value does not change that: with
+    `fill_nulls_with: 0` present, MetricFlow's spine join can only be adding
+    rows this fill already supplies as zero, so it is accepted alongside the
+    fill rather than treated as a reason to refuse.
+
+    Nothing else is safe, and each is refused for its own, separate reason:
+
+    - A non-zero fill has no home in `BindingSpec` at all — there is nowhere
+      to carry an arbitrary value, so it is refused regardless of `kind`.
+    - `average` resolves to `kind: rate`, whose missing period is *undefined*,
+      not zero — roadmap 1.11 exists specifically so a rate's absent evidence
+      is never silently read as zero, and accepting a zero fill here would
+      reintroduce exactly that defect through a side door. This holds even
+      when the fill is zero.
+    - `join_to_timespine` with no `fill_nulls_with` at all still means "NULL
+      at every gap, under the governed metric's name," which `BindingSpec` has
+      no way to express either — there is no fill to prove the coincidence
+      with, so this stays refused exactly as it was before this function
+      existed.
+    """
+    tp = metric.type_params
+    for holder, where in ((tp, ""), (getattr(tp, "measure", None), "its measure input ")):
+        if holder is None:
+            continue
+        # Checked before `join_to_timespine` (the reverse of
+        # `_unsupported_semantics`'s order): a fill's presence and value fully
+        # decide this holder's outcome, safe or not, so it must be judged
+        # first rather than have `join_to_timespine` claim the metric on a
+        # combination — fill zero, spine join true — that is exactly the
+        # accepted idiom.
+        fill = getattr(holder, "fill_nulls_with", None)
+        if fill is not None:
+            if _is_zero_fill(fill) and binding_agg != "average":
+                continue  # the proven-safe case; keep checking other holders
+            if _is_zero_fill(fill):
+                return (
+                    f"{where}declares `fill_nulls_with: {fill}`, but this metric's "
+                    "aggregation makes it a `kind: rate` node — a rate's missing "
+                    "period is undefined, not zero (roadmap 1.11), so treating it "
+                    "as zero here would reintroduce exactly the defect that rule "
+                    "exists to prevent"
+                )
+            return (
+                f"{where}declares `fill_nulls_with: {fill}`, which substitutes a "
+                "value on every period the measure has no rows in; breakdown "
+                "gap-fills from the node's `kind` instead of from a value on the "
+                "metric, so the two agree only by coincidence and would differ at "
+                "exactly the periods the flag exists to control"
+            )
+        if getattr(holder, "join_to_timespine", False):
+            return (
+                f"{where}declares `join_to_timespine`, which emits a row for every "
+                "period in dbt's time spine rather than only the periods the "
+                "measure has rows in; that join is not built here, so the series "
+                "would differ from the governed metric at exactly the empty "
+                "periods a gap analysis is about"
+            )
+    return None
+
+
 def _translate_simple(manifest: Any, metric: Any, result: BridgeResult, dialect: str = "") -> None:
     name = metric.name
     model, agg, column, agg_time = _measure_source(manifest, metric)
@@ -610,6 +712,11 @@ def _translate_simple(manifest: Any, metric: Any, result: BridgeResult, dialect:
     if agg not in AGG_MAP:
         result.skip(name, f"aggregation '{agg}' has no additive decomposition")
         return
+    # Resolved here rather than at the bottom with the rest of the binding: it
+    # is what tells a `kind: flow` node from a `kind: rate` one, which is
+    # exactly what `_spine_fill_reason` below needs to know before it can
+    # accept a `fill_nulls_with: 0`.
+    binding_agg = AGG_MAP[agg]
     if not column:
         result.skip(name, f"aggregation '{agg}' has no column to aggregate")
         return
@@ -650,7 +757,15 @@ def _translate_simple(manifest: Any, metric: Any, result: BridgeResult, dialect:
         result.skip(name, unresolved)
         return
 
-    binding_agg = AGG_MAP[agg]
+    # Also last, for the same reason as the filter check just above: this
+    # needs `binding_agg` (whether the eventual node is `kind: flow` or
+    # `kind: rate`) resolved, which nothing before this point had a reason to
+    # compute early for. See `_spine_fill_reason` for the safety argument.
+    spine_reason = _spine_fill_reason(metric, binding_agg)
+    if spine_reason is not None:
+        result.skip(name, spine_reason)
+        return
+
     result.bindings[name] = BindingSpec(
         relation=_relation(model),
         grain_key=grain_key,
