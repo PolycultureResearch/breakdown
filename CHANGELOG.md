@@ -42,10 +42,19 @@ anyone installing from an index, all of this is new.
     `sql`, `dimensions` or `lags`; each is refused by name.
   - **A rate declares its `denominator`** — the tree metric its per-period
     values are weighted by. Derived where unambiguous (a `num / den` formula, an
-    agreeing `dimensions[].weight`, a `bind:` ratio naming a tree metric), and
-    `dimensions[].weight` now defaults *from* it, so there is one source of
-    truth. A rate that declares one nowhere is **warned** about by name at
-    startup and reported by `breakdown doctor`, never refused.
+    agreeing `dimensions[].weight`, a `bind:` ratio naming a tree metric — and,
+    on the `dbt` path, a `ratio` metric's own `numerator`/`denominator` or the
+    canonical safe idiom `num / nullif(den, 0)`, both of which now translate
+    into a plain `num / den` formula edge instead of being silently dropped or
+    left for the derivation to miss), and `dimensions[].weight` now defaults
+    *from* it, so there is one source of truth. A rate that declares one
+    nowhere is **warned** about by name at startup — the parser stays
+    permissive, so the tree still loads — and **`breakdown doctor` fails** on
+    it: the parser's job is to load the tree, `doctor`'s is to say whether it
+    can be trusted, and a window value computed by the wrong arithmetic with
+    nothing saying so is exactly what the fallback is not allowed to be. The
+    case for the split is written up in
+    [`knowledge/rate_denominator_policy.md`](knowledge/rate_denominator_policy.md).
   - **A window's rate recomputes from its components** — `Σnumerator /
     Σdenominator`, the denominator-weighted mean of the per-period rates,
     wherever a denominator is declared. **This changes published numbers** for

@@ -130,9 +130,15 @@ def _check_rate_denominators(parser) -> CheckResult:
     message told its author to "Add `denominator: <metric>`", which for a median
     is impossible advice. So an answered rate passes, with its reason quoted:
     the point of that field is that the argument travels to the next reader,
-    and this is one of the places the next reader is standing. Only the
-    unanswered ones `skip` — still not a `fail`, because the tree works and the
-    fallback is disclosed rather than wrong-in-secret.
+    and this is one of the places the next reader is standing.
+
+    The unanswered ones `fail`. The parser stays permissive — an unanswered
+    rate must not take the whole tree down at load time, before anyone has
+    seen a single value — but `doctor` is the trust gate, the thing every
+    failure path in the product points users at, and *"can I trust this?"* is
+    the question it is answering. A window value that is silently the wrong
+    arithmetic is exactly what this project's four rules refuse to let a
+    warning sit on.
     """
     rates = [m.name for m in parser.config.metrics if getattr(m, "kind", "flow") == "rate"]
     unanswered = list(getattr(parser, "rates_denominator_unanswered", []))
@@ -167,7 +173,7 @@ def _check_rate_denominators(parser) -> CheckResult:
     )
     if answered:
         remedy += f" ({len(answered)} other rate(s) already answer with `no_denominator`:{reasons})"
-    return CheckResult.skip("rate denominators", remedy)
+    return CheckResult.fail("rate denominators", remedy)
 
 
 # The `dbt` chain, in the order a failure actually cascades: the manifest has to

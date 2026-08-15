@@ -16,6 +16,7 @@ import pytest
 
 from breakdown.dbt_bridge import bridge_project, load_manifest, translate
 from breakdown.dbt_manifest import parse_manifest
+from breakdown.parser import Parser
 
 
 def _model(
@@ -634,19 +635,131 @@ def test_derived_metric_becomes_a_formula_edge():
 
 def test_derived_sql_that_is_not_a_breakdown_formula_is_skipped_by_name():
     # Real example from a dbt project: breakdown formulas are arithmetic over
-    # metric names with no function calls, so the null guard cannot be carried
-    # across — and dropping it would change behaviour at zero.
+    # metric names with no function calls, so a fallback value cannot be
+    # carried across — and dropping it would change behaviour whenever the
+    # denominator is null. (The narrower `nullif(den, 0)` idiom *is* carried
+    # across; see the `nullif`-guarded-ratio tests below.)
     metric = {
         "name": "arpu",
         "type": "derived",
         "type_params": {
-            "expr": "mrr / nullif(subs, 0)",
+            "expr": "mrr / coalesce(subs, 0)",
             "metrics": [{"name": "mrr"}, {"name": "subs"}],
         },
     }
     r = translate(_manifest([_model()], [metric]))
     assert not r.formulas
     assert "not expressible as a breakdown formula" in r.skipped[0].reason
+
+
+# --- `num / nullif(den, 0)` is recognized as plain division (roadmap 2.19) --
+
+
+def _nullif_ratio_metric(name="signup_rate", expr="signups / nullif(sessions, 0)"):
+    return {
+        "name": name,
+        "type": "derived",
+        "type_params": {
+            "expr": expr,
+            "metrics": [{"name": "signups"}, {"name": "sessions"}],
+        },
+    }
+
+
+def test_derived_nullif_guarded_ratio_becomes_a_plain_formula_edge():
+    # `num / nullif(den, 0)` is the canonical MetricFlow idiom for a safe
+    # division and is common enough in real dbt projects that refusing it
+    # wholesale drops otherwise-ordinary rate metrics (roadmap 2.19). It
+    # should translate exactly as `num / den` would.
+    r = translate(_manifest([_model()], [_nullif_ratio_metric()]))
+    assert not r.skipped
+    f = r.formulas["signup_rate"]
+    assert (f.formula, f.parents) == ("signups / sessions", ("signups", "sessions"))
+    assert r.kinds["signup_rate"] == "rate"
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "signups / nullif(sessions, 5)",  # non-zero guard: a different claim
+        "signups / nullif(sessions, 1)",  # non-zero guard: a different claim
+        "signups / coalesce(sessions, 0)",  # different function entirely
+        "signups / nullif(sessions + 1, 0)",  # extra arithmetic inside the guard
+        "(signups + 1) / nullif(sessions, 0)",  # extra arithmetic outside the guard
+        "nullif(signups, 0) / sessions",  # guard on the wrong side
+    ],
+)
+def test_derived_expressions_that_merely_resemble_the_nullif_idiom_are_still_skipped(expr):
+    # Proves the match is narrow: only the exact `num / nullif(den, 0)` shape
+    # is rewritten. Anything else must be refused exactly as before.
+    r = translate(_manifest([_model()], [_nullif_ratio_metric(expr=expr)]))
+    assert not r.formulas
+    assert "not expressible as a breakdown formula" in r.skipped[0].reason
+
+
+def test_derived_nullif_guarded_ratio_accepts_zero_as_a_float():
+    r = translate(
+        _manifest([_model()], [_nullif_ratio_metric(expr="signups / nullif(sessions, 0.0)")])
+    )
+    assert not r.skipped
+    assert r.formulas["signup_rate"].formula == "signups / sessions"
+
+
+def test_derived_nullif_guarded_ratio_is_case_insensitive_and_tolerates_whitespace():
+    r = translate(
+        _manifest([_model()], [_nullif_ratio_metric(expr="signups   /   NULLIF( sessions ,  0 )")])
+    )
+    assert not r.skipped
+    assert r.formulas["signup_rate"].formula == "signups / sessions"
+
+
+def test_derived_nullif_guarded_ratio_still_requires_both_names_as_declared_inputs():
+    # The rewrite happens before the "referenced but not declared" check, so
+    # that check still runs against the clean form -- an undeclared input is
+    # still refused, not silently accepted because the raw expr looked safe.
+    metric = {
+        "name": "signup_rate",
+        "type": "derived",
+        "type_params": {
+            "expr": "signups / nullif(sessions, 0)",
+            "metrics": [{"name": "signups"}],  # sessions is not declared
+        },
+    }
+    r = translate(_manifest([_model()], [metric]))
+    assert not r.formulas
+    assert "sessions" in r.skipped[0].reason
+
+
+def test_derived_nullif_guarded_ratio_reaches_automatic_denominator_derivation():
+    """The load-bearing claim: once the bridge rewrites `num / nullif(den, 0)`
+    to `num / den` and marks it `kind: rate`, the resulting node is
+    indistinguishable from one a human wrote by hand -- so
+    `check_rate_denominator` (breakdown/parser.py) derives its denominator
+    with zero denominator-specific code added here. This reproduces the
+    bridge's output as the tree YAML a human would author and runs it through
+    the real Parser end-to-end.
+    """
+    r = translate(_manifest([_model()], [_nullif_ratio_metric()]))
+    f = r.formulas["signup_rate"]
+    assert (f.formula, f.parents) == ("signups / sessions", ("signups", "sessions"))
+    assert r.kinds["signup_rate"] == "rate"
+
+    tree = """
+metrics:
+  - name: signups
+    source: dbt.metric.signups
+  - name: sessions
+    source: dbt.metric.sessions
+  - name: signup_rate
+    kind: rate
+    formula: "signups / sessions"
+    parents: [signups, sessions]
+"""
+    parser = Parser(tree)
+    defn = parser.dag.nodes["signup_rate"]["definition"]
+    assert defn.denominator == "sessions"
+    assert defn.no_denominator is None
+    assert parser.rates_denominator_unanswered == []
 
 
 def test_offset_inputs_are_skipped_rather_than_silently_unshifted():

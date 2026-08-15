@@ -667,6 +667,21 @@ def _translate_simple(manifest: Any, metric: Any, result: BridgeResult, dialect:
     result.kinds[name] = KIND_MAP.get(binding_agg, "flow")
 
 
+# The one function call `_translate_derived` admits: `num / nullif(den, 0)`,
+# MetricFlow's canonical safe-division idiom (NULL rather than a
+# divide-by-zero error at a zero denominator). breakdown's formula grammar has
+# no function calls, but `num / den` already means the same thing to it --
+# `eval_formula`'s own zero denominator produces inf/nan, which the engine
+# already refuses to attribute rather than inventing a value for. Anything
+# else -- a non-zero second argument, a different guard function, extra
+# arithmetic around it -- is a different claim about the world and is left to
+# `_accept_formula`'s refusal, not generalized into this pattern.
+_NULLIF_GUARDED_RATIO = re.compile(
+    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*/\s*nullif\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*0(?:\.0)?\s*\)\s*$",
+    re.IGNORECASE,
+)
+
+
 def _accept_formula(
     name: str, formula: str, parents: Tuple[str, ...], result: BridgeResult
 ) -> bool:
@@ -676,11 +691,15 @@ def _accept_formula(
     MetricFlow's `expr` is raw SQL and breakdown's `formula` is a deliberately
     small arithmetic language — no function calls — so the two overlap without
     one containing the other. A real example that does not translate is
-    `mrr / nullif(active_subscriptions, 0)`: the null guard is meaningless in a
+    `mrr / coalesce(active_subscriptions, 1)`: the fallback is meaningless in a
     language with no functions, and silently dropping it would change the
-    metric's behaviour at zero. Checking here means the failure surfaces with
-    the metric's name against it, rather than as a parse error in generated
-    tree YAML that nobody can trace back.
+    metric's behaviour whenever the denominator is null. (The one narrow
+    exception, `num / nullif(den, 0)`, is rewritten to `num / den` by the
+    caller before it ever reaches here — see `_NULLIF_GUARDED_RATIO` — because
+    that idiom already means exactly what plain division means to this
+    grammar.) Checking here means the failure surfaces with the metric's name
+    against it, rather than as a parse error in generated tree YAML that
+    nobody can trace back.
     """
     try:
         validate_formula(formula)
@@ -753,13 +772,25 @@ def _translate_derived(metric: Any, result: BridgeResult) -> None:
             "reference input metrics by name",
         )
         return
-    if _accept_formula(metric.name, tp.expr, inputs, result):
+    # `num / nullif(den, 0)` is the canonical MetricFlow idiom for a safe
+    # ratio and is common enough in real projects that refusing it drops
+    # otherwise-ordinary rate metrics wholesale (roadmap 2.19). It is
+    # rewritten to plain `num / den` here, before validation, so both the
+    # formula grammar and the `references not in inputs` check below run
+    # against the clean arithmetic form breakdown already understands —
+    # anything that isn't exactly this shape is left untouched and refused by
+    # `_accept_formula` as before.
+    expr = tp.expr
+    guarded = _NULLIF_GUARDED_RATIO.match(expr)
+    if guarded:
+        expr = f"{guarded.group(1)} / {guarded.group(2)}"
+    if _accept_formula(metric.name, expr, inputs, result):
         # Only a genuine `a / b` is known to be a rate. `mrr * 12` carries its
         # input's kind and `a + b` carries the kind of both, neither of which
         # the manifest states — so the kind is left unset for the author rather
         # than guessed, since guessing `rate` would wrongly forbid resampling
         # and guessing `flow` would wrongly permit summing a ratio.
-        if _SIMPLE_RATIO.match(tp.expr):
+        if _SIMPLE_RATIO.match(expr):
             result.kinds[metric.name] = "rate"
 
 

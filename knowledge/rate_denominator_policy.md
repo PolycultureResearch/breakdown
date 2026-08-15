@@ -1,7 +1,9 @@
 # Should a rate be *required* to declare its denominator?
 
-**Written:** 2026-08-15 · **Status:** recommendation — permissive parser, `doctor` as the
-gate, revisit at 1.0 · **Decision owner:** the author
+**Written:** 2026-08-15 · **Status:** decided and shipped (2026-08-15, roadmap
+[1.12](roadmap.md#horizon-1--prove-it-a-trustworthy-reproducible-rca)) —
+permissive parser, `doctor` fails on an unanswered rate, revisit mandatory at
+1.0 · **Decision owner:** the author
 
 Roadmap [1.11](roadmap.md#horizon-1--prove-it-a-trustworthy-reproducible-rca) gave a
 rate a node-level `denominator`, so a window's value is `Σnumerator / Σdenominator`
@@ -145,6 +147,21 @@ Three moves, not one.
 
 Revisit **at 1.0**, when the schema is allowed to break anyway and there is real
 usage data.
+
+**Shipped 2026-08-15, as [roadmap 1.12](roadmap.md#horizon-1--prove-it-a-trustworthy-reproducible-rca).**
+Move 2 landed as specified. Move 1 turned out to be narrower than framed: for a
+MetricFlow `ratio`-type metric, `dbt_bridge.py` already translates numerator and
+denominator into a `formula: "num / den"` edge, and `parser.py`'s existing
+`check_rate_denominator` already derives `.denominator` from that shape — nothing
+was actually being discarded for that metric type, and this was confirmed with an
+end-to-end test rather than assumed. The real gap was the `derived` metric type's
+equivalent-but-safer idiom, `num / nullif(den, 0)`, which `_accept_formula`
+refused outright (no function calls in breakdown's formula grammar), so those
+metrics never became formula nodes and never reached the derivation at all — this
+is the same fact [2.19](roadmap.md#horizon-2--make-it-repeatable-a-stranger-can-onboard)
+found from the other direction. `_translate_derived` now rewrites that one exact
+idiom to plain `num / den` before translation; anything else is still refused by
+name. Move 3 was a no-op by construction (nothing proposed changing the parser).
 
 ### The narrow version, if teeth are wanted sooner
 
