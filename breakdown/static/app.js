@@ -4119,7 +4119,11 @@ function renderWhatifResults() {
       <div class="rca-card">
         <div class="sub">${sub}</div>
         <div class="gap-line ${dirCls}">${fmt(node.baseline)} → ${fmt(node.simulated)}
-          <span style="font-size:14px">(${signedPct(node.relative_delta)})</span></div>
+          <span style="font-size:14px">(${signedPct(node.relative_delta)})</span></div>${
+          node.window_aggregate
+            ? `<div class="sub">${windowBasisHtml(node)}</div>`
+            : ""
+        }
         <div class="wf-ci">Δ ${fmt(node.delta.estimate)} · 95% CI [${fmt(ci[0])}, ${fmt(ci[1])}] · P(direction) ${pctDir(node.prob_direction, node.prob_direction_censored)}${
           bci ? ` · baseline belief [${fmt(bci[0])}, ${fmt(bci[1])}]` : ""
         }</div>${
@@ -4145,7 +4149,9 @@ function renderWhatifResults() {
             ? ' <span class="cause-flag" title="The engine flagged the model behind this node as suspect — for ADVI, an ELBO that had not settled; for NUTS, R̂ / divergences / ESS over threshold. This row is propagated through that fit.">⚠ suspect fit</span>'
             : ""
         }</td>
-        <td class="num">${fmt(node.baseline)} → ${fmt(node.simulated)}</td>
+        <td class="num">${fmt(node.baseline)} → ${fmt(node.simulated)}${
+          node.window_aggregate ? `<br><span class="muted">${windowBasisHtml(node)}</span>` : ""
+        }</td>
         <td class="num">${signedPct(node.relative_delta)}</td>
         <td class="num">[${fmt(ci[0])}, ${fmt(ci[1])}]</td>
         <td class="num">${pctDir(node.prob_direction, node.prob_direction_censored)}</td>

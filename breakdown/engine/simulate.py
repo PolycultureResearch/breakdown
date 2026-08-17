@@ -58,7 +58,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from breakdown.engine.model import fit_metric
 from breakdown.engine.progress import ProgressFn
 from breakdown.engine.progress import report as _report
-from breakdown.engine.rca import direction_fields, node_window_value
+from breakdown.engine.rca import (
+    direction_fields,
+    node_window_value,
+    rate_window_method,
+    rate_window_method_reason,
+)
 from breakdown.formula import eval_formula
 from breakdown.grains import ensure_grained, fit_grain, snap_window, to_date
 
@@ -342,6 +347,14 @@ def run_scenario(
     # absorb the level in fitted mode, and only deltas propagate here.
     base_mu: Dict[str, float] = {}
     base_draws: Dict[str, np.ndarray] = {}
+    # Which arithmetic formed a rate's baseline, said where the number is read
+    # (roadmap C25a). RCA labels every rate it reports (`window_aggregate`,
+    # 1.11d); this surface computed the same number through the same entry
+    # point and published it bare — the labelling policy's first propagation
+    # test, failed. Fitted mode only: a cold-start baseline is a declared
+    # belief, which the cold-start caveats already label as such.
+    window_basis: Dict[str, Optional[str]] = {}
+    window_basis_reason: Dict[str, Optional[str]] = {}
     if cold_start:
         for n in nx.topological_sort(dag):
             defn = dag.nodes[n]["definition"]
@@ -377,6 +390,8 @@ def run_scenario(
             # undefined — cannot be simulated from, and unlike RCA's per-node
             # degrade every node here is needed, so it errors loudly.
             base_mu[n] = node_window_value(data, n, snapped.first_start, snapped.last_start, g)
+            window_basis[n] = rate_window_method(data, n, snapped.first_start, snapped.last_start, g)
+            window_basis_reason[n] = rate_window_method_reason(data, n, window_basis[n])
             if not np.isfinite(base_mu[n]):
                 raise ValueError(
                     f"Metric '{n}' has no value over the baseline window "
@@ -684,6 +699,9 @@ def run_scenario(
             }
             if cold_start:
                 entry["baseline_ci_95"] = baseline_ci
+            if window_basis.get(node) is not None:
+                entry["window_aggregate"] = window_basis[node]
+                entry["window_aggregate_reason"] = window_basis_reason[node]
             nodes_out[node] = entry
             continue
 
@@ -783,7 +801,12 @@ def run_scenario(
         }
         if cold_start:
             entry["baseline_ci_95"] = baseline_ci
+        if window_basis.get(node) is not None:
+            entry["window_aggregate"] = window_basis[node]
+            entry["window_aggregate_reason"] = window_basis_reason[node]
         nodes_out[node] = entry
+
+    _refuse_non_finite(nodes_out)
 
     sources = [
         {"id": f"i:{iv.metric}", "kind": "intervention", "label": _intervention_label(iv)}
@@ -793,7 +816,7 @@ def run_scenario(
         for a in assumptions
     ]
 
-    return {
+    result = {
         "mode": "cold_start" if cold_start else "fitted",
         "baseline_window": (
             None if cold_start else {"start": scenario.baseline_start, "end": scenario.baseline_end}
@@ -805,3 +828,40 @@ def run_scenario(
         "warnings": warnings,
         "caveats": COLD_START_CAVEATS if cold_start else CAVEATS,
     }
+    return result
+
+
+def _refuse_non_finite(nodes_out: Dict[str, Any]) -> None:
+    """Refuse a scenario whose arithmetic produced a non-finite number.
+
+    Rule 3: no engine result reaches an encoder unsanitized. `slices.py`
+    filters non-finite values before the encoder and `rca.py` learned the same
+    lesson as C17; this surface never did (the 2026-08-12 review's L4, shipped
+    as roadmap C25b) — so a NaN or inf here met Starlette's `allow_nan=False`
+    as an unhandled 500, and over MCP `round_floats` would have turned it into
+    `null`, a simulation of nothing. RCA degrades per node because a tree RCA
+    has independent nodes to save; a scenario's deltas propagate, so one
+    non-finite node means its whole downstream is contaminated and the honest
+    unit of refusal is the scenario. Raises ValueError (the API's 422) naming
+    the nodes, not a status — there is no partial result worth keeping.
+    """
+
+    def bad(value: Any) -> bool:
+        if isinstance(value, float):
+            return not math.isfinite(value)
+        if isinstance(value, dict):
+            return any(bad(v) for v in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(bad(v) for v in value)
+        return False
+
+    offending = sorted(name for name, entry in nodes_out.items() if bad(entry))
+    if offending:
+        raise ValueError(
+            "Scenario produced non-finite results for: "
+            + ", ".join(offending)
+            + ". This usually means a zero denominator inside a formula over "
+            "the baseline window, or (cold start) baseline draws crossing zero "
+            "on a ratio's denominator — declare tighter `baseline`/`plausible` "
+            "bounds, or choose a baseline window with defined values."
+        )

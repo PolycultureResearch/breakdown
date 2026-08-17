@@ -123,6 +123,10 @@ WHATIF_HOW_TO_READ = (
     "- Assumption edges are user-asserted beliefs sampled from the stated 90% range, not "
     "fitted from data; say so when they drive the answer.\n"
     "- Per-source `contributions` are exact Shapley shares and sum to the node's delta estimate.\n"
+    "- A rate node's `window_aggregate` says which arithmetic formed its baseline: "
+    "`components` is Σnumerator/Σdenominator (the real window rate); any `period_mean_*` "
+    "value means the plain average of per-period ratios, with `window_aggregate_reason` "
+    "saying why — narrate such a baseline as approximate, not as the component aggregate.\n"
     "- The `caveats` list applies to every number here; weave it into the narrative rather "
     "than dropping it."
 )
@@ -386,6 +390,12 @@ def compact_scenario(result: Dict[str, Any]) -> Dict[str, Any]:
         # point; a null (point baseline) stays omitted like other null fields.
         if node.get("baseline_ci_95") is not None:
             nodes[name]["baseline_ci_95"] = node["baseline_ci_95"]
+        # A rate's baseline says which arithmetic formed it (C25a) — the same
+        # `window_aggregate` label RCA payloads carry, on both the shrunken
+        # and the full node shape: an unaffected rate still shows a baseline.
+        for k in ("window_aggregate", "window_aggregate_reason"):
+            if node.get(k) is not None:
+                nodes[name][k] = node[k]
     return {
         "mode": result["mode"],
         "baseline_window": result["baseline_window"],
