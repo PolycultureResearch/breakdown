@@ -40,6 +40,7 @@ Slices are fetched on demand at analysis time and never enter the startup
 passes the long-format frames — so the engine stays stateless.
 """
 
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -53,6 +54,8 @@ from breakdown.engine.rca import (
     direction_fields,
 )
 from breakdown.grains import BOOT_BLOCK, period_spine, rate_window_value, snap_window
+
+logger = logging.getLogger(__name__)
 
 # More distinct fetched values than this is an authoring problem, not an
 # analysis input — the response would localize nothing.
@@ -140,7 +143,14 @@ _NULL = "__null__"
 
 
 def _pivot(long_df: pd.DataFrame, label: str) -> pd.DataFrame:
-    """Long `[date, slice, value]` → wide dates × slice values."""
+    """Long `[date, slice, value]` → wide dates × slice values.
+
+    A duplicated `(date, slice)` pair is refused, not summed: the provider
+    contract is one row per pair, and the unsliced path treats a duplicated
+    date as a hard grain-violation error (`_align_to_spine` refuses to reindex
+    it). Until roadmap C23 this used `aggfunc="sum"`, which silently doubled a
+    fanned-out slice — the same layer holding the opposite policy from its
+    neighbour, again."""
     for col in ("date", "slice", "value"):
         if col not in long_df.columns:
             raise ValueError(
@@ -152,22 +162,53 @@ def _pivot(long_df: pd.DataFrame, label: str) -> pd.DataFrame:
     df["slice"] = df["slice"].map(
         lambda v: _NULL if v is None or (isinstance(v, float) and np.isnan(v)) else str(v)
     )
+    dupes = df.duplicated(["date", "slice"])
+    if dupes.any():
+        sample = df.loc[dupes, ["date", "slice"]].head(3).to_records(index=False)
+        raise ValueError(
+            f"Sliced data for {label} holds more than one row per (date, slice) "
+            f"— {int(dupes.sum())} duplicate pair(s), e.g. {list(sample)}. The "
+            "sliced result must be grouped to one row per period per slice; "
+            "summing them here would silently double a fanned-out slice."
+        )
     wide = df.pivot_table(index="date", columns="slice", values="value", aggfunc="sum")
     wide.columns = [str(c) for c in wide.columns]
     return wide
 
 
-def _fill_by_kind(wide: pd.DataFrame, dates: pd.DatetimeIndex, kind: str) -> pd.DataFrame:
+def _fill_by_kind(
+    wide: pd.DataFrame, dates: pd.DatetimeIndex, kind: str, label: str = ""
+) -> pd.DataFrame:
     """Reindex onto the window dates and gap-fill per slice by kind: a missing
     (date, slice) is 0 for a flow, carried forward for a stock (0 before the
-    slice's first observation — the plan tier didn't exist yet). Rates keep
-    NaN; absence is handled through their weights."""
+    slice's first observation). Rates keep NaN; absence is handled through
+    their weights.
+
+    This is deliberately a *different* policy from `_align_to_spine`'s, and
+    the divergence is chosen rather than inherited (roadmap C23): there a
+    stock's leading gap **raises**, because a whole metric with nothing to
+    carry backwards is unservable; here a single slice's leading gap zero-fills,
+    because a slice legitimately starts mid-window — the plan tier didn't exist
+    yet — and refusing would take down the panel over a fact of the business.
+    What was not chosen was the silence: a fill here used to say nothing at
+    all (C18's shape one layer up), so fills are now counted and logged."""
     out = wide.reindex(dates)
+    if kind not in ("flow", "stock"):
+        return out
+    filled = int(out.isna().to_numpy().sum())
+    if filled:
+        logger.info(
+            "Sliced frame%s: %d missing (date, slice) cell(s) of %d filled by "
+            "kind '%s' (flow: 0; stock: carried forward, 0 before a slice's "
+            "first observation).",
+            f" for {label}" if label else "",
+            filled,
+            int(out.size),
+            kind,
+        )
     if kind == "flow":
         return out.fillna(0.0)
-    if kind == "stock":
-        return out.ffill().fillna(0.0)
-    return out
+    return out.ffill().fillna(0.0)
 
 
 def _select_slices(
@@ -483,7 +524,7 @@ def slice_attribution(
             f"distinct values (max {MAX_DISTINCT}). Declare a `values:` pin-list "
             "or slice by a coarser dimension."
         )
-    wide = _fill_by_kind(wide, all_dates, kind)
+    wide = _fill_by_kind(wide, all_dates, kind, label=f"'{defn.name}' by '{dimension}'")
 
     u = unsliced.copy()
     u["date"] = pd.to_datetime(u["date"])
@@ -770,7 +811,20 @@ def _rate_attribution(
     additivity="unknown",
 ) -> Dict[str, Any]:
     """Rates: the weight-blended mix/within decomposition."""
-    weights = weights.reindex(all_dates).fillna(0.0)
+    weights = weights.reindex(all_dates)
+    # A missing (date, slice) weight cell is a flow with no volume there: zero
+    # is the flow fill policy, and a zero weight self-neutralizes in the blend
+    # (Σ w·r / Σ w). Counted and logged like every other fill at this layer
+    # (roadmap C23) — the policy was right, the silence was the defect.
+    missing_w = int(weights.isna().to_numpy().sum())
+    if missing_w:
+        logger.info(
+            "Sliced weights for '%s': %d missing (date, slice) cell(s) filled "
+            "with 0 (no volume in that slice that period).",
+            spec.weight,
+            missing_w,
+        )
+    weights = weights.fillna(0.0)
     common = [c for c in wide.columns if c in set(weights.columns)]
     orphan_rates = [c for c in wide.columns if c not in set(weights.columns)]
     if orphan_rates:

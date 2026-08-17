@@ -197,6 +197,53 @@ def test_every_fetcher_goes_through_the_shared_alignment_contract():
     )
 
 
+def test_every_sliced_fetcher_coerces_timezones():
+    """Rule 1 on the path the C1/C2 sweep never reached (roadmap C23).
+
+    `_sliced_long` — the shared reshape both semantic-layer providers use —
+    floored its labels and never dropped a timezone, so a tz-aware sliced
+    frame survived every check and then reindexed all-NaN against the tz-naive
+    spine in `slices._fill_by_kind`, where the flow branch turned it into a
+    panel of invented zeros: the C1 symptom, in a surface the invariant above
+    is structurally blind to because it only inspects `fetch_metric`. Every
+    concrete `fetch_metric_sliced` must reach `_to_naive_dates` — directly, or
+    through `_sliced_long`, or by delegating to a wrapped fetcher that does.
+    """
+    offenders = []
+    for name, obj in _fetcher_classes():
+        fetch = obj.__dict__.get("fetch_metric_sliced")
+        if fetch is None:
+            continue  # inherits the base refusal; nothing fetches
+        try:
+            src = inspect.getsource(fetch)
+        except (OSError, TypeError):  # pragma: no cover
+            continue
+        if "_to_naive_dates" in src or "_sliced_long" in src:
+            continue
+        # The mock's exemption, with its reason asserted like fetch_metric's:
+        # its sliced frame derives its dates from its own generated series
+        # (which the class produces on `period_spine`), so there is no external
+        # timestamp to coerce. If it ever starts parsing dates it did not
+        # generate, this stops matching and it fails here like anyone else.
+        if name == "MockDataFetcher" and "period_spine" in inspect.getsource(obj):
+            continue
+        # A read-through wrapper serves frames its inner provider (or its own
+        # write path) already coerced; `store.read_sliced` hits are re-parsed
+        # from parquet, which cannot re-attach a zone the writer dropped.
+        if "self.inner.fetch_metric_sliced" in src:
+            continue
+        offenders.append(name)
+    assert not offenders, (
+        f"{offenders} implement fetch_metric_sliced without the shared date "
+        "coercion (`_to_naive_dates` / `_sliced_long`). A tz-aware sliced frame "
+        "becomes an all-zero panel downstream (roadmap C23)."
+    )
+
+    # And the shared reshape itself must hold the coercion, or every provider
+    # routing through it passes the scan while the defect stands.
+    assert "_to_naive_dates" in inspect.getsource(data_fetch._sliced_long)
+
+
 # --- Rule 2: every cache on TreeState is bounded ------------------------------
 
 

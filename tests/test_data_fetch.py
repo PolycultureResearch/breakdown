@@ -1434,3 +1434,25 @@ def test_local_header_only_csv_is_unchanged(monkeypatch, tmp_path):
 
     assert len(df) == 5
     assert (df["unlaunched_stream"] == 0.0).all()
+
+
+def test_sliced_result_drops_timezone_like_the_metric_path(caplog):
+    """C23: `_sliced_long` floored its labels but never dropped a timezone, so
+    a tz-aware sliced frame survived every check here and reindexed all-NaN
+    against the tz-naive spine downstream — where the flow fill turned it into
+    a panel of invented zeros. Same C1 contract, same warning."""
+    import logging
+
+    from breakdown.data_fetch import _sliced_long
+
+    df = pd.DataFrame(
+        {
+            "metric_time__day": pd.date_range("2024-01-01", periods=4, tz="UTC"),
+            "region": ["a", "b", "a", "b"],
+            "revenue": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+    with caplog.at_level(logging.WARNING):
+        out = _sliced_long(df, "revenue", "day")
+    assert out["date"].dt.tz is None
+    assert any("timezone-aware" in r.message for r in caplog.records)

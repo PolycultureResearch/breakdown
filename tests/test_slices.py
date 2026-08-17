@@ -777,3 +777,20 @@ def test_overlapping_slices_withhold_the_verdict():
         additivity="overlapping",
     )
     assert result["localized"] is False
+
+
+def test_pivot_refuses_duplicate_date_slice_pairs():
+    """C23: the unsliced path treats a duplicated date as a hard grain
+    violation; `_pivot` silently *summed* duplicate (date, slice) rows, so a
+    fanned-out slice doubled with nothing said — same layer, opposite policy."""
+    from breakdown.engine.slices import _pivot
+
+    long_df = pd.DataFrame(
+        {
+            "date": ["2024-01-01", "2024-01-01", "2024-01-02"],
+            "slice": ["emea", "emea", "emea"],
+            "value": [1.0, 2.0, 3.0],
+        }
+    )
+    with pytest.raises(ValueError, match="more than one row per"):
+        _pivot(long_df, "'m' by 'region'")

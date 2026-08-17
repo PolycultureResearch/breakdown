@@ -544,7 +544,11 @@ def _sliced_long(df: pd.DataFrame, metric_name: str, grain: str) -> pd.DataFrame
     out = df.rename(columns={date_col: "date", dim_cols[0]: "slice", value_col: "value"})[
         ["date", "slice", "value"]
     ].copy()
-    out["date"] = pd.to_datetime(out["date"])
+    # The same C1 contract as the metric path, which this path went without
+    # for a year (roadmap C23): a tz-aware sliced frame survives every check
+    # here and then reindexes all-NaN against the tz-naive spine downstream,
+    # where the flow fill turns it into a panel of invented zeros.
+    out = _to_naive_dates(out, metric_name)
     out = _floor_labels(out, metric_name, grain)
     out["slice"] = out["slice"].map(lambda v: "__null__" if pd.isna(v) else str(v))
     out["value"] = out["value"].astype(float)
