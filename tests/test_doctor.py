@@ -757,12 +757,22 @@ def _rate_check(tmp_path, extra=""):
 
 def test_an_unanswered_rate_is_reported_with_both_remedies(tmp_path):
     check = _rate_check(tmp_path)
-    assert check.status == "skip"
+    assert check.status == "fail"
     assert "conversion_rate" in check.detail
     # Both, because the old message offered only the one that a median cannot
     # take.
     assert "`denominator: <metric>`" in check.detail
     assert "no_denominator" in check.detail
+
+
+def test_an_unanswered_rate_fails_the_doctor_exit_code(tmp_path):
+    """The parser stays permissive (the tree still loads), but `doctor` is the
+    trust gate the roadmap and knowledge/rate_denominator_policy.md point users
+    at, so an unanswered rate must flip the CLI's exit code, not just print a
+    line someone can scroll past."""
+    tree = tmp_path / "rates.yml"
+    tree.write_text(_RATE_TREE.format(extra=""))
+    assert print_report(run_doctor(str(tree))) == 1
 
 
 def test_an_answered_rate_passes_and_quotes_the_reason(tmp_path):

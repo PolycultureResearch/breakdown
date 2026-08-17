@@ -16,6 +16,7 @@ import pytest
 
 from breakdown.dbt_bridge import bridge_project, load_manifest, translate
 from breakdown.dbt_manifest import parse_manifest
+from breakdown.parser import Parser
 
 
 def _model(
@@ -435,26 +436,66 @@ def test_an_empty_filter_intersection_is_not_a_filter():
     assert "revenue" in r.bindings and not r.skipped
 
 
-@pytest.mark.parametrize("fill", [0, 5])
-def test_fill_nulls_with_is_refused_including_the_falsy_zero(fill):
-    # `fill_nulls_with: 0` is both the commonest value and falsy: a truthiness
-    # check would let the most common case straight through.
-    r = translate(_manifest([_model(measures=())], [_new_spec("revenue")]))
-    assert r.bindings  # same metric without the flag translates
+# --- `fill_nulls_with: 0` on a flow-shaped `simple` metric (roadmap 2.20) ---
+#
+# `data_fetch.fetch_metric_data` already zero-fills every missing period of a
+# `kind: flow` node unconditionally (`breakdown/data_fetch.py`,
+# `if kind == "flow": s = s.fillna(0.0)`), so a MetricFlow metric that resolves
+# to `kind: flow` and declares `fill_nulls_with: 0` produces the identical
+# final series whether the bridge accepts or refuses it. That is the one
+# provable case; everything else below stays refused exactly as before.
+
+
+def test_fill_nulls_with_zero_on_a_flow_metric_is_accepted_as_the_proven_coincidence():
+    metric = _new_spec("revenue")  # agg="sum" -> kind: flow
+    metric["type_params"]["fill_nulls_with"] = 0
+    r = translate(_manifest([_model(measures=())], [metric]))
+    assert "revenue" in r.bindings
+    assert not r.skipped
+    assert r.kinds["revenue"] == "flow"
+
+
+def test_fill_nulls_with_nonzero_is_still_refused():
+    # A non-zero fill has no home in `BindingSpec` at all, regardless of kind.
     metric = _new_spec("revenue")
-    metric["type_params"]["fill_nulls_with"] = fill
+    metric["type_params"]["fill_nulls_with"] = 5
     r = translate(_manifest([_model(measures=())], [metric]))
     assert not r.bindings
-    assert f"`fill_nulls_with: {fill}`" in r.skipped[0].reason
+    assert "`fill_nulls_with: 5`" in r.skipped[0].reason
     assert "gap-fills from the node's `kind`" in r.skipped[0].reason
 
 
-def test_fill_nulls_with_on_the_measure_input_is_refused_too():
-    metric = _classic()
+def test_fill_nulls_with_zero_on_the_measure_input_is_accepted_too():
+    # Same safe case, the other manifest-spec location: the classic spec's
+    # measure input carries the same two flags, and `_translate_simple`
+    # checks both locations symmetrically.
+    metric = _classic()  # measure "revenue", agg="sum" -> kind: flow
     metric["type_params"]["measure"]["fill_nulls_with"] = 0
     r = translate(_manifest([_model()], [metric]))
+    assert "revenue" in r.bindings
+    assert not r.skipped
+    assert r.kinds["revenue"] == "flow"
+
+
+def test_fill_nulls_with_nonzero_on_the_measure_input_is_refused_too():
+    metric = _classic()
+    metric["type_params"]["measure"]["fill_nulls_with"] = 5
+    r = translate(_manifest([_model()], [metric]))
     assert not r.bindings
-    assert "its measure input declares `fill_nulls_with: 0`" in r.skipped[0].reason
+    assert "its measure input declares `fill_nulls_with: 5`" in r.skipped[0].reason
+
+
+def test_fill_nulls_with_zero_on_a_rate_shaped_metric_is_still_refused():
+    # The landmine roadmap 1.11 exists to prevent: an `average` aggregation
+    # resolves to `kind: rate`, whose missing period is undefined, not zero.
+    # Accepting a zero fill here would reintroduce that defect through a side
+    # door, so this must stay refused even though the fill value is zero.
+    metric = _new_spec("avg_order_value", agg="average")
+    metric["type_params"]["fill_nulls_with"] = 0
+    r = translate(_manifest([_model(measures=())], [metric]))
+    assert not r.bindings
+    assert r.skipped[0].name == "avg_order_value"
+    assert "fill_nulls_with: 0" in r.skipped[0].reason
 
 
 def test_join_to_timespine_is_refused_because_the_empty_periods_are_the_analysis():
@@ -464,6 +505,56 @@ def test_join_to_timespine_is_refused_because_the_empty_periods_are_the_analysis
     assert not r.bindings
     assert "`join_to_timespine`" in r.skipped[0].reason
     assert "time spine" in r.skipped[0].reason
+
+
+def test_join_to_timespine_with_fill_nulls_zero_is_the_canonical_accepted_idiom():
+    # `join_to_timespine: true` paired with `fill_nulls_with: 0` is
+    # MetricFlow's own idiom for "explicit zero at gaps." On a flow-shaped
+    # simple metric that coincides with breakdown's own default fill, so
+    # `join_to_timespine`'s value must not gate the decision either way here.
+    metric = _classic()
+    metric["type_params"]["measure"]["join_to_timespine"] = True
+    metric["type_params"]["measure"]["fill_nulls_with"] = 0
+    r = translate(_manifest([_model()], [metric]))
+    assert "revenue" in r.bindings
+    assert not r.skipped
+
+
+def test_fill_nulls_with_zero_on_a_ratio_metric_is_refused_unconditionally():
+    # Scope restriction: only `simple` metrics are in scope for the new
+    # acceptance. A `ratio` metric has no aggregation of its own and is always
+    # `kind: rate`, so this stays refused regardless of the fill value.
+    models = [
+        _model(
+            measures=(
+                {"name": "signups", "agg": "sum", "expr": "1"},
+                {"name": "sessions", "agg": "sum", "expr": "1"},
+            )
+        )
+    ]
+    ratio = _ratio("signup_rate", "signups", "sessions")
+    ratio["type_params"]["fill_nulls_with"] = 0
+    r = translate(_manifest(models, [ratio]))
+    assert not r.formulas
+    skipped = {s.name: s.reason for s in r.skipped}
+    assert "signup_rate" in skipped
+    assert "`fill_nulls_with: 0`" in skipped["signup_rate"]
+
+
+def test_fill_nulls_with_zero_on_a_derived_metric_is_refused_unconditionally():
+    metric = {
+        "name": "arr",
+        "type": "derived",
+        "type_params": {
+            "expr": "mrr * 12",
+            "metrics": [{"name": "mrr"}],
+            "fill_nulls_with": 0,
+        },
+    }
+    r = translate(_manifest([_model()], [metric]))
+    assert not r.formulas
+    assert "arr" not in r.kinds
+    assert "`fill_nulls_with: 0`" in r.skipped[0].reason
 
 
 def test_a_measure_alias_is_not_a_reason_to_refuse_a_simple_metric():
@@ -634,19 +725,131 @@ def test_derived_metric_becomes_a_formula_edge():
 
 def test_derived_sql_that_is_not_a_breakdown_formula_is_skipped_by_name():
     # Real example from a dbt project: breakdown formulas are arithmetic over
-    # metric names with no function calls, so the null guard cannot be carried
-    # across — and dropping it would change behaviour at zero.
+    # metric names with no function calls, so a fallback value cannot be
+    # carried across — and dropping it would change behaviour whenever the
+    # denominator is null. (The narrower `nullif(den, 0)` idiom *is* carried
+    # across; see the `nullif`-guarded-ratio tests below.)
     metric = {
         "name": "arpu",
         "type": "derived",
         "type_params": {
-            "expr": "mrr / nullif(subs, 0)",
+            "expr": "mrr / coalesce(subs, 0)",
             "metrics": [{"name": "mrr"}, {"name": "subs"}],
         },
     }
     r = translate(_manifest([_model()], [metric]))
     assert not r.formulas
     assert "not expressible as a breakdown formula" in r.skipped[0].reason
+
+
+# --- `num / nullif(den, 0)` is recognized as plain division (roadmap 2.19) --
+
+
+def _nullif_ratio_metric(name="signup_rate", expr="signups / nullif(sessions, 0)"):
+    return {
+        "name": name,
+        "type": "derived",
+        "type_params": {
+            "expr": expr,
+            "metrics": [{"name": "signups"}, {"name": "sessions"}],
+        },
+    }
+
+
+def test_derived_nullif_guarded_ratio_becomes_a_plain_formula_edge():
+    # `num / nullif(den, 0)` is the canonical MetricFlow idiom for a safe
+    # division and is common enough in real dbt projects that refusing it
+    # wholesale drops otherwise-ordinary rate metrics (roadmap 2.19). It
+    # should translate exactly as `num / den` would.
+    r = translate(_manifest([_model()], [_nullif_ratio_metric()]))
+    assert not r.skipped
+    f = r.formulas["signup_rate"]
+    assert (f.formula, f.parents) == ("signups / sessions", ("signups", "sessions"))
+    assert r.kinds["signup_rate"] == "rate"
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "signups / nullif(sessions, 5)",  # non-zero guard: a different claim
+        "signups / nullif(sessions, 1)",  # non-zero guard: a different claim
+        "signups / coalesce(sessions, 0)",  # different function entirely
+        "signups / nullif(sessions + 1, 0)",  # extra arithmetic inside the guard
+        "(signups + 1) / nullif(sessions, 0)",  # extra arithmetic outside the guard
+        "nullif(signups, 0) / sessions",  # guard on the wrong side
+    ],
+)
+def test_derived_expressions_that_merely_resemble_the_nullif_idiom_are_still_skipped(expr):
+    # Proves the match is narrow: only the exact `num / nullif(den, 0)` shape
+    # is rewritten. Anything else must be refused exactly as before.
+    r = translate(_manifest([_model()], [_nullif_ratio_metric(expr=expr)]))
+    assert not r.formulas
+    assert "not expressible as a breakdown formula" in r.skipped[0].reason
+
+
+def test_derived_nullif_guarded_ratio_accepts_zero_as_a_float():
+    r = translate(
+        _manifest([_model()], [_nullif_ratio_metric(expr="signups / nullif(sessions, 0.0)")])
+    )
+    assert not r.skipped
+    assert r.formulas["signup_rate"].formula == "signups / sessions"
+
+
+def test_derived_nullif_guarded_ratio_is_case_insensitive_and_tolerates_whitespace():
+    r = translate(
+        _manifest([_model()], [_nullif_ratio_metric(expr="signups   /   NULLIF( sessions ,  0 )")])
+    )
+    assert not r.skipped
+    assert r.formulas["signup_rate"].formula == "signups / sessions"
+
+
+def test_derived_nullif_guarded_ratio_still_requires_both_names_as_declared_inputs():
+    # The rewrite happens before the "referenced but not declared" check, so
+    # that check still runs against the clean form -- an undeclared input is
+    # still refused, not silently accepted because the raw expr looked safe.
+    metric = {
+        "name": "signup_rate",
+        "type": "derived",
+        "type_params": {
+            "expr": "signups / nullif(sessions, 0)",
+            "metrics": [{"name": "signups"}],  # sessions is not declared
+        },
+    }
+    r = translate(_manifest([_model()], [metric]))
+    assert not r.formulas
+    assert "sessions" in r.skipped[0].reason
+
+
+def test_derived_nullif_guarded_ratio_reaches_automatic_denominator_derivation():
+    """The load-bearing claim: once the bridge rewrites `num / nullif(den, 0)`
+    to `num / den` and marks it `kind: rate`, the resulting node is
+    indistinguishable from one a human wrote by hand -- so
+    `check_rate_denominator` (breakdown/parser.py) derives its denominator
+    with zero denominator-specific code added here. This reproduces the
+    bridge's output as the tree YAML a human would author and runs it through
+    the real Parser end-to-end.
+    """
+    r = translate(_manifest([_model()], [_nullif_ratio_metric()]))
+    f = r.formulas["signup_rate"]
+    assert (f.formula, f.parents) == ("signups / sessions", ("signups", "sessions"))
+    assert r.kinds["signup_rate"] == "rate"
+
+    tree = """
+metrics:
+  - name: signups
+    source: dbt.metric.signups
+  - name: sessions
+    source: dbt.metric.sessions
+  - name: signup_rate
+    kind: rate
+    formula: "signups / sessions"
+    parents: [signups, sessions]
+"""
+    parser = Parser(tree)
+    defn = parser.dag.nodes["signup_rate"]["definition"]
+    assert defn.denominator == "sessions"
+    assert defn.no_denominator is None
+    assert parser.rates_denominator_unanswered == []
 
 
 def test_offset_inputs_are_skipped_rather_than_silently_unshifted():

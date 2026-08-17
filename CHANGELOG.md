@@ -42,10 +42,19 @@ anyone installing from an index, all of this is new.
     `sql`, `dimensions` or `lags`; each is refused by name.
   - **A rate declares its `denominator`** — the tree metric its per-period
     values are weighted by. Derived where unambiguous (a `num / den` formula, an
-    agreeing `dimensions[].weight`, a `bind:` ratio naming a tree metric), and
-    `dimensions[].weight` now defaults *from* it, so there is one source of
-    truth. A rate that declares one nowhere is **warned** about by name at
-    startup and reported by `breakdown doctor`, never refused.
+    agreeing `dimensions[].weight`, a `bind:` ratio naming a tree metric — and,
+    on the `dbt` path, a `ratio` metric's own `numerator`/`denominator` or the
+    canonical safe idiom `num / nullif(den, 0)`, both of which now translate
+    into a plain `num / den` formula edge instead of being silently dropped or
+    left for the derivation to miss), and `dimensions[].weight` now defaults
+    *from* it, so there is one source of truth. A rate that declares one
+    nowhere is **warned** about by name at startup — the parser stays
+    permissive, so the tree still loads — and **`breakdown doctor` fails** on
+    it: the parser's job is to load the tree, `doctor`'s is to say whether it
+    can be trusted, and a window value computed by the wrong arithmetic with
+    nothing saying so is exactly what the fallback is not allowed to be. The
+    case for the split is written up in
+    [`knowledge/rate_denominator_policy.md`](knowledge/rate_denominator_policy.md).
   - **A window's rate recomputes from its components** — `Σnumerator /
     Σdenominator`, the denominator-weighted mean of the per-period rates,
     wherever a denominator is declared. **This changes published numbers** for
@@ -173,6 +182,7 @@ anyone installing from an index, all of this is new.
 - **A dbt metric's `filter:` is imported, not refused** (roadmap 2.17). Filters appear on roughly four of five real dbt metrics, and until now a filtered metric was skipped by name — correct, and a capability the tree author could see they did not have. `BindingSpec` gained a `where` list and `dbt_bridge` gained the resolver that fills it: `where_sql_template` is **Jinja, not SQL**, so each `{{ Dimension('order__region') }}` is resolved against the metric's own semantic model, parsed in the target dialect, and column-qualified through sqlglot's AST rather than pasted. The invariant is **total resolution or skip** — every predicate of every filter resolves or the metric stays exactly as refused as it was, so this is a strict superset of the old behaviour whose only failure mode is refusal. Still refused, by name and with a reason: a reference across a join (`{{ Dimension('customer__country') }}`), a time dimension or `metric_time` (MetricFlow renders those at a granularity), a `Metric()` call, a filter on a `ratio`/`derived` metric or one of its inputs (those become formula edges over metrics referenced by name, and a name carries no scope), and a legacy raw-SQL predicate with no `Dimension()` to resolve. **`where` is import-only** — a hand-written `bind: {where: …}` is a parse error pointing at `bind.sql`, which already expresses every filter an author could write.
 - **`breakdown doctor` proves an imported filter actually narrows** — a new `filters narrow` check counts kept-vs-total rows over the probe window. It **fails** when a predicate keeps nothing (an empty or all-zero series: the signature of a predicate the warehouse accepts but reads differently) and **warns** when it excludes nothing (either vacuous over a short window, or constant-true — the silently-dropped filter this exists to prevent). Like the grain claim, it asks the warehouse rather than the metadata. `[WARN]` is a fourth result status; it is counted separately and does not change the exit code. The grain claim itself now runs **post-filter** and says how many relations it checked under one, since a line-level relation can be one row per grain under a filter and multi-row without it.
 - **Two new per-node RCA statuses, `fit_failed` and `attribution_failed`**, each with a `status_reason`, plus a `ci_status` value `nonfinite_bootstrap_replicates`. A node that cannot be fitted or attributed is now reported as such and the rest of the tree still answers, where previously either condition failed the whole analysis or produced a 500.
+- **A dbt metric's `fill_nulls_with: 0` is imported, narrowly, when it's provably safe** (roadmap 2.19). `join_to_timespine`/`fill_nulls_with` were refused outright — correctly, since `BindingSpec` had no way to say what fills a period with no rows. One case turns out to already agree with breakdown's own behavior rather than merely coincide with it: a `simple` metric whose aggregation isn't `average` becomes a `kind: flow` node, and every missing period of a flow node is already zero-filled unconditionally — so `fill_nulls_with: 0` on that shape produces the identical series whether accepted or refused, with or without a paired `join_to_timespine`. That one combination is now accepted; a non-zero fill, a fill on an `average`-aggregated (`kind: rate`) metric — the exact case roadmap 1.11 exists to keep from silently reading a rate's missing period as zero — a `ratio`/`derived` metric of any kind, and bare `join_to_timespine` with no fill are all still refused by name, unchanged. No general `fill:` mechanism was built. Real-project impact is unmeasured (the only complete manifest in reach is external and unavailable here) — this closes a provable subset, not a counted one.
 
 ### Fixed
 
