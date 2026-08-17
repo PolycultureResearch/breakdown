@@ -1598,16 +1598,47 @@ class Parser:
 
     @staticmethod
     def _validate_dimension_weights(G: nx.DiGraph) -> None:
-        """A rate dimension's `weight` must name another tree metric (needs the
-        full node set, so it can't live on MetricDefinition)."""
+        """A rate dimension's `weight` must name another tree metric, at the
+        rate's own grain (needs the full node set, so it can't live on
+        MetricDefinition).
+
+        The grain check is C12: it used to live only in the API's slice
+        handler, so a tree parsed clean, booted clean, served the whole-tree
+        RCA clean — and failed the first time anyone clicked a rate's *slice
+        by* row. Both definitions are in hand right here, one loop above the
+        edge-grain rules that already do this cross-node work.
+
+        Deliberately stricter than `_validate_denominators`, which accepts a
+        denominator at a *finer, nesting* grain — the window aggregate
+        resamples the weight up (`weights_for`), but the sliced blend has no
+        resampling and pairs weight rows to rate rows by date label, so a
+        finer weight would simply never match. Since `dimensions[].weight`
+        defaults *from* `denominator`, the two rules meet exactly here: a
+        finer-nesting denominator stays legal on a rate that only aggregates,
+        and becomes a parse error the moment the rate declares `dimensions` —
+        which is the moment the slice path becomes reachable."""
         for name in G.nodes:
             defn = G.nodes[name]["definition"]
             for dim_name, spec in defn.dimensions.items():
-                if spec.weight is not None and spec.weight not in G:
+                if spec.weight is None:
+                    continue
+                if spec.weight not in G:
                     raise ValueError(
                         f"Dimension '{dim_name}' on metric '{name}' declares "
                         f"weight '{spec.weight}', which is not a metric in the "
                         "tree."
+                    )
+                wdefn = G.nodes[spec.weight]["definition"]
+                if wdefn.grain != defn.grain:
+                    raise ValueError(
+                        f"Rate '{name}' (grain '{defn.grain}') declares dimension "
+                        f"'{dim_name}' with weight '{spec.weight}' at grain "
+                        f"'{wdefn.grain}'. Slicing blends per-slice rates by the "
+                        "weight's value in each period, so the weight must share "
+                        f"the rate's grain. Provide '{spec.weight}' at "
+                        f"'{defn.grain}', or drop `dimensions` from '{name}' — a "
+                        "finer denominator is fine for the window aggregate, "
+                        "which resamples; the sliced blend does not."
                     )
 
     @staticmethod
