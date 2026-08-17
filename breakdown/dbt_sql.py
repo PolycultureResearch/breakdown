@@ -489,6 +489,22 @@ def build_entity_flow_query(
             "as new, churned or migrated requires one slice per entity per "
             "window, and which one is the author's `resolve` choice."
         )
+    if spec.resolve == "error":
+        # The slice query under `error` runs uncorrected, because the author
+        # asserted single-valuedness per *period* and correcting silently would
+        # defeat the point of choosing it. That assertion says nothing about
+        # the choice this query needs: one representative row per entity per
+        # *window*, and an entity whose slice legitimately changes mid-window
+        # makes `first` and `last` different answers to a question the author
+        # has not answered. Until 2026-08-17 `error` silently fell through the
+        # ternary below and executed as `last` — the exact silent correction
+        # the author opted out of. Refused instead; the flows panel degrades
+        # to absent while the attribution stands.
+        raise UnsupportedBinding(
+            "entity flows need a per-window representative row, and "
+            "`resolve: error` asserts a rule only per period. Declare "
+            "`resolve: first` or `resolve: last` to enable flows."
+        )
     if dimension not in bind.dimensions:
         raise UnsupportedBinding(f"binding declares no dimension '{dimension}'")
     dim = bind.dimensions[dimension]

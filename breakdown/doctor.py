@@ -846,7 +846,7 @@ def _check_entity_grain(config, fetcher, wanted, start_date=None, end_date=None)
     """
     from breakdown.dbt_sql import build_multivalue_assertion
 
-    offenders, unresolved, checked = [], [], 0
+    offenders, unresolved, unchecked, checked = [], [], [], 0
     for query_name, tree_name in wanted.items():
         bind = fetcher.bindings.get(query_name)
         if bind is None or not bind.is_non_additive:
@@ -867,7 +867,12 @@ def _check_entity_grain(config, fetcher, wanted, start_date=None, end_date=None)
                 )
                 pairs = int(fetcher._query(sql).iloc[0]["multivalued_pairs"])
             except Exception as e:
-                offenders.append(f"{tree_name}.{dim_name} (check failed: {type(e).__name__})")
+                # A check that could not run is not a violated assertion: this
+                # used to land in `offenders` and print as "`resolve: error` is
+                # asserted but violated" with a remedy telling the author to
+                # abandon an assertion nothing had tested — for a binding that
+                # may not even declare one.
+                unchecked.append(f"{tree_name}.{dim_name} ({type(e).__name__}: {e})")
                 continue
             if not pairs:
                 continue
@@ -897,6 +902,14 @@ def _check_entity_grain(config, fetcher, wanted, start_date=None, end_date=None)
             "Add `entity_grain: {resolve: first|last}` to the binding to make "
             "the slices sum exactly. Without it they are reported as "
             "overlapping and contribution shares are withheld.",
+        )
+    if unchecked:
+        return CheckResult.fail(
+            "entity grain resolves",
+            f"could not be checked: {unchecked[:4]}" + (" …" if len(unchecked) > 4 else ""),
+            "The multivalue assertion query failed against the warehouse — fix "
+            "the error above and re-run; until it runs, whether these slices "
+            "sum exactly is unverified.",
         )
     return CheckResult.ok(
         "entity grain resolves",
