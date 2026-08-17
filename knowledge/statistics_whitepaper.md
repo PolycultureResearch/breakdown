@@ -964,10 +964,10 @@ stable; the statuses here are a snapshot as of the last-updated date.
 **Current state (2026-08-17):** all items open. The workstream is sequenced to
 begin immediately after the 0.1.0 release, ahead of the adoption items, and
 starts with **S1** — benchmarking full-rank ADVI, the cheapest attack on the
-weakness ranked first in §3.2. One item has grown a scheduled first half:
-S20's *disclosure* (a `fit_quality` warning when a fit window carries a long
-run of exact zeros) ships ahead of the first client deployment, because the
-misspecification is currently silent and that fails this track's own
+weakness ranked first in §3.2. One item has shipped its first half: S20's
+*disclosure* (2026-08-17) — a fit whose window is ≥25% exact zeros now carries
+`likelihood_warnings` on every surface that shows its numbers, because the
+misspecification was silent and that failed this track's own
 disclosed-limitation bar; the likelihood itself stays here.
 
 **Ahead of all of it:**
@@ -1159,13 +1159,14 @@ degenerate *bootstrap* over a constant window, this is a misspecified
 *likelihood*. Fixing either alone leaves the other in place — which is the
 useful lesson, because the symptom (an implausibly tight interval on a spiky,
 mostly-zero parent) looks identical from the outside. **A sequencing note
-(2026-08-17):** until the likelihood lands, this misspecification is the one
-weakness in this paper's orbit that is *silent* rather than disclosed — such a
-fit converges and reports `fit_quality: "ok"`, since the ELBO check (§3.2 #4)
-says only that the optimizer stopped. The disclosure half — a `fit_quality`
-warning when the fit window carries a long run of exact zeros, and a
-`how_to_read` clause beside it — is therefore scheduled ahead of the first
-client deployment, separately from the model work.
+(2026-08-17):** until the likelihood lands, this misspecification was the one
+weakness in this paper's orbit that was *silent* rather than disclosed — such
+a fit converges and reports `fit_quality: "ok"`, since the ELBO check (§3.2
+#4) says only that the optimizer stopped. The disclosure half shipped the
+same day, ahead of the first client deployment and separately from the model
+work: a fit whose window is ≥25% exact zeros carries `likelihood_warnings` on
+the payload, the UI, the export and MCP, with a `how_to_read` clause beside
+it. Closing S20 proper deletes the disclosure.
 
 **Fit through undefined periods by masking the likelihood** — `S21`, ○
 optional, build on demand. Roadmap 1.11 settled how a rate behaves when its

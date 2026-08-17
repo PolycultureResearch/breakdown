@@ -547,3 +547,15 @@ ship in every cold-start response.
 6. **ADVI vs NUTS.** ADVI (the RCA default) is a fast approximation that can
    understate uncertainty; NUTS is the gold standard and reports convergence
    diagnostics (R̂ < 1.05 is healthy). Triage with ADVI, confirm with NUTS.
+7. **The observation model is Gaussian, and a mostly-zero series breaks it.**
+   A series that is exactly zero for a long stretch of its fit window — a
+   seasonal business's off-season, a spiky count — converges happily and
+   reports `fit_quality: "ok"`, because convergence diagnostics measure the
+   optimizer, not the model. The fitted sigma is then a compromise between the
+   zero regime and the live one: posterior mass sits on negative values of a
+   non-negative series and the intervals mis-state everywhere. When a quarter
+   or more of a node's fitted periods are exactly zero, the fit discloses it —
+   `likelihood_warnings` on the node, in the RCA table, the export and over
+   MCP — and its intervals and components should be read as approximate. The
+   real fix is a zero-inflated or count likelihood, tracked as roadmap S20;
+   until it lands, the warning is the disclosure.

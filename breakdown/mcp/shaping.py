@@ -260,6 +260,11 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
             # the decision-relevant number.
             "fit_periods": (node.get("fit_window") or {}).get("n_periods"),
             "seasonality_warnings": node.get("seasonality_warnings"),
+            # Carried whole rather than summarized in RCA_HOW_TO_READ: each
+            # warning string is self-contained ("...read its intervals and
+            # components as approximate"), so the guidance travels exactly on
+            # the nodes it applies to and costs nothing on the ones it doesn't.
+            "likelihood_warnings": node.get("likelihood_warnings"),
             "ci_status": node["ci_status"],
             "unexplained": node["unexplained"],
             # Never dropped for token economy: `unexplained: 0` means two

@@ -1119,6 +1119,7 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     if (node.fit_quality === "suspect") bits.push("⚠ suspect fit — the engine's own fit check failed for this node's model");
     if (node.sign_warnings && node.sign_warnings.length) bits.push("⚠ learned sign contradicts declared expectation");
     if (node.seasonality_warnings && node.seasonality_warnings.length) bits.push("⚠ seasonality unidentifiable from fitted history");
+    if (node.likelihood_warnings && node.likelihood_warnings.length) bits.push("⚠ zero-inflated fit window — intervals approximate");
     return bits.length ? ` · ${esc(bits.join(" · "))}` : "";
   };
 
@@ -1149,6 +1150,7 @@ function buildRcaReportHtml(res, treePng, stripPng) {
       );
     }
     (node.seasonality_warnings || []).forEach((w) => out.push(esc(w)));
+    (node.likelihood_warnings || []).forEach((w) => out.push(esc(w)));
     return out.map((t) => `<p class="warn">⚠ ${t}</p>`).join("");
   };
 
@@ -3319,6 +3321,10 @@ function renderRcaTab() {
         node.seasonality_warnings && node.seasonality_warnings.length
           ? ` · <span class="sign-flag" title="${esc(node.seasonality_warnings.join("\n\n"))}">⚠ seasonality unidentifiable from fitted history</span>`
           : "";
+      const zeroNote =
+        node.likelihood_warnings && node.likelihood_warnings.length
+          ? ` · <span class="sign-flag" title="${esc(node.likelihood_warnings.join("\n\n"))}">⚠ zero-inflated fit window — intervals approximate</span>`
+          : "";
       const twoLevel = node.contributions.some((c) => c.decomposition);
       let header, rows, nCols;
 
@@ -3407,7 +3413,7 @@ function renderRcaTab() {
       }
       return `
         <div class="attr-block">
-          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${fitNote2}${signNote}${seasNote}</span></h4>
+          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${fitNote2}${signNote}${seasNote}${zeroNote}</span></h4>
           <table class="data-table">
             ${header}
             ${rows}
