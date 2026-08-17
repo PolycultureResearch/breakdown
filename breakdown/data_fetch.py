@@ -1,3 +1,4 @@
+import ast
 import importlib
 import importlib.util
 import logging
@@ -1061,8 +1062,12 @@ class MockDataFetcher(BaseDataFetcher):
     name — see `_mock_rate_scale`) rather than a volume metric's, so a funnel
     of `count × rate` identities composes instead of compounding once per
     level. Learned edges read their **per-parent** prior, so a declared
-    negative effect really is generated negative. Flows and stocks are
-    unchanged, which keeps all-flow trees byte-identical.
+    negative effect really is generated negative. And a plain difference
+    identity `a - b` over two flow leaves generates the subtrahend as a
+    varying share of the minuend, so the difference stays positive instead
+    of the two leaves landing on unrelated scales (see
+    `_difference_constraints`, C13). Flows and stocks not under a difference
+    are unchanged, which keeps difference-free all-flow trees byte-identical.
     """
 
     def __init__(self, dag: Optional[nx.DiGraph] = None):
@@ -1089,13 +1094,127 @@ class MockDataFetcher(BaseDataFetcher):
             return out
         return resample_up(series, pgrain, grain, pkind, label=f"'{parent}'")
 
+    def _difference_constraints(self) -> Dict[str, str]:
+        """Subtrahend-leaf → minuend-leaf, one entry per plain `a - b` formula.
+
+        A difference identity whose two leaves are drawn independently goes
+        negative whenever the mock happens to put the subtrahend on the larger
+        scale — on the reference tree `controllable_attrition = cancel_requests
+        − saved_cancel_requests` was negative in 100% of periods (C13). The
+        constrained subtrahend is instead generated as a varying share of the
+        minuend, so the difference stays positive while both leaves keep a
+        realistic shape.
+
+        Scope — deliberately the clean cut, not the general case: only a
+        formula that is exactly `Name - Name`, where both names are **leaves**
+        (no parents — a formula or learned node on either side would need its
+        value before topological order provides it), both `kind: flow` (rate
+        leaves already generate inside a clipped band), and both at the same
+        grain (the share is applied per-period, which needs the two spines to
+        coincide). Multi-term differences (`a + b - c`), nested expressions,
+        and mixed-grain pairs are out of scope and generate as before.
+        """
+        constraints: Dict[str, str] = {}
+        for name in sorted(self.dag.nodes):
+            formula = getattr(self.dag.nodes[name]["definition"], "formula", None)
+            if not formula:
+                continue
+            try:
+                expr = ast.parse(formula, mode="eval").body
+            except SyntaxError:
+                continue
+            if not (
+                isinstance(expr, ast.BinOp)
+                and isinstance(expr.op, ast.Sub)
+                and isinstance(expr.left, ast.Name)
+                and isinstance(expr.right, ast.Name)
+            ):
+                continue
+            minuend, subtrahend = expr.left.id, expr.right.id
+            if minuend == subtrahend or subtrahend in constraints:
+                continue
+            if minuend not in self.dag or subtrahend not in self.dag:
+                continue
+            if any(self.dag.in_degree(x) > 0 for x in (minuend, subtrahend)):
+                continue
+            m_def = self.dag.nodes[minuend]["definition"]
+            s_def = self.dag.nodes[subtrahend]["definition"]
+            if any(getattr(d, "kind", "flow") != "flow" for d in (m_def, s_def)):
+                continue
+            if getattr(m_def, "grain", "day") != getattr(s_def, "grain", "day"):
+                continue
+            # Refuse a constraint that would chain back onto itself (`a - b`
+            # and `b - a` declared together): follow the existing map from the
+            # minuend and skip if it reaches the subtrahend.
+            cur = minuend
+            while cur in constraints and cur != subtrahend:
+                cur = constraints[cur]
+            if cur == subtrahend:
+                continue
+            constraints[subtrahend] = minuend
+        return constraints
+
     def _tree_data(self, start_date: str, end_date: str) -> Dict[str, pd.Series]:
         key = (start_date, end_date)
         if key in self._cache:
             return self._cache[key]
 
         series: Dict[str, pd.Series] = {}
+        constraints = self._difference_constraints()
+
+        def gen_leaf(name: str) -> None:
+            """Generate one parentless node, honouring difference constraints.
+
+            Called out of topological order when a constrained subtrahend
+            needs its minuend first; the main loop skips anything already
+            generated, and per-metric seeding keeps the result independent of
+            generation order.
+            """
+            if name in series:
+                return
+            defn = self.dag.nodes[name]["definition"]
+            grain = getattr(defn, "grain", "day")
+            rng = self._rng_for(name)
+            spine = period_spine(start_date, end_date, grain)
+            n = len(spine)
+            t = np.arange(n)
+            if getattr(defn, "kind", "flow") == "rate":
+                # A rate wanders far less than a volume metric and cannot
+                # leave its band, so the walk is damped and clipped — an
+                # undamped one drifts a share negative over a long window.
+                base, lo, hi = _mock_rate_scale(name, rng)
+                vals = np.clip(
+                    base
+                    + np.cumsum(rng.normal(0, 0.005 * base, n))
+                    + 0.03 * base * np.sin(2 * np.pi * t / 7),
+                    lo,
+                    hi,
+                )
+            elif name in constraints:
+                # The subtrahend of a difference identity: a damped share of
+                # the minuend inside (0.1, 0.9), so `minuend - subtrahend`
+                # stays positive in every period while the subtrahend keeps
+                # the minuend's level and seasonality plus its own variation.
+                minuend = constraints[name]
+                gen_leaf(minuend)
+                share = np.clip(
+                    float(rng.uniform(0.2, 0.8)) + np.cumsum(rng.normal(0, 0.004, n)),
+                    0.1,
+                    0.9,
+                )
+                vals = share * series[minuend].to_numpy()
+            else:
+                level = float(rng.uniform(50, 5000))
+                vals = (
+                    level
+                    + np.cumsum(rng.normal(0, 0.02 * level, n))
+                    + 0.1 * level * np.sin(2 * np.pi * t / 7)
+                )
+            series[name] = pd.Series(vals, index=spine)
+
         for name in nx.topological_sort(self.dag):
+            if name in series:
+                continue
             defn = self.dag.nodes[name]["definition"]
             grain = getattr(defn, "grain", "day")
             rng = self._rng_for(name)
@@ -1161,28 +1280,7 @@ class MockDataFetcher(BaseDataFetcher):
                         vals = signal + rng.normal(0, noise_scale, n)
                 series[name] = pd.Series(vals, index=idx)
             else:
-                n = len(spine)
-                t = np.arange(n)
-                if getattr(defn, "kind", "flow") == "rate":
-                    # A rate wanders far less than a volume metric and cannot
-                    # leave its band, so the walk is damped and clipped — an
-                    # undamped one drifts a share negative over a long window.
-                    base, lo, hi = _mock_rate_scale(name, rng)
-                    vals = np.clip(
-                        base
-                        + np.cumsum(rng.normal(0, 0.005 * base, n))
-                        + 0.03 * base * np.sin(2 * np.pi * t / 7),
-                        lo,
-                        hi,
-                    )
-                else:
-                    level = float(rng.uniform(50, 5000))
-                    vals = (
-                        level
-                        + np.cumsum(rng.normal(0, 0.02 * level, n))
-                        + 0.1 * level * np.sin(2 * np.pi * t / 7)
-                    )
-                series[name] = pd.Series(vals, index=spine)
+                gen_leaf(name)
 
         self._cache[key] = series
         return series

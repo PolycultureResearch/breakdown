@@ -342,6 +342,52 @@ def test_mock_all_day_tree_pinned_values():
     )
 
 
+DIFF_TREE = """
+metrics:
+  - name: cancel_requests
+    source: dbt.metric.cancel_requests
+  - name: saved_cancel_requests
+    source: dbt.metric.saved_cancel_requests
+  - name: controllable_attrition
+    source: dbt.metric.controllable_attrition
+    formula: "cancel_requests - saved_cancel_requests"
+    parents: [cancel_requests, saved_cancel_requests]
+"""
+
+
+def test_mock_difference_identity_is_non_negative_every_period():
+    """C13: independently drawn leaves put the subtrahend of `a - b` on an
+    unrelated scale, so the difference could be negative in every period —
+    a value the business being modelled cannot produce. The generator now
+    draws the subtrahend as a varying share of the minuend."""
+    parser = Parser(DIFF_TREE)
+    fetcher = MockDataFetcher(dag=parser.dag)
+    window = ("2024-01-01", "2024-12-31")
+    diff = fetcher.fetch_metric("controllable_attrition", *window)["controllable_attrition"]
+    req = fetcher.fetch_metric("cancel_requests", *window)["cancel_requests"]
+    saved = fetcher.fetch_metric("saved_cancel_requests", *window)["saved_cancel_requests"]
+    # The identity's terms are ordered in every period, so the difference is
+    # positive in every period — not merely on average.
+    assert (saved.to_numpy() <= req.to_numpy()).all()
+    assert (diff > 0).all()
+    assert (saved > 0).all()
+    # Leaf realism: the subtrahend is a *varying* share of the minuend inside
+    # (0.1, 0.9), not a constant fraction the fit would see as collinear.
+    share = saved.to_numpy() / req.to_numpy()
+    assert share.min() >= 0.1 and share.max() <= 0.9
+    assert share.std() > 1e-4
+
+
+def test_mock_difference_constraint_leaves_other_trees_alone():
+    """The constraint applies only to trees with a plain leaf-leaf difference;
+    a difference-free tree's byte-identical guarantee is pinned by
+    `test_mock_all_day_tree_pinned_values` above, and its constraint map is
+    empty by construction."""
+    parser = Parser(TREE_YAML)
+    fetcher = MockDataFetcher(dag=parser.dag)
+    assert fetcher._difference_constraints() == {}
+
+
 def test_mock_mixed_grain_identity_holds_at_node_grain():
     """A weekly formula node satisfies its formula against the daily flow
     parent summed to weeks and the native weekly rate."""
