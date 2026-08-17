@@ -74,6 +74,13 @@ ADDITIVITY = ("exact", "overlapping", "unknown")
 # A slice is flagged noise-level when its excess direction probability is
 # below this — the bootstrap can't tell its concentration from zero.
 _NOISE_PROB = 0.8
+# The headline "X carries N% of the gap" claim is only made when the leader's
+# excess is at least this share of the gap; below it the honest verdict is
+# "not localized". Published on the response (`localization_threshold`) so the
+# UI, the tests and MCP consumers apply one rule — until roadmap C24 this
+# lived only in app.js, hand-mirrored in a test helper, and invisible to MCP,
+# which would confidently name the top slice exactly where the UI declined to.
+_LOCALIZATION_THRESHOLD = 0.25
 # Bootstrap replicates surviving the finite filter below which an interval
 # would be quoted off too little resampling to mean anything.
 _MIN_CI_REPLICATES = 100
@@ -93,6 +100,35 @@ def _rank_by_excess(rows: List[Dict[str, Any]], gap: float) -> None:
     """
     direction = -1.0 if gap < 0 else 1.0
     rows.sort(key=lambda r: -direction * (r["excess"] if r["excess"] is not None else 0.0))
+
+
+def _localization(rows: List[Dict[str, Any]], gap: float) -> Dict[str, Any]:
+    """The headline verdict, computed beside the numbers it summarizes.
+
+    Ranking always produces a first row, so without this gate a panel would
+    name a slice even when the gap is spread evenly — the failure mode that
+    makes flat slicers untrustworthy. Concentration is the leader's excess as
+    a share of the gap: scale-free, and unlike a share-vs-baseline ratio it
+    does not punish slices that are already large (mobile is half the traffic
+    and still the culprit). The claim is withheld when the leader is
+    noise-level, or when either of the numbers the verdict sentence quotes
+    (`share_of_gap`, `baseline_share`) is withheld — quoting a claim whose
+    evidence is withheld would out-run the evidence.
+    """
+    top = rows[0] if rows else None
+    concentration = (
+        abs(top["excess"] / gap)
+        if top and top.get("excess") is not None and abs(gap) > 1e-12
+        else 0.0
+    )
+    localized = bool(
+        top
+        and not top.get("noise_level")
+        and top.get("baseline_share") is not None
+        and top.get("share_of_gap") is not None
+        and concentration >= _LOCALIZATION_THRESHOLD
+    )
+    return {"localized": localized, "localization_threshold": _LOCALIZATION_THRESHOLD}
 
 
 # Reconciliation: mean |Σ slices − metric| above this share of |baseline|
@@ -681,6 +717,9 @@ def _sum_attribution(
         "slices": rows,
         "mix_total": None,
         "reconciliation": recon,
+        # After the overlap step above, deliberately: withheld shares mean a
+        # withheld verdict.
+        **_localization(rows, gap),
     }
 
 
@@ -826,6 +865,12 @@ def _rate_attribution(
             "value": g,
             "share_reference": float(s_ref[j]),
             "share_analysis": float(s_an[j]),
+            # For a rate, the slice's reference share of the *denominator* is
+            # its baseline share — same fact, same name as the sum path, so
+            # every consumer of a slice row reads one field. Its absence here
+            # was C24: the UI's verdict gated on it, so a rate panel could
+            # never say "localized" no matter how concentrated the movement.
+            "baseline_share": None if np.isnan(s_ref[j]) else float(s_ref[j]),
             "rate_reference": None if np.isnan(r_ref[j]) else float(r_ref[j]),
             "rate_analysis": None if np.isnan(r_an[j]) else float(r_an[j]),
             "within": float(within[j]),
@@ -868,9 +913,11 @@ def _rate_attribution(
     node_gap = float(node_an - node_ref)
     if abs(gap - node_gap) > 0.02 * max(abs(node_gap), 1e-12):
         caveats.append(
-            f"Weight-blended gap ({gap:.4g}) differs from the node's unweighted "
-            f"window-mean gap ({node_gap:.4g}); the difference is a weighting "
-            "effect, not a slice's doing."
+            f"Weight-blended gap ({gap:.4g}) differs from the node's own "
+            f"window-aggregate gap ({node_gap:.4g}). Both aggregate as "
+            "Σnumerator/Σdenominator, so a difference that survives means the "
+            "slices' weights are not the node's denominator — check `weight` — "
+            "not a slice's doing."
         )
 
     return {
@@ -886,4 +933,5 @@ def _rate_attribution(
         "slices": rows,
         "mix_total": mix_total,
         "reconciliation": recon,
+        **_localization(rows, gap),
     }

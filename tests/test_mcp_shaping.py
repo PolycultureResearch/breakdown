@@ -455,3 +455,64 @@ def test_compact_rca_passes_lag_windows_through():
     assert lagged["parent_windows"] == windows
     for c in out["nodes"]["revenue"]["contributions"][1:]:
         assert "lag" not in c and "parent_windows" not in c
+
+
+def test_compact_slice_carries_the_verdict_and_the_38_trio():
+    """C24 + the 3.8 payload: `localized` (False included — a verdict, not a
+    null), the threshold, `additivity`, `overlap` and `entity_flows` all
+    survive compaction. Dropping them was the C9 failure mode through a new
+    door: the agent surface lost exactly the fields that prevent the likeliest
+    misreading (naming an unlocalized top slice; narrating a migration as two
+    offsetting causes)."""
+    result = {
+        "metric": "active_users",
+        "dimension": "platform",
+        "dimension_source": "user__platform",
+        "grain": "day",
+        "kind": "stock",
+        "effective_windows": {
+            "reference": {"start": "2024-02-05", "end": "2024-03-03", "n_periods": 28},
+            "analysis": {"start": "2024-03-04", "end": "2024-03-10", "n_periods": 7},
+        },
+        "baseline": 2069.0,
+        "actual": 2050.0,
+        "gap": -19.0,
+        "attribution_method": "slice_sum",
+        "mix_total": None,
+        "localized": False,
+        "localization_threshold": 0.25,
+        "additivity": "overlapping",
+        "overlap": {"mean": 37.0, "share_of_baseline": 0.018},
+        "entity_flows": {
+            "totals": {"new": 12, "churned": 31, "retained": 2026, "migrated": 36},
+            "migrations": [{"from": "ios", "to": "web", "entities": 36}],
+            "migration_net": 0,
+            "reconciles_to_gap": False,
+        },
+        "slices": [
+            {
+                "value": "ios",
+                "baseline": 900.0,
+                "actual": 880.0,
+                "contribution": -20.0,
+                "share_of_gap": None,
+                "baseline_share": 0.43,
+                "excess": -11.0,
+                "ci_95": None,
+                "prob_concentrated": 0.6,
+                "noise_level": True,
+            }
+        ],
+        "reconciliation": {"status": "not_applicable", "residual_share_of_baseline": 0.018},
+        "ci_status": "ok",
+        "caveats": [],
+    }
+    out = compact_slice(result)
+    assert out["localized"] is False
+    assert out["localization_threshold"] == 0.25
+    assert out["additivity"] == "overlapping"
+    assert out["overlap"]["share_of_baseline"] == 0.018
+    assert out["entity_flows"]["migrations"][0]["from"] == "ios"
+    # `unknown` additivity is background, not a finding, and is trimmed.
+    plain = compact_slice({**result, "additivity": "unknown", "overlap": None})
+    assert "additivity" not in plain and "overlap" not in plain

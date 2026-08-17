@@ -3052,19 +3052,13 @@ function sliceResultHtml(metric) {
     .join("");
 
   // The headline claim only survives if the leader is genuinely concentrated.
-  // Ranking always produces a first row, so without this the panel would name
-  // a slice even when the gap is spread evenly — the failure mode that makes
-  // flat slicers untrustworthy. Concentration is excess as a share of the gap:
-  // scale-free, and unlike a share-vs-baseline ratio it does not punish slices
-  // that are already large (mobile is half the traffic and still the culprit).
+  // The verdict is the engine's (`localized`, per its published
+  // `localization_threshold`), not recomputed here: this file recomputing it
+  // was C24 — the rate rows never carried `baseline_share`, so the local rule
+  // silently said "not localized" for every rate, and MCP consumers applied
+  // no rule at all. One published fact, every surface reads it.
   const top = r.slices[0];
-  const concentration =
-    top && top.excess != null && Math.abs(r.gap) > 1e-12
-      ? Math.abs(top.excess / r.gap)
-      : 0;
-  const localized =
-    top && !top.noise_level && top.baseline_share != null && top.share_of_gap != null
-      && concentration >= 0.25;
+  const localized = !!r.localized;
   const verdict = localized
     ? `<p class="slice-verdict">${sliceLabel(top.value)} carries
          <strong>${pct(top.share_of_gap)}</strong> of the gap on a

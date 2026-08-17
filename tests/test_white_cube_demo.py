@@ -211,23 +211,13 @@ def ui_comovement(node):
 
 def ui_localized(s):
     """Whether the slice panel prints the "<x> carries N% of the gap" verdict
-    rather than "Not localized by <dimension>". Ranking always produces a first
-    row, so this concentration floor is the whole difference between a slicer
-    worth believing and one that names whatever sorted first."""
-    top = s["slices"][0] if s["slices"] else None
-    gap = s.get("gap")
-    concentration = (
-        abs(top["excess"] / gap)
-        if top and top.get("excess") is not None and gap and abs(gap) > 1e-12
-        else 0.0
-    )
-    return bool(
-        top
-        and not top.get("noise_level")
-        and top.get("baseline_share") is not None
-        and top.get("share_of_gap") is not None
-        and concentration >= 0.25
-    )
+    rather than "Not localized by <dimension>". Since C24 the verdict is
+    *published* (`localized`) and the UI just reads it — this helper reads the
+    same field, so the browser rule, this suite and MCP consumers cannot
+    drift apart again. (The hand-mirrored recomputation this replaces is how
+    the rate panels' always-false verdict went unnoticed: every rate
+    assertion here was a negative one, passing for the wrong reason.)"""
+    return bool(s.get("localized"))
 
 
 def test_the_tree_is_the_size_the_script_says():

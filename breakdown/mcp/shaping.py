@@ -86,6 +86,20 @@ SLICE_HOW_TO_READ = (
     "- For rates: `within` is the slice's own rate moving, `mix` is traffic "
     "shifting between slices. `mix_total` is a composition effect — nobody's "
     "fault, and often the whole story.\n"
+    "- `localized: false` means no slice carries enough of the gap beyond its "
+    "own size to headline (the leader's `excess` is below "
+    "`localization_threshold` of the gap, or it is noise-level): narrate the "
+    "gap as spread across slices, and do not name the top slice as the cause.\n"
+    "- `additivity: overlapping` means these slices share entities and "
+    "overstate the metric by `overlap` — arithmetic, not a defect. Per-slice "
+    "`share_of_gap` is withheld (absent) because the slices do not sum to the "
+    "total, and `reconciliation.status` is `not_applicable` rather than "
+    "`discrepant`.\n"
+    "- `entity_flows`, when present, sits beside the attribution, never inside "
+    "it: new/churned/retained/migrated entity counts across the two windows "
+    "(`reconciles_to_gap: false`). A migration nets to zero across slices — "
+    "narrate it as the metric moving *between* slices, not changing size; "
+    "naive slicing reads the same event as two large offsetting causes.\n"
     "- `reconciliation.status: discrepant` means the slices do not sum/blend "
     "back to the metric: the dimension does not cleanly partition it. Treat "
     "attributions as approximate and say so.\n"
@@ -319,6 +333,21 @@ def compact_slice(result: Dict[str, Any]) -> Dict[str, Any]:
         "gap": result["gap"],
         "attribution_method": result["attribution_method"],
         "mix_total": result["mix_total"],
+        # The verdict travels with the payload (C24): the UI applies exactly
+        # this gate before naming a top slice, and an agent holding only
+        # `prob_concentrated` — which answers a different question — would
+        # confidently name one exactly where the UI declines to.
+        "localized": result.get("localized"),
+        "localization_threshold": result.get("localization_threshold"),
+        # The 3.8 trio. Dropping these was the C9 failure mode through a new
+        # door: `additivity: overlapping` is *why* every slice is missing
+        # `share_of_gap`, and the migration line in `entity_flows` is the
+        # difference between "a user switched platform" and two large
+        # offsetting causes — the misreading an LLM narrator is most likely
+        # to produce is the one these fields exist to prevent.
+        "additivity": (result.get("additivity") if result.get("additivity") != "unknown" else None),
+        "overlap": result.get("overlap"),
+        "entity_flows": result.get("entity_flows"),
         "slices": [{k: v for k, v in row.items() if v is not None} for row in result["slices"]],
         "reconciliation": {
             "status": result["reconciliation"]["status"],
@@ -327,6 +356,8 @@ def compact_slice(result: Dict[str, Any]) -> Dict[str, Any]:
         "ci_status": result["ci_status"],
         "caveats": result["caveats"] or None,
     }
+    # `localized: False` is a verdict, not a null — the trim below drops only
+    # absent facts, never negative ones.
     return {k: v for k, v in out.items() if v is not None}
 
 

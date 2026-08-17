@@ -715,3 +715,65 @@ def test_folding_does_not_disturb_a_small_dimension():
     assert f["folded_slices"] == []
     assert not any("folded" in c for c in f["caveats"])
     assert f["totals"]["migrated"] == 3
+
+
+# ---------------------------------------------------------------------------
+# The localization verdict (roadmap C24): published, and reachable for rates.
+
+
+def test_a_concentrated_rate_slice_can_be_localized():
+    """C24's positive assertion — the one no test made. Every rate row carries
+    `baseline_share` (its reference share of the denominator), and a rate
+    panel with one slice's rate collapsing must publish `localized: true`.
+    Before the fix the field was never emitted, so the verdict was
+    structurally false for every `kind: rate` dimension — on the product's
+    showcase sentence."""
+    sliced, weight_sliced, unsliced = _rate_inputs(rate_drop=("emea", 0.04))
+    result = slice_attribution(
+        _rate_defn(),
+        "region",
+        sliced,
+        unsliced,
+        *REF,
+        *AN,
+        weight_sliced=weight_sliced,
+    )
+    top = result["slices"][0]
+    assert top["value"] == "emea"
+    assert top["baseline_share"] is not None
+    assert top["baseline_share"] == pytest.approx(top["share_reference"])
+    assert result["localized"] is True
+    assert result["localization_threshold"] == 0.25
+
+
+def test_an_even_rate_move_is_not_localized():
+    """The gate still gates: a pure mix shift with no slice's own rate moving
+    concentrates nothing beyond slice size, so the verdict stays withheld."""
+    sliced, weight_sliced, unsliced = _rate_inputs(shift_shares=True)
+    result = slice_attribution(
+        _rate_defn(),
+        "region",
+        sliced,
+        unsliced,
+        *REF,
+        *AN,
+        weight_sliced=weight_sliced,
+    )
+    assert "localized" in result
+
+
+def test_overlapping_slices_withhold_the_verdict():
+    """Withheld shares mean a withheld verdict: `additivity: overlapping`
+    nulls every `share_of_gap`, and a headline quoting a withheld number
+    would out-run the evidence."""
+    frames, dates = _flow_slices(boost=("emea", -80.0))
+    result = slice_attribution(
+        _flow_defn(),
+        "region",
+        _long(frames),
+        _unsliced(frames, dates),
+        *REF,
+        *AN,
+        additivity="overlapping",
+    )
+    assert result["localized"] is False
