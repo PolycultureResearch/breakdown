@@ -407,3 +407,58 @@ The order matters for the reason the user's brief gives: NN will resurface
 this list reordered. Everything in phase 1 is work that makes the client
 deployment *legible* — the tool telling the truth about itself — which is
 exactly the property that lets real-world feedback be trusted when it arrives.
+
+---
+
+## Addendum: what shipped, and the read-the-numbers record (2026-08-17)
+
+Phase 1 and part of phase 2 shipped the same day this report landed: **2.20**
+(containment snapshot reads + doctor sees snapshots), **C12** (weight grain at
+parse time, with the policy fork resolved in writing), **C23** (the sliced
+path joins the date contract; `_pivot` refuses duplicates; the fill divergence
+chosen in writing and logged), **C24** (the localization verdict published and
+reachable for rates, plus the MCP slice payload trio), **C25** (simulate
+labels + the non-finite refusal), the **S20 disclosure half**
+(`likelihood_warnings`), and the two 3.8 follow-ups (`resolve: error` refuses
+flows; doctor separates cannot-check from violated). Roadmap rows carry the
+details. Still open from this report's lists: C9, C13, C7, the NN expectation
+brief, and the PyPI blockers.
+
+Verified per [`read-the-numbers`](../.claude/skills/read-the-numbers/SKILL.md),
+2026-08-17, suite green (1102 passed before the C24+ batch; affected suites
+re-run green after):
+
+> **White Cube** (snapshot-served, provider `/nonexistent` by design). Story A
+> `new_mrr` ref 2026-01-05→02-01, an 2026-02-09→03-08: 1701.458 → 1449.625,
+> gap −251.833 (−14.8%), `unexplained` −2.3e-13 `measured`;
+> `new_subscriptions` −324.8 share 1.290 ci [−534.8, −76.8] psd 0.998;
+> `new_arpu` +73.0 share −0.290 ci spans zero, psd 0.708; `ranked_causes[0]`
+> `new_subscriptions` 0.633 via `new_mrr` — byte-matches the 2026-08-13
+> record. **The change probes:** `customer_churn_rate` by country over the
+> same windows publishes `localized: true`, and the UI renders *"BR carries
+> 55.1% of the gap on a 9.6% baseline share"* — the sentence that was
+> structurally unsayable for every rate before C24 — with noise chips on
+> US/FR/ES and the additivity caveat beneath; the flow slice
+> (`new_subscriptions` by plan) correctly withholds (leader noise-level).
+> `/simulate` +10% `new_subscriptions`: every rate carries
+> `window_aggregate: "components"` on both node shapes, `new_mrr`'s simulate
+> baseline equals the RCA's to the decimal, propagation +10% → net-new +16.3%;
+> intervening on `customer_churn_rate` +10% renders *component aggregate*
+> under 0.0101 → 0.0111 in the table and paints the churn side worsening.
+> **Doctor** on the same deployment: `[WARN] dbt project … not fatal here:
+> every metric is snapshot-covered`, `[PASS] snapshots — all 18 sourced
+> metrics covered`, fit readiness proves 18/18 through the wrapped path,
+> **exit 0** (was `[FAIL]` + exit 1). **Containment:** re-serving with
+> `--end-date` narrowed one week boots healthy against the unreachable
+> provider — 32 "served from stored window … trimmed" hits, `data_through`
+> 2026-07-19 — a boot that was impossible before 2.20a.
+>
+> **B2B MRR** (106 metrics, mock): boots with the known identity-departure
+> warnings (the C13 class, expected); `contract_renewal_rate` by segment over
+> two 6-month windows: `localized: false`, every slice noise-level,
+> `baseline_share` present, windows snapped to whole months, reconciliation
+> ok; a day-grain flow slice localizes. Skipped, with reasons: a whole-tree
+> B2B RCA (fit-heavy; slicing was the changed surface), the export-HTML diff
+> (the live panel was verified; the export shares `caveatBlock`), and a live
+> S20 probe (no shipped tree has a zero-inflated node — the unit and
+> fit-integration tests carry it).
