@@ -122,7 +122,8 @@ WHATIF_HOW_TO_READ = (
     "(detail in `warnings`) means the scenario leaves that range — call the result speculative.\n"
     "- Assumption edges are user-asserted beliefs sampled from the stated 90% range, not "
     "fitted from data; say so when they drive the answer.\n"
-    "- Per-source `contributions` are exact Shapley shares and sum to the node's delta estimate.\n"
+    "- Per-source `contributions` are exact Shapley shares of the node's *point* delta: they "
+    "sum to `delta.estimate`, not to the posterior draws or the interval.\n"
     "- A rate node's `window_aggregate` says which arithmetic formed its baseline: "
     "`components` is Σnumerator/Σdenominator (the real window rate); any `period_mean_*` "
     "value means the plain average of per-period ratios, with `window_aggregate_reason` "
@@ -205,9 +206,10 @@ def metric_link(name: str, tree=None) -> str:
 
 
 def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
-    """Compact a run_rca result: drop per-contribution decompositions and
-    effective-window detail, collapse components to point estimates, shrink
-    skipped nodes to their status, and omit null node fields.
+    """Compact a run_rca result: drop per-contribution decompositions (and the
+    node-level `interaction` that summarizes them) and effective-window detail,
+    trim components to `{estimate, ci_95}`, shrink skipped nodes to their
+    status, and omit null node fields.
 
     A non-`ok` node keeps `status_reason`, and keeps its own `baseline`,
     `actual` and `gap` when it has them. Both matter more here than in the HTTP
@@ -277,12 +279,26 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
             # answer is not the real component aggregate.
             "window_aggregate": node.get("window_aggregate"),
             "window_aggregate_reason": node.get("window_aggregate_reason"),
+            # Components keep their interval: the trend estimate is a fitted
+            # quantity, and a narrator handed only its point value states model
+            # structure with certainty the model never claimed. A null ci_95
+            # stays null — withheld is information (see ci_status).
             "components": (
-                {k: v["estimate"] for k, v in node["components"].items()}
+                {
+                    k: {"estimate": v["estimate"], "ci_95": v["ci_95"]}
+                    for k, v in node["components"].items()
+                }
                 if node["components"]
                 else None
             ),
-            "interaction": node["interaction"],
+            # `interaction` is deliberately absent. It is a *readout* of the
+            # co-movement already inside each contribution's `estimate`
+            # (estimate = means + comovement; interaction = Σ comovement), and
+            # this compaction drops the `decomposition` that says so. A summary
+            # of a dropped detail, shipped without the detail, reads as one
+            # more term — and an agent that sums the contributions and adds it
+            # double-counts the entire co-movement shift. The full HTTP
+            # payload keeps both halves together.
             "contributions": [
                 {
                     # ci_95: null is meaningful (withheld interval) and stays;
