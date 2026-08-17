@@ -5,7 +5,7 @@ providers, statistical improvements, whatever you've got. Please, come on in and
 pull request.
 
 You're also welcome to just use breakdown. Run it, point it at your own
-metric trees, and use it as part of your company's internal tooling. Our FSL [license](LICENSE) permits any use, commercial or otherwise, except selling it as part of a competing product — and each release converts to plain Apache-2.0 two years after it ships, by the license's own irrevocable grant. Fork it, extend it, adapt it to
+metric trees, and use it as part of your company's internal tooling. Our FSL [license](LICENSE) permits any use, commercial or otherwise, except selling it as part of a competing product, and each release converts to plain Apache-2.0 two years after it ships, by the license's own irrevocable grant. Fork it, extend it, adapt it to
 what you need. We hope you'll contribute improvements back if you're so inclined.
 
 ## Before you open a pull request
