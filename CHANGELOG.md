@@ -186,6 +186,20 @@ anyone installing from an index, all of this is new.
 
 ### Fixed
 
+- **Cold-start beliefs respect their own declared bounds, and a ratio over a
+  zero-crossing belief is refused** (roadmap C7). Baseline draws are truncated
+  to the node's `plausible` bounds by rejection resampling — a
+  `plausible: {min: 0}` belief could previously draw negative customer counts,
+  because the bounds were consulted only after sampling, for extrapolation
+  flags. `baseline: {distribution: LogNormal}` is new: `[low, high]` read as
+  the central 90% interval on the log scale, the natural shape for an
+  order-of-magnitude belief about a positive quantity (`low` must be > 0). And
+  a formula dividing by a belief whose draws cross zero is refused with the
+  divisor and remedies named, rather than publishing the Monte-Carlo mean of a
+  ratio whose mean does not exist — the pre-fix behavior turned "somewhere
+  between 2 and 40 signups a month" into a $2.1M CAC. Cold-start numbers move
+  slightly wherever truncation bites; the centre stays a mean, deliberately,
+  so per-source contributions keep summing exactly to `delta.estimate`.
 - **`GET /metrics/{name}` no longer 500s on an undefined period.** It serialized
   its `time_series` unsanitized, so a single `NaN` reached Starlette's
   `allow_nan=False` encoder as an unhandled 500 for the whole metric — which is

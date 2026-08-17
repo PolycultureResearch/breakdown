@@ -413,9 +413,13 @@ rate's `baseline`/`actual` ([above](#root-cause-analysis)),
 because the baseline here is the same window arithmetic and a `period_mean_*`
 fallback should be read the same way wherever it appears. A scenario whose
 arithmetic produces a non-finite number anywhere (a zero denominator inside a
-formula over the baseline window; cold-start draws crossing zero on a ratio's
-denominator) is refused with a **422 naming the nodes** rather than encoded —
-there is no partial result worth keeping, because deltas propagate.
+formula over the baseline window) is refused with a **422 naming the nodes**
+rather than encoded — there is no partial result worth keeping, because deltas
+propagate. On a cold-start tree the same policy fires one step earlier: a
+formula that divides by a belief whose draws cross zero is refused with the
+divisor and the remedies named (a `plausible` floor above zero, or a
+`LogNormal` baseline), because the ratio's Monte-Carlo mean would not exist
+and its centre would be an artifact of the seed.
 
 Pass an optional `run_id` query parameter to follow a long simulation with
 [`GET /progress/{run_id}`](#get-progressrun_id--live-progress), exactly as for

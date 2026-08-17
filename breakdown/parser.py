@@ -2,7 +2,7 @@ import datetime
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import networkx as nx
 import yaml
@@ -35,15 +35,28 @@ class AssertedBaseline(BaseModel):
     degenerating to a point. Units are mean per native grain period, exactly
     what a fitted baseline (`window_mean`) would be. Written in YAML either as
     the shorthand `baseline: 1200` or as `baseline: {low: 800, high: 1600}`.
+
+    `distribution: LogNormal` (roadmap C7) reads the same `[low, high]` as the
+    central 90% interval of a LogNormal instead — the natural shape for an
+    order-of-magnitude belief about a positive quantity ("between 2 and 40
+    signups a month"), where a Normal would put real mass at and below zero.
+    Spelled exactly like the edge priors' distributions, and requiring
+    `low > 0`, since a LogNormal has no support at zero.
     """
 
     low: float
     high: float
+    distribution: Literal["Normal", "LogNormal"] = "Normal"
 
     @model_validator(mode="after")
     def check_bounds(self) -> "AssertedBaseline":
         if self.low > self.high:
             raise ValueError(f"baseline low ({self.low}) must be <= high ({self.high})")
+        if self.distribution == "LogNormal" and self.low <= 0:
+            raise ValueError(
+                f"baseline distribution LogNormal requires low > 0 (got {self.low}); "
+                "a LogNormal has no support at or below zero"
+            )
         return self
 
     @property

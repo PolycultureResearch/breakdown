@@ -349,3 +349,129 @@ def test_parser_contract():
         )
     with pytest.raises(Exception, match="plausible"):
         Parser(COLD_START_YAML.replace("plausible: {min: 0, max: 150}", "plausible: {}"))
+
+
+# ---------------------------------------------------------------------------
+# C7: baseline draws respect the declared bounds, LogNormal beliefs exist,
+# and a ratio over a zero-crossing divisor is refused rather than summarized.
+
+
+def _stub_defn(low, high, distribution="Normal", pmin=None, pmax=None):
+    yaml_src = f"""
+metrics:
+  - name: m
+    source: assumed
+    baseline: {{low: {low}, high: {high}, distribution: {distribution}}}
+"""
+    if pmin is not None or pmax is not None:
+        parts = []
+        if pmin is not None:
+            parts.append(f"min: {pmin}")
+        if pmax is not None:
+            parts.append(f"max: {pmax}")
+        yaml_src = yaml_src.rstrip() + f"\n    plausible: {{{', '.join(parts)}}}\n"
+    return Parser(yaml_src).dag.nodes["m"]["definition"]
+
+
+def test_baseline_draws_are_truncated_at_plausible_bounds():
+    """C7a: `plausible` used to be consulted only *after* sampling, for
+    extrapolation flags — the shipped example drew ~1% negative customer
+    counts. Truncation is rejection resampling, not clipping, so no point
+    mass piles up on the bound."""
+    from breakdown.engine.simulate import _baseline_draws
+
+    # A belief hugging zero: mu 70, sigma ~30 puts real mass below 0.
+    defn = _stub_defn(20, 120, pmin=0)
+    draws = _baseline_draws("m", defn, np.random.default_rng(0), 20_000)
+    assert float(draws.min()) >= 0.0
+    # Rejection, not clipping: nothing sits exactly on the bound.
+    assert (draws == 0.0).sum() == 0
+
+    # Without bounds the belief is taken at its word (draws may be negative).
+    free = _stub_defn(20, 120)
+    assert float(_baseline_draws("m", free, np.random.default_rng(0), 20_000).min()) < 0.0
+
+
+def test_lognormal_baseline_reads_low_high_on_the_log_scale():
+    """C7b: an order-of-magnitude belief ("between 2 and 40") as a LogNormal —
+    support excludes zero by construction, and [low, high] is the central 90%
+    interval on the log scale."""
+    from breakdown.engine.simulate import _baseline_draws
+
+    defn = _stub_defn(2, 40, distribution="LogNormal")
+    draws = _baseline_draws("m", defn, np.random.default_rng(0), 50_000)
+    assert float(draws.min()) > 0.0
+    assert np.median(draws) == pytest.approx(np.sqrt(2 * 40), rel=0.05)
+    inside = ((draws >= 2) & (draws <= 40)).mean()
+    assert inside == pytest.approx(0.90, abs=0.01)
+
+
+def test_lognormal_baseline_requires_positive_low():
+    with pytest.raises(Exception, match="LogNormal requires low > 0"):
+        _stub_defn(0, 40, distribution="LogNormal")
+
+
+def test_contradictory_baseline_and_plausible_raise_with_both_named():
+    """A belief whose mass lies almost entirely outside its own plausible
+    range cannot be resampled honestly — both declarations came from the same
+    author, and only the author knows which is wrong."""
+    from breakdown.engine.simulate import _baseline_draws
+
+    defn = _stub_defn(20, 120, pmin=1000)
+    with pytest.raises(ValueError, match="contradict"):
+        _baseline_draws("m", defn, np.random.default_rng(0), 1000)
+
+
+RATIO_YAML = """
+metrics:
+  - name: spend
+    source: assumed
+    baseline: {low: 8000, high: 12000}
+    plausible: {min: 0}
+  - name: signups
+    source: assumed
+    baseline: {low: 2, high: 40}
+  - name: cac
+    source: assumed
+    formula: "spend / signups"
+    parents: [spend, signups]
+"""
+
+
+def test_zero_crossing_divisor_is_refused_not_summarized():
+    """C7c, option 1: the Monte-Carlo mean of a ratio whose divisor draws
+    cross zero does not exist — the $2.1M-CAC pathology. Refused with the
+    remedies named, rather than switching the centre to a median, which would
+    break the property that per-source contributions sum exactly to the delta
+    (the mean is linear; a median is not)."""
+    dag = make_dag(RATIO_YAML)
+    with pytest.raises(ValueError, match="divisor 'signups'.*cross zero"):
+        run(dag, interventions=[Intervention(metric="spend", mode="pct", value=0.1)])
+
+
+def test_bounded_divisor_yields_a_finite_defensible_cac():
+    """The same belief with a plausible floor (or a LogNormal) is fine: the
+    mean exists once the divisor cannot cross zero."""
+    floored = RATIO_YAML.replace(
+        "    baseline: {low: 2, high: 40}\n",
+        "    baseline: {low: 2, high: 40}\n    plausible: {min: 1}\n",
+    )
+    result = run(
+        make_dag(floored),
+        interventions=[Intervention(metric="spend", mode="pct", value=0.1)],
+    )
+    cac = result["nodes"]["cac"]
+    assert np.isfinite(cac["baseline"])
+    # An order-of-magnitude denominator belief gives a wide but sane CAC —
+    # hundreds to thousands per signup, not the pre-fix $2.1M artifact.
+    assert 100 < cac["baseline"] < 20_000
+
+    lognormal = RATIO_YAML.replace(
+        "baseline: {low: 2, high: 40}",
+        "baseline: {low: 2, high: 40, distribution: LogNormal}",
+    )
+    result = run(
+        make_dag(lognormal),
+        interventions=[Intervention(metric="spend", mode="pct", value=0.1)],
+    )
+    assert np.isfinite(result["nodes"]["cac"]["baseline"])

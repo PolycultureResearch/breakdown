@@ -484,12 +484,27 @@ every input is a stated belief, and the output must be read that way.
 
 **Where the numbers come from.** Each non-formula node's operating point is
 its asserted `baseline` — `[low, high]` read as the central 90% interval of a
-Normal, sampled per draw (formula nodes derive theirs from parents per draw,
-so identities hold exactly under the stated beliefs). Each probabilistic
-edge's slope is sampled directly from its YAML prior in business units: with
-nothing to fit, the prior *is* the coefficient distribution. Propagation,
-do-operator semantics, and the Shapley source decomposition are identical to
-fitted mode; the response says `mode: "cold_start"`.
+Normal (or of a LogNormal with `distribution: LogNormal`, on the log scale),
+sampled per draw and **truncated to the node's declared `plausible` bounds**
+by rejection resampling, so a `min: 0` belief cannot draw a negative customer
+count and nothing piles up on the bound (formula nodes derive theirs from
+parents per draw, so identities hold exactly under the stated beliefs). Each
+probabilistic edge's slope is sampled directly from its YAML prior in
+business units: with nothing to fit, the prior *is* the coefficient
+distribution. Propagation, do-operator semantics, and the Shapley source
+decomposition are identical to fitted mode; the response says
+`mode: "cold_start"`.
+
+**One refusal to know about.** A formula that *divides* by a belief whose
+draws cross zero is refused, with the divisor and the remedies named. The
+Monte-Carlo mean of such a ratio does not exist — the sample mean is whatever
+the seed's nearest-zero denominator makes it, which is how an ordinary
+order-of-magnitude belief ("2 to 40 signups a month") once produced a $2.1M
+CAC. The centre stays a mean rather than switching to a median because the
+mean is linear: it is what keeps per-source contributions summing exactly to
+the delta, on this surface as everywhere else. Declare a `plausible` floor
+above zero on the divisor, or state the belief as a `LogNormal`, whose
+support excludes zero by construction.
 
 **What the intervals mean.** A fitted 95% CI summarizes a posterior — belief
 disciplined by data. A cold-start 95% CI summarizes *only your stated

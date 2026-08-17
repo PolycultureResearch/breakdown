@@ -484,10 +484,17 @@ history yet.
 
 **What it is.** The full what-if machine with zero data. Each node's operating
 point comes from an asserted `baseline: [low, high]`, read as the central 90%
-interval of a Normal and sampled per draw. Each edge's slope is sampled directly
-from its YAML prior. With nothing to fit, **the prior *is* the coefficient
-distribution** — which is not a workaround but the correct Bayesian statement of
-the situation.
+interval of a Normal — or of a LogNormal (`distribution: LogNormal`, the
+natural shape for an order-of-magnitude belief about a positive quantity) —
+sampled per draw and truncated to the node's declared `plausible` bounds by
+rejection resampling (C7): the belief keeps its shape inside the bounds, with
+no mass piling up on them. Each edge's slope is sampled directly from its YAML
+prior. With nothing to fit, **the prior *is* the coefficient distribution** —
+which is not a workaround but the correct Bayesian statement of the situation.
+One guard follows from taking the arithmetic seriously: a formula dividing by
+a belief whose draws cross zero is refused, because the resulting ratio is
+Cauchy-like and its Monte-Carlo mean does not exist — a summary of it would be
+a seed artifact, not a statistic.
 
 **Why it fits.** This is arguably the purest expression of the Bayesian stance
 in the product. A founder with no data still has beliefs, and those beliefs have
@@ -831,11 +838,18 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
     The bias is not symmetric in practice: a founder's beliefs about their own
     funnel are substantially one latent variable (how optimistic they are), and
     treating them as independent systematically *understates* interval width.
-    Two related defects are C7 rather than S7 — baseline draws are unbounded
-    Normals that ignore the declared `plausible` floor, and the central
-    statistic on a ratio node is the Monte-Carlo mean of a ratio distribution
-    whose mean may not exist. Cold start is a demo mode as of 2026-08-05; read
-    its numbers as illustrations of a belief, not as forecasts.
+    Two related defects were C7 rather than S7, and **C7 shipped 2026-08-17**:
+    baseline draws are now truncated to the declared `plausible` bounds by
+    rejection resampling (a `min: 0` belief cannot draw a negative customer
+    count, and nothing piles up on the bound), a `LogNormal` baseline exists
+    for order-of-magnitude beliefs about positive quantities, and a formula
+    dividing by a belief whose draws cross zero is **refused** with the
+    remedies named — the Monte-Carlo mean of such a ratio does not exist, and
+    the centre stays a mean rather than switching to a median because the
+    mean's linearity is what keeps per-source contributions summing exactly to
+    the delta. What remains here is S7's correlation gap. Cold start is a demo
+    mode as of 2026-08-05; read its numbers as illustrations of a belief, not
+    as forecasts.
 13. **Causal language rests entirely on the declared DAG.** — ○ open
     ([S14](roadmap.md#statistical-rigor-s--a-standing-workstream))
     This is disclosed everywhere and remains the assumption most likely to be
@@ -972,12 +986,13 @@ disclosed-limitation bar; the likelihood itself stays here.
 
 **Ahead of all of it:**
 [**Horizon 0**](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend),
-the correctness gate. Nothing in this section is worth building on top of a
-number the engine cannot defend. Two of the items there were the defect halves
-of S items listed below — C4 of S6, C7 of S7 — and **C4 shipped 2026-08-13**,
-which unblocks S17: an earlier edition of this paragraph said C4 "blocks any
-honest reading of S17's rebuilt coverage test," and that is no longer true.
-C7 remains open.
+the correctness gate — **closed 2026-08-17: every row is ✅.** Two of its items
+were the defect halves of S items listed below — C4 of S6 (shipped
+2026-08-13, which unblocked S17; an earlier edition of this paragraph said C4
+"blocks any honest reading of S17's rebuilt coverage test," and that stopped
+being true then) and C7 of S7 (shipped 2026-08-17). With the gate closed, this
+track's sequencing condition is met on the correctness side; S1 remains the
+scheduled start.
 
 | ID | Item | Status |
 |---|---|---|
@@ -1228,6 +1243,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-08-17 | **C7 shipped — and with it Horizon 0 closed, every row ✅.** §2.7 and §3.2 #12 updated: cold-start baseline draws are truncated to declared `plausible` bounds by rejection resampling (not clipping — clipping piles a point mass on the bound, a belief the author never stated), a `LogNormal` baseline reads `[low, high]` on the log scale for order-of-magnitude beliefs, and a formula dividing by a belief whose draws cross zero is refused with the remedies named. The decision worth recording: the roadmap row said "stop reporting the Monte-Carlo mean as the central number on ratio nodes," and the shipped fix deliberately does not — it makes the mean *exist* instead (truncation + refusal), because the mean's linearity is what keeps per-source Shapley contributions summing exactly to the delta; a median centre was considered and rejected for breaking that property on the one surface whose numbers are already the least evidential. §4's gate paragraph now records the correctness gate as closed; what remains at cold start is S7's correlation gap, unchanged. |
 | 2026-08-17 | **Caught the paper up to four days of shipped work it had missed, and recorded a fourth audit.** Three corrections this paper owed its reader: §4's "current state (2026-08-05): all items open" was twelve days stale; its claim that "C4 blocks any honest reading of S17's rebuilt coverage test" had been false since C4 shipped on 2026-08-13 (S17 is unblocked; a reader planning the S track off that paragraph would have deferred it for a dead reason); and roadmap 1.11 — the largest *statistical* change since this paper was written — appeared nowhere: §2.9 now carries it (a window's rate is `Σnum/Σden`, which moved every rate's published `baseline`/`actual`/`relative_change` by a measured 0.02%–10.9%; undefined periods drop out of both sums; the fit refuses rather than imputes; an undeclared denominator's fallback is labelled in the payload). §4 gained `S21` (mask the likelihood over undefined periods — the state-space option 1.11's refusal declined) and S20 gained a scheduled disclosure half ahead of the first client deployment, because a Gaussian fit to a mostly-zero series currently reports `fit_quality: "ok"` with nothing anywhere saying otherwise — the one weakness in this paper's orbit that was silent rather than disclosed. §3.3 records the [2026-08-17 milestone-readiness audit](milestone_readiness_2026_08_17.md): the four recent policy decisions all held; what leaked was propagation, at the three boundaries without a structural test (engine→MCP, engine→UI, metric-path→slice-path), filed as roadmap C23–C25. No §3.2 weakness changed status. |
 | 2026-08-13 | **Filter support shipped (roadmap 2.17), and §3.3 needed one clause rather than a rewrite.** That section recorded C15's fix as *"filtered metrics are now refused by name until the binding language can carry a predicate"*, which was true when written and would now tell a reader that every filtered dbt metric is skipped. It is not: a filter whose every reference resolves to a categorical dimension on the measure's own relation is compiled into the generated SQL, and one that reaches across a join, into a time dimension, or into a `Metric()` call is still refused by name. No weakness changed status and none was added — this is a capability, not a statistical position — but the sentence mattered because the whole point of §3.3 is what this engine does at the seam where it meets someone else's data, and *resolve-totally-or-refuse* is a different answer from *always refuse*. The property that has not changed is the one worth stating: the only failure mode at this seam is still refusal. |
 | 2026-08-13 | **C4, C5 and C6 shipped — and taking C4's measurement moved a weakness rather than closing it.** §3.2 #2 (short-window bootstrap) and #8 (`ranked_causes`) both changed status: #2's two named defects are fixed, #8's inversion is fixed and only its S12 framing half remains. But measuring the block cap in order to justify it turned up something nobody had looked for: **`BOOT_BLOCK["day"] = 7` resonates with a weekly cycle** — a 7-day block holds each weekday exactly once, so a weekly seasonal component cancels identically in every replicate and the shipped default sits at a *local minimum* of the honest interval width, roughly a third of the width at block 3 on the demo tree. Every daily-grain interval on a weekday-seasonal metric has been optimistic by a factor no cap can correct, and that now sits under [S6](roadmap.md#statistical-rigor-s--a-standing-workstream), whose row was rewritten from "the current values are reasonable guesses" to a measured indictment of one of them. So the honest summary of C4 is that it closed two defects and *promoted* a third from unsuspected to disclosed — which is what measurement is for, and is why "read a short-window formula CI as a lower bound" survives in a narrower form instead of disappearing. #8 also carries a correction to this paper's own framing: it called the `ranked_causes` inversion a near-zero-gap edge case, and it reproduces on the bundled demo tree over an ordinary fortnight on a gap nowhere near zero. |
