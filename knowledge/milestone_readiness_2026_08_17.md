@@ -421,8 +421,9 @@ reachable for rates, plus the MCP slice payload trio), **C25** (simulate
 labels + the non-finite refusal), the **S20 disclosure half**
 (`likelihood_warnings`), and the two 3.8 follow-ups (`resolve: error` refuses
 flows; doctor separates cannot-check from violated). Roadmap rows carry the
-details. Still open from this report's lists: C9, C13, C7, the NN expectation
-brief, and the PyPI blockers.
+details. The client-facing expectation brief was written and is kept with the
+engagement materials rather than in this public repo. Still open from this
+report's lists: C9, C13, C7, and the PyPI blockers.
 
 Verified per [`read-the-numbers`](../.claude/skills/read-the-numbers/SKILL.md),
 2026-08-17, suite green (1102 passed before the C24+ batch; affected suites
