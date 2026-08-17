@@ -255,6 +255,23 @@ anyone installing from an index, all of this is new.
 
 ### Changed
 
+- **License: Apache-2.0 → FSL-1.1-ALv2** (2026-08-13, during pre-release
+  development). `0.1.0` is the first release breakdown publishes anywhere, and
+  it ships under the [Functional Source License](LICENSE) — no published
+  artifact and no deployment ever carried Apache-2.0, so nobody's terms
+  changed underneath them. What the license means in practice: anyone may
+  read, run, self-host, modify, fork and build on breakdown, commercially or
+  otherwise; the one excluded use is offering it (or a substitute for it) as a
+  competing commercial product or service. And the openness is not
+  indefinitely deferred: the license itself contains an **irrevocable grant
+  converting each release to Apache-2.0 two years after it ships**, so every
+  version of breakdown becomes plain open source on a fixed clock. The intent
+  is to be as open as a small team can afford to be while preventing a larger
+  vendor from reselling the engine against it — the license points at
+  competitors, not at users. For completeness: the pre-release `c0.0.1` tag
+  and the git history before 2026-08-13 were published under Apache-2.0, and
+  that grant is irrevocable for those snapshots — anyone who took the code
+  then keeps Apache-2.0 rights to what they took.
 - **`ranked_causes` no longer saturates, and no longer lists non-causes** (roadmap C5). A hop now weights a parent by `min(|share|, 1)` divided by the node's *cancellation factor* — how much gross parent movement the decomposition needed in order to net out to the gap — so a parent explaining 165% of a gap scores **below** one explaining a clean 80%, which is what a share far past 100% always meant. A node's parents' weights sum to at most 1, so a hop can no longer inflate influence. Rows for nodes no hop ever reached are dropped (`via` is never `null`); a node that *was* reached and explains nothing stays, scored 0.0, with its provenance.
 - **The bootstrap's block-length cap is `n // 4`, not `n // 2`** (roadmap C4). Measured: the old cap gave a resampled-to-true variance ratio of 0.46-0.63 for every window of 16 periods or fewer and was non-monotone in window length; the new one gives 0.74-0.90 and is monotone. **Intervals on windows shorter than ~28 periods are now wider**, including slice intervals, because they were previously too narrow - this changes published numbers.
 - A structurally absent `components.seasonal` is **omitted** rather than reported as `{estimate: 0.0, ci_95: [0.0, 0.0]}`. A zero-width 95% interval asserted infinite precision about a term the model never contained.

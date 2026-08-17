@@ -19,9 +19,15 @@ Legend: ✅ shipped · ◑ partially shipped · ○ not started.
 
 1. **Build against real need.** Prefer the item a concrete use case is blocked on
    over the speculatively useful one. The roadmap is a priority order, not a promise.
-2. **The engine is the open core.** Statistical inference, attribution, and RCA are
-   the differentiated, open part. Operational surfaces (scheduling, alerting,
-   hosting, multi-user) are a separate layer built on top, not woven into the engine.
+2. **The engine is the core, and it is developed in the open.** Statistical
+   inference, attribution, and RCA are the differentiated part — source-available
+   to everyone under [FSL-1.1-ALv2](../LICENSE): read it, run it, self-host it,
+   fork it, build on it, commercially or otherwise, with one excluded use
+   (selling it as a competing product), and **every release becomes Apache-2.0
+   open source automatically two years after it ships** — the license's own
+   irrevocable future grant, not a promise. The license points at competitors,
+   not at users. Operational surfaces (scheduling, alerting, hosting,
+   multi-user) are a separate layer built on top, not woven into the engine.
 3. **Never ship a number the engine can't defend.** Credible intervals, a
    first-class `unexplained` term, and suspect-fit flags are the brand. Every new
    surface inherits this honesty posture — no bare point estimates.
