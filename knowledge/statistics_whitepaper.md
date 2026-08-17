@@ -3,7 +3,7 @@
 **A white paper on the models behind Bayesian metric trees, why each was chosen,
 and where each one stops being trustworthy.**
 
-> **Written:** 2026-08-04 · **Last updated:** 2026-08-13 ·
+> **Written:** 2026-08-04 · **Last updated:** 2026-08-17 ·
 > **Engine version:** 0.1.0
 >
 > **This is a living document.** The assessment in §3 and the improvements in §4
@@ -572,6 +572,34 @@ flow/stock parents resample up (rates never auto-resample); windows snap per
 node to whole periods; and raw gaps across different grains are not comparable
 (compare `share_of_gap` instead).
 
+**A window's rate is `Σnum / Σden`, not the mean of per-period ratios**
+*(roadmap 1.11, shipped 2026-08-13 — this changed published numbers).* "Kind:
+rate recomputes from components" now extends from the grain resample to the
+window aggregate itself. When a rate declares its `denominator`, the value
+reported for a window is the component aggregate — equivalently, the
+denominator-weighted mean of the per-period rates — rather than the unweighted
+average of daily ratios, which overweights exactly the low-volume periods §2.9
+identifies as division noise. Measured on the White Cube tree, the two
+arithmetics differ by 0.02% to 10.9% per node, so every rate's `baseline`,
+`actual` and `relative_change` moved when this landed. Three consequences with
+stated policies. *(i)* A period whose denominator is zero has **no** rate — it
+drops out of both sums, so the window value stays defined where the per-period
+ratio is not; a window with no defined period at all reports
+`undefined_over_window` rather than a number. *(ii)* The **fit refuses** a
+series with undefined periods (`fit_failed`, periods named) rather than
+imputing — filling asserts an observation that does not exist, and dropping the
+row re-dates every later period against the positional spine §2.10 defends;
+`S21` in §4 holds the candidate third option (mask the likelihood). *(iii)* A
+rate that declares **no** denominator still gets a number — the mean of defined
+per-period ratios — but the payload labels which arithmetic ran
+(`window_aggregate`: `components` or one of three `period_mean_*` statuses,
+with the reason), because the two aggregates genuinely differ and an unlabelled
+fallback would have the payload misdescribe its own arithmetic. Rates that
+*legitimately* have no denominator (a median, a duration over an uncarried
+cohort) declare `no_denominator: "<reason>"`; the case for keeping the field
+optional and gating on `doctor` instead of the parser is
+[`rate_denominator_policy.md`](rate_denominator_policy.md).
+
 ### 2.10 Guarding the inputs
 
 The most dangerous statistical failure is not a wide interval — it is a
@@ -887,7 +915,8 @@ trimming one late-starting node would delete those periods for every metric at
 that grain.
 
 That seam has now produced **five of the six** silent-wrong-number defects this
-project has found, and no other part of the system has produced more than one.
+project had found by mid-August, and no other part of the system had produced
+more than one.
 The count is not the point; the location of the fifth is. A shared contract
 written to close a class of defect can still carry an instance of it, and this
 one survived being read by two hostile reviews — the second filed it as
@@ -895,6 +924,25 @@ one survived being read by two hostile reviews — the second filed it as
 does with it. Treat a number's *provenance* as the least-tested thing in this
 system, prefer a provider path with a `doctor` check behind it over one without,
 and do not assume a boundary is sound because the last defect there was fixed.
+
+**A fourth pass, on 2026-08-17, tested that advice deliberately and found the
+class in a new place** — the
+[milestone-readiness audit](milestone_readiness_2026_08_17.md) traced four
+recently-decided policies (null handling, rate denominators, non-additive
+slicing, the concentration verdict) from decision to code to tests. The
+decisions themselves all held. What leaked was *propagation*: the sliced fetch
+path never received the date contract the metric path got from C1/C2 — a
+tz-aware sliced frame silently becomes an all-zero panel (roadmap C23) — the
+slice panel's "localized" verdict is structurally unreachable for every rate
+because one field is never emitted (C24), and `/simulate` publishes a rate's
+window aggregate unlabelled and unsanitized where the RCA surface labels and
+sweeps it (C25). The pattern across all fifteen findings: the honesty machinery
+is implemented and largely correct at the engine, and its guarantees thin out
+at the three boundaries without a structural test — engine→MCP compaction,
+engine→UI rendering, and metric-path→slice-path. That is a better problem than
+the 2026-08-05 review found, and a mechanically closable one; it is also the
+current best answer to "where would this system lie to me": not in a model,
+but in a surface a policy forgot to reach.
 
 The remaining Horizon 0 items are open. Until they close, the honest statement
 is: the *statistical* limitations are documented; a short, named list of
@@ -913,18 +961,23 @@ which is the source of truth for status and sequencing. This section holds the
 *rationale* — why each gap matters and what "fixed" would mean. The IDs are
 stable; the statuses here are a snapshot as of the last-updated date.
 
-**Current state (2026-08-05):** all items open. The workstream is sequenced to
+**Current state (2026-08-17):** all items open. The workstream is sequenced to
 begin immediately after the 0.1.0 release, ahead of the adoption items, and
 starts with **S1** — benchmarking full-rank ADVI, the cheapest attack on the
-weakness ranked first in §3.2.
+weakness ranked first in §3.2. One item has grown a scheduled first half:
+S20's *disclosure* (a `fit_quality` warning when a fit window carries a long
+run of exact zeros) ships ahead of the first client deployment, because the
+misspecification is currently silent and that fails this track's own
+disclosed-limitation bar; the likelihood itself stays here.
 
 **Ahead of all of it:**
 [**Horizon 0**](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend),
 the correctness gate. Nothing in this section is worth building on top of a
-number the engine cannot defend, and two of the items there (C4, C7) are the
-defect halves of S items listed below (S6, S7). C4 in particular blocks any
-honest reading of S17's rebuilt coverage test: measuring calibration against an
-attenuated bootstrap would just relocate the error.
+number the engine cannot defend. Two of the items there were the defect halves
+of S items listed below — C4 of S6, C7 of S7 — and **C4 shipped 2026-08-13**,
+which unblocks S17: an earlier edition of this paragraph said C4 "blocks any
+honest reading of S17's rebuilt coverage test," and that is no longer true.
+C7 remains open.
 
 | ID | Item | Status |
 |---|---|---|
@@ -947,7 +1000,8 @@ attenuated bootstrap would just relocate the error.
 | S17 | Rebuild the calibration suite's coverage test | ○ open |
 | S18 | Right-censored metrics — series whose past values restate | ○ open |
 | S19 | Partial pooling across a repeated-cycle grouping | ○ open |
-| S20 | Zero-inflated and count likelihoods | ○ open |
+| S20 | Zero-inflated and count likelihoods | ○ open — disclosure half scheduled first |
+| S21 | Fit through undefined periods by masking the likelihood | ○ optional — build on demand |
 | 3.4 | Counterfactual RCA (Horizon 3, not the S track) | ○ open |
 
 Below, the reasoning behind each — ordered by value per unit of effort.
@@ -1104,7 +1158,33 @@ series also triggers `C4`, and the two are genuinely separate: `C4` is a
 degenerate *bootstrap* over a constant window, this is a misspecified
 *likelihood*. Fixing either alone leaves the other in place — which is the
 useful lesson, because the symptom (an implausibly tight interval on a spiky,
-mostly-zero parent) looks identical from the outside.
+mostly-zero parent) looks identical from the outside. **A sequencing note
+(2026-08-17):** until the likelihood lands, this misspecification is the one
+weakness in this paper's orbit that is *silent* rather than disclosed — such a
+fit converges and reports `fit_quality: "ok"`, since the ELBO check (§3.2 #4)
+says only that the optimizer stopped. The disclosure half — a `fit_quality`
+warning when the fit window carries a long run of exact zeros, and a
+`how_to_read` clause beside it — is therefore scheduled ahead of the first
+client deployment, separately from the model work.
+
+**Fit through undefined periods by masking the likelihood** — `S21`, ○
+optional, build on demand. Roadmap 1.11 settled how a rate behaves when its
+denominator is legitimately zero: the fit *refuses* rather than imputes
+(`fit_failed`, periods named), because imputing fabricates an observation and
+dropping the row re-dates every later period. That refusal is honest, and there
+is a third option it declines to take: a missing observation is the case a
+state-space model is built for. The latent trend keeps a state at every `t`
+whether or not `t` was observed, so the likelihood can simply not condition on
+the undefined periods — mechanically, `pm.Normal(..., mu=mu[mask],
+observed=y[mask])` — leaving trend, seasonality and regressors untouched. The
+node keeps its posterior instead of losing it, and the posterior widens on its
+own over the unobserved stretch, which is the honest answer *computed* rather
+than stated. It stays optional because refusal degrades gracefully (the node's
+own gap still reports, and no shipped tree has a node that is both
+probabilistic and gappy), and because two questions must be settled first:
+`fit_quality` should carry the observed-period count (a fit on 60 of 100
+periods is not a fit on 100), and `MIN_FIT_PERIODS` must count *observed*
+periods, or the floor is not a floor.
 
 ### 4.3 Explainability
 
@@ -1147,6 +1227,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-08-17 | **Caught the paper up to four days of shipped work it had missed, and recorded a fourth audit.** Three corrections this paper owed its reader: §4's "current state (2026-08-05): all items open" was twelve days stale; its claim that "C4 blocks any honest reading of S17's rebuilt coverage test" had been false since C4 shipped on 2026-08-13 (S17 is unblocked; a reader planning the S track off that paragraph would have deferred it for a dead reason); and roadmap 1.11 — the largest *statistical* change since this paper was written — appeared nowhere: §2.9 now carries it (a window's rate is `Σnum/Σden`, which moved every rate's published `baseline`/`actual`/`relative_change` by a measured 0.02%–10.9%; undefined periods drop out of both sums; the fit refuses rather than imputes; an undeclared denominator's fallback is labelled in the payload). §4 gained `S21` (mask the likelihood over undefined periods — the state-space option 1.11's refusal declined) and S20 gained a scheduled disclosure half ahead of the first client deployment, because a Gaussian fit to a mostly-zero series currently reports `fit_quality: "ok"` with nothing anywhere saying otherwise — the one weakness in this paper's orbit that was silent rather than disclosed. §3.3 records the [2026-08-17 milestone-readiness audit](milestone_readiness_2026_08_17.md): the four recent policy decisions all held; what leaked was propagation, at the three boundaries without a structural test (engine→MCP, engine→UI, metric-path→slice-path), filed as roadmap C23–C25. No §3.2 weakness changed status. |
 | 2026-08-13 | **Filter support shipped (roadmap 2.17), and §3.3 needed one clause rather than a rewrite.** That section recorded C15's fix as *"filtered metrics are now refused by name until the binding language can carry a predicate"*, which was true when written and would now tell a reader that every filtered dbt metric is skipped. It is not: a filter whose every reference resolves to a categorical dimension on the measure's own relation is compiled into the generated SQL, and one that reaches across a join, into a time dimension, or into a `Metric()` call is still refused by name. No weakness changed status and none was added — this is a capability, not a statistical position — but the sentence mattered because the whole point of §3.3 is what this engine does at the seam where it meets someone else's data, and *resolve-totally-or-refuse* is a different answer from *always refuse*. The property that has not changed is the one worth stating: the only failure mode at this seam is still refusal. |
 | 2026-08-13 | **C4, C5 and C6 shipped — and taking C4's measurement moved a weakness rather than closing it.** §3.2 #2 (short-window bootstrap) and #8 (`ranked_causes`) both changed status: #2's two named defects are fixed, #8's inversion is fixed and only its S12 framing half remains. But measuring the block cap in order to justify it turned up something nobody had looked for: **`BOOT_BLOCK["day"] = 7` resonates with a weekly cycle** — a 7-day block holds each weekday exactly once, so a weekly seasonal component cancels identically in every replicate and the shipped default sits at a *local minimum* of the honest interval width, roughly a third of the width at block 3 on the demo tree. Every daily-grain interval on a weekday-seasonal metric has been optimistic by a factor no cap can correct, and that now sits under [S6](roadmap.md#statistical-rigor-s--a-standing-workstream), whose row was rewritten from "the current values are reasonable guesses" to a measured indictment of one of them. So the honest summary of C4 is that it closed two defects and *promoted* a third from unsuspected to disclosed — which is what measurement is for, and is why "read a short-window formula CI as a lower bound" survives in a narrower form instead of disappearing. #8 also carries a correction to this paper's own framing: it called the `ranked_causes` inversion a near-zero-gap edge case, and it reproduces on the bundled demo tree over an ordinary fortnight on a gap nowhere near zero. |
 | 2026-08-12 | **A fifth defect at the provider boundary, found by re-checking the review rather than by a new one** — the 2026-08-12 review was frozen at `c18d150`; re-verifying all 33 of its findings against `e433daa` confirmed 28 still live and promoted two into [Horizon 0](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend) that it had filed lower. `C18` is the one this paper owes text: a `flow` metric whose source starts partway into the loaded window was zero-filled back to the window's start **silently**, and the fit trained on the invented periods. §3.3 is updated, and its counting claim with it — this seam has produced five of six, not four of five. The location is the finding: `_align_to_spine` is the shared contract `C1`/`C2` built to end this class, and it warns correctly about *interior* gaps three lines away. `C17` (a zero denominator in a formula reaching the encoder as a NaN, and an agent payload as `null`) is the other promotion; it is an engine defect rather than a boundary one and adds no §3.2 weakness. No weakness changed status. Recorded because a reader comparing editions should see that §3.3's "the failure modes are documented rather than hidden" survived a second audit only after two more exceptions were fixed — and that both were found by re-reading a report, not by a third review. |

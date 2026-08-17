@@ -14,5 +14,10 @@ shipped. These are **historical** — for what to build next, see
 - [`product_integration_plan.md`](product_integration_plan.md) — data-connectivity
   analysis. Env-var secrets and the warehouse provider shipped; the connectivity kit
   (connection doctor, CSV ingest, scaffolder, snapshot store) is carried forward.
+- [`grill_2026_08_12_triage.md`](grill_2026_08_12_triage.md) — the reproduction
+  and triage of the second hostile review's 33 findings (companion to the frozen
+  [`../grill_2026_08_12.md`](../grill_2026_08_12.md)). Archived 2026-08-17 with
+  everything shipped or carried forward (C15–C18, 2.18, C25, 2.20); kept for how
+  each finding was *verified* and what verification corrected about the report.
 
 Internal links in these documents point at paths as they were when archived.
