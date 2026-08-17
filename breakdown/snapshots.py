@@ -1,9 +1,11 @@
 """Snapshot store: a local parquet cache of fetched metric series (roadmap 2.4).
 
 Each fetched series is written once per (metric, grain, kind, window) and
-read back on every later startup, so a tree refits without touching the
-warehouse: restarts are cheap, RCAs re-run reproducibly from a fresh clone
-(snapshots are plain files a partner repo can commit), and a provider
+read back on every later startup — and a read is served from any stored
+window that *contains* the request, trimmed, so narrowing the loaded window
+never turns a warm cache cold (roadmap 2.20). A tree refits without touching
+the warehouse: restarts are cheap, RCAs re-run reproducibly from a fresh
+clone (snapshots are plain files a partner repo can commit), and a provider
 migration is invisible as long as the snapshots agree. The cache wraps the
 real fetcher at the `BaseDataFetcher` boundary — nothing downstream knows
 snapshots exist.
@@ -40,6 +42,34 @@ from breakdown.data_fetch import BaseDataFetcher, _align_to_spine
 logger = logging.getLogger(__name__)
 
 MANIFEST = "manifest.json"
+
+
+def resolve_snapshot_dir(tree_path: str) -> Optional[str]:
+    """The snapshot directory the server will use for this tree, or None when
+    snapshots are disabled.
+
+    One resolution, shared by the server's `_wrap_snapshots` and by
+    `breakdown doctor` (roadmap 2.20): `doctor`'s promise is that it proves the
+    code path the server will use, and that promise is only as good as the two
+    agreeing about where the snapshots live. BREAKDOWN_SNAPSHOT_DIR overrides,
+    "off" disables, and the default is tree-adjacent so a partner repo can
+    commit its snapshots.
+    """
+    snapshot_dir = os.environ.get("BREAKDOWN_SNAPSHOT_DIR", "")
+    if snapshot_dir == "off":
+        return None
+    if not snapshot_dir:
+        snapshot_dir = os.path.join(os.path.dirname(tree_path), ".breakdown", "snapshots")
+    return snapshot_dir
+
+
+def _span_days(start: str, end: str) -> int:
+    try:
+        return (datetime.date.fromisoformat(end) - datetime.date.fromisoformat(start)).days
+    except ValueError:
+        # A filename whose span does not parse as two ISO dates was not written
+        # by this store; rank it last rather than crash the read path over it.
+        return 10**9
 
 # Attributes on a provider that hold its per-metric definitions, keyed by the
 # same name the snapshot store is keyed by (`provider_query_name`): the
@@ -145,15 +175,79 @@ class SnapshotStore:
         kind: str,
         definition_sha: Optional[str] = None,
     ) -> Optional[pd.DataFrame]:
-        filename = self._filename(metric, start, end, grain, kind)
-        path = os.path.join(self.directory, filename)
-        if not os.path.isfile(path):
-            return None
-        if not self._definition_matches(filename, metric, definition_sha):
-            return None
-        df = pd.read_parquet(path)
-        df["date"] = pd.to_datetime(df["date"])
-        return df
+        """Return a frame covering [start, end]: an exact-window hit, or one
+        trimmed from any stored window that contains the request.
+
+        The exact match was the whole contract until roadmap 2.20, and the gap
+        it left was operational rather than numerical: nudging `--end-date` by
+        one day took a snapshot-served deployment to `degraded` on every
+        metric, for a config change that *shrank* the request — while
+        `read_sliced`, in this same file, already documented why serving a
+        containing window trimmed is correct. Trimming is sound here for the
+        same reason it is there: the caller re-aligns every hit through
+        `_realign_snapshot`, so a sub-window of an aligned frame is exactly
+        what a fresh fetch of that sub-window would have produced.
+
+        One guard the sliced path also gets: a stored window's *bounds* can
+        contain the request while its *data* does not (a wide window written
+        when the source ended in June, trimmed to a request for July). Serving
+        that empty trim would hand `_align_to_spine` nothing, and for a `flow`
+        it would fabricate a full window of zeros — so an empty trim of a
+        non-empty file is a miss, not a hit, and falls through to the provider.
+        """
+        prefix = f"{metric}__{grain}-{kind}__"
+        for path, s, e in self._containing(prefix, start, end):
+            if not self._definition_matches(os.path.basename(path), metric, definition_sha):
+                continue
+            df = pd.read_parquet(path)
+            df["date"] = pd.to_datetime(df["date"])
+            if (s, e) == (start, end):
+                return df
+            window = df[(df["date"] >= start) & (df["date"] <= end)]
+            if window.empty and not df.empty:
+                logger.info(
+                    "snapshot %s spans [%s, %s] but holds no rows in [%s, %s]; "
+                    "treating as a miss rather than serving an empty frame.",
+                    os.path.basename(path),
+                    s,
+                    e,
+                    start,
+                    end,
+                )
+                continue
+            logger.info(
+                "snapshot for %s [%s, %s] served from stored window [%s, %s], trimmed.",
+                metric,
+                start,
+                end,
+                s,
+                e,
+            )
+            return window.reset_index(drop=True)
+        return None
+
+    def covering_window(
+        self,
+        metric: str,
+        start: str,
+        end: str,
+        grain: str,
+        kind: str,
+        definition_sha: Optional[str] = None,
+    ) -> Optional[tuple[str, str]]:
+        """The stored window a `read` for [start, end] would be served from,
+        without loading any parquet — `doctor`'s inventory question (2.20).
+
+        Cheaper than `read` and correspondingly weaker: it proves a
+        definition-matched file spans the request, not that the file's data
+        reaches every period of it. The end-to-end proof is `doctor`'s fit
+        readiness check, which fetches through the same wrapped path the
+        server uses."""
+        prefix = f"{metric}__{grain}-{kind}__"
+        for path, s, e in self._containing(prefix, start, end):
+            if self._definition_matches(os.path.basename(path), metric, definition_sha):
+                return (s, e)
+        return None
 
     def read_sliced(
         self,
@@ -177,21 +271,23 @@ class SnapshotStore:
         The definition is checked per candidate, exactly as in `read`: the
         binding that produces a sliced frame is the same binding that produces
         the unsliced series, so an edited `bind:` block must invalidate both."""
-        for path, s, e in self._sliced_candidates(metric, dimension, grain, kind):
-            if s <= start and e >= end:
-                if not self._definition_matches(os.path.basename(path), metric, definition_sha):
-                    continue
-                df = pd.read_parquet(path)
-                df["date"] = pd.to_datetime(df["date"])
-                window = df[(df["date"] >= start) & (df["date"] <= end)]
-                return window.reset_index(drop=True)
+        prefix = f"{metric}__by-{dimension}__{grain}-{kind}__"
+        for path, s, e in self._containing(prefix, start, end):
+            if not self._definition_matches(os.path.basename(path), metric, definition_sha):
+                continue
+            df = pd.read_parquet(path)
+            df["date"] = pd.to_datetime(df["date"])
+            window = df[(df["date"] >= start) & (df["date"] <= end)]
+            if window.empty and not df.empty:
+                # Same guard as `read`: bounds that contain the request are not
+                # data that covers it, and an empty sliced frame downstream
+                # reads as "no slices moved" rather than "nothing was stored".
+                continue
+            return window.reset_index(drop=True)
         return None
 
-    def _sliced_candidates(
-        self, metric: str, dimension: str, grain: str, kind: str
-    ) -> list[tuple[str, str, str]]:
-        """Stored sliced windows for this key, widest first."""
-        prefix = f"{metric}__by-{dimension}__{grain}-{kind}__"
+    def _candidates(self, prefix: str) -> list[tuple[str, str, str]]:
+        """Every stored (path, start, end) whose filename carries `prefix`."""
         found = []
         try:
             names = os.listdir(self.directory)
@@ -204,7 +300,17 @@ class SnapshotStore:
             start, _, end = span.partition("__")
             if start and end:
                 found.append((os.path.join(self.directory, name), start, end))
-        return sorted(found, key=lambda f: (f[1], f[2]))
+        return found
+
+    def _containing(self, prefix: str, start: str, end: str) -> list[tuple[str, str, str]]:
+        """Candidates whose stored window contains [start, end] — the exact
+        match first (cheapest, and provenance-cleanest), then by ascending span
+        so a trim loads the least data that answers."""
+        found = [c for c in self._candidates(prefix) if c[1] <= start and c[2] >= end]
+        return sorted(
+            found,
+            key=lambda c: ((c[1], c[2]) != (start, end), _span_days(c[1], c[2]), c[0]),
+        )
 
     def write(
         self,
