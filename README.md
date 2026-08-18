@@ -79,8 +79,7 @@ metrics:
 
 **3. Ask it why a metric moved.**
 
-You don't choose an attribution method — the tree already decided it, edge by
-edge, when you declared it. One request, `POST /rca/{name}` (or the **Root
+One request, `POST /rca/{name}` (or the **Root
 cause** tab in the UI), analyzes the target and every metric upstream of it,
 applying the right decomposition to each:
 
