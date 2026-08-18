@@ -11,18 +11,12 @@ them land in a **minor** bump (`0.1 → 0.2`), with patch releases reserved for
 fixes. Callers who need stability should pin the minor series they tested
 against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
 
-## [0.1.0] — unreleased
+## [0.1.0] — 2026-08-18
 
-**The first release, not yet published.** `pip install metric-breakdown` does
-not work today: nothing has been published to PyPI under that name and no
-`v0.1.0` tag or GitHub release exists yet, so installation is from source until
-the release is cut. `0.1.0` **is** the version that will be published — the
-number is settled; the release is not.
-
-Everything below ships in it. The **Added** section describes the surface;
+**The first published release.** The **Added** section describes the surface;
 **Changed** and **Fixed** are relative to the `0.0.1` pre-release, which was
-tagged on GitHub (`c0.0.1`) and likewise never published to an index — so for
-anyone installing from an index, all of this is new.
+tagged on GitHub (`c0.0.1`) but never published to an index — so for anyone
+installing from PyPI, all of this is new.
 
 ### Added
 
@@ -343,4 +337,4 @@ release, tag `v0.1.0`, point the link below at
 `[Unreleased]: .../compare/v0.1.0...HEAD`. Note that cutting the GitHub release
 *is* the publish: `.github/workflows/publish.yml` triggers on `release:
 published` and uploads via Trusted Publishing. -->
-[0.1.0]: https://github.com/PolycultureResearch/breakdown/commits/main
+[0.1.0]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.1.0
