@@ -424,8 +424,16 @@ flows; doctor separates cannot-check from violated). Roadmap rows carry the
 details. The client-facing expectation brief was written and is kept with the
 engagement materials rather than in this public repo. C9 and C13 shipped
 later the same day, and C7 closed the same evening once the author chose
-option 1 (§ "The C7 decision") — **Horizon 0 is closed, every row ✅.** Still
-open from this report's lists: the PyPI blockers.
+option 1 — **Horizon 0 is closed, every row ✅.** The PyPI blockers closed on
+2026-08-18: license documented and principle 2 reworded, the demo URL alive
+and serving the merged build, local build + twine + fresh-venv install passes,
+the first-tree tutorial shipped, and the README moved to the published tense.
+**`metric-breakdown 0.1.0` published to PyPI 2026-08-18** (tag `v0.1.0`,
+Trusted Publishing behind the reviewer-gated `pypi` environment), verified by
+a fresh-venv `pip install metric-breakdown` and the rendered project page.
+Of this report's three milestones, the 0.1.0 release and PyPI publication are
+done; the Northern Nights deployment carries its punch list complete and
+awaits the engagement itself.
 
 Verified per [`read-the-numbers`](../.claude/skills/read-the-numbers/SKILL.md),
 2026-08-17, suite green (1102 passed before the C24+ batch; affected suites
