@@ -565,6 +565,10 @@ ship in every cold-start response.
 6. **ADVI vs NUTS.** ADVI (the RCA default) is a fast approximation that can
    understate uncertainty; NUTS is the gold standard and reports convergence
    diagnostics (R̂ < 1.05 is healthy). Triage with ADVI, confirm with NUTS.
+   This is measured, not hypothetical: on synthetic worlds with a drifting
+   parent — the geometry where the trend and the parent compete to explain
+   the same movement — ADVI's 95% interval is roughly 20% narrower than the
+   NUTS interval on the same data (roadmap S1's benchmark, 2026-08-18).
 7. **The observation model is Gaussian, and a mostly-zero series breaks it.**
    A series that is exactly zero for a long stretch of its fit window — a
    seasonal business's off-season, a spiky count — converges happily and

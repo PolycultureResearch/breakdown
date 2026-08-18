@@ -35,6 +35,14 @@ roadmap. For how the codebase is built, see [`../AGENTS.md`](../AGENTS.md) and
   `σ²(1−ρ²)` result), why this engine is unusually exposed, a worked example of
   a decision it would send the wrong way, when to confirm with NUTS, and the
   two candidate fixes (PSIS k̂ escalation, full-rank ADVI).
+- [`s1_fullrank_advi_benchmark.md`](s1_fullrank_advi_benchmark.md) — the
+  measurement that closed roadmap S1 (2026-08-18): full-rank ADVI vs
+  mean-field vs NUTS on fit time and interval width, across the calibration
+  DGP, a ridge-geometry suite, and the White Cube tree. Outcome: full-rank
+  reproduces NUTS on the synthetic ridge but is slower than NUTS and badly
+  over-dispersed on real nodes — not adopted; S2 (k̂ + escalation) is the
+  path. Reproducible via
+  [`benchmarks/s1_fullrank_advi.py`](benchmarks/s1_fullrank_advi.py).
 
 ## Design specs
 
