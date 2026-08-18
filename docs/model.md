@@ -73,7 +73,10 @@ Consequences to keep in mind when reading results:
 - **Windows snap per node** to the whole periods fully inside the requested
   dates; each node reports its `effective_windows`, and a node whose window
   holds no whole period is reported with `status: "window_shorter_than_grain"`
-  rather than failing the analysis. Two further statuses say a node was *not
+  (its `status_reason` names the grain) rather than failing the analysis. The
+  one exception is the RCA **target**: with no whole period there, nothing can
+  be attributed anywhere, so that case is refused before any fitting, with the
+  grain and the most recent whole period the data holds named in the error. Two further statuses say a node was *not
   analyzed*, and both carry a `status_reason` naming the cause — read them as
   gaps in the analysis, never as "nothing happened here":
   `"fit_failed"` (the node's model could not be fitted, in practice a series

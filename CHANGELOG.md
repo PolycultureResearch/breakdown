@@ -186,6 +186,20 @@ anyone installing from an index, all of this is new.
 
 ### Fixed
 
+- **An RCA whose target has no whole period is refused up front, with the
+  grain and a working window named.** A week-grain target given the default
+  "last 7 days" window used to pay for every day-grain ancestor's fit and
+  then report "not analyzed — window shorter than grain" on the one node the
+  user asked about, from a message that named neither the grain nor a window
+  that would have worked. Now: the request is refused **before any fitting**
+  (422) naming the target's grain, the offending window, and the most recent
+  whole period the data holds; per-node `window_shorter_than_grain` records
+  carry a `status_reason` naming the grain on every surface; the UI's window
+  presets are **grain-aware** — a week-grain target defaults to "Last full
+  week" (with "Last 4 full weeks" beside it), a month-grain target to "Last
+  full month", both computed against the scope's real data edge rather than
+  the loaded window's end — and the client validates whole-period coverage
+  before submitting, so the answer arrives before the request does.
 - **Cold-start beliefs respect their own declared bounds, and a ratio over a
   zero-crossing belief is refused** (roadmap C7). Baseline draws are truncated
   to the node's `plausible` bounds by rejection resampling — a

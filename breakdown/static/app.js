@@ -573,11 +573,41 @@ const daysInclusive = (start, end) => Math.round((end - start) / DAY_MS) + 1;
    The reference is not part of a preset: in auto mode it tracks the analysis
    window (the server's matched adjacent block, mirrored by
    defaultReferenceJS), and a hand-edited reference is "custom". Each preset
-   needs at least one day before the analysis for a reference to exist. */
+   needs at least one day before the analysis for a reference to exist.
+
+   Presets are grain-aware, twice over. `grains` says which target grains a
+   preset can ever serve — "Last 7 days" on a week-grain target holds no whole
+   Mon–Sun week unless it happens to align, so offering it was offering a
+   window the engine must refuse (a parent is never coarser than its child, so
+   the target is always the coarsest node in its own scope). And `compute`
+   receives the scope's real data edge rather than the loaded window's end:
+   week- and month-grain series end at their last *whole* period, so a preset
+   computed from `date_end` could name a week the data does not reach. */
+const monthStart = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+const monthEnd = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0));
+const addMonths = (d, n) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, 1));
+
+function lastFullWeeks(start, end, nWeeks) {
+  const lastSunday = addDays(end, -end.getUTCDay()); // getUTCDay: Sun=0
+  const anStart = addDays(lastSunday, -(7 * nWeeks - 1)); // Monday, nWeeks back
+  if (anStart <= start) return null; // needs >= 1 day of history before it
+  return { anStart: isoUTC(anStart), anEnd: isoUTC(lastSunday) };
+}
+
+function lastFullMonths(start, end, nMonths) {
+  // The month containing `end`, if `end` completes it; else the one before.
+  let last = monthStart(end);
+  if (end < monthEnd(end)) last = addMonths(last, -1);
+  const anStart = addMonths(last, -(nMonths - 1));
+  if (anStart <= start) return null;
+  return { anStart: isoUTC(anStart), anEnd: isoUTC(monthEnd(last)) };
+}
+
 const WINDOW_PRESETS = [
   {
     id: "last7",
     label: "Last 7 days",
+    grains: ["day"],
     compute(start, end) {
       const anStart = addDays(end, -6);
       if (daysInclusive(start, end) < 8) return null;
@@ -587,6 +617,7 @@ const WINDOW_PRESETS = [
   {
     id: "last14",
     label: "Last 14 days",
+    grains: ["day"],
     compute(start, end) {
       const anStart = addDays(end, -13);
       if (daysInclusive(start, end) < 15) return null;
@@ -596,24 +627,90 @@ const WINDOW_PRESETS = [
   {
     id: "last-full-week",
     label: "Last full week (Mon–Sun)",
+    grains: ["day", "week"],
     compute(start, end) {
-      const lastSunday = addDays(end, -end.getUTCDay()); // getUTCDay: Sun=0
-      const anStart = addDays(lastSunday, -6); // Monday
-      if (anStart <= start) return null; // needs >= 1 day of history before it
-      return { anStart: isoUTC(anStart), anEnd: isoUTC(lastSunday) };
+      return lastFullWeeks(start, end, 1);
+    },
+  },
+  {
+    id: "last-4-full-weeks",
+    label: "Last 4 full weeks (Mon–Sun)",
+    grains: ["week"],
+    compute(start, end) {
+      return lastFullWeeks(start, end, 4);
+    },
+  },
+  {
+    id: "last-full-month",
+    label: "Last full month",
+    grains: ["month"],
+    compute(start, end) {
+      return lastFullMonths(start, end, 1);
+    },
+  },
+  {
+    id: "last-3-full-months",
+    label: "Last 3 full months",
+    grains: ["month"],
+    compute(start, end) {
+      return lastFullMonths(start, end, 3);
     },
   },
   { id: "custom", label: "Custom", compute: null },
 ];
 
+/* The default preset per target grain: the largest-window preset that is
+   guaranteed to snap to whole periods, so the out-of-the-box click works. */
+const DEFAULT_PRESET = { day: "last7", week: "last-full-week", month: "last-full-month" };
+
+/* The data edge the presets compute against: the earliest `data_through`
+   across the target's ancestor scope (a week-grain series ends at its last
+   whole week, days later than that is data nobody has), falling back to the
+   loaded window's end when the meta carries none. */
+function scopeDataEnd(target) {
+  const dt = (state.meta && state.meta.data_through) || {};
+  let edge = state.meta.date_end;
+  ancestorScope(target).forEach((name) => {
+    if (dt[name] && dt[name] < edge) edge = dt[name];
+  });
+  return edge;
+}
+
 function applyPreset(id) {
   const preset = WINDOW_PRESETS.find((p) => p.id === id);
   if (!preset || !preset.compute) return; // custom: leave inputs untouched
-  const w = preset.compute(new Date(state.meta.date_start), new Date(state.meta.date_end));
+  const target = $("target-select").value;
+  const w = preset.compute(new Date(state.meta.date_start), new Date(scopeDataEnd(target)));
   if (!w) return;
   $("an-start").value = w.anStart;
   $("an-end").value = w.anEnd;
   applyAutoReference();
+}
+
+/* (Re)populate the preset select for the current target's grain — called at
+   init and on every target change, because "Last 7 days" is not an option a
+   month-grain KPI should ever offer. */
+function populatePresets() {
+  const presetSelect = $("win-preset");
+  const target = $("target-select").value;
+  const grain = state.dag ? referenceAlignment(target).coarsest : "day";
+  const start = new Date(state.meta.date_start);
+  const end = new Date(scopeDataEnd(target));
+  presetSelect.innerHTML = "";
+  const available = new Set();
+  WINDOW_PRESETS.forEach((p) => {
+    if (p.id !== "custom" && !p.grains.includes(grain)) return;
+    if (p.id !== "custom" && !p.compute(start, end)) return; // omit too-short presets
+    available.add(p.id);
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.label;
+    presetSelect.appendChild(opt);
+  });
+  const wanted = DEFAULT_PRESET[grain];
+  const fallback = [...available][0] || "custom";
+  presetSelect.value = available.has(wanted) ? wanted : fallback;
+  return presetSelect.value;
 }
 
 /* ---------- default reference window (display mirror) ----------
@@ -726,6 +823,24 @@ function setRefMode(mode) {
   if (mode === "auto") applyAutoReference();
 }
 
+/* Does [asIso, aeIso] contain at least one whole period at `grain`? Mirrors
+   the engine's `snap_window` for the two coarse grains (day is always true). */
+function holdsWholePeriod(asIso, aeIso, grain) {
+  const as = new Date(asIso), ae = new Date(aeIso);
+  if (grain === "week") {
+    // First Monday on/after the start, and the Sunday that closes its week.
+    const offset = (8 - as.getUTCDay()) % 7; // getUTCDay: Mon=1
+    const monday = addDays(as, offset);
+    return addDays(monday, 6) <= ae;
+  }
+  if (grain === "month") {
+    let first = monthStart(as);
+    if (first < as) first = addMonths(first, 1);
+    return monthEnd(first) <= ae;
+  }
+  return true;
+}
+
 /* Client-side mirror of the backend window rules. Returns true when valid.
    Marks offending inputs, toggles #run-rca, and writes the status area. */
 function validateWindows() {
@@ -767,6 +882,29 @@ function validateWindows() {
   if (rs > re) return fail(["ref-start", "ref-end"], "Reference window start must be on or before its end.");
   if (re >= as) return fail(["ref-end", "an-start"], "Reference window must end before the analysis window starts.");
   if (as > ae) return fail(["an-start", "an-end"], "Analysis window start must be on or before its end.");
+
+  // A window that holds no whole period at the target's grain is refused
+  // *here*, before the request — the engine refuses it too (before fitting),
+  // but the person typing dates should not need a round trip to learn the
+  // grain. The target is always the coarsest node in its own scope (a parent
+  // is never coarser than its child), so its grain is the one that binds.
+  const targetName = $("target-select").value;
+  const grain = state.dag ? referenceAlignment(targetName).coarsest : "day";
+  if (grain !== "day") {
+    const label = grain === "week" ? "Mon–Sun week" : "calendar month";
+    if (!holdsWholePeriod(as, ae, grain)) {
+      return fail(
+        ["an-start", "an-end"],
+        `${targetName} is measured at ${grain} grain, and this analysis window holds no whole ${label} — pick the "${grain === "week" ? "Last full week" : "Last full month"}" preset, or widen to whole ${grain}s.`,
+      );
+    }
+    if (!holdsWholePeriod(rs, re, grain)) {
+      return fail(
+        ["ref-start", "ref-end"],
+        `${targetName} is measured at ${grain} grain, and this reference window holds no whole ${label} — widen it to whole ${grain}s (auto picks aligned ones).`,
+      );
+    }
+  }
 
   runBtn.disabled = false;
   // Muted advisories, not errors. Scope-keyed to the selected target: only
@@ -4258,21 +4396,11 @@ function initControls() {
     return;
   }
 
-  // window presets: populate the select with those the data window supports
+  // window presets: grain-aware, populated for the current target and
+  // re-populated whenever the target changes (a month-grain KPI must never
+  // default to a 7-day window the engine has to refuse).
   const presetSelect = $("win-preset");
-  const start = new Date(state.meta.date_start);
-  const end = new Date(state.meta.date_end);
-  const available = new Set();
-  WINDOW_PRESETS.forEach((p) => {
-    if (p.id !== "custom" && !p.compute(start, end)) return; // omit too-short presets
-    available.add(p.id);
-    const opt = document.createElement("option");
-    opt.value = p.id;
-    opt.textContent = p.label;
-    presetSelect.appendChild(opt);
-  });
-  const defaultPreset = available.has("last7") ? "last7" : available.has("last14") ? "last14" : "custom";
-  presetSelect.value = defaultPreset;
+  const defaultPreset = populatePresets();
 
   // Date inputs, analysis-first: editing the analysis window flips the
   // preset to Custom and (in auto mode) recomputes the reference; editing a
@@ -4301,9 +4429,14 @@ function initControls() {
     setRefMode("auto");
     validateWindows();
   });
-  // A different target can change the auto reference (its ancestor scope
-  // decides week alignment and the coarsest grain).
+  // A different target can change the coarsest grain in scope, and with it
+  // which presets even make sense — so the preset list is rebuilt, and unless
+  // the user had hand-picked Custom dates, the new grain's default preset is
+  // applied so the out-of-the-box click keeps working.
   select.addEventListener("change", () => {
+    const wasCustom = presetSelect.value === "custom";
+    const next = populatePresets();
+    if (!wasCustom && next !== "custom") applyPreset(next);
     applyAutoReference();
     validateWindows();
   });

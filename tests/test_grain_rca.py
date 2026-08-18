@@ -88,42 +88,94 @@ def test_mixed_grain_shapley_attribution_efficiency():
     assert abs(sum(sh["attribution"].values()) - sh["gap"]) < 1e-9
 
 
-def test_window_shorter_than_grain_degrades_not_errors():
-    """A weekly target with sub-week windows reports a status; RCA returns."""
-    dag = Parser(MIXED_YAML).dag
-    data = mixed_grain_data()
+def test_target_with_no_whole_period_is_refused_before_any_fitting():
+    """A weekly target with sub-week windows is a 422-shaped refusal, not a
+    per-node status — and it fires *before* the fits.
 
-    result = run_rca(
-        dag,
-        data,
-        {},
-        "conversions",
-        **win(("2024-01-02", "2024-01-05"), ("2024-01-06", "2024-01-09")),
+    This test used to pin the opposite (`degrades, not errors`), and the
+    change of policy is deliberate: per-node degradation exists so one bad
+    node does not cost the rest of the tree, but when the *target* has no
+    whole period there is no rest of the tree — nothing can be attributed to
+    a metric with no measured movement. Under the old policy a user paid for
+    every day-grain ancestor's ADVI fit and then read "not analyzed" on the
+    one node they asked about, from a message that named neither the grain
+    nor a window that would have worked. The refusal names all three.
+
+    Per-node `window_shorter_than_grain` still exists, as a backstop for DAGs
+    assembled without the parser: through any parser-built tree the target is
+    always the coarsest node in its own scope (a parent may never be coarser
+    than its child), so if any node's windows snap to nothing the target's do
+    too, and the refusal wins.
+    """
+    fitted_day_yaml = """
+metrics:
+  - name: sessions
+    source: dbt.metric.sessions
+  - name: trial_starts
+    source: dbt.metric.trial_starts
+    parents: [sessions]
+    priors:
+      coefficient:
+        distribution: "Normal"
+        params: { mu: 0.1, sigma: 0.02 }
+  - name: trial_conversion_rate
+    source: dbt.metric.trial_conversion_rate
+    grain: week
+    kind: rate
+  - name: conversions
+    source: dbt.metric.conversions
+    grain: week
+    formula: "trial_starts * trial_conversion_rate"
+    parents: [trial_starts, trial_conversion_rate]
+"""
+    dag = Parser(fitted_day_yaml).dag
+    base = mixed_grain_data()
+    days = base.series("trial_starts", "day")
+    data = build_grained(
+        {
+            "sessions": pd.DataFrame(
+                {"date": days["date"], "sessions": days["trial_starts"].to_numpy() * 10.0}
+            ),
+            "trial_starts": days,
+            "trial_conversion_rate": base.series("trial_conversion_rate", "week"),
+            "conversions": base.series("conversions", "week"),
+        },
+        {
+            "sessions": "day",
+            "trial_starts": "day",
+            "trial_conversion_rate": "week",
+            "conversions": "week",
+        },
+        {
+            "sessions": "flow",
+            "trial_starts": "flow",
+            "trial_conversion_rate": "rate",
+            "conversions": "flow",
+        },
     )
 
-    node = result["nodes"]["conversions"]
-    assert node["status"] == "window_shorter_than_grain"
-    assert node["gap"] is None
-    assert node["contributions"] == []
-    # Daily ancestors still analyze fine.
-    assert result["nodes"]["trial_starts"]["status"] == "ok"
+    traces = {}
+    with pytest.raises(ValueError) as exc:
+        run_rca(
+            dag,
+            data,
+            traces,
+            "conversions",
+            **win(("2024-01-02", "2024-01-05"), ("2024-01-06", "2024-01-09")),
+        )
 
-    # The target was never attributed, so no hop reached an ancestor and none
-    # of them may be credited with influence. This used to read
-    # `all(r["score"] == 0.0 for r in ...)`, which said the right thing until
-    # unreached rows started being dropped — after which the list is empty and
-    # `all()` is vacuously true, so the assertion could no longer fail.
-    #
-    # Both halves are asserted, because "dropped from the ranking" and
-    # "disappeared from the analysis" are different outcomes and only one of
-    # them is correct: the ranking answers "which paths carry influence" and
-    # has nothing to say here, while `nodes` remains the full inventory of what
-    # was in scope, each with its own status.
-    assert result["ranked_causes"] == []
-    assert set(result["nodes"]) == {"conversions", "trial_starts", "trial_conversion_rate"}
-    # The weekly rate is in the same bind as the target; the daily parent is
-    # not. Both are still reported, with the reason each is where it is.
-    assert result["nodes"]["trial_conversion_rate"]["status"] == "window_shorter_than_grain"
+    msg = str(exc.value)
+    # (1) names the grain, (2) names the offending window, (3) names a window
+    # that would work — the most recent whole week the data holds.
+    assert "week grain" in msg
+    assert "no whole week" in msg
+    assert "2024-01-06" in msg and "2024-01-09" in msg
+    assert "2024-05-13 → 2024-05-19" in msg
+    # (4) and it refused before fitting anything: `trial_starts` is a
+    # day-grain probabilistic node whose windows are fine, and under the old
+    # policy its ADVI fit ran (and was cached) before the target's status was
+    # ever discovered.
+    assert traces == {}
 
 
 def test_shapley_endpoint_errors_loudly_on_short_window():

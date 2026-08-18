@@ -44,7 +44,10 @@ ranked.
 lets the rest of the tree through, with the reason in `status_reason`:
 
 - `"window_shorter_than_grain"` — the windows hold no whole period at the
-  node's grain;
+  node's grain (`status_reason` names the grain and the windows). When the
+  **target** itself has no whole period there is nothing to attribute anywhere,
+  so that case raises *before any fitting*, naming the grain and the most
+  recent whole period that would work;
 - `"fit_failed"` — the node's own BSTS fit raised (a parent held flat for the
   whole fit window has zero variance and cannot be normalized);
 - `"attribution_failed"` — the node's formula does not produce a finite value
@@ -271,6 +274,23 @@ def resolve_reference_window(
         earliest_start=_earliest_readable_reference(dag, data, target),
     )
     return ref_start, ref_end, True
+
+
+def _last_whole_period(frame: pd.DataFrame, grain: str) -> Optional[str]:
+    """The most recent whole period a node has data for, as "start → end".
+
+    For the refusal message when a target's windows hold no whole period: an
+    error that names a window that *would* work is a remedy, one that only
+    names the rule is homework. Grain frames hold whole periods by the shared
+    date contract (partial edges are dropped at fetch), so the last label is
+    the start of a complete period, not a partial one.
+    """
+    dates = pd.to_datetime(frame["date"])
+    if not len(dates):
+        return None
+    start = dates.max()
+    end = next_start(start, grain) - pd.Timedelta(days=1)
+    return f"{start.date()} → {end.date()}"
 
 
 def _validate_windows(
@@ -1135,6 +1155,34 @@ def run_rca(
         snapped_ref = snap_window(reference_start, reference_end, grain)
         snapped_an = snap_window(analysis_start, analysis_end, grain)
         if snapped_ref is None or snapped_an is None:
+            # An *ancestor* whose windows hold no whole period degrades to a
+            # per-node status below — the rest of the tree still answers. The
+            # TARGET is different: with no measured movement there is nothing
+            # to attribute anywhere, so the whole analysis is already void.
+            # Refuse it here, before any fitting — a user once paid for every
+            # ancestor's ADVI fit only to learn the target itself had no whole
+            # week in an 8-day default window, from a message that named
+            # neither the grain nor a window that would have worked.
+            if node == target:
+                which = []
+                if snapped_an is None:
+                    which.append(f"analysis window [{analysis_start}, {analysis_end}]")
+                if snapped_ref is None:
+                    which.append(f"reference window [{reference_start}, {reference_end}]")
+                suggestion = _last_whole_period(frame, grain)
+                raise ValueError(
+                    f"Target '{target}' is measured at {grain} grain, and the "
+                    + " and the ".join(which)
+                    + f" hold{'s' if len(which) == 1 else ''} no whole {grain} — a "
+                    f"{grain}-grain metric has one value per whole {grain}, so there "
+                    "is nothing to measure and nothing was fitted. "
+                    + (
+                        f"The most recent whole {grain} with data runs {suggestion}; "
+                        f"windows of whole {grain}s ending on or before that will work."
+                        if suggestion
+                        else f"Choose windows made of whole {grain}s."
+                    )
+                )
             scoped[node] = (grain, frame, None, None)
             continue
         _validate_coverage(frame, node, grain, snapped_ref, snapped_an, defn.lags)
@@ -1193,10 +1241,29 @@ def run_rca(
         grain, frame, snapped_ref, snapped_an = scoped[node]
 
         # Windows are interpreted per node at its grain: only whole periods
-        # fully inside the requested [start, end] count. A window too short
-        # for the grain reports a status instead of failing the whole RCA.
+        # fully inside the requested [start, end] count. A non-target node
+        # whose windows hold no whole period reports a status instead of
+        # failing the whole RCA. Through a parser-built tree this branch is a
+        # backstop: the target is always the coarsest node in its own scope
+        # (a parent may never be coarser than its child), so any window that
+        # snaps to nothing here snapped to nothing for the target too, and the
+        # pre-fit refusal above already fired. It stays for DAGs assembled
+        # without the parser's grain validation.
         if snapped_ref is None or snapped_an is None:
-            nodes_out[node] = _node_out(status="window_shorter_than_grain", grain=grain)
+            nodes_out[node] = _node_out(
+                status="window_shorter_than_grain",
+                grain=grain,
+                # The reason names the grain, because the status alone made a
+                # reader go look it up: every surface that renders a degraded
+                # node already appends `status_reason`, so saying it here says
+                # it in the table, the export, and the MCP payload at once.
+                status_reason=(
+                    f"'{node}' is measured at {grain} grain, and the windows "
+                    f"({reference_start} → {reference_end} vs {analysis_start} → "
+                    f"{analysis_end}) hold no whole {grain} fully inside them. "
+                    f"Windows of whole {grain}s give this node a value."
+                ),
+            )
             continue
         ref_start, ref_end = snapped_ref.first_start, snapped_ref.last_start
         an_start, an_end = snapped_an.first_start, snapped_an.last_start
