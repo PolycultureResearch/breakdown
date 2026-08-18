@@ -284,6 +284,18 @@ DOCS = [
         },
     ),
     DocFile(
+        "docs/first-tree-tutorial.md",
+        # The tutorial builds the bundled jaffle tree from scratch, so its
+        # blocks are the bundled tree in pieces (plus the three provider-swap
+        # blocks and the dimensions teaser) and its curls replay against the
+        # exact tree and window this fixture boots. That is the point: a
+        # tutorial whose every command the suite has already run.
+        yaml_blocks=7,
+        parsable_yaml_blocks=7,
+        skipped_yaml=[],
+        curl_examples=2,
+    ),
+    DocFile(
         "docs/yaml-reference.md",
         yaml_blocks=20,
         parsable_yaml_blocks=15,
