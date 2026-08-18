@@ -56,6 +56,24 @@ It resolves every `${VAR}`, finds `mf`, lists metrics, and reports whole-period
 counts per node against the 10-period fit minimum. Faster and more honest than
 re-reading the YAML.
 
+## Why the MRR layer is weekly, and stays weekly
+
+Asked and settled 2026-08-17, with measurements rather than taste, after the
+week grain surfaced (and helped fix) a default-window UX gap. The weekly grain
+is **not** in the data: `fake_companies` generates event-level facts and every
+semantic model declares `time_granularity: day`, so MetricFlow would serve any
+of these daily. It is an authoring choice, and the events are why: over the
+783-day span, churn runs 4.3 events/day with **24% zero-event days** (so a
+daily `churn_arpu` is undefined a quarter of the time and the `churned_mrr`
+identity fails on nearly any multi-week window), expansion has 52% zero days
+and contraction 83% — while the *new* side (10.7/day, 0% zero days) could go
+daily but shares an apex with the side that cannot. That sparsity is realistic
+for a business this size; it is the same reason real subscription companies
+run MRR weekly, and the mixed day-funnel/week-MRR shape is the demo's showcase
+of the grain machinery. Re-open this only with a materially bigger simulated
+business (`configs/white_cube_b2c_app.yaml`), and budget re-pinning every tour
+number and `ground_truth.json` if you do.
+
 ## What went wrong, and what it taught
 
 **A weekly rate cannot take a daily weight.** `trial_conversion_rate` is declared
