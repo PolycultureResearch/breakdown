@@ -153,6 +153,10 @@ Then open `http://localhost:9090/ui` to explore the tree interactively — the D
 
 ## Authoring a tree
 
+New here? **[docs/first-tree-tutorial.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/first-tree-tutorial.md)**
+builds a tree from an empty file to a running root-cause analysis in about half
+an hour, no credentials required. The rest of this section is the short version.
+
 A tree is one YAML file: a `provider` block saying where the numbers come from,
 and a list of `metrics`. Every metric needs a `name` and a `source`; `parents`
 are what make it a tree, and whether an edge is **learned** or **exact** is
@@ -293,6 +297,7 @@ Notes: the first `run_rca`/`run_whatif` on a tree fits models on demand (ADVI) a
 
 ## Further reading
 
+- **[docs/first-tree-tutorial.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/first-tree-tutorial.md)** — from an empty file to a running RCA in half an hour; start here if you're new.
 - **[docs/model.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md)** — statistical assumptions and how to read results. Read this before trusting any output.
 - **[docs/ui-guide.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/ui-guide.md)** — driving the UI: fitting a model, running an RCA, slicing, what-if.
 - **[docs/deploying.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/deploying.md)** — serving several trees, authentication, Docker, `breakdown doctor`, snapshots, environment variables.

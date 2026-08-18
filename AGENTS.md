@@ -31,6 +31,7 @@ between them. The stance is **probabilistic and causal**, never frequentist:
 **Using breakdown** — author trees, run analyses, interpret output:
 
 - [`README.md`](README.md) — what breakdown is, quickstart, MCP
+- [`docs/first-tree-tutorial.md`](docs/first-tree-tutorial.md) — the guided path: empty file → running RCA, building the bundled example from scratch
 - [`docs/yaml-reference.md`](docs/yaml-reference.md) — **the canonical tree-authoring reference**: every field the parser accepts and the rules on each
 - [`docs/api-reference.md`](docs/api-reference.md) — every route the server answers, its parameters, and its response shape
 - [`docs/model.md`](docs/model.md) — statistical assumptions and how to read results; **read this before trusting output**
@@ -80,6 +81,7 @@ breakdown/
     jaffle_shop_tree.yml   # The bundled default (mock) tree
 docs/
   model.md           # Model assumptions & how to interpret results — start here
+  first-tree-tutorial.md  # Empty file -> running RCA, building the bundled example
   yaml-reference.md  # Every field a tree may declare, and the rules on each
   api-reference.md   # Every route the server answers, and what comes back
   ui-guide.md        # Driving the UI
