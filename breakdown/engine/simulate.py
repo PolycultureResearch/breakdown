@@ -58,8 +58,13 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from breakdown.engine.model import fit_metric
 from breakdown.engine.progress import ProgressFn
 from breakdown.engine.progress import report as _report
-from breakdown.engine.rca import direction_fields, node_window_value
-from breakdown.formula import eval_formula
+from breakdown.engine.rca import (
+    direction_fields,
+    node_window_value,
+    rate_window_method,
+    rate_window_method_reason,
+)
+from breakdown.formula import divisor_expressions, eval_formula
 from breakdown.grains import ensure_grained, fit_grain, snap_window, to_date
 
 _N_DRAWS = 2000
@@ -342,20 +347,53 @@ def run_scenario(
     # absorb the level in fitted mode, and only deltas propagate here.
     base_mu: Dict[str, float] = {}
     base_draws: Dict[str, np.ndarray] = {}
+    # (cold start) Draws come from `_baseline_draws`: the declared belief's
+    # distribution, truncated to the declared `plausible` bounds (C7a) — the
+    # bounds used to be consulted only *after* sampling, for extrapolation
+    # flags, so the shipped example drew ~1% negative customer counts.
+    # Which arithmetic formed a rate's baseline, said where the number is read
+    # (roadmap C25a). RCA labels every rate it reports (`window_aggregate`,
+    # 1.11d); this surface computed the same number through the same entry
+    # point and published it bare — the labelling policy's first propagation
+    # test, failed. Fitted mode only: a cold-start baseline is a declared
+    # belief, which the cold-start caveats already label as such.
+    window_basis: Dict[str, Optional[str]] = {}
+    window_basis_reason: Dict[str, Optional[str]] = {}
     if cold_start:
         for n in nx.topological_sort(dag):
             defn = dag.nodes[n]["definition"]
             if defn.formula:
                 parents = list(dag.predecessors(n))
                 vals = {p: base_draws[p] * edge_scale[(p, n)] for p in parents}
+                # A ratio whose divisor draws cross zero has a Cauchy-like
+                # distribution: its mean does not exist, and the sample mean
+                # below would be whatever the seed's nearest-zero denominator
+                # made it — the shipped example was a $2.1M CAC from an
+                # ordinary order-of-magnitude belief (roadmap C7). Refused
+                # rather than summarized differently: keeping the mean is what
+                # keeps per-source contributions summing exactly to the delta
+                # (the mean is linear; a median is not), so the fix is to make
+                # the mean exist — truncate the belief away from zero — not to
+                # publish a different statistic that breaks that property.
+                for div_src in divisor_expressions(defn.formula):
+                    div = np.asarray(eval_formula(div_src, vals), dtype=float)
+                    if float(div.min()) <= 0.0 <= float(div.max()):
+                        raise ValueError(
+                            f"Cold-start metric '{n}': the belief draws for "
+                            f"divisor '{div_src}' in formula '{defn.formula}' "
+                            "cross zero, so the ratio's Monte-Carlo mean does "
+                            "not exist and its centre would be an artifact of "
+                            "the seed. Declare `plausible: {min: ...}` (> 0) "
+                            "on the divisor's metric(s) — draws are truncated "
+                            "to plausible bounds — or use "
+                            "`baseline: {distribution: LogNormal}`, whose "
+                            "support excludes zero, or tighten the belief so "
+                            "the divisor cannot cross zero."
+                        )
                 base_draws[n] = np.asarray(eval_formula(defn.formula, vals), dtype=float)
                 base_mu[n] = float(base_draws[n].mean())
             else:
-                b = defn.baseline
-                sigma = (b.high - b.low) / (2.0 * _Z90)
-                base_draws[n] = (
-                    rng.normal(b.mu, sigma, n_draws) if sigma > 0 else np.full(n_draws, b.mu)
-                )
+                base_draws[n] = _baseline_draws(n, defn, rng, n_draws)
                 # The seeded MC mean, not the analytic mu: every reported
                 # number is a statistic of the same draws, so e.g. a `set`
                 # intervention's simulated level is exactly its pinned value.
@@ -377,6 +415,8 @@ def run_scenario(
             # undefined — cannot be simulated from, and unlike RCA's per-node
             # degrade every node here is needed, so it errors loudly.
             base_mu[n] = node_window_value(data, n, snapped.first_start, snapped.last_start, g)
+            window_basis[n] = rate_window_method(data, n, snapped.first_start, snapped.last_start, g)
+            window_basis_reason[n] = rate_window_method_reason(data, n, window_basis[n])
             if not np.isfinite(base_mu[n]):
                 raise ValueError(
                     f"Metric '{n}' has no value over the baseline window "
@@ -684,6 +724,9 @@ def run_scenario(
             }
             if cold_start:
                 entry["baseline_ci_95"] = baseline_ci
+            if window_basis.get(node) is not None:
+                entry["window_aggregate"] = window_basis[node]
+                entry["window_aggregate_reason"] = window_basis_reason[node]
             nodes_out[node] = entry
             continue
 
@@ -783,7 +826,12 @@ def run_scenario(
         }
         if cold_start:
             entry["baseline_ci_95"] = baseline_ci
+        if window_basis.get(node) is not None:
+            entry["window_aggregate"] = window_basis[node]
+            entry["window_aggregate_reason"] = window_basis_reason[node]
         nodes_out[node] = entry
+
+    _refuse_non_finite(nodes_out)
 
     sources = [
         {"id": f"i:{iv.metric}", "kind": "intervention", "label": _intervention_label(iv)}
@@ -793,7 +841,7 @@ def run_scenario(
         for a in assumptions
     ]
 
-    return {
+    result = {
         "mode": "cold_start" if cold_start else "fitted",
         "baseline_window": (
             None if cold_start else {"start": scenario.baseline_start, "end": scenario.baseline_end}
@@ -805,3 +853,97 @@ def run_scenario(
         "warnings": warnings,
         "caveats": COLD_START_CAVEATS if cold_start else CAVEATS,
     }
+    return result
+
+
+def _baseline_draws(name: str, defn, rng: np.random.Generator, n_draws: int) -> np.ndarray:
+    """Sample a declared baseline belief, truncated to its `plausible` bounds.
+
+    Three shapes (roadmap C7a/C7b):
+
+    - a point belief (`low == high`) is a point mass, whatever the
+      distribution — nothing to sample, nothing to truncate;
+    - `Normal` reads `[low, high]` as the central 90% interval, as before;
+    - `LogNormal` reads the same interval on the log scale — the natural
+      elicitation for an order-of-magnitude belief about a positive quantity,
+      with support excluding zero by construction.
+
+    Truncation is **rejection resampling**, not clipping: clipping piles a
+    point mass on the bound, which turns "customers cannot be negative" into
+    "there is a 1% chance of exactly zero customers" — a different belief the
+    author never stated. Rejection keeps the declared shape inside the bounds.
+    A belief whose mass lies almost entirely outside its own plausible range
+    cannot be resampled honestly, so it raises with both declarations named —
+    the two came from the same author, and only the author knows which one is
+    wrong.
+    """
+    b = defn.baseline
+    if b.is_point:
+        return np.full(n_draws, b.low)
+    if b.distribution == "LogNormal":
+        mu_log = (math.log(b.low) + math.log(b.high)) / 2.0
+        sigma_log = (math.log(b.high) - math.log(b.low)) / (2.0 * _Z90)
+
+        def sample(k: int) -> np.ndarray:
+            return rng.lognormal(mu_log, sigma_log, k)
+    else:
+        sigma = (b.high - b.low) / (2.0 * _Z90)
+
+        def sample(k: int) -> np.ndarray:
+            return rng.normal(b.mu, sigma, k)
+
+    draws = sample(n_draws)
+    pl = defn.plausible
+    if pl is None:
+        return draws
+    lo = pl.min if pl.min is not None else -math.inf
+    hi = pl.max if pl.max is not None else math.inf
+    for _ in range(1000):
+        bad = (draws < lo) | (draws > hi)
+        n_bad = int(bad.sum())
+        if n_bad == 0:
+            return draws
+        draws[bad] = sample(n_bad)
+    raise ValueError(
+        f"Cold-start metric '{name}': the declared baseline "
+        f"[{b.low}, {b.high}] ({b.distribution}) places almost all of its mass "
+        f"outside the declared plausible range [{pl.min}, {pl.max}] — "
+        "truncated resampling cannot converge. The two declarations "
+        "contradict each other; reconcile them."
+    )
+
+
+def _refuse_non_finite(nodes_out: Dict[str, Any]) -> None:
+    """Refuse a scenario whose arithmetic produced a non-finite number.
+
+    Rule 3: no engine result reaches an encoder unsanitized. `slices.py`
+    filters non-finite values before the encoder and `rca.py` learned the same
+    lesson as C17; this surface never did (the 2026-08-12 review's L4, shipped
+    as roadmap C25b) — so a NaN or inf here met Starlette's `allow_nan=False`
+    as an unhandled 500, and over MCP `round_floats` would have turned it into
+    `null`, a simulation of nothing. RCA degrades per node because a tree RCA
+    has independent nodes to save; a scenario's deltas propagate, so one
+    non-finite node means its whole downstream is contaminated and the honest
+    unit of refusal is the scenario. Raises ValueError (the API's 422) naming
+    the nodes, not a status — there is no partial result worth keeping.
+    """
+
+    def bad(value: Any) -> bool:
+        if isinstance(value, float):
+            return not math.isfinite(value)
+        if isinstance(value, dict):
+            return any(bad(v) for v in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(bad(v) for v in value)
+        return False
+
+    offending = sorted(name for name, entry in nodes_out.items() if bad(entry))
+    if offending:
+        raise ValueError(
+            "Scenario produced non-finite results for: "
+            + ", ".join(offending)
+            + ". This usually means a zero denominator inside a formula over "
+            "the baseline window, or (cold start) baseline draws crossing zero "
+            "on a ratio's denominator — declare tighter `baseline`/`plausible` "
+            "bounds, or choose a baseline window with defined values."
+        )

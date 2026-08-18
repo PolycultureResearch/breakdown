@@ -1119,6 +1119,7 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     if (node.fit_quality === "suspect") bits.push("⚠ suspect fit — the engine's own fit check failed for this node's model");
     if (node.sign_warnings && node.sign_warnings.length) bits.push("⚠ learned sign contradicts declared expectation");
     if (node.seasonality_warnings && node.seasonality_warnings.length) bits.push("⚠ seasonality unidentifiable from fitted history");
+    if (node.likelihood_warnings && node.likelihood_warnings.length) bits.push("⚠ zero-inflated fit window — intervals approximate");
     return bits.length ? ` · ${esc(bits.join(" · "))}` : "";
   };
 
@@ -1149,6 +1150,7 @@ function buildRcaReportHtml(res, treePng, stripPng) {
       );
     }
     (node.seasonality_warnings || []).forEach((w) => out.push(esc(w)));
+    (node.likelihood_warnings || []).forEach((w) => out.push(esc(w)));
     return out.map((t) => `<p class="warn">⚠ ${t}</p>`).join("");
   };
 
@@ -3052,19 +3054,13 @@ function sliceResultHtml(metric) {
     .join("");
 
   // The headline claim only survives if the leader is genuinely concentrated.
-  // Ranking always produces a first row, so without this the panel would name
-  // a slice even when the gap is spread evenly — the failure mode that makes
-  // flat slicers untrustworthy. Concentration is excess as a share of the gap:
-  // scale-free, and unlike a share-vs-baseline ratio it does not punish slices
-  // that are already large (mobile is half the traffic and still the culprit).
+  // The verdict is the engine's (`localized`, per its published
+  // `localization_threshold`), not recomputed here: this file recomputing it
+  // was C24 — the rate rows never carried `baseline_share`, so the local rule
+  // silently said "not localized" for every rate, and MCP consumers applied
+  // no rule at all. One published fact, every surface reads it.
   const top = r.slices[0];
-  const concentration =
-    top && top.excess != null && Math.abs(r.gap) > 1e-12
-      ? Math.abs(top.excess / r.gap)
-      : 0;
-  const localized =
-    top && !top.noise_level && top.baseline_share != null && top.share_of_gap != null
-      && concentration >= 0.25;
+  const localized = !!r.localized;
   const verdict = localized
     ? `<p class="slice-verdict">${sliceLabel(top.value)} carries
          <strong>${pct(top.share_of_gap)}</strong> of the gap on a
@@ -3325,6 +3321,10 @@ function renderRcaTab() {
         node.seasonality_warnings && node.seasonality_warnings.length
           ? ` · <span class="sign-flag" title="${esc(node.seasonality_warnings.join("\n\n"))}">⚠ seasonality unidentifiable from fitted history</span>`
           : "";
+      const zeroNote =
+        node.likelihood_warnings && node.likelihood_warnings.length
+          ? ` · <span class="sign-flag" title="${esc(node.likelihood_warnings.join("\n\n"))}">⚠ zero-inflated fit window — intervals approximate</span>`
+          : "";
       const twoLevel = node.contributions.some((c) => c.decomposition);
       let header, rows, nCols;
 
@@ -3413,7 +3413,7 @@ function renderRcaTab() {
       }
       return `
         <div class="attr-block">
-          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${fitNote2}${signNote}${seasNote}</span></h4>
+          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${fitNote2}${signNote}${seasNote}${zeroNote}</span></h4>
           <table class="data-table">
             ${header}
             ${rows}
@@ -4125,7 +4125,11 @@ function renderWhatifResults() {
       <div class="rca-card">
         <div class="sub">${sub}</div>
         <div class="gap-line ${dirCls}">${fmt(node.baseline)} → ${fmt(node.simulated)}
-          <span style="font-size:14px">(${signedPct(node.relative_delta)})</span></div>
+          <span style="font-size:14px">(${signedPct(node.relative_delta)})</span></div>${
+          node.window_aggregate
+            ? `<div class="sub">${windowBasisHtml(node)}</div>`
+            : ""
+        }
         <div class="wf-ci">Δ ${fmt(node.delta.estimate)} · 95% CI [${fmt(ci[0])}, ${fmt(ci[1])}] · P(direction) ${pctDir(node.prob_direction, node.prob_direction_censored)}${
           bci ? ` · baseline belief [${fmt(bci[0])}, ${fmt(bci[1])}]` : ""
         }</div>${
@@ -4151,7 +4155,9 @@ function renderWhatifResults() {
             ? ' <span class="cause-flag" title="The engine flagged the model behind this node as suspect — for ADVI, an ELBO that had not settled; for NUTS, R̂ / divergences / ESS over threshold. This row is propagated through that fit.">⚠ suspect fit</span>'
             : ""
         }</td>
-        <td class="num">${fmt(node.baseline)} → ${fmt(node.simulated)}</td>
+        <td class="num">${fmt(node.baseline)} → ${fmt(node.simulated)}${
+          node.window_aggregate ? `<br><span class="muted">${windowBasisHtml(node)}</span>` : ""
+        }</td>
         <td class="num">${signedPct(node.relative_delta)}</td>
         <td class="num">[${fmt(ci[0])}, ${fmt(ci[1])}]</td>
         <td class="num">${pctDir(node.prob_direction, node.prob_direction_censored)}</td>

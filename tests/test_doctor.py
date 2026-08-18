@@ -793,3 +793,78 @@ def test_a_declared_denominator_still_reads_as_before(tmp_path):
     assert check.status == "pass"
     assert "recompute from components" in check.detail
     assert "no_denominator" not in check.detail
+
+
+# ---------------------------------------------------------------------------
+# Doctor sees snapshots (roadmap 2.20b): a snapshot-served deployment is a
+# healthy one, and the exit code must say so.
+
+LOCAL_SNAPSHOT_TREE = """
+provider:
+  type: local
+  project_path: /nonexistent-by-design
+metrics:
+  - name: revenue
+    source: my.metrics.revenue
+"""
+
+
+def _write_snapshot_tree(tmp_path, start="2024-01-01", end="2024-03-31"):
+    import pandas as pd
+
+    tree = tmp_path / "tree.yml"
+    tree.write_text(LOCAL_SNAPSHOT_TREE)
+    snapdir = tmp_path / ".breakdown" / "snapshots"
+    snapdir.mkdir(parents=True)
+    dates = pd.date_range(start, end, freq="D")
+    pd.DataFrame({"date": dates, "revenue": [float(i) for i in range(len(dates))]}).to_parquet(
+        snapdir / f"revenue__day-flow__{start}__{end}.parquet", index=False
+    )
+    return tree
+
+
+def test_doctor_passes_on_a_snapshot_served_deployment(tmp_path, monkeypatch):
+    """The demo-image shape: a provider that cannot answer (nonexistent dbt
+    project) behind a snapshot dir that covers the whole tree. The provider
+    chain's failures are true and are reported — as warnings, because the
+    server will serve — and fit readiness proves it end to end through the
+    same wrapped fetcher the server uses."""
+    monkeypatch.delenv("BREAKDOWN_SNAPSHOT_DIR", raising=False)
+    tree = _write_snapshot_tree(tmp_path)
+    results = run_doctor(str(tree), "2024-02-01", "2024-02-28")
+    by = by_name(results)
+    assert by["snapshots"].status == "pass"
+    assert "all 1 sourced metrics covered" in by["snapshots"].detail
+    assert not any(r.status == "fail" for r in results), [
+        (r.name, r.detail) for r in results if r.status == "fail"
+    ]
+    downgraded = [r for r in results if r.status == "warn" and "snapshot-covered" in r.detail]
+    assert downgraded, "the provider-chain failure should surface as a warning, not vanish"
+    assert by["fit readiness"].status == "pass"
+    assert print_report(results) == 0
+
+
+def test_doctor_partial_snapshot_coverage_keeps_the_failure(tmp_path, monkeypatch):
+    """Snapshots that do not cover the checked window buy no forgiveness: the
+    provider is down and some metric cannot be served, so the failure stands."""
+    monkeypatch.delenv("BREAKDOWN_SNAPSHOT_DIR", raising=False)
+    tree = _write_snapshot_tree(tmp_path, start="2024-02-10", end="2024-03-31")
+    results = run_doctor(str(tree), "2024-02-01", "2024-02-28")
+    by = by_name(results)
+    assert "not covered: revenue" in by["snapshots"].detail
+    assert any(r.status == "fail" for r in results)
+    assert print_report(results) == 1
+
+
+def test_doctor_reads_the_servers_window_from_the_environment(tmp_path, monkeypatch):
+    """BREAKDOWN_START_DATE/BREAKDOWN_END_DATE are how a deployment (the demo
+    image) configures its window; doctor checks over that window and treats it
+    as explicit, so fit readiness runs instead of silently skipping."""
+    monkeypatch.delenv("BREAKDOWN_SNAPSHOT_DIR", raising=False)
+    monkeypatch.setenv("BREAKDOWN_START_DATE", "2024-02-01")
+    monkeypatch.setenv("BREAKDOWN_END_DATE", "2024-02-28")
+    tree = _write_snapshot_tree(tmp_path)
+    results = run_doctor(str(tree))
+    by = by_name(results)
+    assert by["fit readiness"].status == "pass"
+    assert "2024-02-01" in by["snapshots"].detail

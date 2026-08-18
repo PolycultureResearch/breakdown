@@ -40,6 +40,7 @@ Slices are fetched on demand at analysis time and never enter the startup
 passes the long-format frames — so the engine stays stateless.
 """
 
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -53,6 +54,8 @@ from breakdown.engine.rca import (
     direction_fields,
 )
 from breakdown.grains import BOOT_BLOCK, period_spine, rate_window_value, snap_window
+
+logger = logging.getLogger(__name__)
 
 # More distinct fetched values than this is an authoring problem, not an
 # analysis input — the response would localize nothing.
@@ -74,6 +77,13 @@ ADDITIVITY = ("exact", "overlapping", "unknown")
 # A slice is flagged noise-level when its excess direction probability is
 # below this — the bootstrap can't tell its concentration from zero.
 _NOISE_PROB = 0.8
+# The headline "X carries N% of the gap" claim is only made when the leader's
+# excess is at least this share of the gap; below it the honest verdict is
+# "not localized". Published on the response (`localization_threshold`) so the
+# UI, the tests and MCP consumers apply one rule — until roadmap C24 this
+# lived only in app.js, hand-mirrored in a test helper, and invisible to MCP,
+# which would confidently name the top slice exactly where the UI declined to.
+_LOCALIZATION_THRESHOLD = 0.25
 # Bootstrap replicates surviving the finite filter below which an interval
 # would be quoted off too little resampling to mean anything.
 _MIN_CI_REPLICATES = 100
@@ -95,6 +105,35 @@ def _rank_by_excess(rows: List[Dict[str, Any]], gap: float) -> None:
     rows.sort(key=lambda r: -direction * (r["excess"] if r["excess"] is not None else 0.0))
 
 
+def _localization(rows: List[Dict[str, Any]], gap: float) -> Dict[str, Any]:
+    """The headline verdict, computed beside the numbers it summarizes.
+
+    Ranking always produces a first row, so without this gate a panel would
+    name a slice even when the gap is spread evenly — the failure mode that
+    makes flat slicers untrustworthy. Concentration is the leader's excess as
+    a share of the gap: scale-free, and unlike a share-vs-baseline ratio it
+    does not punish slices that are already large (mobile is half the traffic
+    and still the culprit). The claim is withheld when the leader is
+    noise-level, or when either of the numbers the verdict sentence quotes
+    (`share_of_gap`, `baseline_share`) is withheld — quoting a claim whose
+    evidence is withheld would out-run the evidence.
+    """
+    top = rows[0] if rows else None
+    concentration = (
+        abs(top["excess"] / gap)
+        if top and top.get("excess") is not None and abs(gap) > 1e-12
+        else 0.0
+    )
+    localized = bool(
+        top
+        and not top.get("noise_level")
+        and top.get("baseline_share") is not None
+        and top.get("share_of_gap") is not None
+        and concentration >= _LOCALIZATION_THRESHOLD
+    )
+    return {"localized": localized, "localization_threshold": _LOCALIZATION_THRESHOLD}
+
+
 # Reconciliation: mean |Σ slices − metric| above this share of |baseline|
 # flags the dimension as not cleanly partitioning the metric.
 _RECON_TOL = 0.005
@@ -104,7 +143,14 @@ _NULL = "__null__"
 
 
 def _pivot(long_df: pd.DataFrame, label: str) -> pd.DataFrame:
-    """Long `[date, slice, value]` → wide dates × slice values."""
+    """Long `[date, slice, value]` → wide dates × slice values.
+
+    A duplicated `(date, slice)` pair is refused, not summed: the provider
+    contract is one row per pair, and the unsliced path treats a duplicated
+    date as a hard grain-violation error (`_align_to_spine` refuses to reindex
+    it). Until roadmap C23 this used `aggfunc="sum"`, which silently doubled a
+    fanned-out slice — the same layer holding the opposite policy from its
+    neighbour, again."""
     for col in ("date", "slice", "value"):
         if col not in long_df.columns:
             raise ValueError(
@@ -116,22 +162,53 @@ def _pivot(long_df: pd.DataFrame, label: str) -> pd.DataFrame:
     df["slice"] = df["slice"].map(
         lambda v: _NULL if v is None or (isinstance(v, float) and np.isnan(v)) else str(v)
     )
+    dupes = df.duplicated(["date", "slice"])
+    if dupes.any():
+        sample = df.loc[dupes, ["date", "slice"]].head(3).to_records(index=False)
+        raise ValueError(
+            f"Sliced data for {label} holds more than one row per (date, slice) "
+            f"— {int(dupes.sum())} duplicate pair(s), e.g. {list(sample)}. The "
+            "sliced result must be grouped to one row per period per slice; "
+            "summing them here would silently double a fanned-out slice."
+        )
     wide = df.pivot_table(index="date", columns="slice", values="value", aggfunc="sum")
     wide.columns = [str(c) for c in wide.columns]
     return wide
 
 
-def _fill_by_kind(wide: pd.DataFrame, dates: pd.DatetimeIndex, kind: str) -> pd.DataFrame:
+def _fill_by_kind(
+    wide: pd.DataFrame, dates: pd.DatetimeIndex, kind: str, label: str = ""
+) -> pd.DataFrame:
     """Reindex onto the window dates and gap-fill per slice by kind: a missing
     (date, slice) is 0 for a flow, carried forward for a stock (0 before the
-    slice's first observation — the plan tier didn't exist yet). Rates keep
-    NaN; absence is handled through their weights."""
+    slice's first observation). Rates keep NaN; absence is handled through
+    their weights.
+
+    This is deliberately a *different* policy from `_align_to_spine`'s, and
+    the divergence is chosen rather than inherited (roadmap C23): there a
+    stock's leading gap **raises**, because a whole metric with nothing to
+    carry backwards is unservable; here a single slice's leading gap zero-fills,
+    because a slice legitimately starts mid-window — the plan tier didn't exist
+    yet — and refusing would take down the panel over a fact of the business.
+    What was not chosen was the silence: a fill here used to say nothing at
+    all (C18's shape one layer up), so fills are now counted and logged."""
     out = wide.reindex(dates)
+    if kind not in ("flow", "stock"):
+        return out
+    filled = int(out.isna().to_numpy().sum())
+    if filled:
+        logger.info(
+            "Sliced frame%s: %d missing (date, slice) cell(s) of %d filled by "
+            "kind '%s' (flow: 0; stock: carried forward, 0 before a slice's "
+            "first observation).",
+            f" for {label}" if label else "",
+            filled,
+            int(out.size),
+            kind,
+        )
     if kind == "flow":
         return out.fillna(0.0)
-    if kind == "stock":
-        return out.ffill().fillna(0.0)
-    return out
+    return out.ffill().fillna(0.0)
 
 
 def _select_slices(
@@ -447,7 +524,7 @@ def slice_attribution(
             f"distinct values (max {MAX_DISTINCT}). Declare a `values:` pin-list "
             "or slice by a coarser dimension."
         )
-    wide = _fill_by_kind(wide, all_dates, kind)
+    wide = _fill_by_kind(wide, all_dates, kind, label=f"'{defn.name}' by '{dimension}'")
 
     u = unsliced.copy()
     u["date"] = pd.to_datetime(u["date"])
@@ -681,6 +758,9 @@ def _sum_attribution(
         "slices": rows,
         "mix_total": None,
         "reconciliation": recon,
+        # After the overlap step above, deliberately: withheld shares mean a
+        # withheld verdict.
+        **_localization(rows, gap),
     }
 
 
@@ -731,7 +811,20 @@ def _rate_attribution(
     additivity="unknown",
 ) -> Dict[str, Any]:
     """Rates: the weight-blended mix/within decomposition."""
-    weights = weights.reindex(all_dates).fillna(0.0)
+    weights = weights.reindex(all_dates)
+    # A missing (date, slice) weight cell is a flow with no volume there: zero
+    # is the flow fill policy, and a zero weight self-neutralizes in the blend
+    # (Σ w·r / Σ w). Counted and logged like every other fill at this layer
+    # (roadmap C23) — the policy was right, the silence was the defect.
+    missing_w = int(weights.isna().to_numpy().sum())
+    if missing_w:
+        logger.info(
+            "Sliced weights for '%s': %d missing (date, slice) cell(s) filled "
+            "with 0 (no volume in that slice that period).",
+            spec.weight,
+            missing_w,
+        )
+    weights = weights.fillna(0.0)
     common = [c for c in wide.columns if c in set(weights.columns)]
     orphan_rates = [c for c in wide.columns if c not in set(weights.columns)]
     if orphan_rates:
@@ -826,6 +919,12 @@ def _rate_attribution(
             "value": g,
             "share_reference": float(s_ref[j]),
             "share_analysis": float(s_an[j]),
+            # For a rate, the slice's reference share of the *denominator* is
+            # its baseline share — same fact, same name as the sum path, so
+            # every consumer of a slice row reads one field. Its absence here
+            # was C24: the UI's verdict gated on it, so a rate panel could
+            # never say "localized" no matter how concentrated the movement.
+            "baseline_share": None if np.isnan(s_ref[j]) else float(s_ref[j]),
             "rate_reference": None if np.isnan(r_ref[j]) else float(r_ref[j]),
             "rate_analysis": None if np.isnan(r_an[j]) else float(r_an[j]),
             "within": float(within[j]),
@@ -868,9 +967,11 @@ def _rate_attribution(
     node_gap = float(node_an - node_ref)
     if abs(gap - node_gap) > 0.02 * max(abs(node_gap), 1e-12):
         caveats.append(
-            f"Weight-blended gap ({gap:.4g}) differs from the node's unweighted "
-            f"window-mean gap ({node_gap:.4g}); the difference is a weighting "
-            "effect, not a slice's doing."
+            f"Weight-blended gap ({gap:.4g}) differs from the node's own "
+            f"window-aggregate gap ({node_gap:.4g}). Both aggregate as "
+            "Σnumerator/Σdenominator, so a difference that survives means the "
+            "slices' weights are not the node's denominator — check `weight` — "
+            "not a slice's doing."
         )
 
     return {
@@ -886,4 +987,5 @@ def _rate_attribution(
         "slices": rows,
         "mix_total": mix_total,
         "reconciliation": recon,
+        **_localization(rows, gap),
     }

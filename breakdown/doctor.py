@@ -846,7 +846,7 @@ def _check_entity_grain(config, fetcher, wanted, start_date=None, end_date=None)
     """
     from breakdown.dbt_sql import build_multivalue_assertion
 
-    offenders, unresolved, checked = [], [], 0
+    offenders, unresolved, unchecked, checked = [], [], [], 0
     for query_name, tree_name in wanted.items():
         bind = fetcher.bindings.get(query_name)
         if bind is None or not bind.is_non_additive:
@@ -867,7 +867,12 @@ def _check_entity_grain(config, fetcher, wanted, start_date=None, end_date=None)
                 )
                 pairs = int(fetcher._query(sql).iloc[0]["multivalued_pairs"])
             except Exception as e:
-                offenders.append(f"{tree_name}.{dim_name} (check failed: {type(e).__name__})")
+                # A check that could not run is not a violated assertion: this
+                # used to land in `offenders` and print as "`resolve: error` is
+                # asserted but violated" with a remedy telling the author to
+                # abandon an assertion nothing had tested — for a binding that
+                # may not even declare one.
+                unchecked.append(f"{tree_name}.{dim_name} ({type(e).__name__}: {e})")
                 continue
             if not pairs:
                 continue
@@ -898,6 +903,14 @@ def _check_entity_grain(config, fetcher, wanted, start_date=None, end_date=None)
             "the slices sum exactly. Without it they are reported as "
             "overlapping and contribution shares are withheld.",
         )
+    if unchecked:
+        return CheckResult.fail(
+            "entity grain resolves",
+            f"could not be checked: {unchecked[:4]}" + (" …" if len(unchecked) > 4 else ""),
+            "The multivalue assertion query failed against the warehouse — fix "
+            "the error above and re-run; until it runs, whether these slices "
+            "sum exactly is unverified.",
+        )
     return CheckResult.ok(
         "entity grain resolves",
         f"{checked} non-additive slice(s) resolve to one value per period"
@@ -905,21 +918,100 @@ def _check_entity_grain(config, fetcher, wanted, start_date=None, end_date=None)
     )
 
 
-def check_fit_readiness(parser, start_date: str, end_date: str) -> List[CheckResult]:
+def check_snapshots(
+    parser, tree_path: str, start_date: str, end_date: str, explicit_window: bool
+) -> Tuple[Optional[CheckResult], bool]:
+    """What the snapshot store can serve — and whether it covers the tree.
+
+    `doctor` used to build the raw provider and never look at snapshots at
+    all, while the server reads through them first (roadmap 2.20): on a
+    snapshot-served deployment — the mode the README and the demo both ship —
+    that meant a hard [FAIL] against a box answering perfectly, from the one
+    command every failure path in the product points a user at.
+
+    Returns (result, covered): `covered` is True only when every sourced
+    metric has a definition-matched snapshot spanning the checked window,
+    which is what lets `run_doctor` downgrade provider-chain failures from
+    fatal to warnings. Coverage here is an inventory claim (a file spans the
+    window); the end-to-end proof is fit readiness, which fetches through the
+    same wrapped path the server uses.
+    """
+    from breakdown.data_fetch import provider_query_name
+    from breakdown.snapshots import SnapshotStore, definition_sha, resolve_snapshot_dir
+
+    cfg = parser.config.provider
+    snapshot_dir = resolve_snapshot_dir(tree_path)
+    if snapshot_dir is None:
+        return CheckResult.skip("snapshots", "disabled (BREAKDOWN_SNAPSHOT_DIR=off)"), False
+    if not os.path.isdir(snapshot_dir):
+        return (
+            CheckResult.skip(
+                "snapshots", f"none yet at {snapshot_dir} — the first server run writes them"
+            ),
+            False,
+        )
+
+    store = SnapshotStore(snapshot_dir)
+    # The definition fingerprint needs the provider, but the provider may be
+    # exactly what is broken on a snapshot-only box — so its absence must cost
+    # verification of the sha, never the inventory. `None` serves legacy-style
+    # (with the store's own warning), which mirrors what the server would do.
+    try:
+        from breakdown.api.main import _build_fetcher  # lazy: pulls FastAPI
+
+        inner = _build_fetcher(cfg, parser.dag, parser.config.metrics)
+    except Exception:
+        inner = None
+
+    sourced = [m for m in parser.config.metrics if not m.derived]
+    covered, missing = [], []
+    for m in sourced:
+        query_name = provider_query_name(cfg.type, m)
+        sha = definition_sha(inner, query_name) if inner is not None else None
+        window = store.covering_window(query_name, start_date, end_date, m.grain, m.kind, sha)
+        (covered if window else missing).append(m.name)
+
+    span = f"[{start_date}, {end_date}]"
+    if not explicit_window:
+        span += " (7-day probe window — pass --start-date/--end-date for the real one)"
+    if missing:
+        preview = ", ".join(missing[:5]) + (", ..." if len(missing) > 5 else "")
+        return (
+            CheckResult.ok(
+                "snapshots",
+                f"{len(covered)} of {len(sourced)} sourced metrics covered for {span} "
+                f"at {snapshot_dir}; not covered: {preview}",
+            ),
+            False,
+        )
+    return (
+        CheckResult.ok(
+            "snapshots",
+            f"all {len(sourced)} sourced metrics covered for {span} at {snapshot_dir}",
+        ),
+        True,
+    )
+
+
+def check_fit_readiness(parser, tree_path: str, start_date: str, end_date: str) -> List[CheckResult]:
     """Per-metric whole periods over the window vs the fit minimum — the
     graduation check for a tree migrating from cold start to fitted mode.
-    Fetches through the real provider path (never a lookalike), so it also
-    exercises every metric's query end to end. A second result reports
-    **history headroom**: whether the provider has history before
-    --start-date (RCA trains on everything loaded, so an earlier start
+    Fetches through the real server path (never a lookalike) — which since
+    roadmap 2.20 includes the snapshot read-through wrapper, so a
+    snapshot-served metric passes here exactly as it serves there. A second
+    result reports **history headroom**: whether the provider has history
+    before --start-date (RCA trains on everything loaded, so an earlier start
     strengthens fits and default reference windows)."""
-    from breakdown.api.main import _build_fetcher  # lazy: pulls FastAPI
+    from breakdown.api.main import _build_fetcher, _wrap_snapshots  # lazy: pulls FastAPI
     from breakdown.data_fetch import provider_query_name
     from breakdown.engine.model import MIN_FIT_PERIODS
 
     cfg = parser.config.provider
     try:
         fetcher = _build_fetcher(cfg, parser.dag, parser.config.metrics)
+        fetcher = _wrap_snapshots(
+            fetcher, cfg.type, tree_path, slice_span=(start_date, end_date)
+        )
     except Exception as e:
         return [CheckResult.fail("fit readiness", f"could not build fetcher: {e}")]
 
@@ -992,7 +1084,12 @@ def run_doctor(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ) -> List[CheckResult]:
-    explicit_window = start_date is not None and end_date is not None
+    # "Explicit" includes the BREAKDOWN_START_DATE/BREAKDOWN_END_DATE pair the
+    # server itself reads: a deployment that sets its window in the environment
+    # (the demo image does) has told doctor the real window as surely as flags.
+    explicit_window = (start_date is not None and end_date is not None) or (
+        "BREAKDOWN_START_DATE" in os.environ and "BREAKDOWN_END_DATE" in os.environ
+    )
     start_date, end_date = _probe_window(start_date, end_date)
 
     tree = _check_tree(tree_path)
@@ -1001,6 +1098,11 @@ def run_doctor(
         return results
 
     provider = tree.config.provider.type
+    # Everything appended from here to the snapshots check is the provider
+    # chain — the set a full snapshot covering can downgrade (2.20). Tree
+    # checks above it are never downgraded: a broken tree is broken however
+    # the data arrives.
+    provider_section = len(results)
     extra = check_provider_extra(provider)
     if extra is not None:
         results.append(extra)
@@ -1040,9 +1142,34 @@ def run_doctor(
     else:
         results.append(CheckResult.ok("mock provider", "nothing to check — data is synthetic"))
 
+    # The snapshot store: what it can serve, and — when it covers the whole
+    # tree for the checked window — permission to survive a dead provider.
+    # A snapshot-served deployment is a mode the docs recommend, and doctor
+    # failing hard against a healthy one was 2.20's second half.
+    covered = False
+    if provider not in ("mock", "none"):
+        snap_result, covered = check_snapshots(
+            tree.parser, tree_path, start_date, end_date, explicit_window
+        )
+        if snap_result is not None:
+            results.append(snap_result)
+        if covered:
+            for i in range(provider_section, len(results)):
+                r = results[i]
+                if r.status == "fail":
+                    results[i] = CheckResult.warn(
+                        r.name,
+                        r.detail
+                        + " — not fatal here: every metric is snapshot-covered for the "
+                        "checked window, so the server will serve. Fix this before "
+                        "refetching (BREAKDOWN_REFRESH=1) or widening the window.",
+                        r.remediation,
+                    )
+
     # Fit readiness: periods-per-metric vs the fit minimum. Only meaningful
     # over the tree's real analysis window (the default probe window is a
-    # deliberately tiny 7 days), so it runs when both dates are explicit.
+    # deliberately tiny 7 days), so it runs when the window is explicit —
+    # flags or the BREAKDOWN_*_DATE pair the server reads.
     if provider == "none":
         results.append(
             CheckResult.skip("fit readiness", "cold-start tree — nothing is ever fitted")
@@ -1058,13 +1185,22 @@ def run_doctor(
     elif any(r.status == "fail" for r in results):
         results.append(CheckResult.skip("fit readiness", "provider checks failed above"))
     else:
-        results += check_fit_readiness(tree.parser, start_date, end_date)
+        results += check_fit_readiness(tree.parser, tree_path, start_date, end_date)
     return results
 
 
 def _probe_window(start_date: Optional[str], end_date: Optional[str]) -> Tuple[str, str]:
     """A small recent window: live-warehouse probes should scan days, not the
-    tree's whole (possibly multi-year) analysis window."""
+    tree's whole (possibly multi-year) analysis window.
+
+    Flags win; the BREAKDOWN_START_DATE/BREAKDOWN_END_DATE pair the server
+    reads is next, so a deployment configured by environment (the demo image)
+    is checked over the window it will actually load; the 7-day probe is last.
+    The server's jaffle-shop *defaults* are deliberately not used here — a
+    probe against someone else's demo window would be worse than a small
+    recent one."""
+    start_date = start_date or os.environ.get("BREAKDOWN_START_DATE")
+    end_date = end_date or os.environ.get("BREAKDOWN_END_DATE")
     for label, value in (("--start-date", start_date), ("--end-date", end_date)):
         if value:
             try:

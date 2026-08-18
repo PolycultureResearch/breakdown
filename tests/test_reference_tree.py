@@ -227,6 +227,26 @@ def test_lags_are_in_the_node_s_own_grain(defs):
     assert defs["sales_qualification_rate"].lags == {}
 
 
+def test_controllable_attrition_holds_a_possible_value(parser, defs):
+    """C13: the mock drew `cancel_requests` and `saved_cancel_requests` as
+    independent walks on unrelated scales, so `controllable_attrition =
+    cancel_requests - saved_cancel_requests` was negative in 100% of periods
+    over 2024 — more requests saved than were ever made. The generator now
+    draws the subtrahend leaf as a varying share of the minuend."""
+    fetcher = MockDataFetcher(dag=parser.dag)
+    window = ("2024-01-01", "2024-12-31")
+    series = {}
+    for name in ("controllable_attrition", "cancel_requests", "saved_cancel_requests"):
+        d = defs[name]
+        df = fetcher.fetch_metric(name, *window, grain=d.grain, kind=d.kind)
+        series[name] = df[name]
+    assert (
+        series["saved_cancel_requests"].to_numpy() <= series["cancel_requests"].to_numpy()
+    ).all()
+    assert (series["controllable_attrition"] > 0).all()
+    assert (series["saved_cancel_requests"] > 0).all()
+
+
 def test_mixed_grain_data_builds_and_resamples(parser, defs):
     """The day -> month handoffs are the point of the tree's grain cut, so
     prove they actually align rather than merely parse."""

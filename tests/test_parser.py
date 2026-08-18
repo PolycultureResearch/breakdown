@@ -1732,3 +1732,44 @@ metrics:
     source: dbt.metric.total
     denominator: base
 """)
+
+
+def test_slice_weight_grain_mismatch_fails_at_parse_not_at_click(caplog):
+    """C12: the grain agreement between a rate and its slicing weight used to
+    be checked only in the API's slice handler — a tree parsed clean, booted
+    clean, and 422'd on the first *slice by* click. Both definitions are in
+    hand at parse time, so that is when the author hears about it."""
+    yaml_content = """
+metrics:
+  - name: subs
+    source: dbt.metric.subs
+    grain: day
+  - name: churn_rate
+    source: dbt.metric.churn_rate
+    kind: rate
+    grain: month
+    denominator: subs
+    dimensions:
+      plan: { source: subscription__plan }
+"""
+    with pytest.raises(ValueError, match="weight 'subs' at grain 'day'"):
+        Parser(yaml_content)
+
+
+def test_finer_nesting_denominator_stays_legal_without_dimensions():
+    """The other half of the C12 rule: `_validate_denominators` accepts a
+    denominator at a finer, nesting grain because the window aggregate
+    resamples it up. Only declaring `dimensions` — which is what makes the
+    non-resampling slice path reachable — turns the mismatch into an error."""
+    yaml_content = """
+metrics:
+  - name: subs
+    source: dbt.metric.subs
+    grain: day
+  - name: churn_rate
+    source: dbt.metric.churn_rate
+    kind: rate
+    grain: month
+    denominator: subs
+"""
+    assert Parser(yaml_content).get_metric("churn_rate").denominator == "subs"

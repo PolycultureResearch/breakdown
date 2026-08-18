@@ -311,4 +311,4 @@ Academic background:
 
 ## Contributing
 
-Bug reports, docs fixes, new providers, statistical improvements — see **[CONTRIBUTING.md](https://github.com/PolycultureResearch/breakdown/blob/main/CONTRIBUTING.md)**. You're also welcome to just use breakdown: the [license](https://github.com/PolycultureResearch/breakdown/blob/main/LICENSE) permits any use, commercial or otherwise, short of selling it as part of a competing product.
+Bug reports, docs fixes, new providers, statistical improvements — see **[CONTRIBUTING.md](https://github.com/PolycultureResearch/breakdown/blob/main/CONTRIBUTING.md)**. You're also welcome to just use breakdown: the [license](https://github.com/PolycultureResearch/breakdown/blob/main/LICENSE) (FSL-1.1-ALv2) permits any use, commercial or otherwise, short of selling it as part of a competing product. It also converts each release to plain Apache-2.0 open source two years after it ships, by its own irrevocable grant.

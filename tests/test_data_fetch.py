@@ -342,6 +342,52 @@ def test_mock_all_day_tree_pinned_values():
     )
 
 
+DIFF_TREE = """
+metrics:
+  - name: cancel_requests
+    source: dbt.metric.cancel_requests
+  - name: saved_cancel_requests
+    source: dbt.metric.saved_cancel_requests
+  - name: controllable_attrition
+    source: dbt.metric.controllable_attrition
+    formula: "cancel_requests - saved_cancel_requests"
+    parents: [cancel_requests, saved_cancel_requests]
+"""
+
+
+def test_mock_difference_identity_is_non_negative_every_period():
+    """C13: independently drawn leaves put the subtrahend of `a - b` on an
+    unrelated scale, so the difference could be negative in every period —
+    a value the business being modelled cannot produce. The generator now
+    draws the subtrahend as a varying share of the minuend."""
+    parser = Parser(DIFF_TREE)
+    fetcher = MockDataFetcher(dag=parser.dag)
+    window = ("2024-01-01", "2024-12-31")
+    diff = fetcher.fetch_metric("controllable_attrition", *window)["controllable_attrition"]
+    req = fetcher.fetch_metric("cancel_requests", *window)["cancel_requests"]
+    saved = fetcher.fetch_metric("saved_cancel_requests", *window)["saved_cancel_requests"]
+    # The identity's terms are ordered in every period, so the difference is
+    # positive in every period — not merely on average.
+    assert (saved.to_numpy() <= req.to_numpy()).all()
+    assert (diff > 0).all()
+    assert (saved > 0).all()
+    # Leaf realism: the subtrahend is a *varying* share of the minuend inside
+    # (0.1, 0.9), not a constant fraction the fit would see as collinear.
+    share = saved.to_numpy() / req.to_numpy()
+    assert share.min() >= 0.1 and share.max() <= 0.9
+    assert share.std() > 1e-4
+
+
+def test_mock_difference_constraint_leaves_other_trees_alone():
+    """The constraint applies only to trees with a plain leaf-leaf difference;
+    a difference-free tree's byte-identical guarantee is pinned by
+    `test_mock_all_day_tree_pinned_values` above, and its constraint map is
+    empty by construction."""
+    parser = Parser(TREE_YAML)
+    fetcher = MockDataFetcher(dag=parser.dag)
+    assert fetcher._difference_constraints() == {}
+
+
 def test_mock_mixed_grain_identity_holds_at_node_grain():
     """A weekly formula node satisfies its formula against the daily flow
     parent summed to weeks and the native weekly rate."""
@@ -1434,3 +1480,25 @@ def test_local_header_only_csv_is_unchanged(monkeypatch, tmp_path):
 
     assert len(df) == 5
     assert (df["unlaunched_stream"] == 0.0).all()
+
+
+def test_sliced_result_drops_timezone_like_the_metric_path(caplog):
+    """C23: `_sliced_long` floored its labels but never dropped a timezone, so
+    a tz-aware sliced frame survived every check here and reindexed all-NaN
+    against the tz-naive spine downstream — where the flow fill turned it into
+    a panel of invented zeros. Same C1 contract, same warning."""
+    import logging
+
+    from breakdown.data_fetch import _sliced_long
+
+    df = pd.DataFrame(
+        {
+            "metric_time__day": pd.date_range("2024-01-01", periods=4, tz="UTC"),
+            "region": ["a", "b", "a", "b"],
+            "revenue": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+    with caplog.at_level(logging.WARNING):
+        out = _sliced_long(df, "revenue", "day")
+    assert out["date"].dt.tz is None
+    assert any("timezone-aware" in r.message for r in caplog.records)

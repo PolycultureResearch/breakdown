@@ -1106,3 +1106,45 @@ def test_doctor_and_engine_agree_about_a_thin_tree(tmp_path):
     ample = {r.name: r for r in run_doctor(str(tree), "2024-01-01", "2024-01-31")}["fit readiness"]
     assert ample.status == "pass" and "not fittable yet" not in ample.detail
     assert len(fit_over("2024-01-01", "2024-01-31").dates) == 31
+
+
+# ---------------------------------------------------------------------------
+# S20's disclosure half: a zero-inflated fit window is disclosed, not silent.
+
+
+def test_zero_inflation_helper_thresholds():
+    from breakdown.engine.model import _zero_inflation_warnings
+
+    live = np.full(40, 100.0)
+    assert _zero_inflation_warnings(live, "m", "day") == []
+
+    dark = live.copy()
+    dark[:12] = 0.0  # 30% exact zeros, one leading run
+    (msg,) = _zero_inflation_warnings(dark, "m", "day")
+    assert "12 of 40" in msg and "30%" in msg and "longest run 12" in msg
+    assert "Gaussian" in msg and "S20" in msg
+
+    # Near-zero is a different regime, not this one.
+    tiny = live.copy()
+    tiny[:12] = 1e-9
+    assert _zero_inflation_warnings(tiny, "m", "day") == []
+
+    assert _zero_inflation_warnings(np.array([]), "m", "day") == []
+
+
+def test_zero_inflated_fit_carries_likelihood_warnings():
+    """The Gaussian likelihood on a mostly-zero series converges and reports
+    `fit_quality: "ok"` — convergence measures the optimizer, not the model —
+    which made this the one undisclosed misspecification in the engine's
+    orbit. The disclosure travels in diagnostics, like `seasonality_warnings`."""
+    parser = Parser(SIMPLE_YAML)
+    data = generate_mock_data(n_days=50)
+    dark = data.copy()
+    dark.loc[dark.index[:20], "daily_sessions"] = 0.0  # a 20-day off-season
+
+    fit = fit_metric(parser.dag, dark, "daily_sessions", draws=100, tune=100)
+    (msg,) = fit.diagnostics["likelihood_warnings"]
+    assert "daily_sessions" in msg and "20 of 50" in msg
+
+    clean = fit_metric(parser.dag, data, "daily_sessions", draws=100, tune=100)
+    assert "likelihood_warnings" not in clean.diagnostics

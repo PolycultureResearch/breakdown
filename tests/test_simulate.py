@@ -397,3 +397,89 @@ def test_fit_on_demand_with_real_advi():
     assert result["nodes"]["revenue"]["delta"]["estimate"] > 0
     ci = result["nodes"]["revenue"]["delta"]["ci_95"]
     assert ci[0] < result["nodes"]["revenue"]["delta"]["estimate"] < ci[1]
+
+
+# ---------------------------------------------------------------------------
+# C25: /simulate labels a rate's baseline and refuses non-finite results.
+
+RATE_YAML = """
+metrics:
+  - name: trials
+    source: d.m.trials
+  - name: conversions
+    source: d.m.conversions
+  - name: conversion_rate
+    source: d.m.conversion_rate
+    kind: rate
+    denominator: trials
+  - name: unexplained_rate
+    source: d.m.unexplained_rate
+    kind: rate
+  - name: signups
+    source: d.m.signups
+    formula: "trials * conversion_rate"
+    parents: [trials, conversion_rate]
+"""
+
+
+def test_rate_baselines_carry_the_window_aggregate_label():
+    """C25a: RCA labels which arithmetic formed a rate's window value
+    (`window_aggregate`, roadmap 1.11d) and /simulate computed the same number
+    through the same entry point and published it bare — on both node shapes,
+    since an unaffected rate still shows a baseline."""
+    from breakdown.grains import build_grained
+
+    n = 60
+    dates = pd.date_range("2024-01-01", periods=n)
+    names = ["trials", "conversions", "conversion_rate", "unexplained_rate", "signups"]
+    values = {"trials": 200.0, "conversions": 20.0, "conversion_rate": 0.1,
+              "unexplained_rate": 0.5, "signups": 20.0}
+    data = build_grained(
+        {m: pd.DataFrame({"date": dates, m: np.full(n, values[m])}) for m in names},
+        grain_of={m: "day" for m in names},
+        kind_of={
+            m: ("rate" if m in ("conversion_rate", "unexplained_rate") else "flow")
+            for m in names
+        },
+        denominator_of={"conversion_rate": "trials"},
+    )
+    result = run_scenario(
+        Parser(RATE_YAML).dag,
+        data,
+        {},
+        ScenarioRequest(
+            **BASELINE,
+            interventions=[Intervention(metric="trials", mode="set", value=240.0)],
+        ),
+    )
+    declared = result["nodes"]["conversion_rate"]
+    assert declared["window_aggregate"] == "components"
+    assert declared["window_aggregate_reason"] is None
+
+    undeclared = result["nodes"]["unexplained_rate"]
+    assert undeclared["window_aggregate"] == "period_mean_undeclared"
+    assert "declares no `denominator`" in undeclared["window_aggregate_reason"]
+
+    # Flows and stocks have one aggregation and it is not in question.
+    assert "window_aggregate" not in result["nodes"]["trials"]
+
+
+def test_non_finite_scenario_is_refused_not_encoded():
+    """C25b (the 2026-08-12 review's L4): rule 3 says no engine result reaches
+    an encoder unsanitized. A scenario with a non-finite number anywhere in a
+    node payload raises a ValueError naming the node — the API's 422 — instead
+    of meeting Starlette's `allow_nan=False` as an unhandled 500."""
+    from breakdown.engine.simulate import _refuse_non_finite
+
+    good = {
+        "a": {"status": "baseline", "baseline": 1.0, "delta": {"ci_95": [0.0, 1.0]}},
+    }
+    _refuse_non_finite(good)  # no raise
+
+    bad = {
+        "a": {"status": "baseline", "baseline": 1.0},
+        "b": {"status": "affected", "delta": {"estimate": float("inf"), "ci_95": [0.0, 1.0]}},
+        "c": {"status": "affected", "contributions": [{"source": "i:x", "estimate": float("nan")}]},
+    }
+    with pytest.raises(ValueError, match="non-finite results for: b, c"):
+        _refuse_non_finite(bad)

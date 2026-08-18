@@ -957,3 +957,21 @@ def test_a_second_statement_cannot_ride_in_on_a_predicate():
     bind = _bind(where=["region = 'EMEA'; DROP TABLE fct_orders"])
     with pytest.raises(UnsupportedBinding, match="2 statements, not"):
         build_query(bind, grain="day", **WHOLE_JANUARY)
+
+
+def test_resolve_error_refuses_entity_flows_instead_of_acting_as_last():
+    """`error` asserts single-valuedness per *period*; the flow query needs one
+    representative row per entity per *window*, which that assertion says
+    nothing about. It used to fall through the first/last ternary and execute
+    as `last` — the exact silent correction the author opted out of. Refused,
+    with the remedy named; the flows panel degrades to absent while the
+    attribution stands."""
+    with pytest.raises(UnsupportedBinding, match="per-window representative"):
+        build_entity_flow_query(
+            _dau("error"),
+            dimension="status",
+            reference_start="2024-01-01",
+            reference_end="2024-01-07",
+            analysis_start="2024-01-08",
+            analysis_end="2024-01-14",
+        )

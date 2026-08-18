@@ -130,7 +130,8 @@ The policy at each consumer, stated once:
 |---|---|
 | **The window aggregate** | A window's rate is `Σnumerator / Σdenominator`, which equals the *denominator-weighted* mean of the per-period rates. A period with a zero denominator contributes to neither sum, so it drops out and the window rate stays well-defined where the per-period rate is not. This is the same rule `resample_up` has always enforced in the time direction ("recompute from components, never average daily ratios"), now applied to the window. |
 | **A rate with no declared `denominator`** | Falls back to the plain average of its *defined* periods. That is the pre-1.11 number and it is wrong whenever the denominators differ, so declare one wherever you can establish it. It stays a fallback rather than a parse error because some rates genuinely have none — a *median* load time is not `Σnum / Σden` for any pair of series, and a mean duration whose cohort is not a metric in the tree has no weight to offer. A wrong denominator publishes a confident wrong number; no denominator publishes this, disclosed. Every such node is named in the startup log and by `breakdown doctor`. |
-| **Which of those two a number is** | Said in the payload, not left to be inferred. Every rate node carries `window_aggregate`: `components` (the real `Σnumerator / Σdenominator`), or one of `period_mean_none_exists` / `period_mean_undeclared` / `period_mean_weights_unavailable` — the same arithmetic in all three, three different facts about the world. A metric that *has* no denominator ([`no_denominator:`](yaml-reference.md#grains)) is reporting the only number that exists for it, and must not read as a tree somebody forgot to finish; `window_aggregate_reason` carries the author's own words for why. The UI prints the distinction as a label rather than a tooltip ("period means — no component aggregate exists"), because the exported report has no hover. |
+| **Which of those two a number is** | Said in the payload, not left to be inferred. Every rate node carries `window_aggregate`: `components` (the real `Σnumerator / Σdenominator`), or one of `period_mean_none_exists` / `period_mean_undeclared` / `period_mean_weights_unavailable` — the same arithmetic in all three, three different facts about the world. A metric that *has* no denominator ([`no_denominator:`](yaml-reference.md#grains)) is reporting the only number that exists for it, and must not read as a tree somebody forgot to finish; `window_aggregate_reason` carries the author's own words for why. The UI prints the distinction as a label rather than a tooltip ("period means — no component aggregate exists"), because the exported report has no hover. This holds on every surface that reads the number: RCA and `/shapley` responses, and a fitted what-if's rate baselines (`POST /simulate`), which are the same window arithmetic. |
+| **The what-if baseline** | Computed by the same rule (`Σnumerator / Σdenominator` over the baseline window), labelled the same way — and **refused loudly** when every period of the baseline window is undefined, because unlike RCA there is no per-node degrade worth having: a scenario's deltas propagate, so a baseline that does not exist poisons everything downstream of it. The same reasoning refuses any scenario whose arithmetic produces a non-finite number (422 naming the nodes) rather than encoding it. |
 | **A window with no defined period at all** | The node has no value: `status: "undefined_over_window"`, with `baseline`/`actual`/`gap` all null rather than a fabricated number. |
 | **The fit** | **Refused.** A period with no value cannot be trained on, and every imputation of it (zero, forward-fill, interpolation) is a fabricated observation the posterior would not know to widen for. Dropping the row is worse — model time, lags and the seasonal design are positional, so deleting a period silently re-dates every later one. The node reports `fit_failed` with the periods named, and only that node's attribution is lost. |
 | **A formula node reading the rate** | Refused over any window containing an undefined period, with `attribution_failed` and the dates: a factor with no value has no decomposition. |
@@ -483,12 +484,27 @@ every input is a stated belief, and the output must be read that way.
 
 **Where the numbers come from.** Each non-formula node's operating point is
 its asserted `baseline` — `[low, high]` read as the central 90% interval of a
-Normal, sampled per draw (formula nodes derive theirs from parents per draw,
-so identities hold exactly under the stated beliefs). Each probabilistic
-edge's slope is sampled directly from its YAML prior in business units: with
-nothing to fit, the prior *is* the coefficient distribution. Propagation,
-do-operator semantics, and the Shapley source decomposition are identical to
-fitted mode; the response says `mode: "cold_start"`.
+Normal (or of a LogNormal with `distribution: LogNormal`, on the log scale),
+sampled per draw and **truncated to the node's declared `plausible` bounds**
+by rejection resampling, so a `min: 0` belief cannot draw a negative customer
+count and nothing piles up on the bound (formula nodes derive theirs from
+parents per draw, so identities hold exactly under the stated beliefs). Each
+probabilistic edge's slope is sampled directly from its YAML prior in
+business units: with nothing to fit, the prior *is* the coefficient
+distribution. Propagation, do-operator semantics, and the Shapley source
+decomposition are identical to fitted mode; the response says
+`mode: "cold_start"`.
+
+**One refusal to know about.** A formula that *divides* by a belief whose
+draws cross zero is refused, with the divisor and the remedies named. The
+Monte-Carlo mean of such a ratio does not exist — the sample mean is whatever
+the seed's nearest-zero denominator makes it, which is how an ordinary
+order-of-magnitude belief ("2 to 40 signups a month") once produced a $2.1M
+CAC. The centre stays a mean rather than switching to a median because the
+mean is linear: it is what keeps per-source contributions summing exactly to
+the delta, on this surface as everywhere else. Declare a `plausible` floor
+above zero on the divisor, or state the belief as a `LogNormal`, whose
+support excludes zero by construction.
 
 **What the intervals mean.** A fitted 95% CI summarizes a posterior — belief
 disciplined by data. A cold-start 95% CI summarizes *only your stated
@@ -546,3 +562,15 @@ ship in every cold-start response.
 6. **ADVI vs NUTS.** ADVI (the RCA default) is a fast approximation that can
    understate uncertainty; NUTS is the gold standard and reports convergence
    diagnostics (R̂ < 1.05 is healthy). Triage with ADVI, confirm with NUTS.
+7. **The observation model is Gaussian, and a mostly-zero series breaks it.**
+   A series that is exactly zero for a long stretch of its fit window — a
+   seasonal business's off-season, a spiky count — converges happily and
+   reports `fit_quality: "ok"`, because convergence diagnostics measure the
+   optimizer, not the model. The fitted sigma is then a compromise between the
+   zero regime and the live one: posterior mass sits on negative values of a
+   non-negative series and the intervals mis-state everywhere. When a quarter
+   or more of a node's fitted periods are exactly zero, the fit discloses it —
+   `likelihood_warnings` on the node, in the RCA table, the export and over
+   MCP — and its intervals and components should be read as approximate. The
+   real fix is a zero-inflated or count likelihood, tracked as roadmap S20;
+   until it lands, the warning is the disclosure.

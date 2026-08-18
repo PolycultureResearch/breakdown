@@ -136,9 +136,20 @@ def test_compact_rca():
     assert len(out["ranked_causes"]) == 10  # capped
 
     node = out["nodes"]["revenue"]
-    # windows collapse to period counts; components to point estimates
+    # windows collapse to period counts; components keep their uncertainty —
+    # a trend estimate without its interval would reach the narrator as model
+    # structure stated with certainty the model never claimed (C9)
     assert node["n_periods"] == {"reference": 46, "analysis": 54}
-    assert node["components"] == {"trend": -0.13, "seasonal": 0.0}
+    assert node["components"] == {
+        "trend": {"estimate": -0.13, "ci_95": [-0.2, -0.05]},
+        "seasonal": {"estimate": 0.0, "ci_95": [-0.01, 0.01]},
+    }
+    # `interaction` must never reappear here (C9): each contribution's
+    # `estimate` already contains its co-movement part, and with the
+    # per-contribution `decomposition` dropped there is nothing in the payload
+    # to say so — an agent that summed the contributions and added
+    # `interaction` would double-count the entire co-movement term.
+    assert "interaction" not in node
     # null node fields are omitted, not serialized
     assert "fit_quality" not in node and "sign_warnings" not in node
     assert "fit_periods" not in node and "seasonality_warnings" not in node
@@ -219,9 +230,12 @@ def test_compact_rca_keeps_withheld_ci():
     contrib = fixture["nodes"]["revenue"]["contributions"][0]
     contrib["ci_95"] = None  # degenerate window: interval honestly withheld
     fixture["nodes"]["revenue"]["ci_status"] = "degenerate_single_period"
+    fixture["nodes"]["revenue"]["components"]["trend"]["ci_95"] = None
     out = compact_rca(fixture)
-    # ci_95: null is meaningful (see how_to_read) and must survive compaction
+    # ci_95: null is meaningful (see how_to_read) and must survive compaction —
+    # in contributions and in components alike
     assert out["nodes"]["revenue"]["contributions"][0]["ci_95"] is None
+    assert out["nodes"]["revenue"]["components"]["trend"] == {"estimate": -0.13, "ci_95": None}
     assert out["nodes"]["revenue"]["ci_status"] == "degenerate_single_period"
 
 
@@ -306,6 +320,11 @@ def test_how_to_read_guides():
     assert "unexplained" in RCA_HOW_TO_READ
     assert "window_aggregate" in RCA_HOW_TO_READ
     assert "prob_direction" in WHATIF_HOW_TO_READ
+    # C9: contributions sum to the *point* delta (`delta.estimate`), and the
+    # guide must not claim they sum to "the delta" as if it covered the
+    # posterior too.
+    assert "delta.estimate" in WHATIF_HOW_TO_READ
+    assert "sum to the node's delta estimate" not in WHATIF_HOW_TO_READ
     assert "excess" in SLICE_HOW_TO_READ
     assert "reconciliation" in SLICE_HOW_TO_READ
 
@@ -455,3 +474,64 @@ def test_compact_rca_passes_lag_windows_through():
     assert lagged["parent_windows"] == windows
     for c in out["nodes"]["revenue"]["contributions"][1:]:
         assert "lag" not in c and "parent_windows" not in c
+
+
+def test_compact_slice_carries_the_verdict_and_the_38_trio():
+    """C24 + the 3.8 payload: `localized` (False included — a verdict, not a
+    null), the threshold, `additivity`, `overlap` and `entity_flows` all
+    survive compaction. Dropping them was the C9 failure mode through a new
+    door: the agent surface lost exactly the fields that prevent the likeliest
+    misreading (naming an unlocalized top slice; narrating a migration as two
+    offsetting causes)."""
+    result = {
+        "metric": "active_users",
+        "dimension": "platform",
+        "dimension_source": "user__platform",
+        "grain": "day",
+        "kind": "stock",
+        "effective_windows": {
+            "reference": {"start": "2024-02-05", "end": "2024-03-03", "n_periods": 28},
+            "analysis": {"start": "2024-03-04", "end": "2024-03-10", "n_periods": 7},
+        },
+        "baseline": 2069.0,
+        "actual": 2050.0,
+        "gap": -19.0,
+        "attribution_method": "slice_sum",
+        "mix_total": None,
+        "localized": False,
+        "localization_threshold": 0.25,
+        "additivity": "overlapping",
+        "overlap": {"mean": 37.0, "share_of_baseline": 0.018},
+        "entity_flows": {
+            "totals": {"new": 12, "churned": 31, "retained": 2026, "migrated": 36},
+            "migrations": [{"from": "ios", "to": "web", "entities": 36}],
+            "migration_net": 0,
+            "reconciles_to_gap": False,
+        },
+        "slices": [
+            {
+                "value": "ios",
+                "baseline": 900.0,
+                "actual": 880.0,
+                "contribution": -20.0,
+                "share_of_gap": None,
+                "baseline_share": 0.43,
+                "excess": -11.0,
+                "ci_95": None,
+                "prob_concentrated": 0.6,
+                "noise_level": True,
+            }
+        ],
+        "reconciliation": {"status": "not_applicable", "residual_share_of_baseline": 0.018},
+        "ci_status": "ok",
+        "caveats": [],
+    }
+    out = compact_slice(result)
+    assert out["localized"] is False
+    assert out["localization_threshold"] == 0.25
+    assert out["additivity"] == "overlapping"
+    assert out["overlap"]["share_of_baseline"] == 0.018
+    assert out["entity_flows"]["migrations"][0]["from"] == "ios"
+    # `unknown` additivity is background, not a finding, and is trimmed.
+    plain = compact_slice({**result, "additivity": "unknown", "overlap": None})
+    assert "additivity" not in plain and "overlap" not in plain

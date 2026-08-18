@@ -349,6 +349,9 @@ curl -X POST "http://localhost:9090/rca/signups/slices?dimension=region&referenc
 - `excess = contribution − baseline_share × gap` is the **localization signal**: how much more of the gap the slice carries than its size predicts. Excesses sum to zero — concentration is a reallocation of the gap. `prob_concentrated` is the bootstrap probability the excess direction is real; `noise_level: true` rows should not be narrated as localized.
 - Rate metrics return `attribution_method: "slice_blend"`: each slice splits into `within` (its own rate moved) and `mix` (traffic shifted between slices), summing exactly to the blended gap, with the total composition effect in `mix_total`.
 - `reconciliation` compares the slices' sum (or weighted blend) against the metric's own series; `"discrepant"` means the dimension doesn't cleanly partition the metric — attributions are then approximate, and say so.
+- **`localized`** is the headline verdict: whether the leading slice's excess reaches `localization_threshold` of the gap (and its evidence is intact — not `noise_level`, shares not withheld). The UI's "*X carries N% of the gap*" line renders exactly this field; when it is `false`, narrate the gap as spread across slices rather than naming the top slice, which exists because ranking always produces a first row.
+- **`additivity`** (`"exact"` | `"overlapping"` | `"unknown"`) comes from the binding, never from the residual. `"overlapping"` means an entity may hold several values of this dimension inside a period, so the slices overstate the metric by the amount in **`overlap`** — arithmetic, not a defect; per-slice `share_of_gap` is then `null` (they would be shares of a total the slices don't sum to) and `reconciliation.status` is `"not_applicable"` rather than `"discrepant"`, which keeps `discrepant` meaning *unexplained* divergence.
+- **`entity_flows`** (when the provider can classify entities; otherwise `null`) sits beside the attribution, never inside it: `totals` of new / churned / retained / migrated entities across the two windows, the top `migrations` with `migrations_total`/`migrations_truncated`, and `reconciles_to_gap: false` — window-level sets do not reconcile to a window-mean gap. A migration nets to zero across slices; naive slicing reads the same event as two large offsetting causes.
 - When slicing a **lagged parent** surfaced by an RCA, pass the parent's lag-shifted windows — its RCA contribution carries them as `parent_windows`; those are the periods that influenced the child.
 
 Sliced series are fetched from the provider on demand for just these windows and cached per (metric, dimension, window); nothing about slicing touches the startup data or the fits.
@@ -403,6 +406,20 @@ exactly to the point delta by Shapley efficiency), per-node results
 `delta` with `ci_95`, `relative_delta`, `prob_direction`, `fit_quality`,
 `extrapolation`, `contributions`), plus `warnings` and always-on `caveats`. The
 run is seeded, so identical calls are byte-identical.
+
+On a fitted tree, every `kind: rate` node also carries `window_aggregate` and
+`window_aggregate_reason` — the same labels an RCA response puts beside a
+rate's `baseline`/`actual` ([above](#root-cause-analysis)),
+because the baseline here is the same window arithmetic and a `period_mean_*`
+fallback should be read the same way wherever it appears. A scenario whose
+arithmetic produces a non-finite number anywhere (a zero denominator inside a
+formula over the baseline window) is refused with a **422 naming the nodes**
+rather than encoded — there is no partial result worth keeping, because deltas
+propagate. On a cold-start tree the same policy fires one step earlier: a
+formula that divides by a belief whose draws cross zero is refused with the
+divisor and the remedies named (a `plausible` floor above zero, or a
+`LogNormal` baseline), because the ratio's Monte-Carlo mean would not exist
+and its centre would be an artifact of the seed.
 
 Pass an optional `run_id` query parameter to follow a long simulation with
 [`GET /progress/{run_id}`](#get-progressrun_id--live-progress), exactly as for

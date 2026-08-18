@@ -45,6 +45,32 @@ def referenced_names(formula: str) -> Set[str]:
     return {node.id for node in ast.walk(_parse(formula)) if isinstance(node, ast.Name)}
 
 
+def divisor_expressions(formula: str) -> list:
+    """Source text of every sub-expression `formula` divides by.
+
+    Cold start refuses a scenario whose divisor draws cross zero (roadmap C7):
+    the Monte-Carlo mean of such a ratio does not exist, so the published
+    centre would be an artifact of the seed. Finding the divisors is this
+    function's half of that check; evaluating them is the caller's, because
+    only the caller holds the draws. A constant negative exponent is a
+    division in costume (`x ** -1`), so the base of one counts too.
+    """
+    out = []
+    for node in ast.walk(_parse(formula)):
+        if not isinstance(node, ast.BinOp):
+            continue
+        if isinstance(node.op, ast.Div):
+            out.append(ast.unparse(node.right))
+        elif isinstance(node.op, ast.Pow):
+            try:
+                exponent = ast.literal_eval(node.right)
+            except (ValueError, SyntaxError):
+                continue
+            if isinstance(exponent, (int, float)) and exponent < 0:
+                out.append(ast.unparse(node.left))
+    return out
+
+
 def eval_formula(formula: str, values: Dict[str, np.ndarray]) -> np.ndarray:
     """Evaluate a validated formula over per-metric arrays.
 

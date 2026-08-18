@@ -319,6 +319,48 @@ def _nuts_diagnostics(trace: Any, draws: int, chains: int) -> Dict[str, Any]:
     }
 
 
+# Share of exactly-zero observations in the fit window above which the
+# Gaussian likelihood's misspecification is disclosed. A trigger for a
+# disclosure, not a statistic: at a quarter of the window the fitted sigma is
+# already substantially a compromise between the zero regime and the live one,
+# posterior mass sits on negative values of a non-negative series, and the
+# intervals mis-state everywhere — the real fix is a zero-inflated or count
+# likelihood (roadmap S20); until it lands, the reader gets told.
+_ZERO_INFLATION_SHARE = 0.25
+
+
+def _zero_inflation_warnings(values: np.ndarray, target: str, grain: str) -> list:
+    """Disclose a zero-inflated fit window (S20's cheap half).
+
+    Keys on *exact* zeros: a seasonal business's off-season is written as
+    literal 0.0 by the flow zero-fill contract, and a tiny-but-nonzero value
+    is a different regime, not this one. NaN periods never reach a fit
+    (`fit_metric` refuses them, roadmap 1.11), so they cannot dilute the share.
+    """
+    n = int(values.size)
+    if n == 0:
+        return []
+    zeros = values == 0.0
+    share = float(zeros.mean())
+    if share < _ZERO_INFLATION_SHARE:
+        return []
+    longest = run = 0
+    for z in zeros:
+        run = run + 1 if z else 0
+        longest = max(longest, run)
+    msg = (
+        f"'{target}' is exactly zero in {int(zeros.sum())} of {n} fitted {grain} "
+        f"periods ({share:.0%}; longest run {longest}). The observation model is "
+        "Gaussian, so this fit puts posterior mass on negative values and "
+        "mis-states the variance in the periods that are real — read its "
+        "intervals and components as approximate. A zero-inflated/count "
+        "likelihood is roadmap S20; until it lands this warning is the "
+        "disclosure (see docs/model.md)."
+    )
+    logger.warning(msg)
+    return [msg]
+
+
 def _advi_diagnostics(approx: Any) -> Dict[str, Any]:
     """Convergence diagnostics for a mean-field ADVI fit.
 
@@ -688,6 +730,18 @@ def fit_metric(
     y, X, scale, y_mean, y_std, x_stds, dates = _prepare_series(defn, parents, data, target)
     t = np.arange(len(y))
 
+    # S20's disclosure half: the observation model is Gaussian, and a series
+    # that is exactly zero for a large share of its fit window (a seasonal
+    # business's off-season, a spiky count) is the one misspecification that
+    # used to pass with `fit_quality: "ok"` and nothing anywhere saying
+    # otherwise — the ELBO check only says the optimizer stopped. Detected on
+    # the *raw* series (normalization moves the zeros), warned at fit time,
+    # and carried on the payload as `likelihood_warnings` so the reader of the
+    # number sees it, not only the reader of the log.
+    likelihood_warnings = _zero_inflation_warnings(
+        data[target].to_numpy(dtype=float), target, grain
+    )
+
     # Seasonality periods are in grain steps; a period the data can't cover
     # twice is unidentifiable (composes with the 1.1 hardening work).
     seasonality_warnings = []
@@ -752,6 +806,8 @@ def fit_metric(
         logger.warning("Fit for '%s' is suspect: %s", target, diagnostics)
     if seasonality_warnings:
         diagnostics["seasonality_warnings"] = seasonality_warnings
+    if likelihood_warnings:
+        diagnostics["likelihood_warnings"] = likelihood_warnings
 
     # Declared-direction check: expected_signs is not a prior, so the fit is
     # free to contradict it — but when it does, say so loudly. The classic

@@ -554,3 +554,125 @@ def test_snapshot_definition_hook_takes_precedence(tmp_path):
     hooked = definition_sha(HookedFetcher({"m": REFUNDS_IN}), "m")
     assert hooked == definition_sha(HookedFetcher({"m": REFUNDS_OUT}), "m")
     assert hooked != definition_sha(SqlFetcher({"m": REFUNDS_IN}), "m")
+
+
+# ---------------------------------------------------------------------------
+# Containing-window reads (roadmap 2.20a): narrowing the window keeps the
+# cache warm, and a stored window's bounds are never mistaken for its data.
+
+
+def test_read_serves_contained_window_trimmed(tmp_path):
+    store = SnapshotStore(str(tmp_path))
+    inner = CountingFetcher()
+    fetcher = SnapshotFetcher(inner, store)
+    fetcher.fetch_metric("rev", "2024-01-01", "2024-01-31")
+    assert inner.calls == 1
+
+    df = fetcher.fetch_metric("rev", "2024-01-10", "2024-01-20")
+    assert inner.calls == 1, "a contained request must be served from the store"
+    assert str(df["date"].min().date()) == "2024-01-10"
+    assert str(df["date"].max().date()) == "2024-01-20"
+
+
+def test_end_date_nudge_stays_warm(tmp_path):
+    """The 2.20 reproduction: shrinking --end-date by one day used to
+    cold-miss every metric on a snapshot-served deployment."""
+    store = SnapshotStore(str(tmp_path))
+    inner = CountingFetcher()
+    fetcher = SnapshotFetcher(inner, store)
+    fetcher.fetch_metric("rev", "2024-01-01", "2024-03-31")
+    fetcher.fetch_metric("rev", "2024-01-01", "2024-03-30")
+    assert inner.calls == 1
+
+
+def test_exact_window_match_is_preferred(tmp_path):
+    """When both an exact file and a containing file exist, the exact one is
+    served — cheapest, and its provenance names the requested window."""
+    store = SnapshotStore(str(tmp_path))
+    dates_wide = pd.date_range("2024-01-01", "2024-01-31", freq="D")
+    store.write(
+        "rev",
+        "2024-01-01",
+        "2024-01-31",
+        "day",
+        "flow",
+        pd.DataFrame({"date": dates_wide, "rev": [2.0] * len(dates_wide)}),
+        provider="T",
+    )
+    dates_exact = pd.date_range("2024-01-10", "2024-01-20", freq="D")
+    store.write(
+        "rev",
+        "2024-01-10",
+        "2024-01-20",
+        "day",
+        "flow",
+        pd.DataFrame({"date": dates_exact, "rev": [1.0] * len(dates_exact)}),
+        provider="T",
+    )
+    df = store.read("rev", "2024-01-10", "2024-01-20", "day", "flow")
+    assert set(df["rev"]) == {1.0}
+
+
+def test_empty_trim_is_a_miss_not_a_fabricated_series(tmp_path):
+    """A stored window whose *bounds* contain the request but whose *data*
+    does not must fall through to the provider: serving the empty trim would
+    hand `_align_to_spine` nothing, and a `flow` would come back as a full
+    window of invented zeros."""
+    store = SnapshotStore(str(tmp_path))
+    jan = pd.date_range("2024-01-01", "2024-01-31", freq="D")
+    store.write(
+        "rev",
+        "2024-01-01",
+        "2024-12-31",
+        "day",
+        "flow",
+        pd.DataFrame({"date": jan, "rev": [5.0] * len(jan)}),
+        provider="T",
+    )
+    assert store.read("rev", "2024-07-01", "2024-07-31", "day", "flow") is None
+
+    inner = CountingFetcher()
+    fetcher = SnapshotFetcher(inner, store)
+    df = fetcher.fetch_metric("rev", "2024-07-01", "2024-07-31")
+    assert inner.calls == 1, "the miss must reach the provider"
+    assert not df.empty
+
+
+def test_contained_read_still_checks_the_definition(tmp_path):
+    """An edited definition invalidates a containing window exactly as it
+    invalidates an exact one — C16's guarantee survives 2.20."""
+    store = SnapshotStore(str(tmp_path))
+    dates = pd.date_range("2024-01-01", "2024-01-31", freq="D")
+    store.write(
+        "rev",
+        "2024-01-01",
+        "2024-01-31",
+        "day",
+        "flow",
+        pd.DataFrame({"date": dates, "rev": [5.0] * len(dates)}),
+        provider="T",
+        definition_sha="aaa",
+    )
+    assert store.read("rev", "2024-01-10", "2024-01-20", "day", "flow", "bbb") is None
+    hit = store.read("rev", "2024-01-10", "2024-01-20", "day", "flow", "aaa")
+    assert hit is not None and len(hit) == 11
+
+
+def test_covering_window_reports_without_loading(tmp_path):
+    store = SnapshotStore(str(tmp_path))
+    dates = pd.date_range("2024-01-01", "2024-01-31", freq="D")
+    store.write(
+        "rev",
+        "2024-01-01",
+        "2024-01-31",
+        "day",
+        "flow",
+        pd.DataFrame({"date": dates, "rev": [5.0] * len(dates)}),
+        provider="T",
+    )
+    assert store.covering_window("rev", "2024-01-10", "2024-01-20", "day", "flow") == (
+        "2024-01-01",
+        "2024-01-31",
+    )
+    assert store.covering_window("rev", "2024-01-10", "2024-02-20", "day", "flow") is None
+    assert store.covering_window("rev", "2024-01-10", "2024-01-20", "week", "flow") is None

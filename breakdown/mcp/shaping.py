@@ -86,6 +86,20 @@ SLICE_HOW_TO_READ = (
     "- For rates: `within` is the slice's own rate moving, `mix` is traffic "
     "shifting between slices. `mix_total` is a composition effect — nobody's "
     "fault, and often the whole story.\n"
+    "- `localized: false` means no slice carries enough of the gap beyond its "
+    "own size to headline (the leader's `excess` is below "
+    "`localization_threshold` of the gap, or it is noise-level): narrate the "
+    "gap as spread across slices, and do not name the top slice as the cause.\n"
+    "- `additivity: overlapping` means these slices share entities and "
+    "overstate the metric by `overlap` — arithmetic, not a defect. Per-slice "
+    "`share_of_gap` is withheld (absent) because the slices do not sum to the "
+    "total, and `reconciliation.status` is `not_applicable` rather than "
+    "`discrepant`.\n"
+    "- `entity_flows`, when present, sits beside the attribution, never inside "
+    "it: new/churned/retained/migrated entity counts across the two windows "
+    "(`reconciles_to_gap: false`). A migration nets to zero across slices — "
+    "narrate it as the metric moving *between* slices, not changing size; "
+    "naive slicing reads the same event as two large offsetting causes.\n"
     "- `reconciliation.status: discrepant` means the slices do not sum/blend "
     "back to the metric: the dimension does not cleanly partition it. Treat "
     "attributions as approximate and say so.\n"
@@ -108,7 +122,12 @@ WHATIF_HOW_TO_READ = (
     "(detail in `warnings`) means the scenario leaves that range — call the result speculative.\n"
     "- Assumption edges are user-asserted beliefs sampled from the stated 90% range, not "
     "fitted from data; say so when they drive the answer.\n"
-    "- Per-source `contributions` are exact Shapley shares and sum to the node's delta estimate.\n"
+    "- Per-source `contributions` are exact Shapley shares of the node's *point* delta: they "
+    "sum to `delta.estimate`, not to the posterior draws or the interval.\n"
+    "- A rate node's `window_aggregate` says which arithmetic formed its baseline: "
+    "`components` is Σnumerator/Σdenominator (the real window rate); any `period_mean_*` "
+    "value means the plain average of per-period ratios, with `window_aggregate_reason` "
+    "saying why — narrate such a baseline as approximate, not as the component aggregate.\n"
     "- The `caveats` list applies to every number here; weave it into the narrative rather "
     "than dropping it."
 )
@@ -187,9 +206,10 @@ def metric_link(name: str, tree=None) -> str:
 
 
 def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
-    """Compact a run_rca result: drop per-contribution decompositions and
-    effective-window detail, collapse components to point estimates, shrink
-    skipped nodes to their status, and omit null node fields.
+    """Compact a run_rca result: drop per-contribution decompositions (and the
+    node-level `interaction` that summarizes them) and effective-window detail,
+    trim components to `{estimate, ci_95}`, shrink skipped nodes to their
+    status, and omit null node fields.
 
     A non-`ok` node keeps `status_reason`, and keeps its own `baseline`,
     `actual` and `gap` when it has them. Both matter more here than in the HTTP
@@ -242,6 +262,11 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
             # the decision-relevant number.
             "fit_periods": (node.get("fit_window") or {}).get("n_periods"),
             "seasonality_warnings": node.get("seasonality_warnings"),
+            # Carried whole rather than summarized in RCA_HOW_TO_READ: each
+            # warning string is self-contained ("...read its intervals and
+            # components as approximate"), so the guidance travels exactly on
+            # the nodes it applies to and costs nothing on the ones it doesn't.
+            "likelihood_warnings": node.get("likelihood_warnings"),
             "ci_status": node["ci_status"],
             "unexplained": node["unexplained"],
             # Never dropped for token economy: `unexplained: 0` means two
@@ -254,12 +279,26 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
             # answer is not the real component aggregate.
             "window_aggregate": node.get("window_aggregate"),
             "window_aggregate_reason": node.get("window_aggregate_reason"),
+            # Components keep their interval: the trend estimate is a fitted
+            # quantity, and a narrator handed only its point value states model
+            # structure with certainty the model never claimed. A null ci_95
+            # stays null — withheld is information (see ci_status).
             "components": (
-                {k: v["estimate"] for k, v in node["components"].items()}
+                {
+                    k: {"estimate": v["estimate"], "ci_95": v["ci_95"]}
+                    for k, v in node["components"].items()
+                }
                 if node["components"]
                 else None
             ),
-            "interaction": node["interaction"],
+            # `interaction` is deliberately absent. It is a *readout* of the
+            # co-movement already inside each contribution's `estimate`
+            # (estimate = means + comovement; interaction = Σ comovement), and
+            # this compaction drops the `decomposition` that says so. A summary
+            # of a dropped detail, shipped without the detail, reads as one
+            # more term — and an agent that sums the contributions and adds it
+            # double-counts the entire co-movement shift. The full HTTP
+            # payload keeps both halves together.
             "contributions": [
                 {
                     # ci_95: null is meaningful (withheld interval) and stays;
@@ -319,6 +358,21 @@ def compact_slice(result: Dict[str, Any]) -> Dict[str, Any]:
         "gap": result["gap"],
         "attribution_method": result["attribution_method"],
         "mix_total": result["mix_total"],
+        # The verdict travels with the payload (C24): the UI applies exactly
+        # this gate before naming a top slice, and an agent holding only
+        # `prob_concentrated` — which answers a different question — would
+        # confidently name one exactly where the UI declines to.
+        "localized": result.get("localized"),
+        "localization_threshold": result.get("localization_threshold"),
+        # The 3.8 trio. Dropping these was the C9 failure mode through a new
+        # door: `additivity: overlapping` is *why* every slice is missing
+        # `share_of_gap`, and the migration line in `entity_flows` is the
+        # difference between "a user switched platform" and two large
+        # offsetting causes — the misreading an LLM narrator is most likely
+        # to produce is the one these fields exist to prevent.
+        "additivity": (result.get("additivity") if result.get("additivity") != "unknown" else None),
+        "overlap": result.get("overlap"),
+        "entity_flows": result.get("entity_flows"),
         "slices": [{k: v for k, v in row.items() if v is not None} for row in result["slices"]],
         "reconciliation": {
             "status": result["reconciliation"]["status"],
@@ -327,6 +381,8 @@ def compact_slice(result: Dict[str, Any]) -> Dict[str, Any]:
         "ci_status": result["ci_status"],
         "caveats": result["caveats"] or None,
     }
+    # `localized: False` is a verdict, not a null — the trim below drops only
+    # absent facts, never negative ones.
     return {k: v for k, v in out.items() if v is not None}
 
 
@@ -355,6 +411,12 @@ def compact_scenario(result: Dict[str, Any]) -> Dict[str, Any]:
         # point; a null (point baseline) stays omitted like other null fields.
         if node.get("baseline_ci_95") is not None:
             nodes[name]["baseline_ci_95"] = node["baseline_ci_95"]
+        # A rate's baseline says which arithmetic formed it (C25a) — the same
+        # `window_aggregate` label RCA payloads carry, on both the shrunken
+        # and the full node shape: an unaffected rate still shows a baseline.
+        for k in ("window_aggregate", "window_aggregate_reason"):
+            if node.get(k) is not None:
+                nodes[name][k] = node[k]
     return {
         "mode": result["mode"],
         "baseline_window": result["baseline_window"],

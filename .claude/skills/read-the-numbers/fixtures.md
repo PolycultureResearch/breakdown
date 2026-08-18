@@ -119,22 +119,29 @@ scales with metric count. It is also the only tree where a monthly node's fit
 window is realistically short.
 
 **Known-bad, stated as a cause rather than a symptom — the cause generalizes and
-the symptom does not.** The mock synthesizes **every metric independently**, so
-on this tree **no formula identity holds exactly**. Two consequences you will
-meet, and both are expected:
+the symptom does not.** The mock derives every formula node from its parents
+**plus ~2% noise**, so on this tree **no formula identity holds exactly**. The
+one consequence you will meet, and it is expected:
 
-- `controllable_attrition` is negative in every period — its two leaves are
-  drawn at unrelated scales, so "saved" always exceeds "requested". Roadmap
-  [**C13**](../../../knowledge/roadmap.md), open; the row carries the
-  measurements and the blast radius.
-- Any node reporting a large `unexplained` on what the YAML says is an exact
-  identity — e.g. `total_arr = total_mrr * 12` — is the same defect wearing a
-  different symptom, not a new one.
+- Any node reporting a modest `unexplained` on what the YAML says is an exact
+  identity — e.g. `total_arr = total_mrr * 12` — is the fixture's noise, not an
+  engine bug (measured 2026-08-17: ~1–5% relative residual per period).
 
-Do not report either as new. Everything *structural* is still fair game: a grain
-handoff that drops periods, a refusal that fires wrongly, a slice that will not
-reconcile. Judge those on their own terms — the mock's independence explains
-wrong *values*, not wrong *behaviour*.
+**No longer known-bad:** `controllable_attrition` used to be *negative in every
+period* — its two leaves were drawn at unrelated scales, so "saved" always
+exceeded "requested". Fixed 2026-08-17 (roadmap
+[**C13**](../../../knowledge/roadmap.md): the subtrahend of a plain `a - b`
+difference is generated as a varying share of the minuend), and pinned by
+`tests/test_reference_tree.py`, so `saved_cancel_requests ≤ cancel_requests`
+now holds per period. A negative `controllable_attrition` here is a **finding**
+now, not a known-bad. The constraint covers only a plain leaf−leaf difference
+at one grain — a multi-term difference on some future tree can still go
+negative; the mock's docstring states the scope.
+
+Do not report the identity noise as new. Everything *structural* is still fair
+game: a grain handoff that drops periods, a refusal that fires wrongly, a slice
+that will not reconcile. Judge those on their own terms — the fixture's noise
+explains wrong *values*, not wrong *behaviour*.
 
 ---
 

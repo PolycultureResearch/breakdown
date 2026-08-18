@@ -40,7 +40,7 @@ from breakdown.engine.slices import entity_flows, slice_attribution
 from breakdown.formula import eval_formula
 from breakdown.grains import GrainedData, build_grained, next_start, resample_up
 from breakdown.mcp.server import mcp
-from breakdown.snapshots import SnapshotFetcher, SnapshotStore
+from breakdown.snapshots import SnapshotFetcher, SnapshotStore, resolve_snapshot_dir
 
 logger = logging.getLogger(__name__)
 
@@ -133,11 +133,11 @@ def _wrap_snapshots(fetcher, provider_type: str, tree_path: str, slice_span=None
     analysis window rather than only the ones already run."""
     if provider_type == "mock":
         return fetcher
-    snapshot_dir = os.environ.get("BREAKDOWN_SNAPSHOT_DIR", "")
-    if snapshot_dir == "off":
+    # Directory resolution lives in snapshots.py so `doctor` resolves the same
+    # one — the two disagreeing about where snapshots live was half of 2.20.
+    snapshot_dir = resolve_snapshot_dir(tree_path)
+    if snapshot_dir is None:
         return fetcher
-    if not snapshot_dir:
-        snapshot_dir = os.path.join(os.path.dirname(tree_path), ".breakdown", "snapshots")
     return SnapshotFetcher(
         fetcher,
         SnapshotStore(snapshot_dir),
@@ -1729,6 +1729,9 @@ def _run_slice(
     weight_sliced = None
     if defn.kind == "rate":
         weight_defn = parser.get_metric(spec.weight)
+        # Backstop only: `Parser._validate_dimension_weights` refuses this at
+        # parse time (C12), so a served tree cannot reach it. Kept for callers
+        # who assemble a DAG without the parser.
         if weight_defn.grain != defn.grain:
             raise ValueError(
                 f"Rate '{defn.name}' (grain '{defn.grain}') has weight "

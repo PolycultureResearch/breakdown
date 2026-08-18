@@ -9,6 +9,12 @@ roadmap. For how the codebase is built, see [`../AGENTS.md`](../AGENTS.md) and
 
 - [`roadmap.md`](roadmap.md) — **start here** for what to build next: a prioritized,
   status-tagged list of engineering/product work (no go-to-market).
+- [`milestone_readiness_2026_08_17.md`](milestone_readiness_2026_08_17.md) — the
+  readiness assessment for the three 2026 milestones (Northern Nights deployment,
+  0.1.0, PyPI): the four recent policy decisions audited from decision to code to
+  tests, per-milestone punch lists, and the time-to-first-RCA analysis. Its
+  wrong-number-class findings became roadmap C23–C25 and 2.20 (all shipped
+  2026-08-17; the addendum carries the read-the-numbers verification).
 
 ## White papers
 

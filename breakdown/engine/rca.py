@@ -737,6 +737,7 @@ def _node_out(**fields) -> Dict[str, Any]:
         "sign_warnings": None,
         "fit_window": None,
         "seasonality_warnings": None,
+        "likelihood_warnings": None,
         "ci_status": None,
         "unexplained": None,
         # What the number in `unexplained` *is*. Never omit it while
@@ -1280,6 +1281,7 @@ def run_rca(
         sign_warnings = None
         fit_window = None
         seasonality_warnings = None
+        likelihood_warnings = None
         interaction = None
         unexplained_status = None
         if not parents:
@@ -1588,6 +1590,7 @@ def run_rca(
                 "n_periods": int(len(fit.dates)),
             }
             seasonality_warnings = fit.diagnostics.get("seasonality_warnings")
+            likelihood_warnings = fit.diagnostics.get("likelihood_warnings")
             arr = fit.trace.posterior["beta_raw"].values.reshape(-1, len(parents))
             n_post = arr.shape[0]
 
@@ -1741,6 +1744,7 @@ def run_rca(
             sign_warnings=sign_warnings,
             fit_window=fit_window,
             seasonality_warnings=seasonality_warnings,
+            likelihood_warnings=likelihood_warnings,
             ci_status=ci_status,
             unexplained=unexplained,
             unexplained_status=unexplained_status,
