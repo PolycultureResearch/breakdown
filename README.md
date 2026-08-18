@@ -87,25 +87,8 @@ metrics:
 
 **Requirements:** Python 3.11+
 
-> **⚠️ Not on PyPI yet — install from a checkout.** `metric-breakdown` has
-> never been published, so the `pip install` and `uvx` commands below **do not
-> resolve today**. They are written for the release, not for the present tense.
-> Until it lands, the checkout below is the only way to install breakdown, and
-> it is a complete one — same engine, same UI, same MCP server. The first
-> published version will be **0.1.0**, so `metric-breakdown~=0.1.0` is the pin
-> to write down now.
-
-```bash
-git clone https://github.com/PolycultureResearch/breakdown
-cd breakdown
-uv sync
-uv run breakdown serve            # or: uv run python main.py serve
-```
-
 > **Install as `metric-breakdown` (`breakdown`
 > was already taken on PyPI), use it as `breakdown`.**
-
-Once it is published, either of these will work:
 
 ```bash
 pip install metric-breakdown
@@ -116,6 +99,21 @@ Or, with [uv](https://github.com/astral-sh/uv), without installing anything:
 
 ```bash
 uvx --from metric-breakdown breakdown serve
+```
+
+Pin the minor series you tested against (`metric-breakdown~=0.1.0`): while the
+major version is 0, breaking changes to the CLI, the tree YAML schema, or the
+HTTP/MCP surface land in a minor bump — the full contract is in the
+[changelog](https://github.com/PolycultureResearch/breakdown/blob/main/CHANGELOG.md).
+
+To work on breakdown itself — or to run ahead of the latest release — install
+from a checkout, which is the same complete product (engine, UI, MCP server):
+
+```bash
+git clone https://github.com/PolycultureResearch/breakdown
+cd breakdown
+uv sync
+uv run breakdown serve
 ```
 
 `breakdown --version` reports the installed version — the first thing to include
