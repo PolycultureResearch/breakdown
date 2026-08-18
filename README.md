@@ -6,9 +6,11 @@
 
 ## Overview
 
-Metrics trees model causal relationships between business metrics and assist in diagnosing the root causes of changes in KPIs. Breakdown models your business metrics as a causal graph and uses Bayesian inference to learn the probabilistic relationships between them. Instead of asking "did revenue drop?", you can ask "which upstream metric drove it, and how confident are we?"
+Metrics trees model causal relationships between business metrics. They can help a business visualize and understand the relationship between metrics they can do something about and big outcome metrics. A well-constructed metric tree is a DAG, a Directed Acyclic Graph, which opens all kinds of opportunities to compute over that graph.  For example, if you notice a change in a big, important KPI, you can look for the root causes of that change by looking at what changed "upstream" of that metric, causally speaking. Breakdown models your business metrics as a causal graph and uses Bayesian inference to learn the probabilistic relationships between them. It visualizes the tree, runs root cause analysis over the tree, and can simulate "what if" scenarios to see how changing metrics could affect other metrics downstream.
 
-It handles both kinds of relationships found in a real metric tree. **Deterministic (formula-based)** metrics are arithmetic identities —
+Some relationships between metrics are deterministic, others are probabilistic. Breakdown handles both. 
+
+**Deterministic (formula-based)** metrics are arithmetic identities —
 
 > `Revenue = Order Count × Average Order Value`
 
@@ -18,7 +20,6 @@ It handles both kinds of relationships found in a real metric tree. **Determinis
 
 — so breakdown learns the relationship from your time-series data with **Bayesian Structural Time Series (BSTS)**, producing a posterior distribution over each parent's effect rather than a point estimate.
 
-This is built for the 2am Slack message asking why a metric moved over the weekend, and the hours of ad-hoc SQL that usually follow it — see **[why breakdown](https://github.com/PolycultureResearch/breakdown/blob/main/docs/why-breakdown.md)** for the story behind it.
 
 | Component | Library |
 |-----------|---------|
@@ -76,10 +77,25 @@ metrics:
 
 **2. Breakdown parses this into a DAG.** The YAML is validated and compiled into a directed acyclic graph using NetworkX. Cycles and undefined parent references are caught at parse time.
 
-**3. For each metric, choose your analysis.**
+**3. Ask it why a metric moved.**
 
-- **BSTS sampling** (`POST /analyze/{name}`) — runs PyMC to fit a state-space model and returns a posterior over trend, seasonality, and causal coefficients.
-- **Shapley attribution** (`GET /shapley/{name}`) — for metrics with a `formula`, computes how much of a period-over-period gap each parent is responsible for.
+You don't choose an attribution method — the tree already decided it, edge by
+edge, when you declared it. One request, `POST /rca/{name}` (or the **Root
+cause** tab in the UI), analyzes the target and every metric upstream of it,
+applying the right decomposition to each:
+
+- an edge with a `formula` is an arithmetic identity, so its gap is split
+  **exactly**, with Shapley attribution;
+- a learned edge (declared `parents`, no formula) is decomposed through its
+  fitted **BSTS posterior**, so each parent's contribution carries a credible
+  interval rather than a point estimate;
+- whatever the modeled parents don't account for is reported as
+  **`unexplained`** — a first-class finding, not a residual swept under a rug.
+
+Each piece is also addressable on its own when you want to inspect it:
+`POST /analyze/{name}` fits and returns one metric's posterior (trend,
+seasonality, coefficients), and `GET /shapley/{name}` decomposes one formula
+node's gap by itself.
 
 ---
 
@@ -202,7 +218,7 @@ reference](https://github.com/PolycultureResearch/breakdown/blob/main/docs/api-r
 
 ---
 
-## MCP server (AI assistants)
+## MCP server
 
 The server exposes the engine to AI assistants over [MCP](https://modelcontextprotocol.io) at `http://127.0.0.1:9090/mcp` (streamable HTTP; started automatically by `serve`). A chat assistant connected to it can answer "why was revenue down last week?" by running a real RCA — Shapley attributions, credible intervals, the honest `unexplained` remainder — instead of guessing, and "what if we raise marketing spend 10%?" with a posterior from the what-if engine.
 
