@@ -41,8 +41,12 @@ ENV      := PATH="$(DATA_BIN):$$PATH" \
 all: verify
 
 ## Synthetic raw data + ground truth, deterministic from the config's seed.
+## The chflags is a macOS workaround: uv marks .venv hidden, Python 3.13+
+## skips hidden .pth files, and the console script then can't import its own
+## package. Harmless elsewhere (the `-` ignores a missing chflags).
 generate:
 	cd $(FAKE) && uv sync --extra dbt
+	-chflags -R nohidden $(FAKE)/.venv 2>/dev/null
 	cd $(FAKE) && uv run fake-companies generate --config $(CONFIG) --out $(DB)
 
 ## Staging + marts + semantic layer, in DuckDB.

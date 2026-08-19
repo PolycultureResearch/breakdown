@@ -106,6 +106,30 @@ metrics:
       device: trial__device
       channel: trial__signup_channel
 
+  - name: trial_activation_rate
+    description: "Share of a trial cohort that uploads their first work during the trial, by cohort start week"
+    source: white_cube.metrics.trial_activation_rate
+    grain: week
+    kind: rate
+    # Cohort-dated like trial_conversion_rate: fct_trials aggregates on
+    # trial_start_date, so this week's activation rate describes the same
+    # cohort as this week's conversion rate — the edge is contemporaneous.
+    denominator: trials_started
+    format:
+      style: percent
+      decimals: 1
+
+  - name: trial_days_active
+    description: "Mean distinct days a trial cohort used the product during its 7-day trial"
+    source: white_cube.metrics.trial_days_active
+    grain: week
+    kind: rate
+    denominator: trials_started
+    format:
+      style: number
+      unit: days
+      decimals: 2
+
   - name: trial_conversion_rate
     description: "Share of a trial cohort that converts to paid, by cohort start week"
     source: white_cube.metrics.trial_conversion_rate
@@ -118,6 +142,25 @@ metrics:
     # which would need the daily series cut by a dimension it does not carry
     # at week grain. Hence a denominator here and still no dimensions below.
     denominator: trials_started
+    # Conversion follows engagement: a cohort that activates (uploads work)
+    # and uses more trial days converts better. Both parents describe the same
+    # cohort week, so neither is lagged — and both ride the same underlying
+    # engagement, so expect the fit to split credit between them less surely
+    # than it sizes their sum (collinearity; roadmap S4).
+    parents: [trial_activation_rate, trial_days_active]
+    priors:
+      trial_activation_rate:
+        # Points of conversion per point of activation: a cohort activating
+        # 10pts more converts ~2-3pts more.
+        distribution: "Normal"
+        params: { mu: 0.25, sigma: 0.15 }
+      trial_days_active:
+        # Points of conversion per extra mean active day.
+        distribution: "Normal"
+        params: { mu: 0.05, sigma: 0.04 }
+    expected_signs:
+      trial_activation_rate: positive
+      trial_days_active: positive
     format:
       style: percent
       decimals: 1
@@ -144,22 +187,45 @@ metrics:
       plan: trial__plan
 
   # ------------------------------------------------------------------------ MRR
+  - name: reactivations
+    description: "Paid subscriptions restarted by returning users — churned members and lapsed trials"
+    source: white_cube.metrics.reactivations
+    grain: week
+    format:
+      style: number
+      unit: subscriptions / week
+      decimals: 0
+    dimensions:
+      plan: mrr_movement__plan
+      country: user__country
+
+  - name: direct_conversions
+    description: "Paid subscriptions started without a trial"
+    source: white_cube.metrics.direct_conversions
+    grain: week
+    format:
+      style: number
+      unit: subscriptions / week
+      decimals: 0
+    dimensions:
+      plan: mrr_movement__plan
+      country: user__country
+
   - name: new_subscriptions
     description: "Paid subscriptions booked, dated by the booking event"
     source: white_cube.metrics.new_subscriptions
     grain: week
-    # The showpiece edge. trial_conversions is cohort-dated (fct_trials aggregates
-    # on trial_start_date) while new_subscriptions is event-dated (fct_mrr_movements
-    # on event_date). One week of lag *is* the 7-day trial. Left probabilistic
-    # rather than an identity because resurrections also book new MRR, so the
-    # coefficient should sit just above 1 and the fit should say so.
-    parents: [trial_conversions]
+    # A cohort-aligned lagged identity, not a learned edge: every way into a
+    # paid plan is one of these three terms. trial_conversions is cohort-dated
+    # (fct_trials aggregates on trial_start_date) while this node is
+    # event-dated (fct_mrr_movements on event_date), and one week of lag *is*
+    # the 7-day trial — last week's trial cohort books this week, alongside
+    # this week's reactivations and direct conversions. The `source` makes it
+    # measured: the identity is checked against the fetched series at load,
+    # and `unexplained` means the books disagree, not "noise".
+    formula: "trial_conversions + reactivations + direct_conversions"
+    parents: [trial_conversions, reactivations, direct_conversions]
     lags: { trial_conversions: 1 }
-    priors:
-      coefficient:
-        distribution: "Normal"
-        params: { mu: 1.0, sigma: 0.2 }
-    expected_signs: { trial_conversions: positive }
     format:
       style: number
       unit: subscriptions / week
@@ -201,12 +267,38 @@ metrics:
       plan: subscription_day__plan
       country: user__country
 
+  - name: member_activity_rate
+    description: "Share of member-days with product activity — how much of the paying base actually uses the product"
+    source: white_cube.metrics.member_activity_rate
+    grain: week
+    kind: rate
+    no_denominator: >-
+      The true denominator is member-days (one per active subscription per
+      day), which is deliberately not a tree metric; weighting by weekly
+      active_subscriptions instead would claim an identity that does not
+      close, since a week's distinct subscriptions is not seven days of
+      member-days.
+    format:
+      style: percent
+      decimals: 1
+
   - name: customer_churn_rate
     description: "Share of active subscriptions that cancelled"
     source: white_cube.metrics.customer_churn_rate
     grain: week
     kind: rate
     direction: down_is_good
+    # Disengagement precedes cancellation: weeks where fewer members use the
+    # product are weeks more of them churn. Contemporaneous at week grain —
+    # the demo's churn ledger books cancels in the low-engagement weeks
+    # themselves.
+    parents: [member_activity_rate]
+    priors:
+      coefficient:
+        # Weekly churn points per point of member activity; negative.
+        distribution: "Normal"
+        params: { mu: -0.02, sigma: 0.02 }
+    expected_signs: { member_activity_rate: negative }
     format:
       style: percent
       decimals: 2
