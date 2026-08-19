@@ -11,7 +11,7 @@ them land in a **minor** bump (`0.1 → 0.2`), with patch releases reserved for
 fixes. Callers who need stability should pin the minor series they tested
 against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
 
-## [Unreleased]
+## [0.1.1] — 2026-08-19
 
 ### Fixed
 
@@ -354,4 +354,5 @@ release, tag `v0.1.0`, point the link below at
 `[Unreleased]: .../compare/v0.1.0...HEAD`. Note that cutting the GitHub release
 *is* the publish: `.github/workflows/publish.yml` triggers on `release:
 published` and uploads via Trusted Publishing. -->
+[0.1.1]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.1.1
 [0.1.0]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.1.0
