@@ -11,6 +11,23 @@ them land in a **minor** bump (`0.1 → 0.2`), with patch releases reserved for
 fixes. Callers who need stability should pin the minor series they tested
 against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
 
+## [Unreleased]
+
+### Fixed
+
+- **The UI's DAG layout died for every visitor with a cold cache** — the page
+  loaded, every number was right, and the tree rendered as an unlaid-out grid
+  under a "No such layout `dagre`" banner. The `cytoscape-dagre` script tag
+  pinned a Subresource Integrity hash on jsDelivr's *auto-generated*
+  `.min.js` (the npm package ships no minified build), and jsDelivr
+  re-minifies those files whenever it upgrades Terser — so the served bytes
+  drifted, the browser refused the file, and `cytoscape.use(dagre)` never
+  ran. The tag now loads the package's published, unminified file (12.7 KB;
+  byte-stable npm tarball content) with a hash over those bytes, and
+  `index.html`'s header comment records the rule: never SRI-pin a
+  dynamically generated CDN artifact. Anyone serving the UI from an earlier
+  version needs this fix; nothing else changed.
+
 ## [0.1.0] — 2026-08-18
 
 **The first published release.** The **Added** section describes the surface;

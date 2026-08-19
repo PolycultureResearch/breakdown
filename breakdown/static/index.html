@@ -11,6 +11,16 @@
          hashes were computed from those exact bytes — bumping a version means
          recomputing its hash, or the library silently stops loading.
 
+         An SRI hash may only pin bytes the origin promises never to change:
+         a published artifact (cdnjs commits files to a repo; plot.ly ships its
+         own build), or the npm tarball's own file on jsDelivr. It must NOT pin
+         a jsDelivr auto-generated `.min.js` for a package that ships none —
+         those are re-minified whenever jsDelivr upgrades Terser, the bytes
+         drift, and the pin turns into a delayed outage for every fresh cache.
+         That happened to cytoscape-dagre (2026-08-19, the live demo's layout
+         died with "No such layout `dagre`"), which is why it loads the
+         package's published, unminified file: 12.7 KB once, stable forever.
+
          A library that fails to load (blocked CDN on a corporate network, a
          failed integrity check) is NOT a server outage, and app.js checks for
          these globals before it boots so it can say which one is missing
@@ -21,8 +31,8 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"
             integrity="sha384-2IH3T69EIKYC4c+RXZifZRvaH5SRUdacJW7j6HtE5rQbvLhKKdawxq6vpIzJ7j9M"
             crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-    <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"
-            integrity="sha384-drxU/AikJCPfvw6zqWesCn7xREkWv1Y91CVTxrMRTwdttj6lHh27yDR9Ap7zABYr"
+    <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.js"
+            integrity="sha384-u69h9ebXeSjlg6q/rb1zKTRAGu/h8deCl0409xpS/QJctMKnc4M9Fzkm01VOQdeF"
             crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <script src="https://cdn.plot.ly/plotly-basic-2.32.0.min.js" charset="utf-8"
             integrity="sha384-4S46ebITffI576imRjTcpoCt5L4Uks/66a846s/v5CubaJwAnqT4E3wVRdGUPiVu"
