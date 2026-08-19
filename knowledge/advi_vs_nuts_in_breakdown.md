@@ -244,30 +244,36 @@ exactly the failure mode described here.
 
 ## 5. The fix, and where it sits on the roadmap
 
-Two scheduled items, neither speculative. Both live in the roadmap's
+Both candidate fixes live in the roadmap's
 [Statistical rigor workstream](roadmap.md#statistical-rigor-s--a-standing-workstream),
 which is the source of truth for their status; the white paper's §4.1 holds the
-fuller rationale.
+fuller rationale. The first has now been measured.
 
-**S1 — Benchmark full-rank ADVI (next up).** PyMC's `fullrank_advi` fits a full
-covariance matrix rather than a diagonal one, which is precisely the missing
-capability: it *can* represent the β/trend ridge. It is slower than mean-field
-and far faster than NUTS. This is a config change plus a benchmark — measure fit
-time and interval width against both mean-field and NUTS on the calibration
-suite and the White Cube tree, then adopt if the cost is acceptable.
+**S1 — Benchmark full-rank ADVI: ✅ ran 2026-08-18, and full-rank was
+rejected.** The mechanism this page describes was confirmed: on
+drifting-parent worlds (the ridge), converged full-rank reproduces the NUTS
+interval to within 4% while mean-field is ~20% narrow. But on the real White
+Cube nodes full-rank was *slower than NUTS itself* (~230s vs 11–66s per node)
+and its converged, `ok`-ELBO interval on one node came out 7.8× the NUTS
+width. The model carries one latent trend state per fitted period, so a real
+window puts the full covariance in hundreds of dimensions — slow to optimize
+and badly fit when the optimizer stops, with nothing in the ELBO check able
+to see it. Full measurement:
+[`s1_fullrank_advi_benchmark.md`](s1_fullrank_advi_benchmark.md).
+`fit_metric` keeps `inference_method="fullrank_advi"` as a benchmarked
+experimental option; the RCA default is unchanged.
 
-**S2 — A real approximation diagnostic.** Implement the PSIS-based k̂ diagnostic
-of Yao et al. (2018), which estimates how far the variational approximation is
-from the true posterior — the thing the ELBO check cannot see. Where k̂ is poor,
-either auto-escalate that node to NUTS or mark its intervals as unreliable in
-the response. This addresses the problem without paying NUTS cost on every node,
-which is the reason ADVI is the default in the first place.
+**S2 — A real approximation diagnostic (next up).** Implement the PSIS-based
+k̂ diagnostic of Yao et al. (2018), which estimates how far the variational
+approximation is from the true posterior — the thing the ELBO check cannot
+see, in either direction: S1 measured a variational fit that passed the check
+while far too wide, alongside mean-field's constructional too-narrow. Where
+k̂ is poor, either auto-escalate that node to NUTS or mark its intervals as
+unreliable in the response. S1's timings price the escalation: NUTS at
+11–66s on real weekly nodes is affordable per-node in the interactive
+setting that made NUTS-everywhere unusable.
 
-**S1 is deliberately sequenced before S2.** If full-rank turns out cheap enough
-to default to, the diagnostic may be unnecessary for most trees — so the
-measurement should happen before the machinery gets built.
-
-Until one of those lands, the escape hatch in §4 is the answer, and the
+Until S2 lands, the escape hatch in §4 is the answer, and the
 honest framing is the one in the white paper: **the default path is the
 optimistic path**, it is documented, and most users will never leave it.
 

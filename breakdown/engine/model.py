@@ -361,25 +361,26 @@ def _zero_inflation_warnings(values: np.ndarray, target: str, grain: str) -> lis
     return [msg]
 
 
-def _advi_diagnostics(approx: Any) -> Dict[str, Any]:
-    """Convergence diagnostics for a mean-field ADVI fit.
+def _advi_diagnostics(approx: Any, method: str = "advi") -> Dict[str, Any]:
+    """Convergence diagnostics for a variational (ADVI-family) fit.
 
     Compares the mean loss (−ELBO) of the last 10% of iterations against the
     preceding 10%: if the loss is still moving by more than half its recent
     noise level, the optimization had not converged and the approximation is
     suspect. `elbo_drop` (mean(prev) − mean(last)) is positive while the loss
-    is still falling.
+    is still falling. Applies to mean-field and full-rank alike — either way
+    it measures optimizer convergence, not approximation quality (S2).
     """
     hist = np.asarray(approx.hist, dtype=float)
     w = len(hist) // 10
     if w < 1:
-        return {"fit_quality": "suspect", "method": "advi", "elbo_drop": None}
+        return {"fit_quality": "suspect", "method": method, "elbo_drop": None}
     last, prev = hist[-w:], hist[-2 * w : -w]
     elbo_drop = float(prev.mean() - last.mean())
     suspect = abs(last.mean() - prev.mean()) > 0.5 * last.std()
     return {
         "fit_quality": "suspect" if suspect else "ok",
-        "method": "advi",
+        "method": method,
         "elbo_drop": elbo_drop,
     }
 
@@ -633,6 +634,7 @@ def fit_metric(
     fit_end: Optional[str] = None,
     chains: int = 4,
     random_seed: Optional[int] = None,
+    vi_iterations: int = 20_000,
 ) -> FitResult:
     """
     Fit the Bayesian structural time series for one metric.
@@ -679,9 +681,18 @@ def fit_metric(
     `fit_failed` status, so a thin node costs its own attribution and nothing
     else.
 
-    Inference: "nuts" (exact MCMC, use when accuracy matters) or "advi"
-    (variational approximation, ~5-10x faster, use for triage). `tune` and
-    `chains` apply to NUTS only. `random_seed` makes the fit reproducible on
+    Inference: "nuts" (exact MCMC, use when accuracy matters), "advi"
+    (mean-field variational approximation, ~5-10x faster, use for triage) or
+    "fullrank_advi" (variational with a full covariance matrix — can represent
+    the beta/trend posterior ridge mean-field collapses, and reproduces the
+    NUTS interval on small synthetic fits; benchmarked under roadmap S1 and
+    NOT adopted as a default, because on real-sized windows the O(d^2)
+    covariance over per-period trend latents is slower than NUTS and lands
+    far from the posterior with a clean ELBO — see
+    knowledge/s1_fullrank_advi_benchmark.md before reaching for it). `tune`
+    and `chains` apply to NUTS only; `vi_iterations` (optimizer steps) to the
+    two ADVI variants only — full-rank needs roughly 2x mean-field's steps to
+    converge even on small fits. `random_seed` makes the fit reproducible on
     a given platform/dependency set (RCA and simulate pass a fixed seed so
     their on-demand fits — and hence API responses — are deterministic even
     across empty trace caches; tests seed to kill stochastic flakes).
@@ -693,8 +704,10 @@ def fit_metric(
     import pymc as pm
     import pytensor.tensor as pt
 
-    if inference_method not in ("nuts", "advi"):
-        raise ValueError(f"inference_method must be 'nuts' or 'advi', got '{inference_method}'")
+    if inference_method not in ("nuts", "advi", "fullrank_advi"):
+        raise ValueError(
+            f"inference_method must be 'nuts', 'advi' or 'fullrank_advi', got '{inference_method}'"
+        )
 
     parents = list(dag.predecessors(target))
     # The fit runs at the node's own grain: the target native, finer
@@ -788,10 +801,15 @@ def fit_metric(
             tune,
             fit_end,
         )
-        if inference_method == "advi":
-            approx = pm.fit(n=20_000, method="advi", progressbar=False, random_seed=random_seed)
+        if inference_method in ("advi", "fullrank_advi"):
+            approx = pm.fit(
+                n=vi_iterations,
+                method=inference_method,
+                progressbar=False,
+                random_seed=random_seed,
+            )
             trace = approx.sample(draws=draws, random_seed=random_seed)
-            diagnostics = _advi_diagnostics(approx)
+            diagnostics = _advi_diagnostics(approx, method=inference_method)
         else:
             trace = pm.sample(
                 draws=draws,
