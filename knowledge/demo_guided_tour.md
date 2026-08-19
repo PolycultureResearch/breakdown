@@ -31,7 +31,7 @@ not promise. Nothing else in this document is unasserted.
 table gives the *co-movement* term its own row, so a driver's share there is its
 window-means part over the gap. The API's `share_of_gap` folds each parent's
 slice of that co-movement back into the parent, so it reads a little
-differently: `new_subscriptions` in story A is **130.0%** on screen and `1.2899`
+differently: `new_subscriptions` in story A is **98.8%** on screen and `0.978`
 in the payload. Both decompositions are complete, and both sum to the gap. Quote
 the screen. If a prospect diffs this document against the API, that is the
 reason, and it is not a bug.
@@ -42,17 +42,23 @@ reason, and it is not a bug.
 
 `https://<demo-host>/ui`
 
-Say: *this picture is a YAML file* — **18 metrics** in **284 lines**, of which
-211 are actual configuration and the rest comments and blanks.
+Say: *this picture is a YAML file* — **23 metrics** in **376 lines**, of which
+279 are actual configuration and the rest comments and blanks.
 `net_new_mrr` at the top decomposes into new, expansion, contraction and churned
 MRR: an exact arithmetic identity, so attribution across it is exact Shapley
-rather than a regression. Below that the funnel edges are probabilistic and carry
-credible intervals. Solid edges are identities; dashed ones are learned.
+rather than a regression. Solid edges are identities; dashed ones are learned,
+and the learned ones are the edges a subscription business actually argues
+about: marketing spend → sessions, trial activation and days-active →
+conversion, member activity → churn.
 
-Point at the `trial_conversions → new_subscriptions` edge: it carries a
-**one-week lag**, because that is the trial. Breakdown compares that parent over
-a window shifted back by the trial period rather than over the same calendar
-four weeks.
+Point at `new_subscriptions`: every way into a paid plan is a term of an exact
+identity — `trial_conversions [lag 1] + reactivations + direct_conversions` —
+and the trial term carries a **one-week lag**, because that is the trial.
+`trial_conversions` is dated by the week the trial *started*; the booking lands
+a week later. Breakdown compares that parent over a window shifted back by the
+trial period rather than over the same calendar four weeks — and because the
+node keeps its own source, the identity is checked against the books at load:
+`unexplained` on this node means the ledgers disagree, not "noise".
 
 Worth saying once, early: the apex is net *new* MRR, not MRR. Explaining the
 level of a stock is not a well-posed question; explaining the flow that moves it
@@ -68,22 +74,25 @@ call-to-action on mobile for paid-social landing pages, 2026-02-02 → 2026-03-1
 **Run it.** Target `new_mrr` · Reference **2026-01-05 → 2026-02-01** · Analysis
 **2026-02-09 → 2026-03-08**.
 
-**What it says.** New MRR is down **−14.8%** (−$252/week). The tree walks it back
-through `new_subscriptions` (−18.7%) and `trial_conversions` (−12.3%) to
-`signups` (−10.2%) — not to price, not to conversion quality:
+**What it says.** New MRR is down **−16.7%** (−$324/week). The tree walks it back
+through `new_subscriptions` (−16.5%) and `trial_conversions` (−18.9%) to
+`signups` (−11.2%) — not to price:
 
-- On `new_mrr`, `new_subscriptions` carries **130.0%** of the gap while
-  `new_arpu` carries **−27.9%**, with a **−2.1%** co-movement row under them.
-  Average deal size actually *rose* and masked more than a quarter of the
-  damage. Breakdown does not clamp shares to 100%, so an offsetting effect shows
-  up as a number instead of being flattened away.
-- On `trial_conversions`, `trials_started` carries **101.6%** and
-  `trial_conversion_rate` **−0.6%** (co-movement **−1.0%**). Note the sign:
-  conversion quality did not fall, it ticked up a hair and very slightly
-  *offset* the volume loss. It is a volume problem, not a quality one.
-- `unexplained` on `new_mrr` reads **−2.27e-13**. The identity is exact; nothing
-  is hiding in the remainder. (The test pins that this is below 1e-9, not those
-  exact digits — they are float noise and pinning them would flake.)
+- On `new_mrr`, `new_subscriptions` carries **98.8%** of the gap while
+  `new_arpu` carries **3.2%** (co-movement −1.9%). The price axis is cleared
+  in one row: the count fell, what each subscription was worth is a bystander.
+- On `new_subscriptions`, the identity names every door into a paid plan:
+  trial conversions carry **86.4%** of the drop, direct conversions **16.1%**
+  (they fell too — fewer free users to convert), and reactivations **−2.5%**
+  (they ticked up *against* the drop, and the sign is reported rather than
+  netted away).
+- On `trial_conversions`, `trials_started` carries **68.7%** against
+  `trial_conversion_rate`'s **32.0%**. Mostly a volume problem — and the
+  conversion wobble is not noise either: this tree can chase it into the
+  trial-engagement branch, which is story D's machinery pointed the other way.
+- `unexplained` on `new_mrr` and on `new_subscriptions` reads **0.0**. Both
+  identities are exact; nothing is hiding in a remainder. (The test pins
+  below-1e-9, not the digits.)
 
 **Note the lag.** The analysis window starts a week *after* the break. The
 engine compares `trial_conversions` not over the calendar window but over
@@ -111,7 +120,7 @@ date. That is the trial period, modelled.
 
 **Then slice.** On the `signups` cause, click **slice by → device**:
 
-> mobile carries **90.1%** of the gap on a **51.9%** baseline share.
+> mobile carries **76.2%** of the gap on a **51.1%** baseline share.
 
 Now click **country** on the same cause:
 
@@ -140,41 +149,49 @@ step, because it has no tree to traverse.
 **Run it.** Target `net_new_mrr` · Reference **2026-03-16 → 2026-04-12** ·
 Analysis **2026-05-11 → 2026-06-07**.
 
-**What it says.** Net new MRR is down **−32.1%**, and the graph splits in two
-colours: the churn branch is red (`churned_mrr` **+87.4%**,
-`churned_subscriptions` **+59.3%**, `customer_churn_rate` **+44.8%**) while
-acquisition is green (`new_mrr` **+11.7%**, `new_subscriptions` **+22.3%**).
-Acquisition was having a good month and partly hid the problem.
+**What it says.** Net new MRR is down **−38.5%**, and one branch owns it: the
+churn side is red (`churned_mrr` **+84.8%**, `churned_subscriptions`
+**+47.9%**, `customer_churn_rate` **+34.2%**) while acquisition is flat
+(`new_mrr` −1.5%). The headline moved on retention alone — a single-number
+dashboard would show the drop and nothing about which half of the business
+did it.
 
-Inside `churned_mrr`, the split is **73.5%** `churned_subscriptions` /
-**27.3%** `churn_arpu` (co-movement **−0.8%**): more cancellations, and the ones
+Inside `churned_mrr`, the split is **63.6%** `churned_subscriptions` /
+**36.3%** `churn_arpu` (co-movement **0.1%**): more cancellations, and the ones
 cancelling were worth more than average.
 
-> **⚠ Known gap — one node on the churn branch is the wrong colour.**
-> `churn_arpu` is up **+17.7%** and carries **27.3%** of the churn damage, and
-> it renders **green, with an up arrow**. `demo/white_cube_tree.yml` declares no
-> `direction` on it; the parser defaults `direction` to `up_is_good` and `/dag`
-> serializes that default indistinguishably from a declared one, so the UI has
-> no way to tell silence from an assertion and paints it as an improvement.
-> "The *entire* churn branch is red" is therefore not what the prospect is
-> looking at — an earlier draft of this script said it was. Filed separately.
-> Say "the churn branch" and point at `churned_mrr` / `churned_subscriptions` /
-> `customer_churn_rate`, which are all correctly red; do not sweep a hand across
-> the branch and claim the colour is uniform. If someone notices, the honest
-> answer is that the tree never declared which way is good for that metric, and
-> an undeclared metric is assumed to be one where up is good.
+**Point at the engagement edge being *cleared*.** `customer_churn_rate` has a
+learned parent now — `member_activity_rate`, "disengaged members churn" — and
+in this window the tree checks that explanation and declines it: member
+activity barely moved (+0.5%), its contribution is a sliver of the gap, and
+the posterior is unsure of even that. The obvious wrong story ("our members
+are drifting away") is examined and rejected on screen; what remains is a
+tier-shaped problem, which the slice below names.
+
+> **⚠ Known gap — one node on the churn branch has no colour.** `churn_arpu`
+> is up **+25.0%** and carries **36.3%** of the churn damage, and it renders
+> **uncoloured** — arrow and percentage, no red tint — because
+> `demo/white_cube_tree.yml` never declares a `direction` on it (see the
+> Known-gaps section at the end; it used to render green, which is fixed).
+> "The *entire* churn branch is red" is therefore not quite what the prospect
+> is looking at. Say "the churn branch" and point at `churned_mrr` /
+> `churned_subscriptions` / `customer_churn_rate`, which are all correctly
+> red; if someone notices the grey node, the honest answer is that the tree
+> never declared which way is good for that metric, and the product refuses
+> to guess.
 
 **Then slice** `churned_mrr` by **plan**:
 
-> professional carries **79.9%** of the gap on a **39.6%** baseline share.
+> professional carries **100.6%** of the gap on a **44.0%** baseline share.
 
-Slice `customer_churn_rate` by **country** for the contrast: the panel returns
-*Not localized by country*, and **eight of its nine rows** carry a `noise` flag.
-The problem is a tier, not a geography.
+Slice the same node by **country** for the contrast: the panel returns
+*Not localized by country*, and **seven of its nine rows** carry a `noise`
+flag. Same metric, two dimensions, opposite verdicts — the problem is a tier,
+not a geography.
 
-**The line:** the headline moved once; two branches moved hard in opposite
-directions. That is exactly what a single-number dashboard cannot show you, and
-it is why the offsetting contribution is reported rather than netted away.
+**The line:** the tree named the branch, cleared the tempting wrong
+explanation with a posterior, and the slice named the tier. Three verdicts,
+each checkable, none of them available from a single-number dashboard.
 
 ---
 
@@ -186,21 +203,16 @@ converted unusually well in Brazil, 2025-03-03 → 2025-05-25.*
 **Run it.** Target `signups` · Reference **2025-02-03 → 2025-03-02** · Analysis
 **2025-03-10 → 2025-04-06**.
 
-**What it says.** Signups up **+8.1%**, split across both halves of the identity
-`signups = sessions × visit_signup_rate`: `sessions` carries **61.4%** (the spend
-bought traffic) and `visit_signup_rate` carries **30.9%** (the traffic converted
-better than usual). Sessions themselves are only **+4.9%**, so this is not just
-volume.
-
-This is the one story where the co-movement row is worth reading out: **+7.8%**,
-the largest in the tour. Traffic and conversion rose *together* within the
-window rather than one at a time — which is what a campaign that lands on the
-right audience looks like, and it is a term a two-column price×volume bridge has
-nowhere to put.
+**What it says.** Signups up **+8.5%**, split across both halves of the identity
+`signups = sessions × visit_signup_rate`: `sessions` carries **60.0%** (the spend
+bought traffic) and `visit_signup_rate` carries **42.8%** (the traffic converted
+better than usual). Sessions themselves are only **+5.0%**, so this is not just
+volume — nearly half the win is conversion quality, which is the part a spend
+dashboard cannot see.
 
 **Then slice** `signups` by **country**:
 
-> BR carries **64.5%** of the gap on an **8.7%** baseline share.
+> BR carries **84.3%** of the gap on an **8.4%** baseline share.
 
 **The line:** run this one to show RCA is not a bad-news tool. The same
 decomposition tells you which half of a win was volume and which was quality —
@@ -208,22 +220,44 @@ which is what you need in order to decide whether to spend more.
 
 ---
 
-## Story D — "The onboarding revamp — did it work?"
+## Story D — "The onboarding revamp — did it work, and *why*?"
 
-*Setup: a trial-conversion lift, 2025-08-04 → 2025-11-30.*
+*Setup: an onboarding revamp that lifted trial engagement,
+2025-08-04 → 2025-11-30. The conversion lift is downstream of it — which is
+exactly what the tree should discover.*
 
 **Run it.** Target `new_mrr` · Reference **2025-07-07 → 2025-08-03** · Analysis
 **2025-08-11 → 2025-09-07**.
 
-**What it says.** New MRR up **+46.8%**, and on `trial_conversions` the split
-runs the opposite way to story A: `trial_conversion_rate` carries **70.4%**
-against `trials_started`'s **31.8%** (co-movement **−2.2%**). The same number of
-people started trials; more of them converted.
+**What it says, pass one.** New MRR up **+26.0%**, and on `trial_conversions`
+the split runs the opposite way to story A: `trial_conversion_rate` carries
+**69.3%** against `trials_started`'s **29.8%**. More trials started too — the
+business is growing — but the win is conversion.
+
+**What it says, pass two — the beat this story exists for.** The conversion
+lift itself has a cause the tree can name. `trial_conversion_rate` has two
+learned parents, the ones a subscription company argues about in every
+retro: did they *activate* (upload their first work), and how many days did
+they actually use the trial. In the window: `trial_activation_rate` **+34.4%**,
+`trial_days_active` **+71.2%**, conversion **+40.2%** — and the attribution
+on `trial_conversion_rate` hands **68.2%** of the gap to activation with
+`P(direction)` **0.998** and an interval clear of zero. The story reads
+straight off the screen: *the revamp moved activation, and conversion
+followed.*
+
+**Then say the honest part, because it is a selling point.** The second
+parent, `trial_days_active`, shows a wide interval that straddles zero. The
+two engagement measures move together — an activated trialist is also an
+active one — so the data determines their *combined* effect far more sharply
+than the split between them. The tool says exactly that instead of
+manufacturing precision: the total is sure, the split between two collinear
+twins is not. An analyst who has been burned by regression coefficients will
+recognize what is being done for them here.
 
 **Worth saying:** the windows here are deliberately adjacent. White Cube is in
 the steep part of its growth curve. Push the reference back eight weeks —
 **2025-05-12 → 2025-06-08** instead of the adjacent block — and `trials_started`
-reads **+15.9%** against the same analysis window instead of **+10.8%**: five
+reads **+21.6%** against the same analysis window instead of **+15.5%**: six
 points of pure trend that the tree would then have credited to the revamp.
 Choosing comparable windows is a real part of using this well, and the tool will
 faithfully attribute trend if you hand it a trendy comparison. (Adjacency is now
@@ -239,8 +273,8 @@ Open the **What-if** tab after story B.
 
 1. Baseline window: **2026-06-29 → 2026-07-26** (a recent clean stretch).
 2. Intervene on `customer_churn_rate`: **−20%**.
-3. Run. `churned_mrr` falls from **$885/week to $708/week (−20.0%)**, and
-   `net_new_mrr` rises by exactly that amount — **+$177/week, +15.3%** — with
+3. Run. `churned_mrr` falls from **$804/week to $643/week (−20.0%)**, and
+   `net_new_mrr` rises by exactly that amount — **+$161/week, +9.7%** — with
    `P(direction)` **1.0** and a zero-width 95% interval. That last part is not
    false confidence: the churn edge is an arithmetic identity, so once you
    assume the rate, there is nothing left downstream to be uncertain about.

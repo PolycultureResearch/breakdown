@@ -98,38 +98,63 @@ properly is generator work, not demo work — see §8.
 
 ## 4. The metric tree
 
-`demo/white_cube_tree.yml`, apex `net_new_mrr`, ~20 nodes — small enough to read
+`demo/white_cube_tree.yml`, apex `net_new_mrr`, 23 nodes — small enough to read
 on a pitch screen, deep enough that RCA has to actually traverse.
 
 ```
 net_new_mrr (week, flow)                                          APEX
   = new_mrr + expansion_mrr - contraction_mrr - churned_mrr       [formula]
   ├ new_mrr (week)      = new_subscriptions * new_arpu            [formula]
-  │   ├ new_subscriptions (week) ← trial_conversions              [probabilistic, lags: {trial_conversions: 1}]
-  │   │   └ trial_conversions (week) = trials_started * trial_conversion_rate
-  │   │       ├ trials_started (day, flow) ← signups              [probabilistic]
-  │   │       │   └ signups (day) = sessions * visit_signup_rate  [formula]
-  │   │       │       ├ sessions (day) ← marketing_spend          [probabilistic]
-  │   │       │       │   └ marketing_spend (day, flow)
-  │   │       │       └ visit_signup_rate (day, rate)
-  │   │       └ trial_conversion_rate (week, rate)
+  │   ├ new_subscriptions (week)                                  [measured lagged identity]
+  │   │   = trial_conversions[lag 1] + reactivations + direct_conversions
+  │   │   ├ trial_conversions (week) = trials_started * trial_conversion_rate
+  │   │   │   ├ trials_started (day, flow) ← signups              [probabilistic]
+  │   │   │   │   └ signups (day) = sessions * visit_signup_rate  [formula]
+  │   │   │   │       ├ sessions (day) ← marketing_spend          [probabilistic]
+  │   │   │   │       │   └ marketing_spend (day, flow)
+  │   │   │   │       └ visit_signup_rate (day, rate)
+  │   │   │   └ trial_conversion_rate (week, rate)
+  │   │   │       ← trial_activation_rate, trial_days_active      [probabilistic]
+  │   │   ├ reactivations (week, flow)
+  │   │   └ direct_conversions (week, flow)
   │   └ new_arpu (week, rate)
   ├ churned_mrr (week)  = churned_subscriptions * churn_arpu      [formula]
   │   └ churned_subscriptions (week) = active_subscriptions * customer_churn_rate
+  │       └ customer_churn_rate (week, rate) ← member_activity_rate  [probabilistic]
   ├ expansion_mrr (week, flow)
   └ contraction_mrr (week, flow)
 ```
 
-Three choices are deliberate, and each demonstrates a documented feature rather
-than decorating one:
+The choices below are deliberate, and each demonstrates a documented feature
+rather than decorating one:
 
-**The 7-day trial lag is modelled, not narrated.** `trial_conversions` is
-cohort-dated (`fct_trials` aggregates on `trial_start_date`) while
-`new_subscriptions` is event-dated (`fct_mrr_movements` on `event_date`). The
-edge between them carries `lags: {trial_conversions: 1}` at week grain — that
-*is* the trial period. RCA's `parent_windows` then surfaces the shifted parent
-window, which is what makes the traverse-then-slice follow-up correct across the
-lag instead of quietly comparing the wrong fortnight.
+**Every way into a paid plan is a term of an exact identity.**
+`new_subscriptions = trial_conversions[lag 1] + reactivations +
+direct_conversions` — a *measured* cohort-aligned lagged identity: the node
+keeps its own `source`, so the identity is checked against the books at load
+and `unexplained` means the ledgers disagree, not "noise". The one-week lag
+*is* the 7-day trial: `trial_conversions` is cohort-dated (`fct_trials`
+aggregates on `trial_start_date`) while `new_subscriptions` is event-dated
+(`fct_mrr_movements` on `event_date`), so last week's cohort books this week.
+RCA's `parent_windows` surfaces the shifted window, which is what makes the
+traverse-then-slice follow-up correct across the lag instead of quietly
+comparing the wrong fortnight. (Until 2026-08-19 this edge was probabilistic
+— and the generated data had no reactivation or direct path, so the fit was
+learning an exactly deterministic edge: a point-mass posterior NUTS could
+only flag as `suspect`. Roadmap S1's benchmark surfaced it.)
+
+**The client-familiar learned edges, planted so they are learnable.** Trial
+engagement causes conversion (`trial_conversion_rate` ←
+`trial_activation_rate`, `trial_days_active` — cohort-contemporaneous, and
+deliberately collinear: both ride the same underlying engagement, so the fit
+sizes their *sum* more surely than the split, which is roadmap S4's caveat
+demonstrated on purpose), and member activity suppresses churn
+(`customer_churn_rate` ← `member_activity_rate`, negative declared sign). The
+generator couples these for real: per-user engagement propensity plus shared
+day-level drivers (`trial_engagement`, `member_engagement`) move activity and
+the lifecycle probabilities together, mean-preservingly, and churn resolves
+on weekly hazard sub-ticks so the co-movement survives to the week grain the
+tree fits.
 
 **Mixed grains, honestly declared.** MRR movements at `week`, funnel at `day`;
 finer flow parents resample up by sum. `trial_conversion_rate`, `new_arpu`, and

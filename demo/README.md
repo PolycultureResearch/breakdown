@@ -11,7 +11,7 @@ RCA conclusion the demo produces is checkable against ground truth.
 
 - **Design and rationale:** [`../knowledge/white_cube_demo_plan.md`](../knowledge/white_cube_demo_plan.md)
 - **What to actually click, in order:** [`../knowledge/demo_guided_tour.md`](../knowledge/demo_guided_tour.md)
-- **The tree:** [`white_cube_tree.yml`](white_cube_tree.yml) — 18 metrics, apex `net_new_mrr`
+- **The tree:** [`white_cube_tree.yml`](white_cube_tree.yml) — 23 metrics, apex `net_new_mrr`
 
 ## Running it locally
 
