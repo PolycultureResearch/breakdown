@@ -15,6 +15,11 @@ roadmap. For how the codebase is built, see [`../AGENTS.md`](../AGENTS.md) and
   tests, per-milestone punch lists, and the time-to-first-RCA analysis. Its
   wrong-number-class findings became roadmap C23–C25 and 2.20 (all shipped
   2026-08-17; the addendum carries the read-the-numbers verification).
+- [`bigquery_end_to_end_test_plan.md`](bigquery_end_to_end_test_plan.md) —
+  **plan, not executed**: stand up a real BigQuery and run breakdown against it
+  end to end, with twelve failure predictions derived from the code. Cited by
+  roadmap 2.10 (the still-unverified BigQuery side) and 2.14 (its §6 is the
+  acceptance criteria for differential verification).
 
 ## White papers
 
@@ -65,6 +70,21 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
   (roadmap 1.10): why the reference is not the training window, and why "all
   history" is the wrong reference
 - [`what_if_design.md`](what_if_design.md) — what-if simulation design spec
+- [`cold_start_design.md`](cold_start_design.md) — cold-start mode: what-if
+  with zero data, replacing the fitted machine's data-derived inputs with
+  declared baselines, slopes and assumption ranges. Shipped as a demo mode
+  (see roadmap C7 for its bounds); referenced from
+  `breakdown/engine/simulate.py`; companion:
+  [`cold_start_founder_intro.md`](cold_start_founder_intro.md), the
+  audience-facing pitch the bundled `cold_start_tree.yml` example points at
+- [`rate_denominator_policy.md`](rate_denominator_policy.md) — decided and
+  shipped (2026-08-15, roadmap 1.12): should a rate be *required* to declare
+  its denominator? Permissive parser, `doctor` fails on an unanswered rate,
+  revisit mandatory at 1.0
+- [`reading_the_numbers.md`](reading_the_numbers.md) — why a data product needs
+  a review step that reads the *output*, not just the code: the defect class
+  both hostile reviews missed because they inferred from artifacts. Now
+  operational as the `read-the-numbers` project skill
 - [`multi_tree_design.md`](multi_tree_design.md) — **designed, not built**
   (roadmap 2.16): serving many metric trees from one process, framed around a
   tree per company goal per quarter. The optional `tree:` block (title, owner,
