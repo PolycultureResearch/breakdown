@@ -34,6 +34,7 @@ between them. The stance is **probabilistic and causal**, never frequentist:
 - [`docs/first-tree-tutorial.md`](docs/first-tree-tutorial.md) — the guided path: empty file → running RCA, building the bundled example from scratch
 - [`docs/yaml-reference.md`](docs/yaml-reference.md) — **the canonical tree-authoring reference**: every field the parser accepts and the rules on each
 - [`docs/api-reference.md`](docs/api-reference.md) — every route the server answers, its parameters, and its response shape
+- [`docs/mcp.md`](docs/mcp.md) — the MCP server: the six tools, response shaping, security, and a worked session against the live demo
 - [`docs/model.md`](docs/model.md) — statistical assumptions and how to read results; **read this before trusting output**
 - [`docs/ui-guide.md`](docs/ui-guide.md) — driving the UI: fitting a model, running an RCA, slicing, what-if
 - [`docs/deploying.md`](docs/deploying.md) — serving several trees, authentication, Docker, `breakdown doctor`, snapshots, environment variables
@@ -84,11 +85,14 @@ docs/
   first-tree-tutorial.md  # Empty file -> running RCA, building the bundled example
   yaml-reference.md  # Every field a tree may declare, and the rules on each
   api-reference.md   # Every route the server answers, and what comes back
+  mcp.md             # The MCP server: tools, shaping, security, a worked session
   ui-guide.md        # Driving the UI
   deploying.md       # Serving several trees, auth, Docker, doctor, snapshots
   why-breakdown.md   # The problem breakdown exists to solve
   ai-context/        # Architecture deep-dives (backend, frontend) for contributors
 knowledge/           # Product & design specs, roadmap, reference trees
+packaging/
+  mcpb/              # Claude Desktop extension (.mcpb): one-click connector, built on release
 tests/
 Dockerfile           # Container image (see docs/deploying.md)
 compose.yaml
@@ -145,11 +149,21 @@ is covered in [docs/deploying.md](docs/deploying.md).
   package so the wheel ships them.)
 - **Docs travel with the code.** When you change the API surface, update
   [`docs/api-reference.md`](docs/api-reference.md); the YAML schema,
-  [`docs/yaml-reference.md`](docs/yaml-reference.md); UI behavior or anything a
-  newcomer meets first, the [README](README.md). Update the relevant
-  `docs/ai-context/` doc (architecture) in the same change. All three
-  user-facing docs are executed by `tests/test_docs_examples.py`, so a stale
-  example there is a test failure rather than a reader's problem.
+  [`docs/yaml-reference.md`](docs/yaml-reference.md); the MCP surface,
+  [`docs/mcp.md`](docs/mcp.md); UI behavior or anything a
+  newcomer meets first, the [README](README.md) — subject to the rule below.
+  Update the relevant `docs/ai-context/` doc (architecture) in the same
+  change. The user-facing docs are executed by `tests/test_docs_examples.py`,
+  so a stale example there is a test failure rather than a reader's problem.
+- **`README.md` is human-written, and stays that way.** Every other document
+  in this repo is written and maintained by an AI agent with human oversight
+  (each carries a footer saying so); the README is the deliberate exception
+  in the other direction, and it says so at its end. Do not edit it directly
+  — not for a typo, not to keep it in sync. When a change you are making
+  affects something the README states (an install step, a route, the MCP
+  surface), say exactly what needs changing in your report and let Devon make
+  the edit. Touch the file only on his explicit instruction naming the
+  specific change.
 - **The statistics white paper is a living document.** When you ship a
   [Statistical rigor (S)](knowledge/roadmap.md#statistical-rigor-s--a-standing-workstream)
   or [Horizon 0 correctness (C)](knowledge/roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend)

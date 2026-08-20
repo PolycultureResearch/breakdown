@@ -1,0 +1,8 @@
+{
+  "name": "breakdown-mcpb",
+  "private": true,
+  "description": "Build workspace for the breakdown Claude Desktop extension (.mcpb)",
+  "dependencies": {
+    "mcp-remote": "0.1.38"
+  }
+}

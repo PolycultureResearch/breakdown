@@ -1,0 +1,47 @@
+{
+  "manifest_version": "0.3",
+  "name": "breakdown",
+  "display_name": "Breakdown",
+  "version": "0.1.1",
+  "description": "Connect Claude to a breakdown server: root-cause analysis, slicing, and what-if over your metric tree.",
+  "author": {
+    "name": "Polyculture Research",
+    "url": "https://github.com/PolycultureResearch/breakdown"
+  },
+  "homepage": "https://github.com/PolycultureResearch/breakdown",
+  "documentation": "https://github.com/PolycultureResearch/breakdown/blob/main/docs/mcp.md",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {
+        "BREAKDOWN_MCP_URL": "${user_config.server_url}",
+        "BREAKDOWN_MCP_TOKEN": "${user_config.api_token}"
+      }
+    }
+  },
+  "user_config": {
+    "server_url": {
+      "type": "string",
+      "title": "Server URL",
+      "description": "The breakdown server's MCP endpoint. Running locally, this is http://127.0.0.1:9090/mcp; otherwise ask whoever deployed breakdown for the URL.",
+      "required": true,
+      "default": "http://127.0.0.1:9090/mcp"
+    },
+    "api_token": {
+      "type": "string",
+      "title": "API token",
+      "description": "Only needed when the server sets BREAKDOWN_API_TOKEN. Leave empty for a local or ungated server.",
+      "sensitive": true,
+      "required": false,
+      "default": ""
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"]
+  },
+  "keywords": ["metrics", "root-cause-analysis", "bayesian", "analytics"],
+  "license": "Apache-2.0"
+}
