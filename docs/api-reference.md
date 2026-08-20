@@ -45,7 +45,7 @@ about the whole process rather than one tree.
 | `POST` | `/trees/{id}/load` | Fetch one tree's data now, and return its updated index card |
 | `GET` | `/progress/{run_id}` | Live stage of an in-flight RCA or simulation started with that `run_id` |
 | `GET` | `/ui` | Interactive DAG visualization |
-| — | `/mcp` | [MCP server](../README.md#mcp-server-ai-assistants) for AI assistants (streamable HTTP). Gated by `BREAKDOWN_API_TOKEN` whenever one is set |
+| — | `/mcp` | [MCP server](mcp.md) for AI assistants (streamable HTTP). Gated by `BREAKDOWN_API_TOKEN` whenever one is set |
 
 ## `GET /metrics/{name}/query`
 

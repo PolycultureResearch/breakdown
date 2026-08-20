@@ -28,9 +28,10 @@ Three parts, deliberately disciplined about what they skip:
 2. **Every documented curl is issued against the real app.** Route template,
    query-parameter names and status are all checked; the not-replayed set is
    asserted exactly, per file, for the same reason.
-3. **The MCP section's figures are re-run.** The transcript quoted numbers no
-   code had produced in months; this pins them. That section stays in the
-   README, so those tests name the README rather than the file list.
+3. **The MCP page's worked session is re-run over the MCP wire protocol.**
+   The transcript quoted numbers no code had produced in months; this pins
+   them. The session lives in docs/mcp.md and runs against the White Cube
+   demo snapshots, so its tests skip where demo/ is absent (it is repo-only).
 """
 
 import json
@@ -331,10 +332,22 @@ DOCS = [
         },
         has_route_table=True,
     ),
+    DocFile(
+        # The MCP server's page. Its worked session runs over the MCP wire
+        # protocol against the White Cube demo snapshots — replayed by the
+        # section (c) fixture below, not the curl machinery (its two code
+        # blocks are the connect snippets, not HTTP examples).
+        "docs/mcp.md",
+        yaml_blocks=0,
+        parsable_yaml_blocks=0,
+        skipped_yaml=[],
+        curl_examples=0,
+    ),
 ]
 
 BY_NAME = {doc.name: doc for doc in DOCS}
 README = BY_NAME["README.md"]
+MCP_DOC = BY_NAME["mcp.md"]
 
 # Parametrized over the parsable blocks only, rather than skipping the
 # fragments at runtime: the sdist CI job audits every skip reason in the shipped
@@ -494,37 +507,16 @@ def test_doc_has_the_yaml_blocks_we_think_it_has(doc):
 # (b) Every documented HTTP example actually works
 # --------------------------------------------------------------------------
 
-# The windows the MCP section's exchange quotes.
-TRANSCRIPT_WINDOWS = {
-    "reference_start": "2024-03-13",
-    "reference_end": "2024-03-26",
-    "analysis_start": "2024-03-27",
-    "analysis_end": "2024-04-09",
-}
-
-# The commentary under the transcript claims that the *same* tree over a
-# four-week pair returns an order-count interval excluding zero, and a
-# different story — and uses that to say why moving the transcript to the
-# longer window would have been window-shopping. That is a claim about a run,
-# so it is a run.
-FOUR_WEEK_WINDOWS = {
-    "reference_start": "2024-02-14",
-    "reference_end": "2024-03-12",
-    "analysis_start": "2024-03-13",
-    "analysis_end": "2024-04-09",
-}
-
 
 @pytest.fixture(scope="module")
 def replayed(tmp_path_factory):
     """One pass over the app: boot the bundled tree, issue every replayable
-    curl from every documentation file against it, run the MCP section's two
-    RCAs, then boot the slice fixture.
+    curl from every documentation file against it, then boot the slice
+    fixture.
 
     Module-scoped and single-pass because `app` is a process-wide singleton (two
     TestClient lifespans must not overlap) and because on-demand ADVI fits are
-    cached per fit window — one session costs three fits rather than one per
-    test.
+    cached per fit window.
     """
     results = {}
 
@@ -550,12 +542,6 @@ def replayed(tmp_path_factory):
         with TestClient(app) as client:
             for ex in demo:
                 results[ex.key] = issue(client, ex)
-            resp = client.post("/rca/revenue", params=TRANSCRIPT_WINDOWS)
-            assert resp.status_code == 200, resp.text
-            transcript = resp.json()
-            resp = client.post("/rca/revenue", params=FOUR_WEEK_WINDOWS)
-            assert resp.status_code == 200, resp.text
-            four_week = resp.json()
 
     tree_file = tmp_path_factory.mktemp("docs") / "slice_fixture.yml"
     tree_file.write_text(SLICE_FIXTURE_TREE)
@@ -567,7 +553,7 @@ def replayed(tmp_path_factory):
             for ex in fixture:
                 results[ex.key] = issue(client, ex)
 
-    return results, transcript, four_week
+    return results
 
 
 @pytest.mark.parametrize("doc", DOCS, ids=lambda d: d.name)
@@ -636,7 +622,7 @@ def test_every_documented_query_parameter_is_accepted():
 
 
 def test_replayed_curl_examples_return_the_documented_status(replayed):
-    results, _, _ = replayed
+    results = replayed
     failures = []
     for ex in ALL_CURLS:
         if ex.name in ex.doc.not_replayed:
@@ -729,202 +715,233 @@ def test_route_table_documents_every_route():
 
 
 # --------------------------------------------------------------------------
-# (c) The MCP section's figures come from a run we actually performed
+# (c) docs/mcp.md's worked session comes from a run we actually performed
 # --------------------------------------------------------------------------
 
-# These stay pinned to the README because the transcript stays there: it is the
-# section that shows what breakdown *feels* like, which is landing-page content
-# rather than reference material.
+# The transcript lived in the README until 2026-08-20 and was pinned there as
+# landing-page content. The guideline changed when README.md became
+# human-owned (see AGENTS.md: agents do not edit it) and the MCP surface got
+# its own page. The session now speaks the MCP wire protocol against the
+# committed White Cube demo snapshots — the same hermetic setup as
+# tests/test_white_cube_demo.py — so it exercises the tool layer itself
+# (compaction, `how_to_read`, `sign_warnings`, `report_url`), not just the
+# HTTP routes behind it. Skipped when demo/ is absent: it is repo-only,
+# excluded from the sdist.
 #
-# Tolerances, and why:
-#
-#   tight (<=1e-3)  Everything read off the data — window means, gaps, relative
-#                   changes — and every Shapley contribution on the `revenue`
-#                   formula node. The mock generator is seeded and the Shapley
-#                   decomposition is exact arithmetic over the series, so these
-#                   reproduce to floating point; the tolerance only absorbs the
-#                   rounding in the README's own prose.
-#
-#   bands           The `daily_sessions -> order_count` contribution comes from
-#                   a seeded ADVI fit, and every interval from a seeded
-#                   bootstrap. Seeded is not version-stable — a PyMC/pytensor
-#                   or numpy bump moves the last digits — so these are bands
-#                   wide enough to survive a minor upgrade and narrow enough
-#                   that the README's qualitative claims ("about two-thirds",
-#                   "both cross zero", "direction not established") fail with
-#                   them.
+# Tolerances: tight (abs<=1e-3 in printed units) for anything read off the
+# committed parquet through deterministic arithmetic; bands for posterior
+# quantities (a seeded fit is not version-stable across PyMC/numpy bumps);
+# and *structural* assertions — which row headlines, which flags are set —
+# for the two known-issue beats. Those last are pinned exactly so that
+# shipping roadmap 2.21 turns this section red and the doc's third finding
+# gets rewritten, rather than silently describing behavior that no longer
+# exists.
+
+WC_DEMO = REPO / "demo"
+WC_SNAPSHOTS = WC_DEMO / ".breakdown" / "snapshots"
+
+# The story B windows from knowledge/demo_guided_tour.md — the planted
+# professional churn spike, asked about from the churn-rate side.
+SESSION_WINDOWS = {
+    "reference_start": "2026-03-16",
+    "reference_end": "2026-04-12",
+    "analysis_start": "2026-05-11",
+    "analysis_end": "2026-06-07",
+}
+_MCP_HEADERS = {
+    "Accept": "application/json, text/event-stream",
+    "Content-Type": "application/json",
+}
 
 
-def test_mcp_section_figures_still_match_a_real_run(replayed):
-    _, rca, _ = replayed
-    nodes = rca["nodes"]
+@pytest.fixture(scope="module")
+def mcp_session():
+    """The five tool calls the worked session narrates, over the wire."""
+    if not WC_SNAPSHOTS.is_dir() or not any(WC_SNAPSHOTS.iterdir()):
+        pytest.skip("demo snapshots not present — demo/ is repo-only; run `make -C demo snapshots`")
+    out = {}
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("BREAKDOWN_TREE", str(WC_DEMO / "white_cube_tree.yml"))
+        mp.setenv("BREAKDOWN_START_DATE", "2024-06-01")
+        mp.setenv("BREAKDOWN_END_DATE", "2026-07-30")
+        mp.setenv("BREAKDOWN_SNAPSHOT_DIR", str(WC_SNAPSHOTS))
+        mp.setenv("WHITE_CUBE_DBT_PROJECT", "/nonexistent/white-cube-has-no-provider")
+        # The doc quotes the live demo's report_url; minting it needs the
+        # public base the deployed instance uses.
+        mp.setenv("BREAKDOWN_PUBLIC_URL", "https://white-cube-demo.fly.dev")
+        mp.delenv("BREAKDOWN_API_TOKEN", raising=False)
+        mp.delenv("BREAKDOWN_REQUIRE_AUTH", raising=False)
+        mp.delenv("BREAKDOWN_REFRESH", raising=False)
+        # base_url matters: the transport's DNS-rebinding protection only
+        # admits localhost hosts.
+        with TestClient(app, base_url="http://127.0.0.1:9090") as client:
 
-    def q(name, field):
-        return nodes[name][field]
+            def call(name, arguments):
+                resp = client.post(
+                    "/mcp/",
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"name": name, "arguments": arguments},
+                    },
+                    headers=_MCP_HEADERS,
+                )
+                assert resp.status_code == 200, resp.text
+                result = resp.json()["result"]
+                assert not result.get("isError"), result
+                (text,) = [b["text"] for b in result["content"] if b["type"] == "text"]
+                return json.loads(text)
 
-    # --- headline: revenue rose; it did not fall -------------------------
-    assert q("revenue", "baseline") == pytest.approx(26386.5, rel=1e-4)
-    assert q("revenue", "actual") == pytest.approx(26982.1, rel=1e-4)
-    assert q("revenue", "gap") == pytest.approx(595.5, rel=1e-3)
-    assert q("revenue", "relative_change") == pytest.approx(0.0226, rel=5e-3)
+            out["tree"] = call("get_tree", {})
+            out["rca"] = call("run_rca", {"target": "customer_churn_rate", **SESSION_WINDOWS})
+            out["plan"] = call(
+                "slice_metric", {"name": "churned_mrr", "dimension": "plan", **SESSION_WINDOWS}
+            )
+            out["country_rate"] = call(
+                "slice_metric",
+                {"name": "customer_churn_rate", "dimension": "country", **SESSION_WINDOWS},
+            )
+            out["country_mrr"] = call(
+                "slice_metric", {"name": "churned_mrr", "dimension": "country", **SESSION_WINDOWS}
+            )
+    return out
 
-    # --- the two movers --------------------------------------------------
-    assert q("order_count", "baseline") == pytest.approx(142.7, rel=1e-3)
-    assert q("order_count", "actual") == pytest.approx(148.0, rel=1e-3)
-    assert q("order_count", "relative_change") == pytest.approx(0.0376, rel=5e-3)
 
-    # Both moved +0.17% when `average_order_value` declared `denominator:
-    # order_count`: a window's AOV is Σrevenue / Σorder_count, and it had been
-    # the plain mean of the daily AOVs. The *relative* change barely moved
-    # (-0.013693 -> -0.013698) because both windows shifted by the same 0.17%,
-    # so the narration's "-1.4%" and every Shapley figure below are unchanged
-    # to the digit — `revenue` decomposes `per_period`, not from the parents'
-    # window aggregates.
-    assert q("average_order_value", "baseline") == pytest.approx(185.00, rel=1e-4)
-    assert q("average_order_value", "actual") == pytest.approx(182.46, rel=1e-4)
-    assert q("average_order_value", "relative_change") == pytest.approx(-0.0137, rel=5e-3)
-
-    assert q("daily_sessions", "relative_change") == pytest.approx(0.0224, rel=5e-3)
-
-    # --- the Shapley split the narration is built on ---------------------
-    contrib = {c["parent"]: c for c in q("revenue", "contributions")}
-    oc, aov = contrib["order_count"], contrib["average_order_value"]
-
-    assert oc["estimate"] == pytest.approx(984.5, rel=1e-3)
-    assert oc["share_of_gap"] == pytest.approx(1.653, rel=1e-3)
-    assert aov["estimate"] == pytest.approx(-367.1, rel=1e-3)
-    assert aov["share_of_gap"] == pytest.approx(-0.616, rel=1e-3)
-
-    # The transcript quotes the pair's sum against the observed gap to argue
-    # that nothing is hiding in the remainder.
-    assert oc["estimate"] + aov["estimate"] == pytest.approx(617.4, rel=1e-3)
-
-    # --- the spine of the narration: exact split, undetermined direction --
-    # Both legs' intervals cross zero over a 14-period window, which is why the
-    # transcript declines to call either one established. If a change ever
-    # makes one of these exclude zero, the section's argument is void and the
-    # prose has to be rewritten — not the number quietly bumped.
-    assert oc["ci_95"][0] < 0 < oc["ci_95"][1], (
-        "The README says the order-count leg's interval crosses zero; it no longer does."
-    )
-    assert aov["ci_95"][0] < 0 < aov["ci_95"][1], (
-        "The README says the AOV leg's interval crosses zero too — the whole point of the "
-        "section is that neither direction is established at this window length."
-    )
-    assert oc["prob_same_direction"] == pytest.approx(0.78, abs=0.04)
-    assert aov["prob_same_direction"] == pytest.approx(0.92, abs=0.04)
-    assert oc["ci_95"] == pytest.approx([-1499, 3365], rel=0.05)
-    assert aov["ci_95"] == pytest.approx([-909, 119], rel=0.05)
-
-    # --- `unexplained` is small, which the narration cites ----------------
-    unexplained = q("revenue", "unexplained")
-    assert abs(unexplained) == pytest.approx(21.9, rel=0.02)
-    assert abs(unexplained / q("revenue", "gap")) < 0.04, (
-        "The README says `unexplained` is under 4% of the gap."
-    )
-
-    # --- the sessions leg: about two-thirds, and the least settled --------
-    sessions = {c["parent"]: c for c in q("order_count", "contributions")}["daily_sessions"]
-    assert sessions["estimate"] == pytest.approx(3.7, abs=0.6)
-    assert 0.60 < sessions["share_of_gap"] < 0.76, (
-        "The README says sessions explain 'about two-thirds' of the order-count gain."
-    )
-    assert sessions["ci_95"] == pytest.approx([-9.6, 17.4], rel=0.25)
-    assert sessions["ci_95"][0] < 0 < sessions["ci_95"][1], (
-        "The README says the sessions leg's interval crosses zero."
-    )
-    assert sessions["prob_same_direction"] == pytest.approx(0.69, abs=0.06)
-    assert sessions["prob_same_direction"] < oc["prob_same_direction"], (
-        "The README calls the sessions leg 'the least settled leg of the three'."
-    )
-    assert sessions["prob_same_direction"] < aov["prob_same_direction"]
-
-    # The docs say a node declaring no `seasonality` carries no `seasonal`
-    # key rather than a 0.0 with a zero-width interval. `order_count` declares
-    # none; `revenue` does, but is a formula node with no `components` at all.
-    assert set(q("order_count", "components")) == {"trend"}
-
-    # --- ranked_causes: the three scores the README quotes ---------------
-    ranked = rca["ranked_causes"]
-    assert [r["metric"] for r in ranked] == [
-        "order_count",
-        "daily_sessions",
-        "average_order_value",
-    ]
-    assert [r["via"] for r in ranked] == ["revenue", "order_count", "revenue"]
-    scores = {r["metric"]: r["score"] for r in ranked}
-    # `order_count` and `average_order_value` hang off exact Shapley shares, so
-    # they are arithmetic; `daily_sessions` inherits the fitted sessions share.
-    assert scores["order_count"] == pytest.approx(0.44, abs=0.005)
-    assert scores["average_order_value"] == pytest.approx(0.27, abs=0.005)
-    assert scores["daily_sessions"] == pytest.approx(0.30, abs=0.03)
-    # The claim the README makes *about* the score, rather than its value: a
-    # parent explaining 165% of a gap 62% of which was cancelled ranks below a
-    # lone parent cleanly explaining 80% — which under this weighting would
-    # score 0.8. A clamp that saturated at 1.0 would fail this (roadmap C5).
-    assert scores["order_count"] < 0.8, (
-        "The README says order_count's 165% share scores *below* a clean 80% explainer."
+def mcp_doc_prints(value, spec="{:.1f}%", scale=100.0):
+    """The doc must print exactly this *measured* figure — the same both-ways
+    guard as the tour's `prints` helper in tests/test_white_cube_demo.py:
+    engine drifts, the string vanishes, red; doc edited by hand, same."""
+    printed = spec.format(value * scale).replace("\u2212", "-")
+    text = MCP_DOC.text.replace("\u2212", "-")
+    assert printed in text, (
+        f"docs/mcp.md does not print {printed}, but the session produced it. "
+        "Either the engine moved and the doc is stale, or the doc was edited "
+        "without its pin."
     )
 
 
-def test_readme_four_week_comparison_is_a_run_we_performed(replayed):
-    """The commentary argues that moving the transcript to a longer window to
-    get a cleaner interval would have been window-shopping — and it can only
-    argue that because the longer window really does come back cleaner, and
-    really does tell a different story. Both halves are claims about a run."""
-    _, _, four_week = replayed
-    revenue = four_week["nodes"]["revenue"]
+def test_mcp_session_headline_and_engagement_clearing(mcp_session):
+    """Finding one: churn jumped, and the engagement theory is *cleared* —
+    tiny contribution, unsure posterior, and a remainder that on a one-parent
+    node is the conclusion."""
+    tree = mcp_session["tree"]
+    assert tree["date_start"] == "2024-06-01" and tree["date_end"] == "2026-07-30"
+    assert len(tree["metrics"]) == 23
+    (ccr_meta,) = [m for m in tree["metrics"] if m["name"] == "customer_churn_rate"]
+    assert ccr_meta["parents"] == ["member_activity_rate"]
 
-    assert revenue["gap"] < 0, (
-        "The README says revenue *fell* over the four-week pair — that is what makes "
-        "switching to it a different story rather than a cleaner telling of this one."
+    node = mcp_session["rca"]["nodes"]["customer_churn_rate"]
+    assert node["status"] == "ok"
+    # "0.91% -> 1.23%, +34.2%"
+    assert node["baseline"] == pytest.approx(0.00913, abs=2e-4)
+    assert node["actual"] == pytest.approx(0.01226, abs=2e-4)
+    assert node["relative_change"] == pytest.approx(0.342, abs=5e-3)
+    mcp_doc_prints(node["baseline"], "{:.2f}%")
+    mcp_doc_prints(node["actual"], "{:.2f}%")
+    mcp_doc_prints(node["relative_change"], "{:.1f}%")
+
+    (eng,) = node["contributions"]
+    assert eng["parent"] == "member_activity_rate"
+    # "its contribution is 2.9% of the gap with an interval crossing zero"
+    assert eng["share_of_gap"] == pytest.approx(0.029, abs=0.02)
+    mcp_doc_prints(eng["share_of_gap"], "{:.1f}%")
+    assert eng["ci_95"][0] < 0 < eng["ci_95"][1]
+    assert eng["prob_same_direction"] == pytest.approx(0.65, abs=0.1)
+
+    # "96% of the gap lands in unexplained (status measured)" — the finding.
+    assert node["unexplained_status"] == "measured"
+    unexplained_share = node["unexplained"] / node["gap"]
+    assert unexplained_share > 0.9
+    mcp_doc_prints(unexplained_share, "{:.0f}%")
+
+    # "member activity barely moved (95.8% -> 96.2%)"
+    mar = mcp_session["rca"]["nodes"]["member_activity_rate"]
+    assert abs(mar["relative_change"]) < 0.02
+    mcp_doc_prints(mar["baseline"], "{:.1f}%")
+    mcp_doc_prints(mar["actual"], "{:.1f}%")
+
+
+def test_mcp_session_carries_the_sign_warning(mcp_session):
+    """The narration's 'second, independent reason' is a payload field: the
+    fitted engagement edge contradicts its declared direction and the MCP
+    response says so rather than compacting the warning away. If this fit
+    ever agrees with its declaration, the doc's caveat is stale — rewrite the
+    finding, don't delete the assertion."""
+    node = mcp_session["rca"]["nodes"]["customer_churn_rate"]
+    warnings = node.get("sign_warnings") or []
+    assert warnings, "the doc says the payload carries sign_warnings on this fit"
+    assert any("member_activity_rate" in w for w in warnings)
+
+
+def test_mcp_session_plan_slice_localizes_professional(mcp_session):
+    """Finding two: a pricing-tier story, with the verdict published."""
+    s = mcp_session["plan"]
+    assert s["localized"] is True
+    top = s["slices"][0]
+    assert top["value"] == "professional"
+    assert top["share_of_gap"] == pytest.approx(1.006, abs=1e-3)
+    assert top["baseline_share"] == pytest.approx(0.440, abs=1e-3)
+    assert top["prob_concentrated"] > 0.99
+    mcp_doc_prints(top["share_of_gap"], "{:.1f}%")
+    mcp_doc_prints(top["baseline_share"], "{:.1f}%")
+
+
+def test_mcp_session_known_issue_2_21_the_roll_up_headlines_the_verdict(mcp_session):
+    """Finding three's known-issue half, pinned as a defect the way
+    tests/test_white_cube_demo.py pins the churn_arpu colour gap: this goes
+    red when roadmap 2.21 ships a long-tail verdict vocabulary, at which
+    point docs/mcp.md's third finding must be rewritten to match."""
+    s = mcp_session["country_rate"]
+    assert s["localized"] is True, (
+        "docs/mcp.md narrates a `localized: true` verdict headlined by the "
+        "__other__ roll-up. If this is no longer true, roadmap 2.21 likely "
+        "shipped — rewrite the doc's third finding."
     )
-    oc = {c["parent"]: c for c in revenue["contributions"]}["order_count"]
-    lo, hi = oc["ci_95"]
-    assert lo < hi < 0, (
-        "The README says the four-week order-count interval excludes zero. If it no "
-        "longer does, the point about window-shopping needs restating, not deleting: "
-        f"got [{lo:.1f}, {hi:.1f}]."
+    assert s["localization_threshold"] == pytest.approx(0.25)
+    top = s["slices"][0]
+    assert top["value"] == "__other__"
+    excess_share = abs(top["excess"] / s["gap"])
+    assert excess_share == pytest.approx(0.264, abs=0.01)
+    mcp_doc_prints(excess_share, "{:.1f}%")
+    # "no named country clears the bar (the largest, BR, carries 13%)"
+    named = [r for r in s["slices"] if r["value"] != "__other__"]
+    named_excess = {r["value"]: abs(r["excess"] / s["gap"]) for r in named}
+    assert max(named_excess.values()) < s["localization_threshold"]
+    assert max(named_excess, key=named_excess.get) == "BR"
+    mcp_doc_prints(named_excess["BR"], "{:.0f}%")
+
+
+def test_mcp_session_country_mrr_cross_check_is_not_localized(mcp_session):
+    """Finding three's cross-check: the dollars-side country slice declines,
+    which is what entitles the narration to 'a tier, not a geography'."""
+    s = mcp_session["country_mrr"]
+    assert s["localized"] is False
+    assert sum(1 for r in s["slices"] if r["noise_level"]) == 7
+    assert len(s["slices"]) == 9
+
+
+def test_mcp_doc_report_url_is_the_link_the_server_actually_mints(mcp_session):
+    """The session closes on a deep link into the live demo and claims it
+    replays the analysis; the link printed must be the one the server mints
+    (tree prefix, window params and all)."""
+    url = mcp_session["rca"]["report_url"]
+    assert url.startswith("https://white-cube-demo.fly.dev/ui/#tree=white_cube_tree")
+    assert url in MCP_DOC.text, (
+        f"docs/mcp.md does not print the report_url the server mints:\n  {url}"
     )
 
 
-def test_readme_report_url_is_the_link_the_mcp_server_actually_mints(monkeypatch):
-    """The transcript closes on a deep link and claims it replays the analysis.
-
-    It stopped doing so when trees gained ids: `run_rca` always passes
-    `tree=state.id`, so every minted link now carries a `#tree=` prefix — which
-    the README says itself, two paragraphs above, while printing a link without
-    one.
-    """
-    from breakdown.mcp.shaping import rca_link
-
-    monkeypatch.delenv("BREAKDOWN_PUBLIC_URL", raising=False)
-    monkeypatch.delenv("BREAKDOWN_PORT", raising=False)
-    expected = rca_link(
-        "revenue",
-        TRANSCRIPT_WINDOWS["reference_start"],
-        TRANSCRIPT_WINDOWS["reference_end"],
-        TRANSCRIPT_WINDOWS["analysis_start"],
-        TRANSCRIPT_WINDOWS["analysis_end"],
-        tree=DEMO_TREE.stem,
-    )
-    assert expected in README.text, (
-        "The MCP section's `report_url` is not what the server would mint for "
-        f"this analysis. Expected to find:\n  {expected}"
-    )
-
-
-def test_readme_does_not_call_the_mcp_example_an_unedited_transcript():
-    """Its figures are regenerated by the test above and its narration is
-    written prose, so the label cannot claim a captured model response.
-    Relabelling was the whole point of touching that section."""
-    section = README.text[README.text.index("### What it looks like") :]
+def test_mcp_doc_does_not_call_the_session_an_unedited_transcript():
+    """Its figures are regenerated by the fixture above and its narration is
+    written prose, so the label cannot claim a captured model response."""
+    section = MCP_DOC.text[MCP_DOC.text.index("## A worked session") :]
     section = section[: section.index("\n## ")].lower()
     for forbidden in ("unedited", "verbatim"):
         assert forbidden not in section, (
-            f"The MCP example section calls itself {forbidden!r}. Its figures are "
-            "regenerated by a run this module performs and its narration is written "
-            "prose — the label has to say so."
+            f"The worked session calls itself {forbidden!r}. Its figures are "
+            "regenerated by a run this module performs and its narration is "
+            "written prose — the label has to say so."
         )
 
 
