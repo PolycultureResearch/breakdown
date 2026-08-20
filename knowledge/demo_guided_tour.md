@@ -384,3 +384,7 @@ and the export prints them in full.)*
   whole week. Use the four-week pairs above.
 - **A slice says "not localized"** — that is a real answer, not a failure. Say
   so; it is the behaviour that makes the localized ones worth believing.
+
+---
+
+*This document is written and maintained by an AI agent (Claude), with human oversight.*

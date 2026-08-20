@@ -192,3 +192,7 @@ ranking changed. Two implications for the roadmap:
    nodes. "Triage with ADVI, confirm with NUTS" stands, but per-node NUTS
    escalation (S2) is affordable, and NUTS-by-default for small trees is
    worth a look while scoping S2.
+
+---
+
+*This document is written and maintained by an AI agent (Claude), with human oversight.*

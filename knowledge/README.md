@@ -158,3 +158,7 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
 ## Example trees
 
 - [`b2b_mrr_tree.yml`](b2b_mrr_tree.yml) — a full B2B SaaS "Total MRR" metric tree (106 metrics, single apex), adapted from Metrics Labs' [B2B Metrics Canvas](https://miro.com/app/board/uXjVNq48sQI=/?share_link_id=353173494684) on Miro. A worked reference for mapping a real-world metric tree onto breakdown's `formula` (deterministic) and probabilistic (`priors`/`lags`) edges, and — since [C10](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend) — for the rest of the schema too: `grain`/`kind` on every node (a deliberate day + month cut), `dimensions` on the sliceable ones, `expected_signs` on every learned edge. Its apex is monthly, so run it over years: `--start-date 2022-01-01 --end-date 2024-12-31`.
+
+---
+
+*This document is written and maintained by an AI agent (Claude), with human oversight.*
