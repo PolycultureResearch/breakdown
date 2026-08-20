@@ -721,32 +721,36 @@ def test_route_table_documents_every_route():
 # The transcript lived in the README until 2026-08-20 and was pinned there as
 # landing-page content. The guideline changed when README.md became
 # human-owned (see AGENTS.md: agents do not edit it) and the MCP surface got
-# its own page. The session now speaks the MCP wire protocol against the
-# committed White Cube demo snapshots — the same hermetic setup as
-# tests/test_white_cube_demo.py — so it exercises the tool layer itself
-# (compaction, `how_to_read`, `sign_warnings`, `report_url`), not just the
-# HTTP routes behind it. Skipped when demo/ is absent: it is repo-only,
-# excluded from the sdist.
+# its own page. The session speaks the MCP wire protocol against the
+# committed White Cube demo snapshots, the same hermetic setup as
+# tests/test_white_cube_demo.py, so it exercises the tool layer itself
+# (compaction, `how_to_read`, `report_url`) and not just the HTTP routes
+# behind it. Skipped when demo/ is absent: it is repo-only, excluded from
+# the sdist.
 #
-# Tolerances: tight (abs<=1e-3 in printed units) for anything read off the
-# committed parquet through deterministic arithmetic; bands for posterior
-# quantities (a seeded fit is not version-stable across PyMC/numpy bumps);
-# and *structural* assertions — which row headlines, which flags are set —
-# for the two known-issue beats. Those last are pinned exactly so that
-# shipping roadmap 2.21 turns this section red and the doc's third finding
-# gets rewritten, rather than silently describing behavior that no longer
-# exists.
+# The doc also lists two more prompts we ran while choosing this example
+# (the churn/known-issue session and the two-lever what-if). Those are
+# deliberately quoted without figures, so they carry no pins; only the
+# worked session's numbers are asserted here.
+#
+# Tolerances follow tests/test_white_cube_demo.py's TOUR posture: figures
+# the doc prints are pinned tight (the fits are seeded) via mcp_doc_prints,
+# which fails both ways — engine drift and hand-edited prose alike. The two
+# posterior probabilities the narration quotes (P(direction) 0.998 / 0.94)
+# get approx bands only: seeded is not version-stable across PyMC/numpy
+# bumps, and a band that survives a minor upgrade beats a string pin that
+# flakes on one.
 
 WC_DEMO = REPO / "demo"
 WC_SNAPSHOTS = WC_DEMO / ".breakdown" / "snapshots"
 
-# The story B windows from knowledge/demo_guided_tour.md — the planted
-# professional churn spike, asked about from the churn-rate side.
+# The story D windows from knowledge/demo_guided_tour.md: adjacent four-week
+# blocks around the onboarding revamp's 2025-08-04 ship date.
 SESSION_WINDOWS = {
-    "reference_start": "2026-03-16",
-    "reference_end": "2026-04-12",
-    "analysis_start": "2026-05-11",
-    "analysis_end": "2026-06-07",
+    "reference_start": "2025-07-07",
+    "reference_end": "2025-08-03",
+    "analysis_start": "2025-08-11",
+    "analysis_end": "2025-09-07",
 }
 _MCP_HEADERS = {
     "Accept": "application/json, text/event-stream",
@@ -756,7 +760,7 @@ _MCP_HEADERS = {
 
 @pytest.fixture(scope="module")
 def mcp_session():
-    """The five tool calls the worked session narrates, over the wire."""
+    """The three tool calls the worked session narrates, over the wire."""
     if not WC_SNAPSHOTS.is_dir() or not any(WC_SNAPSHOTS.iterdir()):
         pytest.skip("demo snapshots not present — demo/ is repo-only; run `make -C demo snapshots`")
     out = {}
@@ -794,17 +798,8 @@ def mcp_session():
                 return json.loads(text)
 
             out["tree"] = call("get_tree", {})
-            out["rca"] = call("run_rca", {"target": "customer_churn_rate", **SESSION_WINDOWS})
-            out["plan"] = call(
-                "slice_metric", {"name": "churned_mrr", "dimension": "plan", **SESSION_WINDOWS}
-            )
-            out["country_rate"] = call(
-                "slice_metric",
-                {"name": "customer_churn_rate", "dimension": "country", **SESSION_WINDOWS},
-            )
-            out["country_mrr"] = call(
-                "slice_metric", {"name": "churned_mrr", "dimension": "country", **SESSION_WINDOWS}
-            )
+            out["rca"] = call("run_rca", {"target": "new_mrr", **SESSION_WINDOWS})
+            out["explain"] = call("explain_metric", {"name": "trial_activation_rate"})
     return out
 
 
@@ -821,104 +816,121 @@ def mcp_doc_prints(value, spec="{:.1f}%", scale=100.0):
     )
 
 
-def test_mcp_session_headline_and_engagement_clearing(mcp_session):
-    """Finding one: churn jumped, and the engagement theory is *cleared* —
-    tiny contribution, unsure posterior, and a remainder that on a one-parent
-    node is the conclusion."""
+def test_mcp_session_headline_is_exact_and_the_count_did_the_work(mcp_session):
+    """First movement of the narration: +26.0% new MRR, identities exact,
+    every door into a paid plan reported including the one that pulled the
+    other way."""
     tree = mcp_session["tree"]
     assert tree["date_start"] == "2024-06-01" and tree["date_end"] == "2026-07-30"
     assert len(tree["metrics"]) == 23
-    (ccr_meta,) = [m for m in tree["metrics"] if m["name"] == "customer_churn_rate"]
-    assert ccr_meta["parents"] == ["member_activity_rate"]
+    (tcr_meta,) = [m for m in tree["metrics"] if m["name"] == "trial_conversion_rate"]
+    assert tcr_meta["parents"] == ["trial_activation_rate", "trial_days_active"]
 
-    node = mcp_session["rca"]["nodes"]["customer_churn_rate"]
-    assert node["status"] == "ok"
-    # "0.91% -> 1.23%, +34.2%"
-    assert node["baseline"] == pytest.approx(0.00913, abs=2e-4)
-    assert node["actual"] == pytest.approx(0.01226, abs=2e-4)
-    assert node["relative_change"] == pytest.approx(0.342, abs=5e-3)
-    mcp_doc_prints(node["baseline"], "{:.2f}%")
-    mcp_doc_prints(node["actual"], "{:.2f}%")
-    mcp_doc_prints(node["relative_change"], "{:.1f}%")
+    nodes = mcp_session["rca"]["nodes"]
+    nm = nodes["new_mrr"]
+    # "$1,057 to $1,332 per week, up 26.0%"
+    assert nm["baseline"] == pytest.approx(1057.0, rel=1e-3)
+    assert nm["actual"] == pytest.approx(1332.0, rel=1e-3)
+    assert nm["relative_change"] == pytest.approx(0.260, abs=2e-3)
+    mcp_doc_prints(nm["baseline"], "{:,.0f}", scale=1)
+    mcp_doc_prints(nm["actual"], "{:,.0f}", scale=1)
+    mcp_doc_prints(nm["relative_change"])
+    # "zero to thirteen decimal places"
+    assert abs(nm["unexplained"]) < 1e-9
 
-    (eng,) = node["contributions"]
-    assert eng["parent"] == "member_activity_rate"
-    # "its contribution is 2.9% of the gap with an interval crossing zero"
-    assert eng["share_of_gap"] == pytest.approx(0.029, abs=0.02)
-    mcp_doc_prints(eng["share_of_gap"], "{:.1f}%")
-    assert eng["ci_95"][0] < 0 < eng["ci_95"][1]
-    assert eng["prob_same_direction"] == pytest.approx(0.65, abs=0.1)
-
-    # "96% of the gap lands in unexplained (status measured)" — the finding.
-    assert node["unexplained_status"] == "measured"
-    unexplained_share = node["unexplained"] / node["gap"]
-    assert unexplained_share > 0.9
-    mcp_doc_prints(unexplained_share, "{:.0f}%")
-
-    # "member activity barely moved (95.8% -> 96.2%)"
-    mar = mcp_session["rca"]["nodes"]["member_activity_rate"]
-    assert abs(mar["relative_change"]) < 0.02
-    mcp_doc_prints(mar["baseline"], "{:.1f}%")
-    mcp_doc_prints(mar["actual"], "{:.1f}%")
+    ns = nodes["new_subscriptions"]
+    assert ns["relative_change"] == pytest.approx(0.311, abs=2e-3)
+    mcp_doc_prints(ns["relative_change"])
+    assert ns["unexplained"] == 0.0
+    shares = {c["parent"]: c["share_of_gap"] for c in ns["contributions"]}
+    assert shares["trial_conversions"] == pytest.approx(1.145, abs=2e-3)
+    assert shares["reactivations"] == pytest.approx(-0.217, abs=2e-3)
+    assert shares["direct_conversions"] == pytest.approx(0.072, abs=2e-3)
+    for share in shares.values():
+        mcp_doc_prints(share)
+    (lagged,) = [c for c in ns["contributions"] if c["parent"] == "trial_conversions"]
+    assert lagged["lag"] == 1  # "shifted back one week"
 
 
-def test_mcp_session_carries_the_sign_warning(mcp_session):
-    """The narration's 'second, independent reason' is a payload field: the
-    fitted engagement edge contradicts its declared direction and the MCP
-    response says so rather than compacting the warning away. If this fit
-    ever agrees with its declaration, the doc's caveat is stale — rewrite the
-    finding, don't delete the assertion."""
-    node = mcp_session["rca"]["nodes"]["customer_churn_rate"]
-    warnings = node.get("sign_warnings") or []
-    assert warnings, "the doc says the payload carries sign_warnings on this fit"
-    assert any("member_activity_rate" in w for w in warnings)
+def test_mcp_session_conversion_beats_volume(mcp_session):
+    """Second movement: the business grew underneath (+15.5% trials), but
+    conversion carries more of the gap than volume does."""
+    nodes = mcp_session["rca"]["nodes"]
+    assert nodes["trials_started"]["relative_change"] == pytest.approx(0.155, abs=2e-3)
+    mcp_doc_prints(nodes["trials_started"]["relative_change"])
+
+    tc = nodes["trial_conversions"]
+    split = {c["parent"]: c["share_of_gap"] for c in tc["contributions"]}
+    assert split["trial_conversion_rate"] > split["trials_started"]
+    assert split["trial_conversion_rate"] == pytest.approx(0.697, abs=3e-3)
+    assert split["trials_started"] == pytest.approx(0.303, abs=3e-3)
+    mcp_doc_prints(split["trial_conversion_rate"])
+    mcp_doc_prints(split["trials_started"])
+
+    tcr = nodes["trial_conversion_rate"]
+    # "from 20.4% to 28.6% of each weekly cohort, up 40.2%"
+    assert tcr["baseline"] == pytest.approx(0.2037, abs=1e-3)
+    assert tcr["actual"] == pytest.approx(0.2857, abs=1e-3)
+    mcp_doc_prints(tcr["baseline"])
+    mcp_doc_prints(tcr["actual"])
+    mcp_doc_prints(tcr["relative_change"])
+    # "small-but-measured on the fitted conversion node (about 8% ...)"
+    assert tcr["unexplained_status"] == "measured"
+    assert abs(tcr["unexplained"] / (tcr["actual"] - tcr["baseline"])) < 0.12
 
 
-def test_mcp_session_plan_slice_localizes_professional(mcp_session):
-    """Finding two: a pricing-tier story, with the verdict published."""
-    s = mcp_session["plan"]
-    assert s["localized"] is True
-    top = s["slices"][0]
-    assert top["value"] == "professional"
-    assert top["share_of_gap"] == pytest.approx(1.006, abs=1e-3)
-    assert top["baseline_share"] == pytest.approx(0.440, abs=1e-3)
-    assert top["prob_concentrated"] > 0.99
-    mcp_doc_prints(top["share_of_gap"], "{:.1f}%")
-    mcp_doc_prints(top["baseline_share"], "{:.1f}%")
+def test_mcp_session_names_activation_with_an_honest_split(mcp_session):
+    """The beat this example was chosen for: activation is named with an
+    interval clear of zero, and the collinear twin is reported unsurely —
+    sure of the sum, honest about the split."""
+    nodes = mcp_session["rca"]["nodes"]
+    act, days = nodes["trial_activation_rate"], nodes["trial_days_active"]
+    # "from 54.5% to 73.3% ... up 34.4%; days active from 1.42 to 2.42, up 71.2%"
+    assert act["baseline"] == pytest.approx(0.545, abs=1e-3)
+    assert act["actual"] == pytest.approx(0.733, abs=1e-3)
+    mcp_doc_prints(act["baseline"])
+    mcp_doc_prints(act["actual"])
+    mcp_doc_prints(act["relative_change"])
+    mcp_doc_prints(days["baseline"], "{:.2f}", scale=1)
+    mcp_doc_prints(days["actual"], "{:.2f}", scale=1)
+    mcp_doc_prints(days["relative_change"])
 
-
-def test_mcp_session_known_issue_2_21_the_roll_up_headlines_the_verdict(mcp_session):
-    """Finding three's known-issue half, pinned as a defect the way
-    tests/test_white_cube_demo.py pins the churn_arpu colour gap: this goes
-    red when roadmap 2.21 ships a long-tail verdict vocabulary, at which
-    point docs/mcp.md's third finding must be rewritten to match."""
-    s = mcp_session["country_rate"]
-    assert s["localized"] is True, (
-        "docs/mcp.md narrates a `localized: true` verdict headlined by the "
-        "__other__ roll-up. If this is no longer true, roadmap 2.21 likely "
-        "shipped — rewrite the doc's third finding."
+    by = {c["parent"]: c for c in nodes["trial_conversion_rate"]["contributions"]}
+    a, d = by["trial_activation_rate"], by["trial_days_active"]
+    assert a["share_of_gap"] == pytest.approx(0.682, abs=5e-3)
+    assert d["share_of_gap"] == pytest.approx(0.398, abs=8e-3)
+    mcp_doc_prints(a["share_of_gap"])
+    mcp_doc_prints(d["share_of_gap"])
+    # The narration's whole argument: one interval clear of zero, one not.
+    assert a["ci_95"][0] > 0
+    assert a["prob_same_direction"] == pytest.approx(0.998, abs=0.04)
+    assert d["ci_95"][0] < 0 < d["ci_95"][1], (
+        "the doc says the days-active interval straddles zero — if it no "
+        "longer does, the honest-split paragraph must be rewritten"
     )
-    assert s["localization_threshold"] == pytest.approx(0.25)
-    top = s["slices"][0]
-    assert top["value"] == "__other__"
-    excess_share = abs(top["excess"] / s["gap"])
-    assert excess_share == pytest.approx(0.264, abs=0.01)
-    mcp_doc_prints(excess_share, "{:.1f}%")
-    # "no named country clears the bar (the largest, BR, carries 13%)"
-    named = [r for r in s["slices"] if r["value"] != "__other__"]
-    named_excess = {r["value"]: abs(r["excess"] / s["gap"]) for r in named}
-    assert max(named_excess.values()) < s["localization_threshold"]
-    assert max(named_excess, key=named_excess.get) == "BR"
-    mcp_doc_prints(named_excess["BR"], "{:.0f}%")
+    assert d["prob_same_direction"] == pytest.approx(0.94, abs=0.05)
+    assert a["share_of_gap"] > d["share_of_gap"]
+
+    # "In the tree-wide ranking, activation outranks trial volume itself."
+    ranked = [r["metric"] for r in mcp_session["rca"]["ranked_causes"]]
+    assert ranked.index("trial_activation_rate") < ranked.index("trials_started")
 
 
-def test_mcp_session_country_mrr_cross_check_is_not_localized(mcp_session):
-    """Finding three's cross-check: the dollars-side country slice declines,
-    which is what entitles the narration to 'a tier, not a geography'."""
-    s = mcp_session["country_mrr"]
-    assert s["localized"] is False
-    assert sum(1 for r in s["slices"] if r["noise_level"]) == 7
-    assert len(s["slices"]) == 9
+def test_mcp_session_explain_metric_gives_the_series_context(mcp_session):
+    """The 'this was not a normal month' sentence is a claim about the whole
+    loaded series, which only explain_metric carries."""
+    summary = mcp_session["explain"]["series_summary"]
+    assert summary["n_periods"] == 112
+    assert summary["mean"] == pytest.approx(0.561, abs=2e-3)
+    assert summary["min"] == pytest.approx(0.419, abs=2e-3)
+    assert summary["max"] == pytest.approx(0.784, abs=2e-3)
+    mcp_doc_prints(summary["mean"])
+    mcp_doc_prints(summary["min"])
+    mcp_doc_prints(summary["max"])
+    # "near the top of the whole series": the window's activation sits above
+    # the long-run mean and below the all-time max.
+    act = mcp_session["rca"]["nodes"]["trial_activation_rate"]
+    assert summary["mean"] < act["actual"] < summary["max"]
 
 
 def test_mcp_doc_report_url_is_the_link_the_server_actually_mints(mcp_session):
