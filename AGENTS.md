@@ -91,6 +91,8 @@ docs/
   why-breakdown.md   # The problem breakdown exists to solve
   ai-context/        # Architecture deep-dives (backend, frontend) for contributors
 knowledge/           # Product & design specs, roadmap, reference trees
+packaging/
+  mcpb/              # Claude Desktop extension (.mcpb): one-click connector, built on release
 tests/
 Dockerfile           # Container image (see docs/deploying.md)
 compose.yaml

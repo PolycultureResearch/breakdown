@@ -41,13 +41,40 @@ its `ci_status`.
 
 ## Connecting
 
-From Claude Code:
+Four paths, ordered by how little the person connecting should have to know.
+
+**Someone deployed breakdown for you (the no-setup path).** Add it as a
+custom connector: in Claude, Settings → Connectors → **Add custom
+connector**, paste the server's URL (`https://your-host/mcp`), done. No file
+edits, nothing installed. Two constraints, because connectors run from
+Anthropic's cloud rather than your machine: the server must be reachable on
+the public internet (this path cannot reach `127.0.0.1`), and if it sets
+`BREAKDOWN_API_TOKEN`, the token has to be entered as a request header when
+the connector is added. On Team and Enterprise plans an org admin does that
+once (`static_headers`, in beta as of August 2026: header name
+`Authorization`, value `Bearer <token>`) and everyone else just clicks
+Connect.
+
+**Claude Desktop, when the connector path doesn't fit.** For a server on
+localhost, or a token on a plan with no org admin to hold it, install the
+extension: download `breakdown.mcpb` from the [latest
+release](https://github.com/PolycultureResearch/breakdown/releases/latest),
+double-click it, and fill in the two fields it asks for (server URL, and the
+token if there is one). Claude Desktop runs it with its own built-in Node;
+nothing else gets installed. The bundle lives in
+[`packaging/mcpb/`](../packaging/mcpb/).
+
+**Claude Code.** One line, plus the header if the server is gated:
 
 ```bash
 claude mcp add --transport http breakdown http://127.0.0.1:9090/mcp
+# gated server:
+claude mcp add --transport http breakdown https://your-host/mcp \
+  --header "Authorization: Bearer <token>"
 ```
 
-or from Claude Desktop via `claude_desktop_config.json` (stdio bridge):
+**Any other MCP client, by hand.** The stdio bridge the extension automates,
+in `claude_desktop_config.json` form (requires Node on the machine):
 
 ```json
 {

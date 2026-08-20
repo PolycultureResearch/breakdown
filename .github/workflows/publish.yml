@@ -110,3 +110,79 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  # The Claude Desktop extension rides the same release: build the .mcpb
+  # bundle (see packaging/mcpb/) and attach it as a release asset, stamping
+  # its manifest version from the release tag so it cannot go stale.
+  bundle-mcpb:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # gh release upload
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Stamp manifest version from the release tag
+        working-directory: packaging/mcpb
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          node -e "
+            const fs = require('fs');
+            const m = JSON.parse(fs.readFileSync('manifest.json', 'utf8'));
+            m.version = process.argv[1];
+            fs.writeFileSync('manifest.json', JSON.stringify(m, null, 2) + '\n');
+          " "$VERSION"
+
+      - name: Build the bundle
+        working-directory: packaging/mcpb
+        run: |
+          npm ci --omit=dev
+          npx -y @anthropic-ai/mcpb validate manifest.json
+          npx -y @anthropic-ai/mcpb pack . breakdown.mcpb
+
+      # The bundled entry script must actually bridge stdio to a breakdown
+      # server before it ships. tools/list through the real vendored proxy
+      # against a served instance (the bundled mock tree, no provider) is the
+      # smallest end-to-end proof.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.0
+
+      - name: Smoke-test the bridge
+        run: |
+          uv run --isolated --no-project --with . breakdown serve --port 9090 >/tmp/serve.log 2>&1 &
+          for i in $(seq 1 90); do
+            curl -fsS http://127.0.0.1:9090/health 2>/dev/null | grep -q '"ok"' && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:9090/health | grep -q '"ok"' || { cat /tmp/serve.log; exit 1; }
+          node - <<'JS'
+          const { spawn } = require("child_process");
+          const p = spawn("node", ["packaging/mcpb/server/index.js"], {
+            env: { ...process.env, BREAKDOWN_MCP_URL: "http://127.0.0.1:9090/mcp" },
+          });
+          let out = "";
+          p.stdout.on("data", (d) => (out += d));
+          const send = (m) => p.stdin.write(JSON.stringify(m) + "\n");
+          send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
+            protocolVersion: "2025-06-18", capabilities: {},
+            clientInfo: { name: "ci", version: "0" } } });
+          setTimeout(() => {
+            send({ jsonrpc: "2.0", method: "notifications/initialized" });
+            send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+          }, 5000);
+          setTimeout(() => {
+            const ok = out.includes('"run_rca"');
+            console.log(ok ? "bridge OK" : "bridge FAILED\n" + out.slice(-2000));
+            p.kill();
+            process.exit(ok ? 0 : 1);
+          }, 30000);
+          JS
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" packaging/mcpb/breakdown.mcpb --clobber
