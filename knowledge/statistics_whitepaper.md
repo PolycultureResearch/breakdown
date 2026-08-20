@@ -1419,3 +1419,7 @@ Learning*, 35.
 
 Young, H. P. (1985). Monotonic solutions of cooperative games. *International
 Journal of Game Theory*, 14, 65–72.
+
+---
+
+*This document is written and maintained by an AI agent (Claude), with human oversight.*

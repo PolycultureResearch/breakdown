@@ -299,3 +299,7 @@ path lengths in Hamiltonian Monte Carlo. *Journal of Machine Learning Research*,
 Yao, Y., Vehtari, A., Simpson, D., & Gelman, A. (2018). Yes, but did it work?:
 Evaluating variational inference. *International Conference on Machine
 Learning*, 35.
+
+---
+
+*This document is written and maintained by an AI agent (Claude), with human oversight.*

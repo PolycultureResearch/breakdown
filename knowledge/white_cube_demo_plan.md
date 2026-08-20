@@ -288,3 +288,7 @@ generator's own truth rather than against a number someone wrote down.
 
 Everything else — `breakdown doctor` all-PASS, `mf validate-configs`, the guided
 tour in [`demo_guided_tour.md`](demo_guided_tour.md) — is a check on top of that.
+
+---
+
+*This document is written and maintained by an AI agent (Claude), with human oversight.*

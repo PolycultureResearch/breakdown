@@ -142,3 +142,7 @@ historical, move `timeline.start` in
 windows by the same offset, and re-run `make all`. Then update the window pairs
 in `scripts/verify_white_cube_stories.py` and the guided tour together — the
 verifier is what proves the stories still land.
+
+---
+
+*This document is written and maintained by an AI agent (Claude), with human oversight.*

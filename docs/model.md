@@ -581,3 +581,7 @@ ship in every cold-start response.
    MCP — and its intervals and components should be read as approximate. The
    real fix is a zero-inflated or count likelihood, tracked as roadmap S20;
    until it lands, the warning is the disclosure.
+
+---
+
+*This document is written and maintained by an AI agent (Claude), with human oversight.*

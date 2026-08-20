@@ -509,3 +509,7 @@ error is *measured* rather than assumed (S1/S2), and no weakness in white paper
 *Ticket-level detail and the rationale behind shipped work live in
 [`archive/`](archive/) (statistical review T1–T12, UI plan U1–U6, connectivity
 analysis). This roadmap absorbs their open items.*
+
+---
+
+*This document is written and maintained by an AI agent (Claude), with human oversight.*
