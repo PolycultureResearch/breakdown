@@ -14,7 +14,7 @@ ignore red flags.
 
 | Tree | Metrics | Grain | Provider | What it is for |
 |---|---|---|---|---|
-| **White Cube** `demo/white_cube_tree.yml` | 18 | day + week | committed snapshots | **Ground truth.** Anomalies planted on purpose; every answer checkable. |
+| **White Cube** `demo/white_cube_tree.yml` | 23 | day + week | committed snapshots | **Ground truth.** Anomalies planted on purpose; every answer checkable. |
 | **B2B MRR** `knowledge/b2b_mrr_tree.yml` | 106 | day + month | mock | **Scale and shape.** Mixed grain, 26 sliceable nodes, deep chains. |
 | **Jaffle** `breakdown/examples/jaffle_shop_tree.yml` | 4 | day | mock | Fast sanity check only. Too small to surface much. |
 
@@ -45,8 +45,8 @@ provider instead of a snapshot, it fails loudly rather than quietly working on a
 machine that happens to have the dbt project. Copy the command; do not "fix" the
 path.
 
-Snapshots are committed (`demo/.breakdown/snapshots`, 51 files: 18 metrics + 32
-sliced + the manifest). If missing, `make -C demo snapshots` — which regenerates
+Snapshots are committed (`demo/.breakdown/snapshots`, 59 files: 23 metrics + 36
+sliced, plus the manifest). If missing, `make -C demo snapshots` — which regenerates
 both halves and, since roadmap 1.11, actually completes: it had been unable to
 finish since C2 landed on 2026-08-05, invisibly, because the snapshots were
 committed.
@@ -55,11 +55,17 @@ committed.
 narrative: [`knowledge/demo_guided_tour.md`](../../../knowledge/demo_guided_tour.md),
 authoritative for the windows.
 
-**Do not trust the tour's percentages.** It says every number in it is asserted
-in `tests/test_white_cube_demo.py`; that test pins *properties* — gap sign,
-which node ranks first, the lag, a share inequality — and **no** quoted
-percentage. Several of its shares have drifted since it was written. Step 6 of
-the procedure exists partly because of this.
+**The tour's percentages are pinned now — and step 6 is still the reason to
+check them.** This line used to say the opposite, and it was right when written:
+`tests/test_white_cube_demo.py` pinned only *properties* (gap sign, which node
+ranks first, the lag, a share inequality) while the tour quoted percentages that
+had drifted, one by 28 points. Every figure the tour prints is now pinned to the
+decimal place it prints, **beside** the property it is the witness for, and the
+`prints()` helper fails in both directions — engine drift and a hand-edited
+document alike. So the failure mode step 6 is hunting has changed shape rather
+than gone: a *new* figure added to the tour and never pinned, or a re-pin that
+moved a value without re-reading the sentence it sits in. Read the paragraph,
+not just the number.
 
 | Story | Target | Reference | Analysis |
 |---|---|---|---|
@@ -82,21 +88,36 @@ sampler change that moves the values:
 If the top cause moves off `new_subscriptions`, that is a finding regardless of
 what the tests say — the planted cause is a volume story.
 
-**`churn_arpu` is the undefined-rate fixture.** Nine of its 113 weeks have no
+**`churn_arpu` is the undefined-rate fixture.** Eleven of its 112 weeks have no
 value — every one of them a week in which nobody churned, so the rate is `0/0`
 (the tree declares `denominator: churned_subscriptions`, which is what lets the
-engine say *undefined* rather than *missing*). Use it to exercise roadmap 1.11:
+engine say *undefined* rather than *missing*). The business is barely a month old
+at the start of the window, which is why they cluster there. Re-measured
+2026-08-22 off the committed snapshot; the previous counts here predated the
+engagement-edges regeneration and named a week (`2024-09-02`) that is now
+defined, and its behaviour bullets predated 1.12's up-front refusal. All three
+cases below were re-run against the live server on 2026-08-22:
 
-- `2024-06-03` → `2024-06-24` and `2024-07-08` → `2024-07-29` are each **four
-  consecutive** undefined weeks, so a window inside either is entirely
-  undefined and `churn_arpu` reports `undefined_over_window`;
-- `2024-09-02` is a lone undefined week — a good single-period analysis window;
-- a window merely *containing* one still has a defined rate, because the window
-  aggregate is `Σchurned_mrr / Σchurned_subscriptions`;
-- any window containing one makes `churned_mrr` (which multiplies by it)
-  `attribution_failed`, and leaves every other node in scope reporting.
+- `2024-06-03` → `2024-08-05` is **ten consecutive** undefined weeks. A window
+  wholly inside it makes `churned_mrr` (`churned_subscriptions * churn_arpu`)
+  non-finite, and `POST /rca/churned_mrr` **refuses with a 422** that names the
+  formula, which side of the comparison failed, and how many periods —
+  *"`churned_subscriptions` is zero or non-finite on 4 of 4 reference-window
+  week(s)"*. A refusal, not a degraded node: the message is the fixture.
+- `2024-08-19` is the lone undefined week, with `2024-08-12` and `2024-08-26`
+  defined either side — use it as a single-period **analysis** window against
+  `2024-08-12` → `2024-08-18` and the same refusal fires on the analysis side
+  (*"1 of 1 analysis-window week(s)"*), which is how you check the message
+  reports the correct half.
+- A window merely *containing* an undefined week is fine: `2024-10-07` →
+  `2024-11-03` reports `status: ok` on `churn_arpu`, `churned_mrr` and
+  `churned_subscriptions` alike, because the window aggregate is
+  `Σchurned_mrr / Σchurned_subscriptions` rather than a mean of weekly ratios.
+  That contrast — refused when *every* period is undefined, ordinary when only
+  some are — is the property worth re-checking, in both directions.
 
-Every tour window is well clear of all nine, so the four stories are unaffected.
+Every tour window is well clear of all eleven, so the four stories are
+unaffected.
 
 **Known-bad:** none currently logged.
 

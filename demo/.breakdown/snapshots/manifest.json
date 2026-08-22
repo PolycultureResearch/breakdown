@@ -145,7 +145,7 @@
   },
   "member_activity_rate__week-rate__2024-06-01__2026-07-30.parquet": {
     "definition_sha": null,
-    "fetched_at": "2026-08-19T18:12:19.624137+00:00",
+    "fetched_at": "2026-08-22T20:20:52.366071+00:00",
     "provider": "LocalDataFetcher",
     "rows": 112
   },
@@ -241,7 +241,7 @@
   },
   "sessions__by-session__country__day-flow__2024-06-01__2026-07-30.parquet": {
     "definition_sha": null,
-    "fetched_at": "2026-08-19T18:15:24.441498+00:00",
+    "fetched_at": "2026-08-22T20:21:25.515849+00:00",
     "provider": "LocalDataFetcher",
     "rows": 9483
   },
@@ -283,7 +283,7 @@
   },
   "trial_activation_rate__week-rate__2024-06-01__2026-07-30.parquet": {
     "definition_sha": null,
-    "fetched_at": "2026-08-19T18:12:02.618464+00:00",
+    "fetched_at": "2026-08-22T20:20:35.636938+00:00",
     "provider": "LocalDataFetcher",
     "rows": 112
   },
@@ -319,7 +319,7 @@
   },
   "trial_days_active__week-rate__2024-06-01__2026-07-30.parquet": {
     "definition_sha": null,
-    "fetched_at": "2026-08-19T18:12:04.359846+00:00",
+    "fetched_at": "2026-08-22T20:20:37.267252+00:00",
     "provider": "LocalDataFetcher",
     "rows": 112
   },

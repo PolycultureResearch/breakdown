@@ -162,11 +162,23 @@ cancelling were worth more than average.
 
 **Point at the engagement edge being *cleared*.** `customer_churn_rate` has a
 learned parent now — `member_activity_rate`, "disengaged members churn" — and
-in this window the tree checks that explanation and declines it: member
-activity barely moved (+0.5%), its contribution is a sliver of the gap, and
-the posterior is unsure of even that. The obvious wrong story ("our members
+in this window the tree checks that explanation and declines it. Member
+activity moved the **wrong way for the story**: it is *up* **+2.5%** (25.4% →
+26.0% of members active on an average day) in the four weeks churn spiked. The
+edge's declared sign is negative, so a rise predicts churn *falling* — its
+contribution comes back at **−4.9%** of the gap, pulling against it rather
+than explaining it, and the posterior is unsure of even that sign (interval
+crossing zero, `P(direction)` **0.82**). The obvious wrong story ("our members
 are drifting away") is examined and rejected on screen; what remains is a
 tier-shaped problem, which the slice below names.
+
+*Worth knowing if a prospect presses on it:* this is a real edge declining a
+real window, not an edge too weak to say anything either way. The generator
+couples member activity to churn through a shared engagement driver, and story
+D's branch is the same machinery answering *yes* on a window where the
+mechanism did move. An engagement edge that never fires is worthless; the
+point is that this one fires when the mechanism moved and abstains when it
+did not.
 
 > **⚠ Known gap — one node on the churn branch has no colour.** `churn_arpu`
 > is up **+25.0%** and carries **36.3%** of the churn damage, and it renders
@@ -248,9 +260,9 @@ business is growing — but the win is conversion.
 lift itself has a cause the tree can name. `trial_conversion_rate` has two
 learned parents, the ones a subscription company argues about in every
 retro: did they *activate* (upload their first work), and how many days did
-they actually use the trial. In the window: `trial_activation_rate` **+34.4%**,
-`trial_days_active` **+71.2%**, conversion **+40.2%** — and the attribution
-on `trial_conversion_rate` hands **68.2%** of the gap to activation with
+they actually use the trial. In the window: `trial_activation_rate` **+35.9%**,
+`trial_days_active` **+76.1%**, conversion **+40.2%** — and the attribution
+on `trial_conversion_rate` hands **70.7%** of the gap to activation with
 `P(direction)` **0.998** and an interval clear of zero. The story reads
 straight off the screen: *the revamp moved activation, and conversion
 followed.*

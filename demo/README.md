@@ -100,19 +100,22 @@ boot, and the trace cache `prewarm.py` fills is discarded along with the
 process, so the prewarm buys nothing. Add a payment method; the free allowance
 still covers an app this size.
 
-**The deploy workflow needs a token that has never existed.** `Deploy demo` has
-failed on every run with `no access token available` — there is no
-`FLY_API_TOKEN` at repo level or in the `demo` environment. Its own prerequisite
-comment says how, but note the environment scope:
+**The deploy workflow needs a token, and it needs it in the right scope.**
+`Deploy demo` failed on every run until 2026-08-10 with `no access token
+available`, because `FLY_API_TOKEN` existed nowhere. It is now set (in the
+`demo` environment, which is the part that is easy to get wrong) and every push
+to `main` deploys — verified 2026-08-22, `Deploy demo` green on the last three
+pushes and the live `/health` answering in 0.2s. If it ever has to be recreated:
 
 ```bash
 fly tokens create deploy --app white-cube-demo
 gh secret set FLY_API_TOKEN --env demo --body "<token>"   # --env, not repo-level
 ```
 
-Until that exists every deploy is manual, and `fly.toml` changes silently never
-reach production — which is how `min_machines_running = 1` sat committed but
-undeployed. Check what the live machine actually runs with
+While it was missing, every deploy was manual and `fly.toml` changes silently
+never reached production — which is how `min_machines_running = 1` sat committed
+but undeployed. That failure mode is not visible from the repo, so check what the
+live machine actually runs with
 `fly machine status <id> --app white-cube-demo --display-config`, not by reading
 `fly.toml`.
 
