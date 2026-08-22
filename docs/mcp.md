@@ -180,10 +180,11 @@ reproducing by hand:
   (a 2.9% contribution with an interval crossing zero) and puts 96% of the
   gap in `unexplained`, which on a one-parent node is the finding, not a
   failure. The plan slice names the professional tier. The country slice on
-  the rate returns `localized: true` headlined by the `__other__` roll-up
-  bucket, a known issue (roadmap 2.21): read it as "the long tail moved",
-  and cross-check the dollars-side country slice, which declines to
-  localize, before concluding anything about geography.
+  the rate returns `localization: "long_tail"` — the concentration sits in
+  the `__other__` roll-up rather than in any named country, so the answer is
+  "the tail moved; raise this dimension's `top_k` to see inside it", never
+  a country. Cross-check the dollars-side country slice, which declines to
+  localize at all, before concluding anything about geography.
 - *"We can fund one thing next quarter: a retention push we believe cuts
   churn 20%, or 30% more marketing spend. Which is worth more?"*
   `run_whatif` prices the spend lever higher (+$345 against +$161 per week)

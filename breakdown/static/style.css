@@ -584,6 +584,24 @@ details .data-table { margin-top: 8px; }
 .slice-panel:empty { display: none; }
 .slice-verdict { font-size: 12.5px; margin: 6px 0; }
 .slice-verdict.dim { color: var(--muted); }
+/* The third verdict (roadmap 2.21): the gap is concentrated, but in the
+   `__other__` roll-up rather than in a segment anyone can act on. Neither the
+   plain headline nor the muted "not localized" — it carries a remedy, so it
+   gets the same warn treatment as every other "here is what to do next" block
+   in the panel, and never the accent tint that means "this is your culprit". */
+.slice-verdict.tail {
+  color: var(--warn-ink);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  line-height: 1.45;
+}
+.slice-verdict.tail code {
+  background: rgba(255, 255, 255, 0.6);
+  padding: 0 3px;
+  border-radius: 3px;
+}
 .slice-table { margin-top: 4px; font-size: 12px; table-layout: fixed; width: 100%; }
 .slice-table th, .slice-table td { overflow: hidden; text-overflow: ellipsis; }
 .slice-table th:first-child, .slice-table td:first-child { width: 38%; }

@@ -719,6 +719,7 @@ def test_folding_does_not_disturb_a_small_dimension():
 
 # ---------------------------------------------------------------------------
 # The localization verdict (roadmap C24): published, and reachable for rates.
+# Three states since roadmap 2.21: the roll-up bucket is not a segment.
 
 
 def test_a_concentrated_rate_slice_can_be_localized():
@@ -743,6 +744,7 @@ def test_a_concentrated_rate_slice_can_be_localized():
     assert top["baseline_share"] is not None
     assert top["baseline_share"] == pytest.approx(top["share_reference"])
     assert result["localized"] is True
+    assert result["localization"] == "localized"
     assert result["localization_threshold"] == 0.25
 
 
@@ -759,7 +761,70 @@ def test_an_even_rate_move_is_not_localized():
         *AN,
         weight_sliced=weight_sliced,
     )
-    assert "localized" in result
+    assert result["localized"] is False
+    assert result["localization"] == "not_localized"
+
+
+def test_a_concentrated_roll_up_is_the_long_tail_not_a_localization():
+    """Roadmap 2.21. The gap really is concentrated — but in `__other__`, the
+    fold of everything outside `top_k`, which is the set of values *nobody
+    enumerated*. Calling that "localized" hands the reader a culprit they
+    cannot go and act on; calling it "not localized" denies a move that
+    happened. It is its own state, with the remedy named."""
+    frames, dates = _flow_slices(boost=("amer", -80.0))  # amer is the smallest
+    result = slice_attribution(
+        _flow_defn(top_k=2),  # keeps apac + emea; amer folds into __other__
+        "region",
+        _long(frames),
+        _unsliced(frames, dates),
+        *REF,
+        *AN,
+    )
+    top = result["slices"][0]
+    assert top["value"] == "__other__"
+    assert top["n_values"] == 1
+    # It clears the bar on the numbers — this is not a threshold miss.
+    assert abs(top["excess"] / result["gap"]) > 0.25
+    assert not top["noise_level"]
+
+    assert result["localization"] == "long_tail"
+    # The older boolean is the narrow "may I print '<value> carries N%'?"
+    # question, which only a named segment can answer — so a consumer that
+    # knows nothing of the third state stays restrained rather than naming the
+    # bucket of leftovers.
+    assert result["localized"] is False
+    # A verdict whose next move is a setting has to name the setting, and the
+    # remedy travels in the same dict so the panel and an agent read one
+    # wording. Not a caveat: the panel already prints the verdict, and the same
+    # paragraph twice on one screen reads as two findings.
+    assert "top_k" in result["localization_remedy"]
+    assert not any("long tail" in c for c in result["caveats"])
+
+
+def test_the_long_tail_state_needs_the_roll_up_to_actually_concentrate():
+    """The new state is a *reclassification*, not a second gate: a roll-up that
+    tops the ranking without clearing the threshold is still plainly "not
+    localized", and says nothing about raising `top_k`.
+
+    All three slices fall roughly in proportion to their size, with the folded
+    one a hair steeper — so `__other__` sorts first (ranking always yields a
+    first row) while carrying only a few percent of the gap beyond its share.
+    """
+    frames, dates = _flow_slices()
+    an = ((dates >= pd.Timestamp(AN[0])) & (dates <= pd.Timestamp(AN[1]))).astype(float)
+    for name, delta in (("amer", -40.0), ("emea", -60.0), ("apac", -90.0)):
+        frames[name] = frames[name] + delta * an
+    result = slice_attribution(
+        _flow_defn(top_k=2),
+        "region",
+        _long(frames),
+        _unsliced(frames, dates),
+        *REF,
+        *AN,
+    )
+    assert result["slices"][0]["value"] == "__other__"
+    assert result["localization"] == "not_localized"
+    assert result["localization_remedy"] is None
 
 
 def test_overlapping_slices_withhold_the_verdict():
@@ -777,6 +842,7 @@ def test_overlapping_slices_withhold_the_verdict():
         additivity="overlapping",
     )
     assert result["localized"] is False
+    assert result["localization"] == "not_localized"
 
 
 def test_pivot_refuses_duplicate_date_slice_pairs():
