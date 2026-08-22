@@ -762,7 +762,16 @@ _MCP_HEADERS = {
 def mcp_session():
     """The three tool calls the worked session narrates, over the wire."""
     if not WC_SNAPSHOTS.is_dir() or not any(WC_SNAPSHOTS.iterdir()):
-        pytest.skip("demo snapshots not present — demo/ is repo-only; run `make -C demo snapshots`")
+        # Worded exactly as `test_white_cube_demo.py`'s guard, deliberately:
+        # CI's sdist job audits every skip reason against an allow-list and
+        # requires a repo-only guard to say "not part of the distribution" in
+        # those words, then counts the distinct ones. A second wording for the
+        # same absent directory is both un-allowed and a third entry in a count
+        # of two — which is how the sdist job went red on main.
+        pytest.skip(
+            "demo snapshots not present — `demo/` is repo-only, not part of the "
+            "distribution; in a checkout, run `make -C demo snapshots`"
+        )
     out = {}
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("BREAKDOWN_TREE", str(WC_DEMO / "white_cube_tree.yml"))
