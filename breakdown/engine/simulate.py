@@ -415,7 +415,9 @@ def run_scenario(
             # undefined — cannot be simulated from, and unlike RCA's per-node
             # degrade every node here is needed, so it errors loudly.
             base_mu[n] = node_window_value(data, n, snapped.first_start, snapped.last_start, g)
-            window_basis[n] = rate_window_method(data, n, snapped.first_start, snapped.last_start, g)
+            window_basis[n] = rate_window_method(
+                data, n, snapped.first_start, snapped.last_start, g
+            )
             window_basis_reason[n] = rate_window_method_reason(data, n, window_basis[n])
             if not np.isfinite(base_mu[n]):
                 raise ValueError(

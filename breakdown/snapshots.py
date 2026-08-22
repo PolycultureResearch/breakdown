@@ -71,6 +71,7 @@ def _span_days(start: str, end: str) -> int:
         # by this store; rank it last rather than crash the read path over it.
         return 10**9
 
+
 # Attributes on a provider that hold its per-metric definitions, keyed by the
 # same name the snapshot store is keyed by (`provider_query_name`): the
 # `warehouse` fetcher's `metric_sql`, the `dbt` fetcher's `bindings`. The
