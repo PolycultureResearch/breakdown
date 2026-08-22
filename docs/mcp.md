@@ -203,17 +203,22 @@ reproducing by hand:
 
 - *"Churn jumped this spring. Is it members disengaging, and which customers
   is it?"* The RCA on `customer_churn_rate` clears the engagement theory
-  (a −4.2% contribution: member activity moved *up* that spring, so under the
+  (a −6.7% contribution: member activity moved *up* that spring, so under the
   edge's declared negative sign it pulls against the gap rather than
-  explaining it, and the interval crosses zero) and leaves 102% of the gap in
-  `unexplained` — over 100% precisely because the one parent pulls the other
-  way. On a one-parent node that is the finding, not a failure. The plan
-  slice names the professional tier. The country slice on
-  the rate returns `localization: "long_tail"` — the concentration sits in
-  the `__other__` roll-up rather than in any named country, so the answer is
-  "the tail moved; raise this dimension's `top_k` to see inside it", never
-  a country. Cross-check the dollars-side country slice, which declines to
-  localize at all, before concluding anything about geography.
+  explaining it, and the interval crosses zero at P(direction) 0.81) and
+  leaves 72% of the gap in `unexplained`. On a one-parent node that is the
+  finding, not a failure — the tree has one declared explanation here, it
+  checked it, and most of the move is not it. Note the `khat_status:
+  "escalated"` on that node: its mean-field k̂ is 1.26, so the numbers above
+  are a NUTS re-fit. The approximation reported −4.2% and put **102%** of the
+  gap in `unexplained`, because it had collapsed the latent trend's
+  contribution to almost nothing. The plan slice names the professional tier.
+  The country slice on the rate returns `localization: "long_tail"` — the
+  concentration sits in the `__other__` roll-up rather than in any named
+  country, so the answer is "the tail moved; raise this dimension's `top_k`
+  to see inside it", never a country. Cross-check the dollars-side country
+  slice, which declines to localize at all, before concluding anything about
+  geography.
 - *"We can fund one thing next quarter: a retention push we believe cuts
   churn 20%, or 30% more marketing spend. Which is worth more?"*
   `run_whatif` prices the spend lever higher (+$345 against +$161 per week)

@@ -38,16 +38,50 @@ deliberate choice at both ends:
   4.3 points on `new_arpu`, and a 1.6-point swing that inverted a sign. A
   tolerance anywhere near those is worth nothing. 0.001 is ~280x tighter than
   the worst of them, and tighter than the last digit the tour prints.
-* **Not tighter**, because every pinned figure is deterministic arithmetic over
-  committed parquet — Shapley on an identity, or a ratio of window means — with
-  no sampler in the path. Measured across separate processes these agree
-  bit-for-bit, so the real noise floor is ~1e-13 and 0.001 is ten orders of
-  magnitude of headroom for a different BLAS or a summation reorder.
+* **Not tighter**, because nearly every pinned figure is deterministic
+  arithmetic over committed parquet — Shapley on an identity, or a ratio of
+  window means — with no sampler in the path. Measured across separate
+  processes these agree bit-for-bit, so the real noise floor is ~1e-13 and
+  0.001 is ten orders of magnitude of headroom for a different BLAS or a
+  summation reorder.
 
-Nothing sampler-derived is pinned as a value. Where the tour would have had to
-quote one (the `marketing_spend` what-if lever, which runs through a learned
-edge), it quotes the *contrast* instead — a wide interval against a degenerate
-one — and that contrast is what is asserted, with a band rather than a point.
+**Story B's engagement figures do have a sampler in their path**, and they are
+called out here because the tolerance argument above does not cover them. That
+node's mean-field k̂ is 1.26, so roadmap S2's escalation discards the
+approximation and re-fits it with **NUTS**; `run_rca` seeds (`random_seed=0`),
+so a rerun on *this* machine reproduces bit-for-bit — but a seed does not make
+a NUTS chain reproducible across a different CPU, BLAS or PyMC build, and
+measurement says how much it does not:
+
+| quantity | this machine | CI |
+|---|---|---|
+| `share_of_gap` (posterior mean) | −0.0768 | agrees within 1e-3 |
+| β (posterior mean) | −0.036 | agrees within 1e-3 |
+| β HDI 2.5% (tail quantile) | −0.059 | **−0.061** |
+| `P(direction)` | 0.838 | just under 0.835 |
+
+So the two kinds of number get two treatments, and the line between them is
+statistical rather than convenient. **Posterior means** are averages over
+~5,000 effective draws; their Monte-Carlo error is small, they hold at TOUR's
+tolerance, and `share_of_gap` is tied to the document with `prints()`. **Tail
+quantiles** (an HDI bound) carry far more Monte-Carlo error than their centre,
+so they get a band sized to the measured spread. And a value sitting on a
+**rounding boundary** — `P(direction)` at 0.835 — is unsafe to `prints()` at
+any precision, because the two machines print different second decimals from
+the same seed; the tour writes it "≈0.84" and the test bands it. That one cost
+a red CI run to learn, which is why it is written down.
+
+What must never be relaxed is the row of properties beside these values — sign,
+magnitude bound, the contribution interval straddling zero, `P(direction)`
+under 0.9, and the coefficient HDI clear of zero. They are the beat; the values
+are only its witnesses. When a PyMC or numpy bump moves a value, **re-measure
+and re-pin**; widening is for cross-machine noise that has been measured, not
+for a figure that genuinely moved.
+
+Everywhere else the tour would have had to quote a sampler-derived number (the
+`marketing_spend` what-if lever, which also runs through a learned edge), it
+quotes the *contrast* instead — a wide interval against a degenerate one — and
+that contrast is what is asserted, with a band rather than a point.
 
 Two claims the tour makes are **product defects, not stale numbers**, and are
 pinned here as such: `churn_arpu` has no declared `direction` so the UI colours
@@ -460,6 +494,13 @@ def test_story_b_churn_spike_is_plan_localized_and_engagement_is_cleared(client)
     # because it could barely see anything. At the configured ~25% level that
     # correlation is +0.74 and the mechanism is genuinely strong, so declining
     # it here is a statement about *this window*, not about a squashed driver.
+    #
+    # And the numbers below now come from **NUTS**. `customer_churn_rate`'s
+    # mean-field k̂ is 1.26, so roadmap S2's escalation discards the
+    # approximation and re-fits the node exactly (`khat_status: "escalated"`).
+    # The value moved a long way — the contribution is −7.7% of the gap, not
+    # the −4.9% the approximation reported — while every property held. See
+    # the module docstring for what that means for the tolerance.
     mar = d["nodes"]["member_activity_rate"]
     assert mar["relative_change"] > 0, "activity rose — the wrong way for the churn story"
     assert mar["relative_change"] == pytest.approx(0.025, **TOUR)
@@ -469,15 +510,61 @@ def test_story_b_churn_spike_is_plan_localized_and_engagement_is_cleared(client)
     assert mar["baseline"] == pytest.approx(0.254, **TOUR)
     assert mar["actual"] == pytest.approx(0.260, **TOUR)
     ccr = d["nodes"]["customer_churn_rate"]
+    # The node the beat rests on is the one S2 re-fits, so assert that it did:
+    # a `suspect` here would mean the tour is quoting an approximation the
+    # engine itself says is not evidence about its own interval width.
+    assert ccr["khat_status"] == "escalated"
+    assert ccr["inference_method"] == "nuts"
+    assert ccr["fit_quality"] == "ok"
     (eng,) = [c for c in ccr["contributions"] if c["parent"] == "member_activity_rate"]
     assert eng["share_of_gap"] < 0, "the edge pulls against the gap, not merely a little with it"
     assert abs(eng["share_of_gap"]) < 0.15
-    assert eng["share_of_gap"] == pytest.approx(-0.049, **TOUR)
+    assert eng["share_of_gap"] == pytest.approx(-0.077, **TOUR)
     assert eng["ci_95"][0] < 0 < eng["ci_95"][1]
     assert eng["prob_same_direction"] < 0.9
-    # A band, not a pin: this is the one figure here a PyMC/numpy bump could
-    # nudge, and the tour quotes it to two places.
-    assert eng["prob_same_direction"] == pytest.approx(0.82, abs=0.04)
+    # A band, not a pin: this is the figure here a PyMC/numpy bump could nudge
+    # most, and the tour quotes it to two places. It is deliberately *not*
+    # `prints()`-ed — see the module docstring: this machine measures 0.838 and
+    # CI measures a hair under 0.835, so the two round to different second
+    # decimals from the same seed. The tour writes it "≈0.84" for that reason.
+    assert eng["prob_same_direction"] == pytest.approx(0.84, abs=0.04)
+    # The headline the presenter reads, and the one figure here safe to tie to
+    # the document: it is a posterior *mean* over ~5,000 effective draws, at
+    # one decimal place of a percentage. See the module docstring for why that
+    # is a different kind of number from the two above and below.
+    prints(eng["share_of_gap"])
+
+    # The two intervals the tour now separates, because a prospect who clicks
+    # the node sees both and they say different things. The *contribution*
+    # interval straddles zero (asserted above); the *coefficient* interval does
+    # not. That distinction is the beat: the edge is real and its direction is
+    # settled, and it still does not explain this window, because activity
+    # barely moved. Escalation is what made it true — the discarded mean-field
+    # fit put this same HDI at [-0.0530, +0.0050], failing to exclude zero.
+    m = client.get("/metrics/customer_churn_rate")
+    assert m.status_code == 200, m.text
+    summary = m.json()["summary"]
+    assert m.json()["diagnostics"]["method"] == "nuts"
+    beta, lo, hi = (
+        summary["mean"]["beta_raw[0]"],
+        summary["hdi_2.5%"]["beta_raw[0]"],
+        summary["hdi_97.5%"]["beta_raw[0]"],
+    )
+    assert hi < 0, (
+        "the coefficient's HDI must stay clear of zero — the tour tells the "
+        "presenter to say the edge itself is settled, and only the "
+        "contribution is unsure"
+    )
+    # The mean is a mean, so it holds at TOUR's tolerance. The HDI *bounds* are
+    # tail quantiles and do not: this machine reads [-0.059, -0.013] and CI
+    # reads [-0.061, -0.013] from the same seed, because a 2.5% quantile of
+    # 2,000 draws carries far more Monte-Carlo error than their centre. Banded
+    # to the measured spread with room, which is what the difference between
+    # the two kinds of number actually warrants — the claim that has to hold
+    # exactly is `hi < 0` above, and that is asserted hard.
+    assert beta == pytest.approx(-0.036, abs=1e-3)
+    assert lo == pytest.approx(-0.060, abs=0.004)
+    assert hi == pytest.approx(-0.013, abs=0.004)
 
     s = slices(client, "churned_mrr", "plan", ref, ana)
     assert s["slices"][0]["value"] == "professional"

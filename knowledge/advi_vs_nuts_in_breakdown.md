@@ -274,8 +274,9 @@ reported as `khat` / `khat_status` and the intervals are labelled.
 **And the measurement turned this page's central claim into a stronger one.**
 This document argued that mean-field's under-dispersion is *constructional* and
 worst on the β-vs-trend ridge. k̂ agrees, and puts a number on how general it
-is: on the White Cube tree it flags **all four** probabilistic nodes (k̂ 8.55,
-1.21, 1.01, 0.98) and on the bundled demo's `order_count` it reads 1.18. So the
+is: on the White Cube tree it flags **all four** probabilistic nodes (k̂ 10.18,
+1.07, 0.85, 1.36 at full window, `random_seed=0`) and on the bundled demo's
+`order_count` it reads 1.04. So the
 ridge is not an occasional geometry this model wanders into — a local-level
 random walk with one latent per period *is* a ridge, everywhere, and mean-field
 is not a usable approximation to it at real window sizes. §4's escape hatch is

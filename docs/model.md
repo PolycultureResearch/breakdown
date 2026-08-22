@@ -605,8 +605,29 @@ ship in every cold-start response.
    is the honest reading of the measurement rather than a defect in it: the
    same diagnostic returns `ok` on a posterior mean-field can actually
    represent. In practice this makes RCA on a small tree mostly-NUTS and
-   roughly 3-5× slower than it was, in exchange for intervals and point
+   roughly 3-6× slower than it was, in exchange for intervals and point
    estimates that survive the check.
+
+   **Read `khat_status` before you quote a point estimate, not just an
+   interval.** The failure is not only that a rejected approximation's
+   intervals are too narrow; its *coefficients* land in the wrong place, and
+   not by a predictable amount or in a predictable direction. Measured on the
+   bundled demo tree, two learned edges under this exact escalation: one
+   contribution moves from −108.2 to −68.8 when the node is re-fitted, and
+   another moves from −0.049 to −0.077 of its target's gap — 57% in each case,
+   in opposite directions. What is consistent is that the approximation
+   collapses the latent trend's window delta toward zero; the coefficient then
+   absorbs the discrepancy along whichever way that node's trend-vs-β ridge
+   runs. Nothing in the payload lets you correct for it by hand, which is why
+   the engine re-fits rather than annotates.
+
+   On the second of those two edges the coefficient's interval also changes
+   verdict: the approximation's 95% HDI on β straddled zero and the exact
+   fit's excludes it. So a rejected approximation is not reliably
+   *over*-confident — on a ridge it can be under-confident about an effect
+   that is really there. Treat `khat_status: "unusable"` as "this fit says
+   nothing dependable about this node", in either direction, rather than as
+   "these intervals are a bit too tight".
 7. **The observation model is Gaussian, and a mostly-zero series breaks it.**
    A series that is exactly zero for a long stretch of its fit window, a
    seasonal business's off-season or a spiky count, converges happily and

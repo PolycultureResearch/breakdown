@@ -13,8 +13,9 @@ the path.**
 
 > **Follow-up (2026-08-22): S2 shipped, and it confirmed this benchmark's
 > reading of the model while breaking its assumption about scope.** PSIS k̂
-> flags mean-field on *all four* White Cube probabilistic nodes (8.55, 1.21,
-> 1.01, 0.98) and on the bundled demo's `order_count` (1.18) — including the
+> flags mean-field on *all four* White Cube probabilistic nodes (10.18, 1.07,
+> 0.85, 1.36 at full window, `random_seed=0`) and on the bundled demo's
+> `order_count` (1.04) — including the
 > two whose ELBO check came back `ok`, which is the failure this page argued
 > S2 was needed for. Per-node escalation therefore is not the occasional rescue
 > the "adopt if cheap enough" framing below imagined; it makes RCA on a small

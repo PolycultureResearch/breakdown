@@ -82,8 +82,19 @@ restore the file from git afterwards to keep the reasoning.
   are serialized behind a single lock, so a cold multi-node RCA is the one real
   latency risk in a live pitch. **Roadmap S2 (2026-08-22) roughly quintupled
   that risk**: every probabilistic node on this tree fails the PSIS k̂ check, so
-  a cold RCA re-fits three of them with NUTS and takes ~48s rather than ~10s.
-  The prewarm is no longer a nicety — run it before every scheduled call.
+  a cold RCA re-fits three or four of them with NUTS and takes ~47-57s rather
+  than ~8-11s. The prewarm is no longer a nicety — run it before every
+  scheduled call.
+- **Story B sits exactly on the escalation cap.** `MAX_ESCALATIONS = 4` bounds
+  how many NUTS re-fits one analysis may spend (rule 4), and story B's subtree
+  holds exactly four probabilistic nodes — `sessions`, `trials_started`,
+  `trial_conversion_rate`, `customer_churn_rate` — all four of which k̂ rejects.
+  Every one is escalated today, with nothing left over. A fifth learned edge
+  anywhere under `net_new_mrr` would push one node past the budget, and it
+  would be published from its approximation with a `suspect` fit and a warning
+  naming the cap. Worth knowing before adding an edge to this tree: check the
+  demo tests still see `khat_status: "escalated"` on `customer_churn_rate`,
+  because that is the node the tour's engagement beat is read off.
 - `min_machines_running = 1` keeps one up rather than letting the app scale to
   zero. Suspend only covers *short* idles; a long-idle machine gets stopped
   outright, and that path measured **16.0s** to first byte on `GET /ui`

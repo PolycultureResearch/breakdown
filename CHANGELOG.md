@@ -32,9 +32,17 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
   **This is slower, and it is slower because the old numbers were wrong.** On
   this engine's model (one latent trend state per fitted period) k̂ flags
   mean-field on most real nodes, so an RCA on a small tree is now mostly NUTS
-  and roughly 3–5× the wall clock. What that buys, measured on the demo tree:
-  one headline contribution moves from −108.2 to −68.8 — 0.68 to 0.43 of the
-  gap — with the difference reassigned to the trend. Full account in
+  and roughly 3–6× the wall clock. What that buys, measured on two different
+  edges of the demo tree: one headline contribution moves from −108.2 to −68.8
+  (0.68 → 0.43 of the gap), and a second moves −0.049 → −0.077 (57% *larger*).
+  Both times the difference is a trend delta the approximation had collapsed
+  toward zero — and because the coefficient absorbs that error in whichever
+  direction its own ridge runs, the sign of the bias is not something a reader
+  can infer from the payload. These are **point estimates**, not interval
+  widths. On the second edge the *verdict* changes too: the approximation's
+  95% interval on the coefficient straddled zero, and the exact fit's excludes
+  it — the approximation was under-confident about a real effect, not
+  over-confident about a spurious one. Full account in
   [`docs/model.md`](docs/model.md) and §3.2 of the
   [statistics white paper](knowledge/statistics_whitepaper.md).
 
