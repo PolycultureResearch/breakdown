@@ -84,6 +84,9 @@ _NOISE_PROB = 0.8
 # lived only in app.js, hand-mirrored in a test helper, and invisible to MCP,
 # which would confidently name the top slice exactly where the UI declined to.
 _LOCALIZATION_THRESHOLD = 0.25
+# The three states the verdict can take. `long_tail` exists because the
+# roll-up bucket is not a segment (roadmap 2.21): see `_localization`.
+LOCALIZATION_STATES = ("localized", "long_tail", "not_localized")
 # Bootstrap replicates surviving the finite filter below which an interval
 # would be quoted off too little resampling to mean anything.
 _MIN_CI_REPLICATES = 100
@@ -117,6 +120,29 @@ def _localization(rows: List[Dict[str, Any]], gap: float) -> Dict[str, Any]:
     noise-level, or when either of the numbers the verdict sentence quotes
     (`share_of_gap`, `baseline_share`) is withheld — quoting a claim whose
     evidence is withheld would out-run the evidence.
+
+    **Concentration alone is not enough: the leader must be a segment.**
+    `__other__` is the roll-up of every value outside `top_k` — the set nobody
+    enumerated — so "localized in `__other__`" reads as a finding whose next
+    move does not exist, because there is no segment to go and act on.
+    Suppressing it to "not localized" would be wrong the other way: the tail
+    genuinely did move. So it is its own verdict state, `long_tail`, decided
+    here rather than in the UI, MCP and the tests separately — which is how
+    C24's three copies of the rule drifted apart in the first place
+    (roadmap 2.21).
+
+    A verdict whose next move is a *setting* rather than a segment has to say
+    which setting, so the remedy travels in the same dict as
+    `localization_remedy` — one sentence, written once, rendered by the panel
+    and read by an agent. It is deliberately **not** appended to `caveats`:
+    the panel already prints the verdict, and the same paragraph twice on one
+    screen reads as two findings.
+
+    `localized` keeps exactly its pre-2.21 meaning — may the panel print
+    "*⟨value⟩ carries N% of the gap*"? — which only a named segment can fill,
+    so it is `False` under `long_tail`. A consumer that knows only the boolean
+    therefore falls back to the restrained reading rather than naming the
+    bucket of leftovers.
     """
     top = rows[0] if rows else None
     concentration = (
@@ -124,14 +150,30 @@ def _localization(rows: List[Dict[str, Any]], gap: float) -> Dict[str, Any]:
         if top and top.get("excess") is not None and abs(gap) > 1e-12
         else 0.0
     )
-    localized = bool(
+    concentrated = bool(
         top
         and not top.get("noise_level")
         and top.get("baseline_share") is not None
         and top.get("share_of_gap") is not None
         and concentration >= _LOCALIZATION_THRESHOLD
     )
-    return {"localized": localized, "localization_threshold": _LOCALIZATION_THRESHOLD}
+    if not concentrated:
+        state = "not_localized"
+    elif top["value"] == _OTHER:
+        state = "long_tail"
+    else:
+        state = "localized"
+    return {
+        "localized": state == "localized",
+        "localization": state,
+        "localization_threshold": _LOCALIZATION_THRESHOLD,
+        "localization_remedy": (
+            "Raise this dimension's top_k (or pin values:) to see inside the roll-up, "
+            "or slice a different dimension."
+            if state == "long_tail"
+            else None
+        ),
+    }
 
 
 # Reconciliation: mean |Σ slices − metric| above this share of |baseline|

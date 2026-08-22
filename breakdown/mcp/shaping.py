@@ -82,14 +82,23 @@ SLICE_HOW_TO_READ = (
     "bootstrap's resolution ceiling — narrate it as a bound ('>99.8%'), not a "
     "measured value.\n"
     "- `__other__` folds the non-top slices (`n_values` of them) and can "
-    "itself be the finding — a long-tail move is real.\n"
+    "itself be the finding — a long-tail move is real. It is still not a "
+    "segment: when it tops the ranking the verdict is `long_tail`, below.\n"
     "- For rates: `within` is the slice's own rate moving, `mix` is traffic "
     "shifting between slices. `mix_total` is a composition effect — nobody's "
     "fault, and often the whole story.\n"
-    "- `localized: false` means no slice carries enough of the gap beyond its "
-    "own size to headline (the leader's `excess` is below "
-    "`localization_threshold` of the gap, or it is noise-level): narrate the "
-    "gap as spread across slices, and do not name the top slice as the cause.\n"
+    "- `localization` is the verdict, in three states. `localized`: the leader "
+    "clears `localization_threshold` of the gap with its evidence intact — "
+    "name it. `not_localized`: no slice carries enough of the gap beyond its "
+    "own size (the leader's `excess` is below the threshold, or it is "
+    "noise-level) — narrate the gap as spread across slices, and do not name "
+    "the top slice as the cause. `long_tail`: the leader is `__other__`, the "
+    "roll-up of the values outside `top_k` — the tail really did move, but "
+    "there is no segment to act on, so say the concentration is in the long "
+    "tail and hand back `localization_remedy`, which names what to change "
+    "to see inside it. Never narrate `long_tail` by naming `__other__` as the "
+    "culprit. `localized: <bool>` rides along as the older two-state form of "
+    "the same verdict, and is `false` under `long_tail`.\n"
     "- `additivity: overlapping` means these slices share entities and "
     "overstate the metric by `overlap` — arithmetic, not a defect. Per-slice "
     "`share_of_gap` is withheld (absent) because the slices do not sum to the "
@@ -361,7 +370,13 @@ def compact_slice(result: Dict[str, Any]) -> Dict[str, Any]:
         # The verdict travels with the payload (C24): the UI applies exactly
         # this gate before naming a top slice, and an agent holding only
         # `prob_concentrated` — which answers a different question — would
-        # confidently name one exactly where the UI declines to.
+        # confidently name one exactly where the UI declines to. Both forms
+        # travel (roadmap 2.21): `localization` carries the third state, and
+        # `localized` stays the narrower "may I name this slice?" boolean it
+        # has always been, so an older consumer reading only the boolean is
+        # restrained rather than misled.
+        "localization": result.get("localization"),
+        "localization_remedy": result.get("localization_remedy"),
         "localized": result.get("localized"),
         "localization_threshold": result.get("localization_threshold"),
         # The 3.8 trio. Dropping these was the C9 failure mode through a new

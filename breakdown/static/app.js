@@ -3167,6 +3167,18 @@ function sliceResultHtml(metric) {
   };
   const sliceLabel = (v) =>
     SLICE_SENTINEL[v] ? `<em>${esc(SLICE_SENTINEL[v])}</em>` : `<code>${esc(v)}</code>`;
+  // The verdict is the engine's (`localization`, per its published
+  // `localization_threshold`), not recomputed here: this file recomputing it
+  // was C24 — the rate rows never carried `baseline_share`, so the local rule
+  // silently said "not localized" for every rate, and MCP consumers applied
+  // no rule at all. One published fact, every surface reads it.
+  //
+  // Three states, because the roll-up bucket is not a segment (roadmap 2.21):
+  // `__other__` topping the ranking is a real finding about the *tail*, and the
+  // reader's next move is to raise `top_k` rather than to go and act on a
+  // segment that was never enumerated. Falls back to the older boolean so a
+  // payload from before 2.21 still renders one of the two states it knew about.
+  const verdictState = r.localization || (r.localized ? "localized" : "not_localized");
   const rows = r.slices
     .map((row, i) => {
       // Concentration is relative to size: lead with the slice carrying more
@@ -3175,7 +3187,11 @@ function sliceResultHtml(metric) {
       const noise = row.noise_level
         ? ' <span class="slice-noise" title="The bootstrap cannot distinguish this slice&#39;s concentration from zero — the gap is not localized here.">noise</span>'
         : "";
-      const lead = i === 0 && !row.noise_level ? ' class="slice-lead"' : "";
+      // Tint the leader only when the leader *is* the finding. A highlighted
+      // first row under a "not localized" or long-tail verdict says the
+      // opposite of the sentence above it — and under the long tail the tinted
+      // row would be `__other__`, which is exactly the read 2.21 exists to stop.
+      const lead = i === 0 && verdictState === "localized" ? ' class="slice-lead"' : "";
       const label = `<td>${sliceLabel(row.value)}${noise}${row.n_values ? ` <span class="dim">(${row.n_values})</span>` : ""}</td>`;
       return rate
         ? `<tr${lead}>${label}
@@ -3191,20 +3207,26 @@ function sliceResultHtml(metric) {
     })
     .join("");
 
-  // The headline claim only survives if the leader is genuinely concentrated.
-  // The verdict is the engine's (`localized`, per its published
-  // `localization_threshold`), not recomputed here: this file recomputing it
-  // was C24 — the rate rows never carried `baseline_share`, so the local rule
-  // silently said "not localized" for every rate, and MCP consumers applied
-  // no rule at all. One published fact, every surface reads it.
+  // The headline claim only survives if the leader is genuinely concentrated,
+  // and is a segment at all — see `verdictState` above.
   const top = r.slices[0];
-  const localized = !!r.localized;
-  const verdict = localized
-    ? `<p class="slice-verdict">${sliceLabel(top.value)} carries
-         <strong>${pct(top.share_of_gap)}</strong> of the gap on a
-         ${pct(top.baseline_share)} baseline share.</p>`
-    : `<p class="slice-verdict dim">Not localized by ${esc(r.dimension)} — no slice carries
-         enough of the gap beyond its own size to single it out.</p>`;
+  const verdict =
+    verdictState === "localized"
+      ? `<p class="slice-verdict">${sliceLabel(top.value)} carries
+           <strong>${pct(top.share_of_gap)}</strong> of the gap on a
+           ${pct(top.baseline_share)} baseline share.</p>`
+      : verdictState === "long_tail"
+        ? // The remedy sentence is the engine's, not this file's: a verdict whose
+          // next move is a setting has to name the setting, and one wording read
+          // by both the panel and an agent cannot drift from the rule that
+          // produced it.
+          `<p class="slice-verdict tail"><strong>Concentrated in the long tail</strong>, not in any
+             named ${esc(r.dimension)} — the ${top.n_values ? `${top.n_values} values` : "values"}
+             rolled up as <em>everything else</em> carry ${pct(top.share_of_gap)} of the gap on a
+             ${pct(top.baseline_share)} baseline share, and nothing named stands out. That roll-up
+             is not a segment you can act on. ${esc(r.localization_remedy || "")}</p>`
+        : `<p class="slice-verdict dim">Not localized by ${esc(r.dimension)} — no slice carries
+             enough of the gap beyond its own size to single it out.</p>`;
 
   // mix_total is an {estimate, ci_95} block, like the tree's interaction row.
   const mixNote =

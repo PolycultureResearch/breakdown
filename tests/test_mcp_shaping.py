@@ -499,6 +499,7 @@ def test_compact_slice_carries_the_verdict_and_the_38_trio():
         "attribution_method": "slice_sum",
         "mix_total": None,
         "localized": False,
+        "localization": "not_localized",
         "localization_threshold": 0.25,
         "additivity": "overlapping",
         "overlap": {"mean": 37.0, "share_of_baseline": 0.018},
@@ -528,7 +529,17 @@ def test_compact_slice_carries_the_verdict_and_the_38_trio():
     }
     out = compact_slice(result)
     assert out["localized"] is False
+    assert out["localization"] == "not_localized"
     assert out["localization_threshold"] == 0.25
+    # Roadmap 2.21's third state travels too, and the boolean beside it stays
+    # `False` — an agent that knows only the boolean must not name `__other__`.
+    tail = compact_slice(
+        {**result, "localization": "long_tail", "localization_remedy": "Raise top_k."}
+    )
+    assert tail["localization"] == "long_tail" and tail["localized"] is False
+    assert tail["localization_remedy"] == "Raise top_k."
+    # Absent on the other two states, and trimmed rather than sent as a null.
+    assert "localization_remedy" not in out
     assert out["additivity"] == "overlapping"
     assert out["overlap"]["share_of_baseline"] == 0.018
     assert out["entity_flows"]["migrations"][0]["from"] == "ios"

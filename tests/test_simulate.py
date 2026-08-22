@@ -432,14 +432,18 @@ def test_rate_baselines_carry_the_window_aggregate_label():
     n = 60
     dates = pd.date_range("2024-01-01", periods=n)
     names = ["trials", "conversions", "conversion_rate", "unexplained_rate", "signups"]
-    values = {"trials": 200.0, "conversions": 20.0, "conversion_rate": 0.1,
-              "unexplained_rate": 0.5, "signups": 20.0}
+    values = {
+        "trials": 200.0,
+        "conversions": 20.0,
+        "conversion_rate": 0.1,
+        "unexplained_rate": 0.5,
+        "signups": 20.0,
+    }
     data = build_grained(
         {m: pd.DataFrame({"date": dates, m: np.full(n, values[m])}) for m in names},
         grain_of={m: "day" for m in names},
         kind_of={
-            m: ("rate" if m in ("conversion_rate", "unexplained_rate") else "flow")
-            for m in names
+            m: ("rate" if m in ("conversion_rate", "unexplained_rate") else "flow") for m in names
         },
         denominator_of={"conversion_rate": "trials"},
     )

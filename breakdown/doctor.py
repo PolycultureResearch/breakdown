@@ -993,7 +993,9 @@ def check_snapshots(
     )
 
 
-def check_fit_readiness(parser, tree_path: str, start_date: str, end_date: str) -> List[CheckResult]:
+def check_fit_readiness(
+    parser, tree_path: str, start_date: str, end_date: str
+) -> List[CheckResult]:
     """Per-metric whole periods over the window vs the fit minimum — the
     graduation check for a tree migrating from cold start to fitted mode.
     Fetches through the real server path (never a lookalike) — which since
@@ -1009,9 +1011,7 @@ def check_fit_readiness(parser, tree_path: str, start_date: str, end_date: str) 
     cfg = parser.config.provider
     try:
         fetcher = _build_fetcher(cfg, parser.dag, parser.config.metrics)
-        fetcher = _wrap_snapshots(
-            fetcher, cfg.type, tree_path, slice_span=(start_date, end_date)
-        )
+        fetcher = _wrap_snapshots(fetcher, cfg.type, tree_path, slice_span=(start_date, end_date))
     except Exception as e:
         return [CheckResult.fail("fit readiness", f"could not build fetcher: {e}")]
 
@@ -1159,8 +1159,7 @@ def run_doctor(
                 if r.status == "fail":
                     results[i] = CheckResult.warn(
                         r.name,
-                        r.detail
-                        + " — not fatal here: every metric is snapshot-covered for the "
+                        r.detail + " — not fatal here: every metric is snapshot-covered for the "
                         "checked window, so the server will serve. Fix this before "
                         "refetching (BREAKDOWN_REFRESH=1) or widening the window.",
                         r.remediation,

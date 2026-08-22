@@ -211,13 +211,23 @@ def ui_comovement(node):
 
 def ui_localized(s):
     """Whether the slice panel prints the "<x> carries N% of the gap" verdict
-    rather than "Not localized by <dimension>". Since C24 the verdict is
-    *published* (`localized`) and the UI just reads it — this helper reads the
-    same field, so the browser rule, this suite and MCP consumers cannot
-    drift apart again. (The hand-mirrored recomputation this replaces is how
-    the rate panels' always-false verdict went unnoticed: every rate
-    assertion here was a negative one, passing for the wrong reason.)"""
+    rather than one of the two restrained ones. Since C24 the verdict is
+    *published* and the UI just reads it — this helper reads the same field, so
+    the browser rule, this suite and MCP consumers cannot drift apart again.
+    (The hand-mirrored recomputation this replaces is how the rate panels'
+    always-false verdict went unnoticed: every rate assertion here was a
+    negative one, passing for the wrong reason.)
+
+    Since roadmap 2.21 there are three states, and this helper still answers
+    the narrow question the panel's headline sentence asks — "may I name this
+    slice?" — which `long_tail` answers no to. `ui_verdict` is the full one."""
     return bool(s.get("localized"))
+
+
+def ui_verdict(s):
+    """The verdict the panel renders, in the engine's own vocabulary
+    (roadmap 2.21): `localized`, `long_tail` or `not_localized`."""
+    return s["localization"]
 
 
 def test_the_tree_is_the_size_the_script_says():
@@ -368,7 +378,7 @@ def test_story_a_signup_regression_traverses_and_localizes(client):
     assert s["slices"][0]["baseline_share"] < abs(s["slices"][0]["share_of_gap"])
     assert s["reconciliation"]["status"] == "ok"
     assert not s["slices"][0]["noise_level"]
-    assert ui_localized(s)
+    assert ui_verdict(s) == "localized"
     # "mobile carries 76.2% of the gap on a 51.1% baseline share."
     assert s["slices"][0]["share_of_gap"] == pytest.approx(0.762, **TOUR)
     assert s["slices"][0]["baseline_share"] == pytest.approx(0.511, **TOUR)
@@ -376,7 +386,9 @@ def test_story_a_signup_regression_traverses_and_localizes(client):
     # "Not localized by country" — the contrast that is the point of the demo.
     # It is a verdict, not a number, so the rule behind it is what gets pinned.
     c = slices(client, "signups", "country", ref, ana)
-    assert not ui_localized(c)
+    # The exact state, not merely "not localized": since 2.21 the restrained
+    # verdict has two forms, and the tour prints this one's sentence.
+    assert ui_verdict(c) == "not_localized"
     assert abs(c["slices"][0]["excess"] / c["gap"]) < 0.25
 
     # Still asserted over the lag-shifted pair too: a prospect who slices from
@@ -445,20 +457,53 @@ def test_story_b_churn_spike_is_plan_localized_and_engagement_is_cleared(client)
     assert s["slices"][0]["value"] == "professional"
     assert s["slices"][0]["excess"] > 0
     assert s["reconciliation"]["status"] == "ok"
-    assert ui_localized(s)
+    assert ui_verdict(s) == "localized"
     # "professional carries 100.6% of the gap on a 44.0% baseline share."
     assert s["slices"][0]["share_of_gap"] == pytest.approx(1.006, **TOUR)
     assert s["slices"][0]["baseline_share"] == pytest.approx(0.440, **TOUR)
 
     # The contrast: a tier, not a geography — on the same node the plan slice
     # just localized, so the two verdicts are directly comparable. (The tour
-    # used to script this contrast on customer_churn_rate; that node's country
-    # slice now returns a marginal verdict headlined by the __other__ roll-up
-    # bucket, which is a threshold artifact, not a geography story.)
+    # scripts the contrast here rather than on customer_churn_rate, whose
+    # country slice is the long-tail case pinned below: a third verdict makes
+    # a muddier beat than two opposite ones on one node.)
     c = slices(client, "churned_mrr", "country", ref, ana)
-    assert not ui_localized(c)
+    assert ui_verdict(c) == "not_localized"
     assert len(c["slices"]) == 9
     assert sum(1 for row in c["slices"] if row["noise_level"]) == 7
+
+
+def test_story_b_the_churn_rate_by_country_is_a_long_tail_verdict(client):
+    """Roadmap 2.21, on the window that produced it.
+
+    `customer_churn_rate` by country concentrates 26.4% of the gap — a hair
+    over the 25% bar — in `__other__`, the fold of the four countries outside
+    this dimension's `top_k`. Every named country is either noise-level or
+    carries a few percent. Before 2.21 this published `localized: true` and
+    the panel printed "*everything else carries 42.6% of the gap*", naming as
+    the culprit the one row that is not a segment: the reader's next move
+    (go and look at that country) does not exist. It is now its own verdict,
+    with the remedy on screen.
+
+    Raising `top_k` to 20 on this exact window enumerates all twelve
+    countries and the verdict falls to `not_localized` — the best named slice
+    is AU at 13.8% — which is the check that `long_tail` was the honest
+    reading and not a softened `localized`."""
+    ref, ana = ("2026-03-16", "2026-04-12"), ("2026-05-11", "2026-06-07")
+    c = slices(client, "customer_churn_rate", "country", ref, ana)
+
+    assert ui_verdict(c) == "long_tail"
+    assert not ui_localized(c)  # the headline sentence stays unprintable
+    top = c["slices"][0]
+    assert top["value"] == "__other__"
+    assert top["n_values"] == 4
+    assert abs(top["excess"] / c["gap"]) == pytest.approx(0.264, **TOUR)
+    assert not top["noise_level"]
+    # Five of nine rows are noise-flagged: nothing named stands out either.
+    assert sum(1 for row in c["slices"] if row["noise_level"]) == 5
+    # The remedy travels with the verdict, not only in the browser: the panel
+    # renders this exact sentence, and an MCP consumer gets the same one.
+    assert "top_k" in c["localization_remedy"]
 
 
 def test_known_gap_churn_arpu_is_undeclared_and_the_ui_colours_it_green(client):
@@ -575,7 +620,7 @@ def test_story_c_campaign_splits_volume_from_quality(client):
     assert top["value"] == "BR"
     # Brazil is ~8% of traffic but carries ten times that share of the gap
     assert top["share_of_gap"] > 3 * top["baseline_share"]
-    assert ui_localized(s)
+    assert ui_verdict(s) == "localized"
     # "BR carries 84.3% of the gap on an 8.4% baseline share."
     assert top["share_of_gap"] == pytest.approx(0.843, **TOUR)
     assert top["baseline_share"] == pytest.approx(0.084, **TOUR)

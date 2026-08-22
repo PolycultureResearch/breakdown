@@ -189,6 +189,16 @@ Slice the same node by **country** for the contrast: the panel returns
 flag. Same metric, two dimensions, opposite verdicts — the problem is a tier,
 not a geography.
 
+*(Keep the contrast on `churned_mrr`, both dimensions on the one node: two
+opposite verdicts side by side is the beat. If someone asks for the same cut on
+`customer_churn_rate`, its country slice is worth showing as the **third**
+verdict — *concentrated in the long tail*, because the only row clearing the
+concentration bar is `everything else`, the four countries folded outside this
+dimension's `top_k`. It is the honest answer rather than a hedge: enumerate all
+twelve countries and the verdict falls to "not localized" — no single country
+clears the bar. Read it as "the tail moved; raise `top_k` to see inside", never
+as "everything else is the cause".)*
+
 **The line:** the tree named the branch, cleared the tempting wrong
 explanation with a posterior, and the slice named the tier. Three verdicts,
 each checkable, none of them available from a single-number dashboard.
@@ -384,6 +394,13 @@ and the export prints them in full.)*
   whole week. Use the four-week pairs above.
 - **A slice says "not localized"** — that is a real answer, not a failure. Say
   so; it is the behaviour that makes the localized ones worth believing.
+- **A slice says "concentrated in the long tail"** — the third verdict, and the
+  same restraint one step further in. The gap really is concentrated, but in
+  `everything else`: the roll-up of the values outside the dimension's `top_k`,
+  which is the set nobody enumerated. There is no segment to go and act on, so
+  the panel says exactly that and tells you to raise `top_k` or slice another
+  dimension. Do **not** read it out as "everything else is the cause" — the
+  whole point of the verdict is that it isn't a cause, it's a next step.
 
 ---
 

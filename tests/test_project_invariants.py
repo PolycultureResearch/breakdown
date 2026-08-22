@@ -36,6 +36,7 @@ import json
 import logging
 import math
 import os
+import re
 import typing
 from pathlib import Path
 
@@ -1195,4 +1196,38 @@ metrics:
         "a derived node was 'checked' against an identity it is defined by — "
         "there is nothing to compare, and reporting one would be the "
         "definitional zero wearing a measurement's clothes"
+    )
+
+
+# --- Nothing in app.js shadows the global `state` (roadmap 2.21) -------------
+
+
+def test_no_local_binding_shadows_the_global_state_object():
+    """The fifth rule again, and this one cost a whole RCA render.
+
+    Roadmap 2.21 introduced `const state = r.localization || ...` inside
+    `sliceResultHtml`, whose *first line* reads the global `state.slices`.
+    `const` hoists into the temporal dead zone, so every RCA rendered
+    "RCA failed: Cannot access 'state' before initialization" — the whole
+    right-hand panel, from a name collision. No JS runner and no red suite;
+    it was found by opening the browser, which is exactly the gap the fifth
+    rule names, so the cheap half of it is enumerated here instead.
+
+    `state` is the one genuinely global mutable in `app.js` (declared at the
+    top, read by nearly every function), so a local of the same name is never
+    what the author meant even when it happens to work.
+    """
+    app_js = (PACKAGE / "static" / "app.js").read_text().splitlines()
+    shadows = [
+        f"{i + 1}: {line.strip()}"
+        for i, line in enumerate(app_js)
+        # The global itself is at column 0; anything indented is a local.
+        if re.match(r"\s+(const|let|var)\s+state\b", line)
+    ]
+    assert not shadows, (
+        "a local binding named `state` shadows the global state object in "
+        f"app.js; every read of the real `state` in that scope throws: {shadows}"
+    )
+    assert sum(1 for line in app_js if re.match(r"const state\b", line)) == 1, (
+        "the global `state` object should be declared exactly once at the top of app.js"
     )
