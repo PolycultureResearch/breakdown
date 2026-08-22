@@ -563,13 +563,50 @@ ship in every cold-start response.
 5. **Window means hide within-window shape.** A spike-and-recover pattern and
    a level shift can have the same window mean. Choose windows that isolate
    the regime you care about, and look at the time-series panel.
-6. **ADVI vs NUTS.** ADVI (the RCA default) is a fast approximation that can
-   understate uncertainty; NUTS is the gold standard and reports convergence
-   diagnostics (R̂ < 1.05 is healthy). Triage with ADVI, confirm with NUTS.
+6. **ADVI vs NUTS, and the check that decides between them.** ADVI (the RCA
+   default) is a fast approximation that can misstate uncertainty; NUTS is
+   exact MCMC and reports convergence diagnostics (R̂ < 1.05 is healthy).
    This is measured, not hypothetical: on synthetic worlds with a drifting
-   parent, the geometry where the trend and the parent compete to explain
-   the same movement, ADVI's 95% interval is roughly 20% narrower than the
-   NUTS interval on the same data (roadmap S1's benchmark, 2026-08-18).
+   parent — the geometry where the trend and the parent compete to explain
+   the same movement — ADVI's 95% interval is roughly 20% narrower than the
+   NUTS interval on the same data, and on the demo tree's real nodes the ADVI
+   *point estimate* of one contribution was 57% larger than NUTS's, with the
+   difference going to the trend (roadmap S1's benchmark, 2026-08-18, and S2's
+   measurements, 2026-08-22).
+
+   You are not left to guess which case you are in. **Every variational fit is
+   scored with PSIS k̂** (Yao et al., 2018), which measures how far the
+   approximation sits from the posterior it approximates — not whether the
+   optimizer stopped, which is a different and much weaker question. It appears
+   as `khat` with a band in `khat_status`, on the fit's diagnostics, on every
+   RCA and what-if node, over MCP, and in the UI beside R̂:
+
+   | `khat_status` | k̂ | What it means |
+   |---|---|---|
+   | `ok` | ≤ 0.5 | The approximation is close. Read the intervals normally. |
+   | `suspect` | ≤ 0.7 | Measurably off — the importance ratios have no finite variance. Read the intervals as approximate. |
+   | `unusable` | > 0.7 | Not close, and not fixable by reweighting. **The intervals are not evidence about how wide the real ones are.** |
+   | `escalated` | — | The approximation was `unusable`, so the engine threw it away and re-fitted the node with NUTS. These are the trustworthy numbers; `khat` describes the *discarded* fit. |
+   | `unavailable` | — | The check could not run. An unchecked fit, not a clean one. |
+
+   **RCA and what-if escalate automatically**: those paths choose ADVI on your
+   behalf for speed, so they own the consequence, and a node whose k̂ exceeds
+   0.7 is silently re-fitted with NUTS (`inference_method` then reads `nuts`
+   and `khat_status` reads `escalated`). Escalation is capped at four nodes per
+   analysis — NUTS costs seconds to a minute per node and runs inside your
+   request — and a fifth flagged node keeps its approximation, says so, and
+   names the remedy. `POST /analyze/{name}?inference_method=advi` does **not**
+   escalate: there you asked for ADVI explicitly, so you get ADVI with its k̂
+   reported, and `?inference_method=nuts` is the one-node upgrade.
+
+   On this engine's model — one latent trend state per fitted period, so a
+   posterior in the hundreds of dimensions with strong correlation between
+   neighbouring states — k̂ flags mean-field ADVI on **most real nodes**. That
+   is the honest reading of the measurement rather than a defect in it: the
+   same diagnostic returns `ok` on a posterior mean-field can actually
+   represent. In practice this makes RCA on a small tree mostly-NUTS and
+   roughly 3-5× slower than it was, in exchange for intervals and point
+   estimates that survive the check.
 7. **The observation model is Gaussian, and a mostly-zero series breaks it.**
    A series that is exactly zero for a long stretch of its fit window, a
    seasonal business's off-season or a spiky count, converges happily and

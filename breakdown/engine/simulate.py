@@ -55,7 +55,11 @@ import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from breakdown.engine.model import fit_metric
+from breakdown.engine.model import (
+    MAX_ESCALATIONS,
+    escalation_budget_warning,
+    fit_metric,
+)
 from breakdown.engine.progress import ProgressFn
 from breakdown.engine.progress import report as _report
 from breakdown.engine.rca import (
@@ -495,10 +499,17 @@ def run_scenario(
             if not cold_start and (node, fit_end_key) not in traces:
                 to_fit.append(node)
 
+    # Same S2 policy as `run_rca`, and for the same reason: the engine picked
+    # ADVI here for speed, so the engine owns what happens when PSIS says the
+    # approximation is not close to the posterior. A scenario propagates every
+    # fitted slope downstream, so a rejected approximation here is not one
+    # node's problem — it is every node below it. `escalations_left` is the
+    # cost ceiling, on the stack for this call only.
+    escalations_left = MAX_ESCALATIONS
     for i, node in enumerate(to_fit, 1):
         _report(progress, stage="fitting", metric=node, current=i, total=len(to_fit))
         try:
-            traces[(node, fit_end_key)] = fit_metric(
+            fit = fit_metric(
                 dag,
                 data,
                 node,
@@ -506,6 +517,7 @@ def run_scenario(
                 inference_method="advi",
                 fit_end=fit_end_key,
                 random_seed=0,
+                escalate_on_khat=escalations_left > 0,
             )
         except ValueError as e:
             # `run_rca` degrades this to a per-node `fit_failed` and answers for
@@ -530,6 +542,18 @@ def run_scenario(
                 "missing. Widen the window so the node varies, or intervene "
                 "somewhere that does not route through it."
             ) from e
+        # Outside the `try`, which exists for `fit_metric` alone: a bug in the
+        # bookkeeping below must not be reported to the caller as an
+        # unestimable coefficient.
+        if fit.diagnostics.get("escalated_from"):
+            escalations_left -= 1
+        elif fit.diagnostics.get("khat_status") == "unusable":
+            fit.diagnostics["khat_warnings"] = (fit.diagnostics.get("khat_warnings") or []) + [
+                escalation_budget_warning(
+                    node, fit.inference_method, fit.diagnostics.get("khat"), MAX_ESCALATIONS
+                )
+            ]
+        traces[(node, fit_end_key)] = fit
 
     _report(progress, stage="simulating", total=len(to_fit))
 
@@ -721,6 +745,8 @@ def run_scenario(
                 "relative_delta": 0.0,
                 "prob_direction": None,
                 "fit_quality": None,
+                "khat_status": None,
+                "khat_warnings": None,
                 "extrapolation": {"flag": False, **hist},
                 "contributions": [],
             }
@@ -792,8 +818,19 @@ def run_scenario(
                 )
 
         fit_quality = None
+        khat_status = None
+        khat_warnings = None
         if not cold_start and node in needs_beta:
-            fit_quality = traces[(node, fit_end_key)].diagnostics.get("fit_quality")
+            dx = traces[(node, fit_end_key)].diagnostics
+            fit_quality = dx.get("fit_quality")
+            # Roadmap S2's verdict on the approximation this node's slope came
+            # from — `escalated` means it was replaced by a NUTS fit, anything
+            # else worse than `ok` means it was not. See `_node_out` in rca.py
+            # for the vocabulary; the numeric k-hat stays in the fit's own
+            # diagnostics (GET /metrics/{name}) rather than on every scenario
+            # node, because what a scenario reader needs is the verdict.
+            khat_status = dx.get("khat_status")
+            khat_warnings = dx.get("khat_warnings")
 
         contribs = [
             {"source": sid, "estimate": est}
@@ -823,6 +860,8 @@ def run_scenario(
             # shared helper draws that line.
             **direction_fields(d, key="prob_direction", n_effective=n_effective),
             "fit_quality": fit_quality,
+            "khat_status": khat_status,
+            "khat_warnings": khat_warnings,
             "extrapolation": {"flag": bool(flag), **hist},
             "contributions": contribs,
         }

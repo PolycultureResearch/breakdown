@@ -361,28 +361,228 @@ def _zero_inflation_warnings(values: np.ndarray, target: str, grain: str) -> lis
     return [msg]
 
 
-def _advi_diagnostics(approx: Any, method: str = "advi") -> Dict[str, Any]:
-    """Convergence diagnostics for a variational (ADVI-family) fit.
+# PSIS k-hat bands for a variational approximation (Yao et al., 2018, "Yes,
+# but Did It Work?: Evaluating Variational Inference"; smoothing per Vehtari
+# et al., 2024). k-hat is the shape parameter of a generalized Pareto fitted
+# to the tail of the importance ratios p(theta, y) / q(theta): it says how
+# heavy that tail is, i.e. how far the proposal q sits from the target p.
+#
+#   k <= 0.5   the ratios have finite variance; importance sampling — and so
+#              the approximation it is diagnosing — is reliable.
+#   0.5 < k    finite mean, infinite variance. Usable with care; convergence
+#     <= 0.7   of any reweighting is slow and the approximation is visibly off.
+#   k >  0.7   neither the variance nor (past k=1) the mean is finite. The
+#              approximation cannot be trusted and cannot be *rescued* by
+#              reweighting either; the only fix is a better posterior.
+#
+# The 0.7 bar is the conventional PSIS threshold and is the one this engine
+# escalates on. Three bands rather than one because 0.5-0.7 and >0.7 call for
+# different things — "read the interval as approximate" versus "this interval
+# is not evidence" — and collapsing them would either over- or under-warn.
+_KHAT_GOOD = 0.5
+_KHAT_ESCALATE = 0.7
 
-    Compares the mean loss (−ELBO) of the last 10% of iterations against the
-    preceding 10%: if the loss is still moving by more than half its recent
-    noise level, the optimization had not converged and the approximation is
-    suspect. `elbo_drop` (mean(prev) − mean(last)) is positive while the loss
-    is still falling. Applies to mean-field and full-rank alike — either way
-    it measures optimizer convergence, not approximation quality (S2).
+# Draws used for the k-hat estimate. The Pareto fit uses the largest 20% of
+# the ratios, so 1000 draws fit the tail on ~200 points — the same order as
+# the ArviZ/loo default — and costs ~0.2s after the (one-off, ~1.5s) graph
+# compile, against a 1.4-6s ADVI fit on the demo trees. Nothing about the
+# diagnostic scales with the tree, only with the model's latent count.
+_KHAT_DRAWS = 1000
+
+
+def _psis_khat(
+    approx: Any, n_draws: int = _KHAT_DRAWS, random_seed: Optional[int] = None
+) -> Tuple[Optional[float], str, Optional[str]]:
+    """PSIS k-hat for a variational approximation (Yao et al., 2018).
+
+    Treats the fitted `approx` as an importance-sampling proposal for the true
+    posterior: draw theta from q, form the log ratios
+    `log p(theta, y) - log q(theta)`, smooth their tail with a generalized
+    Pareto, and return its shape parameter k-hat. Both terms are taken in the
+    model's **unconstrained** space, where q actually lives — `sized_symbolic_logp`
+    carries the change-of-variables Jacobian and `symbolic_logq` is the density
+    of the same draws, so the ratio is a ratio of comparable densities. Working
+    through PyMC's own symbolic machinery (rather than reconstructing the
+    variational density by hand) is what makes this work unchanged for
+    mean-field and full-rank: each family supplies its own `symbolic_logq`.
+
+    Returns `(khat, status, reason)`. `status` is one of `"ok"`, `"suspect"`,
+    `"unusable"` (the three bands above) or `"unavailable"` — the last means
+    the number could not be computed, and then `khat` is None and `reason`
+    says why. Never returns a non-finite k-hat: a NaN k-hat rendered as a
+    number is worse than no k-hat, and it would reach an encoder (rule 3).
+    """
+    import arviz as az
+    import pytensor.tensor as pt
+    from pymc.pytensorf import compile, find_rng_nodes, reseed_rngs
+
+    size = pt.iscalar("khat_draws")
+    logp, logq = approx.set_size_and_deterministic(
+        [approx.sized_symbolic_logp, approx.symbolic_logq], size, 0
+    )
+    ratio_fn = compile([size], [logp, logq])
+    if random_seed is not None:
+        reseed_rngs(find_rng_nodes([logp, logq]), random_seed)
+    log_p, log_q = ratio_fn(int(n_draws))
+
+    log_ratios = np.asarray(log_p, dtype=float) - np.asarray(log_q, dtype=float)
+    finite = np.isfinite(log_ratios)
+    n_finite = int(finite.sum())
+    # A ratio is non-finite when a draw lands where the model's logp is -inf
+    # (outside a constrained support the transform did not cover) or where q
+    # underflows. A handful is noise; a large share means the Pareto tail
+    # would be fitted to whatever survived, which is a different quantity.
+    if n_finite < 100 or n_finite < 0.9 * log_ratios.size:
+        return (
+            None,
+            "unavailable",
+            f"only {n_finite} of {log_ratios.size} log importance ratios were finite",
+        )
+    centered = log_ratios[finite]
+    centered = centered - centered.max()
+    _, khat = az.psislw(centered.reshape(1, -1))
+    k = float(np.asarray(khat).ravel()[0])
+    if not np.isfinite(k):
+        return None, "unavailable", "the generalized Pareto fit returned a non-finite shape"
+    if k <= _KHAT_GOOD:
+        return k, "ok", None
+    if k <= _KHAT_ESCALATE:
+        return k, "suspect", None
+    return k, "unusable", None
+
+
+# The cost ceiling on S2's escalation, shared by `run_rca` and `run_scenario`
+# so the two cannot drift apart (the meta-defect the four rules exist for).
+#
+# Escalation runs NUTS inside a request that already holds the tree's lock, and
+# NUTS on a real weekly node measured 3-62s against 1.4-6s for the mean-field
+# fit it replaces. That is affordable a few times and not affordable N times:
+# a wide tree with a dozen probabilistic nodes would serialize ten minutes of
+# sampling behind one lock, and every other viewer of that process would see a
+# hung server. This is rule 4's shape — bounded work behind a lock, refused
+# above the cap with a remedy rather than silently approximated — applied to
+# the one new unbounded thing S2 introduces.
+#
+# Four, because it is the count that covers every tree this repo ships (the
+# White Cube demo fits exactly four probabilistic nodes; the bundled jaffle
+# tree fits one) while capping the worst case at ~4 minutes rather than
+# ~10. It is a ceiling on the *analysis*, not on the tree: a fifth flagged
+# node keeps its approximation, is published `suspect` with its k-hat, and
+# names the per-node NUTS route as the remedy — and because escalated fits are
+# cached under the same key as the approximations they replace, the next
+# analysis of the same window escalates the next four.
+MAX_ESCALATIONS = 4
+
+
+def escalation_budget_warning(target: str, method: str, khat: Optional[float], cap: int) -> str:
+    """Why a k-hat-flagged node was *not* escalated: the budget ran out.
+
+    A node that fails the PSIS check and is not re-fitted must say which of the
+    two reasons it is — the caller never asked for escalation, or the analysis
+    had already spent its cap — because only the second has "run this again and
+    it may be escalated" as a next move.
+    """
+    return (
+        f"'{target}' failed the PSIS check (k-hat = {khat:.2f}) but was not re-fitted with "
+        f"NUTS: this analysis had already escalated {cap} node(s), the per-analysis cap. Its "
+        f"numbers still come from the {method} approximation. Re-fit it directly with "
+        f"POST /analyze/{target}?inference_method=nuts, then re-run the analysis — the "
+        "cached NUTS fit is used in preference to a new approximation."
+    )
+
+
+def _khat_warning(target: str, method: str, khat: Optional[float], status: str, reason) -> str:
+    """The one self-contained sentence a k-hat verdict travels with."""
+    if status == "unavailable":
+        return (
+            f"The approximation quality of the {method} fit for '{target}' could not be "
+            f"checked: {reason}. That is an unchecked fit, not a clean one — its intervals "
+            "carry no evidence either way (see docs/model.md)."
+        )
+    if status == "suspect":
+        return (
+            f"The {method} approximation for '{target}' has PSIS k-hat = {khat:.2f} "
+            f"(> {_KHAT_GOOD}): the importance ratios against the true posterior have no "
+            "finite variance, so this fit sits measurably away from the posterior it "
+            "approximates. Read its intervals as approximate, and confirm anything "
+            "load-bearing with a NUTS fit (see docs/model.md)."
+        )
+    return (
+        f"The {method} approximation for '{target}' has PSIS k-hat = {khat:.2f} "
+        f"(> {_KHAT_ESCALATE}): the importance ratios against the true posterior have "
+        "neither finite variance nor a usable mean, so the approximation is not close to "
+        "the posterior and cannot be corrected by reweighting. Its credible intervals are "
+        "not evidence about the width of the real ones. Re-fit this node with NUTS "
+        "(POST /analyze/{name}?inference_method=nuts) before relying on it."
+    )
+
+
+def _advi_diagnostics(
+    approx: Any,
+    method: str = "advi",
+    target: str = "",
+    random_seed: Optional[int] = None,
+    khat_draws: int = _KHAT_DRAWS,
+) -> Dict[str, Any]:
+    """Diagnostics for a variational (ADVI-family) fit: the optimizer, and the
+    approximation.
+
+    Two independent checks, because they answer different questions and this
+    used to report only the first:
+
+    - **`elbo_drop` / the ELBO check** — did the *optimizer* stop? Compares the
+      mean loss (−ELBO) of the last 10% of iterations against the preceding
+      10%: if the loss is still moving by more than half its recent noise
+      level, the optimization had not converged. `elbo_drop` (mean(prev) −
+      mean(last)) is positive while the loss is still falling. This says
+      nothing about how close the converged approximation is to the posterior
+      — a well-converged bad approximation passes it, which is exactly what
+      S1's benchmark measured on real nodes.
+    - **`khat` / the PSIS check** — how far is the *approximation* from the
+      posterior? See `_psis_khat`. This is roadmap S2, and it is the check
+      that decides whether the intervals mean anything.
+
+    `fit_quality` is "suspect" when either check fails: the field is a gate
+    ("do not trust this fit as-is"), and every consumer already branches on
+    its two values, so the k-hat verdict rides that channel rather than
+    opening a parallel one. `khat` and `khat_status` are the evidence beside
+    it, the way `max_rhat` / `divergences` / `min_ess_bulk` are for NUTS. A
+    k-hat that could not be computed (`khat_status: "unavailable"`) does not
+    flip `fit_quality`: an unchecked fit is not a failed one, and saying so is
+    the honest reading — but it does carry the warning that says it is
+    unchecked, because silence there reads as "no problems found".
     """
     hist = np.asarray(approx.hist, dtype=float)
     w = len(hist) // 10
     if w < 1:
-        return {"fit_quality": "suspect", "method": method, "elbo_drop": None}
-    last, prev = hist[-w:], hist[-2 * w : -w]
-    elbo_drop = float(prev.mean() - last.mean())
-    suspect = abs(last.mean() - prev.mean()) > 0.5 * last.std()
-    return {
-        "fit_quality": "suspect" if suspect else "ok",
+        elbo_drop, elbo_suspect = None, True
+    else:
+        last, prev = hist[-w:], hist[-2 * w : -w]
+        elbo_drop = float(prev.mean() - last.mean())
+        elbo_suspect = bool(abs(last.mean() - prev.mean()) > 0.5 * last.std())
+
+    try:
+        khat, khat_status, khat_reason = _psis_khat(
+            approx, n_draws=khat_draws, random_seed=random_seed
+        )
+    except Exception as e:  # pragma: no cover - defensive: a PyMC API change
+        khat, khat_status, khat_reason = None, "unavailable", f"{type(e).__name__}: {e}"
+        logger.warning("PSIS k-hat could not be computed for '%s': %s", target, e)
+
+    diagnostics: Dict[str, Any] = {
+        "fit_quality": "suspect"
+        if (elbo_suspect or khat_status in ("suspect", "unusable"))
+        else "ok",
         "method": method,
         "elbo_drop": elbo_drop,
+        "khat": khat,
+        "khat_status": khat_status,
     }
+    if khat_status != "ok":
+        msg = _khat_warning(target, method, khat, khat_status, khat_reason)
+        logger.warning(msg)
+        diagnostics["khat_warnings"] = [msg]
+    return diagnostics
 
 
 def _validate_columns(data: pd.DataFrame, cols: List[str]) -> None:
@@ -635,6 +835,7 @@ def fit_metric(
     chains: int = 4,
     random_seed: Optional[int] = None,
     vi_iterations: int = 20_000,
+    escalate_on_khat: bool = False,
 ) -> FitResult:
     """
     Fit the Bayesian structural time series for one metric.
@@ -696,6 +897,20 @@ def fit_metric(
     a given platform/dependency set (RCA and simulate pass a fixed seed so
     their on-demand fits — and hence API responses — are deterministic even
     across empty trace caches; tests seed to kill stochastic flakes).
+
+    Every variational fit is scored with **PSIS k-hat** (Yao et al., 2018;
+    roadmap S2) and reports it as `diagnostics["khat"]` / `["khat_status"]`.
+    `escalate_on_khat` is what the caller does about a bad one: with it set,
+    a fit whose `khat_status` is `"unusable"` (k-hat > 0.7) is thrown away and
+    re-fitted with NUTS, the returned `inference_method` says `"nuts"`, and
+    `diagnostics["escalated_from"]` records the approximation that was
+    rejected. It defaults to **off** here because `inference_method` is a
+    promise about which sampler runs, and a primitive that silently runs a
+    different one — at 2-20x the cost — breaks every caller that asked for
+    ADVI on purpose (the S1 benchmark, the "I want triage speed" path). The
+    callers that pick ADVI *on the user's behalf* — `run_rca` and
+    `run_scenario` — turn it on, under a per-analysis cap; see
+    `_MAX_ESCALATIONS` there.
 
     Returns a `FitResult`. Its trace's posterior includes `beta_raw`
     (= beta / scale): the coefficient on each parent in business units,
@@ -809,7 +1024,62 @@ def fit_metric(
                 random_seed=random_seed,
             )
             trace = approx.sample(draws=draws, random_seed=random_seed)
-            diagnostics = _advi_diagnostics(approx, method=inference_method)
+            diagnostics = _advi_diagnostics(
+                approx, method=inference_method, target=target, random_seed=random_seed
+            )
+            # S2's second half. `khat_status: "unusable"` is a measurement that
+            # this approximation's intervals are not evidence about the real
+            # ones, so where the caller asked for escalation the node is re-fit
+            # with the reference method and the VI result is discarded — not
+            # blended, not averaged, and not kept as a fallback, because two
+            # posteriors for one node is a choice nobody downstream can make.
+            # `"suspect"` (0.5 < k-hat <= 0.7) does *not* escalate: the fit is
+            # off but not uninformative, and 3-62s per node is too much to
+            # spend on a band whose remedy is "read it as approximate".
+            #
+            # The escalated fit reports its own NUTS diagnostics — including
+            # `fit_quality: "suspect"` when R-hat/ESS/divergences say so. There
+            # is no third method to escalate to, and falling back to the VI fit
+            # that k-hat just rejected would be strictly worse, so a suspect
+            # NUTS fit is published as a suspect NUTS fit, honestly flagged.
+            # `escalated_from` keeps the reason visible: without it the response
+            # would show a NUTS fit where the caller asked for ADVI, with
+            # nothing anywhere saying why.
+            if escalate_on_khat and diagnostics["khat_status"] == "unusable":
+                logger.info(
+                    "Escalating '%s' to NUTS: %s k-hat = %.2f > %.1f",
+                    target,
+                    inference_method,
+                    diagnostics["khat"],
+                    _KHAT_ESCALATE,
+                )
+                rejected_khat = diagnostics["khat"]
+                trace = pm.sample(
+                    draws=draws,
+                    tune=tune,
+                    target_accept=0.9,
+                    chains=chains,
+                    random_seed=random_seed,
+                )
+                diagnostics = _nuts_diagnostics(trace, draws, chains)
+                # `khat` survives the swap and `khat_status` becomes
+                # "escalated": the number describes the approximation that was
+                # *rejected*, not the NUTS fit that replaced it (NUTS has no
+                # k-hat — it is not an approximation), and the status is what
+                # says so. One field, one vocabulary, no reader left guessing
+                # whether a k-hat printed beside `inference_method: "nuts"`
+                # condemns the fit they are looking at.
+                diagnostics["khat"] = rejected_khat
+                diagnostics["khat_status"] = "escalated"
+                diagnostics["escalated_from"] = inference_method
+                diagnostics["khat_warnings"] = [
+                    f"'{target}' was re-fitted with NUTS because its {inference_method} "
+                    f"approximation failed the PSIS check (k-hat = {rejected_khat:.2f} > "
+                    f"{_KHAT_ESCALATE}). Every number here comes from the NUTS fit; the "
+                    "discarded approximation's intervals were off by an unknown amount in "
+                    "an unknown direction."
+                ]
+                inference_method = "nuts"
         else:
             trace = pm.sample(
                 draws=draws,

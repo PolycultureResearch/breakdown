@@ -263,19 +263,25 @@ to see it. Full measurement:
 `fit_metric` keeps `inference_method="fullrank_advi"` as a benchmarked
 experimental option; the RCA default is unchanged.
 
-**S2 — A real approximation diagnostic (next up).** Implement the PSIS-based
-k̂ diagnostic of Yao et al. (2018), which estimates how far the variational
-approximation is from the true posterior — the thing the ELBO check cannot
-see, in either direction: S1 measured a variational fit that passed the check
-while far too wide, alongside mean-field's constructional too-narrow. Where
-k̂ is poor, either auto-escalate that node to NUTS or mark its intervals as
-unreliable in the response. S1's timings price the escalation: NUTS at
-11–66s on real weekly nodes is affordable per-node in the interactive
-setting that made NUTS-everywhere unusable.
+**S2 — A real approximation diagnostic (shipped 2026-08-22).** The PSIS-based
+k̂ diagnostic of Yao et al. (2018) now scores every variational fit: it
+estimates how far the approximation is from the true posterior — the thing the
+ELBO check cannot see, in either direction, as S1 measured. Where k̂ exceeds
+0.7, `run_rca` and `run_scenario` discard the approximation and re-fit the node
+with NUTS (capped at four per analysis); everywhere else the verdict is
+reported as `khat` / `khat_status` and the intervals are labelled.
 
-Until S2 lands, the escape hatch in §4 is the answer, and the
-honest framing is the one in the white paper: **the default path is the
-optimistic path**, it is documented, and most users will never leave it.
+**And the measurement turned this page's central claim into a stronger one.**
+This document argued that mean-field's under-dispersion is *constructional* and
+worst on the β-vs-trend ridge. k̂ agrees, and puts a number on how general it
+is: on the White Cube tree it flags **all four** probabilistic nodes (k̂ 8.55,
+1.21, 1.01, 0.98) and on the bundled demo's `order_count` it reads 1.18. So the
+ridge is not an occasional geometry this model wanders into — a local-level
+random walk with one latent per period *is* a ridge, everywhere, and mean-field
+is not a usable approximation to it at real window sizes. §4's escape hatch is
+now the engine's own default behaviour on the paths that chose ADVI for you,
+and the honest framing has changed accordingly: the default path is no longer
+the optimistic one, at the price of an RCA that is 3–5× slower.
 
 ---
 

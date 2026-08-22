@@ -11,6 +11,18 @@
 **Status: complete (2026-08-18). Decision: full-rank is not adopted; S2 is
 the path.**
 
+> **Follow-up (2026-08-22): S2 shipped, and it confirmed this benchmark's
+> reading of the model while breaking its assumption about scope.** PSIS k̂
+> flags mean-field on *all four* White Cube probabilistic nodes (8.55, 1.21,
+> 1.01, 0.98) and on the bundled demo's `order_count` (1.18) — including the
+> two whose ELBO check came back `ok`, which is the failure this page argued
+> S2 was needed for. Per-node escalation therefore is not the occasional rescue
+> the "adopt if cheap enough" framing below imagined; it makes RCA on a small
+> tree mostly-NUTS, which is where the closing note's "NUTS-by-default for
+> small trees is worth a look" landed by a different route. The prices quoted
+> here are what makes that survivable.  See
+> [`statistics_whitepaper.md`](statistics_whitepaper.md) §4.1.
+
 ## Why this measurement exists
 
 Mean-field ADVI — the RCA default — approximates the posterior as independent

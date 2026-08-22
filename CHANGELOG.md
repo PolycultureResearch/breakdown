@@ -13,6 +13,31 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **Every ADVI fit now says how far it landed from the posterior, and RCA
+  re-fits the ones that missed** (roadmap S2). The old check asked only whether
+  the ELBO had stopped moving — a question about the optimizer, which a
+  well-converged *bad* approximation passes. Fits now carry **PSIS k̂**
+  (Yao et al., 2018) as `khat` / `khat_status`, in three bands (`ok` ≤ 0.5,
+  `suspect` ≤ 0.7, `unusable` above) plus `escalated` and `unavailable`, on the
+  fit's diagnostics, on every RCA and what-if node, over MCP with a
+  `how_to_read` entry, and in the UI beside R̂. `POST /rca/{name}` and
+  `POST /simulate` — the routes that pick ADVI on your behalf — **discard an
+  `unusable` approximation and re-fit that node with NUTS**, up to four nodes
+  per request; a fifth keeps its approximation, is labelled, and names the
+  per-node remedy. `POST /analyze/{name}?inference_method=advi` reports k̂ and
+  does not escalate: there you asked for ADVI.
+
+  **This is slower, and it is slower because the old numbers were wrong.** On
+  this engine's model (one latent trend state per fitted period) k̂ flags
+  mean-field on most real nodes, so an RCA on a small tree is now mostly NUTS
+  and roughly 3–5× the wall clock. What that buys, measured on the demo tree:
+  one headline contribution moves from −108.2 to −68.8 — 0.68 to 0.43 of the
+  gap — with the difference reassigned to the trend. Full account in
+  [`docs/model.md`](docs/model.md) and §3.2 of the
+  [statistics white paper](knowledge/statistics_whitepaper.md).
+
 ### Fixed
 
 - **Every MCP tool error became `Error executing tool <name>` for anyone on

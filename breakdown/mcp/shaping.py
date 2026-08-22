@@ -62,8 +62,16 @@ RCA_HOW_TO_READ = (
     "An `attribution_failed` node still reports a real `gap`: the move is measured, only "
     "the split is missing. Nothing upstream of such a node is attributed either, so "
     "`ranked_causes` is incomplete whenever one is present.\n"
-    "- Fits use ADVI, which can understate uncertainty; treat this as triage and confirm "
-    "load-bearing findings with a NUTS fit before big decisions."
+    "- `khat_status`: how far this node's fast approximation sits from its true posterior "
+    "(PSIS k̂). `escalated` = it was rejected and the node **re-fitted with NUTS**, so these "
+    "are the reliable numbers (`khat` describes the discarded fit). `unusable` = rejected and "
+    "*not* re-fitted: its `ci_95` is not evidence about the real interval, so narrate the "
+    "point estimate as provisional and the uncertainty as unmeasured — never as precise. "
+    "`suspect` = measurably off; approximate. `unavailable` = unchecked, which is not clean. "
+    "`khat_warnings` gives the reason, including a node left un-escalated by the per-run NUTS "
+    "budget — for which re-fitting that node with NUTS is the fix worth naming.\n"
+    "- Nodes not marked `escalated` were fitted with ADVI, which can misstate uncertainty; "
+    "treat those as triage and confirm load-bearing findings with a NUTS fit."
 )
 
 SLICE_HOW_TO_READ = (
@@ -127,6 +135,10 @@ WHATIF_HOW_TO_READ = (
     "number is the resolution ceiling of `n_draws` — a lower bound, not a measurement.\n"
     "- Interventions are do-operator: the metric is pinned, its usual drivers are severed, "
     "and effects propagate only downstream through the tree.\n"
+    "- `khat_status` is the PSIS check on the fit behind a node's slope. `escalated` = "
+    "re-fitted with NUTS, so trust it. `unusable` = the slope driving this outcome is not "
+    "close to its posterior and was not re-fitted (`khat_warnings` says why) — narrate the "
+    "direction, not the interval. `suspect` = approximate. `unavailable` = unchecked.\n"
     "- Fitted slopes are local to the observed operating range; `extrapolation: true` "
     "(detail in `warnings`) means the scenario leaves that range — call the result speculative.\n"
     "- Assumption edges are user-asserted beliefs sampled from the stated 90% range, not "
@@ -266,6 +278,15 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
             "relative_change": node["relative_change"],
             "attribution_method": node["attribution_method"],
             "fit_quality": node["fit_quality"],
+            # Roadmap S2. The verdict rides along on every fitted node, and the
+            # number only where it is bad news: `khat` on an `ok` fit is a
+            # token an agent has no decision to make with, while on a flagged
+            # one it is the difference between "slightly off" and "not
+            # evidence". Never dropped when non-null-and-not-ok, for the same
+            # reason `unexplained_status` is never dropped.
+            "khat_status": node.get("khat_status"),
+            "khat": node.get("khat") if node.get("khat_status") != "ok" else None,
+            "khat_warnings": node.get("khat_warnings"),
             "sign_warnings": node["sign_warnings"],
             # fit_window start/end are dropped for token economy; n_periods is
             # the decision-relevant number.
@@ -419,6 +440,11 @@ def compact_scenario(result: Dict[str, Any]) -> Dict[str, Any]:
                 "prob_direction": node["prob_direction"],
                 **{k: node[k] for k in ("prob_direction_censored",) if node.get(k) is not None},
                 "fit_quality": node["fit_quality"],
+                # Roadmap S2, same vocabulary as the RCA payload. A scenario
+                # propagates a fitted slope downstream, so which fit produced
+                # it is decision-relevant here too.
+                "khat_status": node.get("khat_status"),
+                "khat_warnings": node.get("khat_warnings"),
                 "extrapolation": node["extrapolation"]["flag"],
                 "contributions": node["contributions"],
             }

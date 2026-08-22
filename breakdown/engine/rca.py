@@ -71,7 +71,13 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
-from breakdown.engine.model import compute_shapley, fit_metric, seasonal_window_delta
+from breakdown.engine.model import (
+    MAX_ESCALATIONS,
+    compute_shapley,
+    escalation_budget_warning,
+    fit_metric,
+    seasonal_window_delta,
+)
 from breakdown.engine.progress import ProgressFn
 from breakdown.engine.progress import report as _report
 from breakdown.formula import eval_formula
@@ -754,6 +760,18 @@ def _node_out(**fields) -> Dict[str, Any]:
         "attribution_method": None,
         "inference_method": None,
         "fit_quality": None,
+        # Roadmap S2. `fit_quality` is the gate ("do not trust this fit as-is");
+        # these are the evidence behind it for a variational fit, the way R-hat
+        # and ESS are for NUTS. `khat` is the PSIS shape parameter and
+        # `khat_status` its band: `ok` (<= 0.5), `suspect` (<= 0.7), `unusable`
+        # (> 0.7), `unavailable` (could not be computed — an unchecked fit, not
+        # a clean one), or `escalated` — the one case where `khat` describes a
+        # fit that is *not* the one reported here: the approximation that
+        # failed, which this node was re-fitted with NUTS to replace.
+        # Both stay null on a fit that was NUTS from the start.
+        "khat": None,
+        "khat_status": None,
+        "khat_warnings": None,
         "sign_warnings": None,
         "fit_window": None,
         "seasonality_warnings": None,
@@ -1213,11 +1231,20 @@ def run_rca(
     # used to abort the whole tree analysis and return nothing. The `try` wraps
     # the single `fit_metric` call and nothing else, so unrelated failures
     # elsewhere in the loop still surface.
+    #
+    # The engine — not the user — chose ADVI here, for speed. So this is the
+    # path that owns the consequences of that choice: a node whose PSIS k-hat
+    # says the approximation is not close to its posterior (roadmap S2) is
+    # re-fitted with NUTS rather than published with intervals that are not
+    # evidence. `escalations_left` is the cost ceiling, held on the stack for
+    # this one call — `run_rca` stays a pure function of its arguments, so two
+    # concurrent analyses cannot spend each other's budget.
     fit_failures: Dict[str, str] = {}
+    escalations_left = MAX_ESCALATIONS
     for i, node in enumerate(to_fit, 1):
         _report(progress, stage="fitting", metric=node, current=i, total=len(to_fit))
         try:
-            traces[(node, analysis_start)] = fit_metric(
+            fit = fit_metric(
                 dag,
                 data,
                 node,
@@ -1225,9 +1252,22 @@ def run_rca(
                 inference_method="advi",
                 fit_end=analysis_start,
                 random_seed=0,
+                escalate_on_khat=escalations_left > 0,
             )
         except ValueError as e:
             fit_failures[node] = str(e)
+            continue
+        if fit.diagnostics.get("escalated_from"):
+            escalations_left -= 1
+        elif fit.diagnostics.get("khat_status") == "unusable":
+            # Flagged, and the budget was already spent. Say which — see
+            # `escalation_budget_warning`.
+            fit.diagnostics["khat_warnings"] = (fit.diagnostics.get("khat_warnings") or []) + [
+                escalation_budget_warning(
+                    node, fit.inference_method, fit.diagnostics.get("khat"), MAX_ESCALATIONS
+                )
+            ]
+        traces[(node, analysis_start)] = fit
 
     _report(progress, stage="attributing", total=len(to_fit))
 
@@ -1345,6 +1385,9 @@ def run_rca(
         components = None
         inference_method = None
         fit_quality = None
+        khat = None
+        khat_status = None
+        khat_warnings = None
         sign_warnings = None
         fit_window = None
         seasonality_warnings = None
@@ -1648,6 +1691,9 @@ def run_rca(
             fit = traces[(node, analysis_start)]
             inference_method = fit.inference_method
             fit_quality = fit.diagnostics.get("fit_quality")
+            khat = fit.diagnostics.get("khat")
+            khat_status = fit.diagnostics.get("khat_status")
+            khat_warnings = fit.diagnostics.get("khat_warnings")
             sign_warnings = fit.diagnostics.get("sign_warnings")
             # What the model actually trained on: all loaded whole periods
             # before analysis_start — not the reference window.
@@ -1808,6 +1854,9 @@ def run_rca(
             attribution_method=attribution_method,
             inference_method=inference_method,
             fit_quality=fit_quality,
+            khat=khat,
+            khat_status=khat_status,
+            khat_warnings=khat_warnings,
             sign_warnings=sign_warnings,
             fit_window=fit_window,
             seasonality_warnings=seasonality_warnings,

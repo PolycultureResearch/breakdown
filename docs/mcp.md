@@ -234,8 +234,10 @@ too.
 
 ## Notes
 
-The first `run_rca`/`run_whatif` on a tree fits models on demand (ADVI) and
-can take a minute; fits are cached and shared with the UI. The cache resets
+The first `run_rca`/`run_whatif` on a tree fits models on demand (ADVI, with
+any node whose PSIS k̂ fails re-fitted with NUTS — see
+[`docs/model.md`](model.md)) and can take a few minutes on a tree whose nodes
+mostly escalate; fits are cached and shared with the UI. The cache resets
 when `--reload` restarts the process. Set `BREAKDOWN_PUBLIC_URL` if the
 server is reached at anything other than `http://127.0.0.1:<port>` so
 `report_url` links resolve.

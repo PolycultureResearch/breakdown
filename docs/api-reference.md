@@ -97,7 +97,7 @@ Query parameters:
 
 | Param | Default | Description |
 |-------|---------|-------------|
-| `inference_method` | `nuts` | `nuts` (full MCMC) or `advi` (variational inference, faster but less accurate) |
+| `inference_method` | `nuts` | `nuts` (full MCMC) or `advi` (variational inference, faster but less accurate). This route takes you at your word: an `advi` fit here is **not** auto-escalated the way RCA's is, so you get ADVI, with its PSIS k̂ reported in `diagnostics`. |
 | `draws` | `500` | Posterior draws, which buy different things per method. Under `nuts` this is draws per chain after `tune` discarded steps, so 500 × 4 chains = 2,000 draws, and more of them tighten the Monte-Carlo error. Under `advi` the optimization is a fixed 20,000 steps regardless. There it only sets how many samples are drawn from the already-fitted approximation, so more is nearly free and does not make the answer more accurate. |
 | `tune` | `500` | Tuning steps (NUTS only) |
 | `chains` | `4` | Number of NUTS chains (NUTS only) |
@@ -110,6 +110,20 @@ curl -X POST "http://localhost:9090/analyze/order_count?inference_method=nuts&dr
 # Fast variational inference (use for live incident triage)
 curl -X POST "http://localhost:9090/analyze/order_count?inference_method=advi"
 ```
+
+The response's `diagnostics` block carries the engine's verdict on the fit.
+NUTS reports `max_rhat`, `divergences` and `min_ess_bulk`; a variational fit
+reports `elbo_drop` (did the optimizer settle?) and **`khat` / `khat_status`**
+(did it settle anywhere near the posterior?) — the PSIS diagnostic of Yao et
+al. (2018). `khat_status` is one of `ok` (k̂ ≤ 0.5), `suspect` (≤ 0.7),
+`unusable` (> 0.7 — the intervals are not evidence about how wide the real
+ones are), `escalated` (the approximation was rejected and the node re-fitted
+with NUTS; `khat` then describes the *discarded* fit) or `unavailable` (the
+check could not run — an unchecked fit, not a clean one). Anything other than
+`ok` also carries `khat_warnings`, a list of self-contained sentences.
+`fit_quality` stays the two-valued gate (`ok` | `suspect`) and goes `suspect`
+when either check fails. Full interpretation in
+[`docs/model.md`](model.md#assumptions-and-limitations-to-keep-in-mind).
 
 ## `GET /shapley/{name}`
 
@@ -162,7 +176,7 @@ Example response:
 
 ## `POST /rca/{name}`
 
-Walks the ancestor DAG of `name` and attributes the change between a reference window and an analysis window to upstream metrics. Any probabilistic node in scope that hasn't been fit yet is fit on demand with ADVI and its trace is cached (a second call is much faster).
+Walks the ancestor DAG of `name` and attributes the change between a reference window and an analysis window to upstream metrics. Any probabilistic node in scope that hasn't been fit yet is fit on demand with ADVI and its trace is cached (a second call is much faster). Because this route picks ADVI on your behalf, it also owns the consequence: a node whose PSIS k̂ exceeds 0.7 is re-fitted with NUTS and the NUTS fit is what gets cached and reported (`inference_method: "nuts"`, `khat_status: "escalated"`). Escalation is capped at **four nodes per request** — NUTS costs seconds to a minute per node — and a fifth flagged node keeps its approximation with `khat_status: "unusable"` and a `khat_warnings` entry naming the cap and the per-node remedy.
 
 Query parameters (`YYYY-MM-DD`): `analysis_start` and `analysis_end` are
 required; `reference_start` and `reference_end` are optional. Omitting both
@@ -211,6 +225,10 @@ Trimmed response:
       },
       "baseline": 500.0, "actual": 540.0, "gap": 40.0, "relative_change": 0.08,
       "attribution_method": "posterior",
+      "inference_method": "nuts",
+      "fit_quality": "ok",
+      "khat": 1.02, "khat_status": "escalated",
+      "khat_warnings": ["'order_count' was re-fitted with NUTS because …"],
       "ci_status": "ok",
       "unexplained": 1.4, "unexplained_status": "measured",
       "components": {
@@ -229,6 +247,8 @@ Trimmed response:
   ]
 }
 ```
+
+Every fitted (`attribution_method: "posterior"`) node also reports which model produced its numbers and how much that model can be trusted: `inference_method`, `fit_quality` (`ok` | `suspect`), and the PSIS triple `khat` / `khat_status` / `khat_warnings` described under [`POST /analyze/{name}`](#post-analyzename). Read `khat_status` before quoting a `ci_95` from such a node: `unusable` means the interval is not a measurement of the real one, and `escalated` means the node was re-fitted with NUTS and is the trustworthy case, not a warning.
 
 Grain support adds two per-node fields: `grain` (the grain the node was analyzed at) and `effective_windows` (the whole periods the requested windows snapped to at that grain). Gaps are mean-per-period at each node's own grain, so in mixed-grain trees compare nodes via `share_of_gap` and `ranked_causes` scores, not raw gaps.
 
@@ -289,7 +309,7 @@ Every contribution is reported as an `estimate` (mean), a 95% interval (`ci_95`)
 
 `prob_same_direction` is a proportion over those 500 replicates, so it is never published as 1.0. There is no representable value between 0.998 and 1, and a saturated count is the estimator running out of resolution, not a measurement of certainty. A saturated estimate publishes the ceiling alongside `prob_same_direction_censored: true`, and the UI and the exported report both render it as the bound it is: `>99.8%`. `prob_concentrated` (slices) and `prob_direction` (what-if) follow the same rule with their own sample sizes. Read it as "no replicate crossed zero", not as "the sign is certain".
 
-Unfitted probabilistic nodes in scope are fit with ADVI on demand, on data strictly before the analysis window, and cached, so the endpoint works without a prior `/analyze` call.
+Unfitted probabilistic nodes in scope are fit with ADVI on demand, on data strictly before the analysis window, and cached, so the endpoint works without a prior `/analyze` call — with the same k̂ escalation and the same four-node cap described above.
 
 `ranked_causes` is a documented heuristic. It propagates an influence score from the target up the ancestor tree, weighting each hop by the parent's `|share_of_gap|` (capped at 1) divided by the child's total gross parent movement, meaning the sum of every parent's `|share_of_gap|`, floored at 1 so a decomposition that sums tidily is never penalized. That divisor is what stops a parent scoring full marks on a gap its siblings cancelled: two parents at +165% and −62% both rank *below* a lone parent cleanly explaining 80%. Each row carries `via`, the child it was reached through, so a score can be traced back to the hop that produced it. A node no hop ever reached is omitted rather than listed at zero; `nodes` remains the full inventory of what was in scope. Use it as a triage ordering, not as a probability.
 
@@ -409,7 +429,8 @@ decomposition (each intervention's and assumption's signed share, summing
 exactly to the point delta by Shapley efficiency), per-node results
 (`status`, one of `baseline` | `affected` | `intervened`, plus `baseline`,
 `simulated`, `delta` with `ci_95`, `relative_delta`, `prob_direction`,
-`fit_quality`, `extrapolation`, `contributions`), plus `warnings` and
+`fit_quality`, `khat_status`, `khat_warnings`, `extrapolation`,
+`contributions`), plus `warnings` and
 always-on `caveats`. The run is seeded, so identical calls are byte-identical.
 
 On a fitted tree, every `kind: rate` node also carries `window_aggregate` and

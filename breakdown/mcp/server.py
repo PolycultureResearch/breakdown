@@ -297,6 +297,14 @@ async def explain_metric(name: str, tree: Optional[str] = None) -> Dict[str, Any
     if fit is not None:
         fit_info["inference_method"] = fit.inference_method
         fit_info["fit_quality"] = fit.diagnostics.get("fit_quality")
+        # Roadmap S2: the PSIS verdict on a variational fit. Carried here as
+        # well as on RCA nodes because `explain_metric` is where an agent goes
+        # to decide whether one metric's numbers are worth narrating, and
+        # `fit_quality: "suspect"` alone does not say whether the model failed
+        # to converge or converged somewhere far from the posterior.
+        fit_info["khat"] = fit.diagnostics.get("khat")
+        fit_info["khat_status"] = fit.diagnostics.get("khat_status")
+        fit_info["khat_warnings"] = fit.diagnostics.get("khat_warnings")
         fit_info["sign_warnings"] = fit.diagnostics.get("sign_warnings")
 
     return round_floats(

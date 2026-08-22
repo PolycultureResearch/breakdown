@@ -80,7 +80,10 @@ restore the file from git afterwards to keep the reasoning.
   in about a second with the pre-warmed trace cache intact. The prewarm run is
   what keeps the first prospect of the day from paying for the model fits — fits
   are serialized behind a single lock, so a cold multi-node RCA is the one real
-  latency risk in a live pitch.
+  latency risk in a live pitch. **Roadmap S2 (2026-08-22) roughly quintupled
+  that risk**: every probabilistic node on this tree fails the PSIS k̂ check, so
+  a cold RCA re-fits three of them with NUTS and takes ~48s rather than ~10s.
+  The prewarm is no longer a nicety — run it before every scheduled call.
 - `min_machines_running = 1` keeps one up rather than letting the app scale to
   zero. Suspend only covers *short* idles; a long-idle machine gets stopped
   outright, and that path measured **16.0s** to first byte on `GET /ui`
