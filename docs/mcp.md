@@ -128,21 +128,21 @@ RCA names.
 > Why: the conversion rate has two learned drivers, the ones a subscription
 > team argues about in every retro. Did trialists activate (upload their
 > first work), and how many days did they use the trial. Both moved.
-> Activation went from 54.5% to 73.3% of each cohort, up 34.4%; days active
-> from 1.42 to 2.42, up 71.2%. The fitted attribution hands 68.2% of the
+> Activation went from 53.5% to 72.7% of each cohort, up 35.9%; days active
+> from 1.31 to 2.32, up 76.1%. The fitted attribution hands 70.7% of the
 > conversion gap to activation, with an interval clear of zero (roughly 0.03
-> to 0.09 points of conversion) and P(direction) 0.998. In the tree-wide
+> to 0.10 points of conversion) and P(direction) 0.998. In the tree-wide
 > ranking, activation outranks trial volume itself.
 >
 > Now the part worth reading out loud. The second driver, days active,
-> carries 39.8% with an interval that straddles zero and P(direction) 0.94.
+> carries 36.0% with an interval that straddles zero and P(direction) 0.92.
 > The two measures move together, since an activated trialist is an active
 > one, so the data pins their combined effect much harder than the split
 > between them. The tool says exactly that instead of manufacturing
 > precision: sure of the sum, honest about the split.
 >
-> Context from `explain_metric`: activation averaged 56.1% over the loaded
-> 112 weeks, ranging 41.9% to 78.4%. The post-ship window sits at 73.3%,
+> Context from `explain_metric`: activation averaged 55.5% over the loaded
+> 112 weeks, ranging 41.9% to 77.3%. The post-ship window sits at 72.7%,
 > near the top of the whole series. This was not a normal month.
 >
 > Two things this analysis cannot tell you. It cannot say the *revamp*
@@ -158,7 +158,7 @@ RCA names.
 Every figure comes from a field in a tool response, and the hedges are the
 payload's own, applied where each one bites. The line between exact and
 fitted is the payload's line: `unexplained` reads 0.0 on the two identity
-nodes and small-but-`measured` on the fitted conversion node (about 8% of
+nodes and small-but-`measured` on the fitted conversion node (about 7% of
 that node's own gap), so the narration calls the MRR split arithmetic and the
 activation split an estimate. The days-active hedge follows the interval, and
 the interval is wide because the tree declared two drivers that ride the same
@@ -177,9 +177,12 @@ reproducing by hand:
 
 - *"Churn jumped this spring. Is it members disengaging, and which customers
   is it?"* The RCA on `customer_churn_rate` clears the engagement theory
-  (a 2.9% contribution with an interval crossing zero) and puts 96% of the
-  gap in `unexplained`, which on a one-parent node is the finding, not a
-  failure. The plan slice names the professional tier. The country slice on
+  (a −4.2% contribution: member activity moved *up* that spring, so under the
+  edge's declared negative sign it pulls against the gap rather than
+  explaining it, and the interval crosses zero) and leaves 102% of the gap in
+  `unexplained` — over 100% precisely because the one parent pulls the other
+  way. On a one-parent node that is the finding, not a failure. The plan
+  slice names the professional tier. The country slice on
   the rate returns `localization: "long_tail"` — the concentration sits in
   the `__other__` roll-up rather than in any named country, so the answer is
   "the tail moved; raise this dimension's `top_k` to see inside it", never

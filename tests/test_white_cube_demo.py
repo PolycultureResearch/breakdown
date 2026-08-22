@@ -441,17 +441,43 @@ def test_story_b_churn_spike_is_plan_localized_and_engagement_is_cleared(client)
     assert ui_share(cm, "churn_arpu") == pytest.approx(0.363, **TOUR)
     assert ui_comovement(cm) == pytest.approx(0.001, **TOUR)
 
-    # The learned engagement edge is *cleared*, not silent: member activity
-    # barely moved, its contribution to the churn-rate gap is small, and the
-    # posterior is unsure of even that — the tree checked the "members
-    # disengaged" explanation and declined it. That restraint is the beat the
-    # tour now scripts, because a planted pricing-tier spike is exactly the
-    # case an engagement edge must not absorb.
-    assert abs(d["nodes"]["member_activity_rate"]["relative_change"]) < 0.02
+    # The learned engagement edge is *cleared*, not silent — and since the
+    # 2026-08-22 generator fidelity fix it is cleared on stronger evidence than
+    # before, which is worth stating because it is the beat's whole point.
+    #
+    # Member activity moved **up** (+2.5%) in a window where churn spiked. The
+    # tree declares the edge's sign negative ("disengaged members churn"), so an
+    # activity *rise* predicts churn *falling*: the contribution runs against
+    # the gap rather than explaining it, and the posterior is unsure of even
+    # that sign. The tree examined the "members disengaged" story and declined
+    # it, which is exactly what a planted pricing-tier spike requires of an
+    # engagement edge.
+    #
+    # Why the bounds are unchanged and now mean more: `dau_over_active` used to
+    # reach the event stream as an NHPP rate factor, so `member_activity_rate`
+    # sat at ~93% against its ceiling with weekly corr(activity, the shared
+    # `member_engagement` driver) of only +0.28 — the edge partly cleared itself
+    # because it could barely see anything. At the configured ~25% level that
+    # correlation is +0.74 and the mechanism is genuinely strong, so declining
+    # it here is a statement about *this window*, not about a squashed driver.
+    mar = d["nodes"]["member_activity_rate"]
+    assert mar["relative_change"] > 0, "activity rose — the wrong way for the churn story"
+    assert mar["relative_change"] == pytest.approx(0.025, **TOUR)
+    # The tour quotes the levels too, because "+2.5%" of a saturated 93% and of
+    # a 25% working range are different claims, and the presenter is standing in
+    # front of the node card showing the level.
+    assert mar["baseline"] == pytest.approx(0.254, **TOUR)
+    assert mar["actual"] == pytest.approx(0.260, **TOUR)
     ccr = d["nodes"]["customer_churn_rate"]
     (eng,) = [c for c in ccr["contributions"] if c["parent"] == "member_activity_rate"]
+    assert eng["share_of_gap"] < 0, "the edge pulls against the gap, not merely a little with it"
     assert abs(eng["share_of_gap"]) < 0.15
+    assert eng["share_of_gap"] == pytest.approx(-0.049, **TOUR)
+    assert eng["ci_95"][0] < 0 < eng["ci_95"][1]
     assert eng["prob_same_direction"] < 0.9
+    # A band, not a pin: this is the one figure here a PyMC/numpy bump could
+    # nudge, and the tour quotes it to two places.
+    assert eng["prob_same_direction"] == pytest.approx(0.82, abs=0.04)
 
     s = slices(client, "churned_mrr", "plan", ref, ana)
     assert s["slices"][0]["value"] == "professional"
@@ -663,20 +689,27 @@ def test_story_d_names_activation_as_the_mechanism(client):
     ref, ana = ("2025-07-07", "2025-08-03"), ("2025-08-11", "2025-09-07")
     d = rca(client, "new_mrr", ref, ana)
 
-    # The chain the presenter walks: activation +34.4%, days active +71.2%,
+    # The chain the presenter walks: activation +35.9%, days active +76.1%,
     # conversion +40.2% — against trial volume's +15.5% trend (see the
     # adjacency test below for why that number is the control).
-    assert d["nodes"]["trial_activation_rate"]["relative_change"] == pytest.approx(0.344, **TOUR)
-    assert d["nodes"]["trial_days_active"]["relative_change"] == pytest.approx(0.712, **TOUR)
+    #
+    # The two engagement figures moved on 2026-08-22 (activation +34.4% ->
+    # +35.9%, days active +71.2% -> +76.1%) because both are recomputed in dbt
+    # from `product.events`, and the generator stopped folding `dau_over_active`
+    # into an event-rate intensity. Conversion is drawn from the lifecycle, not
+    # from events, so it did not move at all — which is the check that the
+    # regeneration hit the intended layer and nothing else.
+    assert d["nodes"]["trial_activation_rate"]["relative_change"] == pytest.approx(0.359, **TOUR)
+    assert d["nodes"]["trial_days_active"]["relative_change"] == pytest.approx(0.761, **TOUR)
     assert d["nodes"]["trial_conversion_rate"]["relative_change"] == pytest.approx(0.402, **TOUR)
 
     ccr = d["nodes"]["trial_conversion_rate"]
     assert ccr["status"] == "ok"
     by = {c["parent"]: c for c in ccr["contributions"]}
     act, days = by["trial_activation_rate"], by["trial_days_active"]
-    # "trial_activation_rate carries 68.2% of the conversion gap, interval
+    # "trial_activation_rate carries 70.7% of the conversion gap, interval
     # clear of zero, P(direction) 0.998."
-    assert act["share_of_gap"] == pytest.approx(0.682, **TOUR)
+    assert act["share_of_gap"] == pytest.approx(0.707, **TOUR)
     assert act["ci_95"][0] > 0
     assert act["prob_same_direction"] > 0.99
     # ...and the collinear twin is reported unsurely, as it should be.

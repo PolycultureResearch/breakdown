@@ -894,9 +894,9 @@ def test_mcp_session_names_activation_with_an_honest_split(mcp_session):
     sure of the sum, honest about the split."""
     nodes = mcp_session["rca"]["nodes"]
     act, days = nodes["trial_activation_rate"], nodes["trial_days_active"]
-    # "from 54.5% to 73.3% ... up 34.4%; days active from 1.42 to 2.42, up 71.2%"
-    assert act["baseline"] == pytest.approx(0.545, abs=1e-3)
-    assert act["actual"] == pytest.approx(0.733, abs=1e-3)
+    # "from 53.5% to 72.7% ... up 35.9%; days active from 1.31 to 2.32, up 76.1%"
+    assert act["baseline"] == pytest.approx(0.535, abs=1e-3)
+    assert act["actual"] == pytest.approx(0.727, abs=1e-3)
     mcp_doc_prints(act["baseline"])
     mcp_doc_prints(act["actual"])
     mcp_doc_prints(act["relative_change"])
@@ -906,8 +906,8 @@ def test_mcp_session_names_activation_with_an_honest_split(mcp_session):
 
     by = {c["parent"]: c for c in nodes["trial_conversion_rate"]["contributions"]}
     a, d = by["trial_activation_rate"], by["trial_days_active"]
-    assert a["share_of_gap"] == pytest.approx(0.682, abs=5e-3)
-    assert d["share_of_gap"] == pytest.approx(0.398, abs=8e-3)
+    assert a["share_of_gap"] == pytest.approx(0.707, abs=5e-3)
+    assert d["share_of_gap"] == pytest.approx(0.360, abs=8e-3)
     mcp_doc_prints(a["share_of_gap"])
     mcp_doc_prints(d["share_of_gap"])
     # The narration's whole argument: one interval clear of zero, one not.
@@ -917,7 +917,7 @@ def test_mcp_session_names_activation_with_an_honest_split(mcp_session):
         "the doc says the days-active interval straddles zero — if it no "
         "longer does, the honest-split paragraph must be rewritten"
     )
-    assert d["prob_same_direction"] == pytest.approx(0.94, abs=0.05)
+    assert d["prob_same_direction"] == pytest.approx(0.92, abs=0.05)
     assert a["share_of_gap"] > d["share_of_gap"]
 
     # "In the tree-wide ranking, activation outranks trial volume itself."
@@ -930,9 +930,9 @@ def test_mcp_session_explain_metric_gives_the_series_context(mcp_session):
     loaded series, which only explain_metric carries."""
     summary = mcp_session["explain"]["series_summary"]
     assert summary["n_periods"] == 112
-    assert summary["mean"] == pytest.approx(0.561, abs=2e-3)
+    assert summary["mean"] == pytest.approx(0.5555, abs=2e-3)
     assert summary["min"] == pytest.approx(0.419, abs=2e-3)
-    assert summary["max"] == pytest.approx(0.784, abs=2e-3)
+    assert summary["max"] == pytest.approx(0.773, abs=2e-3)
     mcp_doc_prints(summary["mean"])
     mcp_doc_prints(summary["min"])
     mcp_doc_prints(summary["max"])
