@@ -45,7 +45,8 @@ A refusal is part of the contract, not a dead end. Ask for a metric that
 isn't in the tree, a dimension it doesn't declare, a window outside the
 loaded data, or an RCA on a tree with no data provider, and the tool comes
 back with `isError` and a message naming the offending value and — where
-there is one — the remedy. Against the bundled example tree:
+there is one — the remedy. Against the bundled example trees — the first from
+the mock-provider tree, the second from the cold-start one:
 
 ```
 Error executing tool explain_metric: Metric 'reveneu' not found.
