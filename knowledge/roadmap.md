@@ -144,9 +144,10 @@ released that morning changed shipped behavior with nothing in this repo
 changing, and the two jobs that resolve dependencies fresh rather than from
 `uv.lock` are what noticed. Each was traced to a specific code path, and the
 `file:line` references are the starting point for whoever picks the item up.
-*(**C27 is deliberately absent.** It is claimed by an in-flight branch;
-renumbering a row someone is already citing is worse than a gap in the
-sequence.)* *(Line refs
+*(**C27 landed after C28 and the sequence is intact.** C28 was numbered around
+a C27 that was still on an in-flight branch, on the reasoning that renumbering
+a row someone already cites is worse than a temporary gap; that branch has
+since merged, so both rows exist and the gap closed on its own.)* *(Line refs
 re-anchored 2026-08-17 — the 2.16 multi-tree refactor had moved `api/main.py`
 by ~1,100 lines and every open row's reference with it.)*
 
