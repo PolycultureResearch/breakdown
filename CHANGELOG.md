@@ -11,6 +11,26 @@ them land in a **minor** bump (`0.1 → 0.2`), with patch releases reserved for
 fixes. Callers who need stability should pin the minor series they tested
 against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
 
+## [Unreleased]
+
+### Fixed
+
+- **Every MCP tool error became `Error executing tool <name>` for anyone on
+  `mcp` 2.1.0** — no offending value, no list of valid metrics, no pointer at
+  the tool that would have worked. The SDK released 2026-08-24 stopped
+  forwarding the text of an *unexpected* exception to the caller (a sound
+  hardening: a crash's message is for the server log, not the peer), and
+  breakdown's refusals were raising `ValueError`/`RuntimeError`, which is
+  exactly what the SDK calls unexpected. On 2.0.0 every exception's text was
+  forwarded, so six carefully-written refusals had been reaching callers by
+  accident. The consumer here is an AI assistant with no log to open: told
+  only that a tool failed, it cannot correct the metric name, switch to
+  `run_whatif`, or move the window — it can only guess. Refusals now raise the
+  SDK's anticipated-failure type, so the messages arrive intact on both 2.0.0
+  and 2.1.0, unchanged in wording. Genuine bugs stay terse by design. Affects
+  anyone who installed `metric-breakdown` on or after 2026-08-24; upgrade to
+  get the messages back.
+
 ## [0.1.1] — 2026-08-19
 
 ### Fixed
@@ -356,3 +376,4 @@ release, tag `v0.1.0`, point the link below at
 published` and uploads via Trusted Publishing. -->
 [0.1.1]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.1.1
 [0.1.0]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.1.0
+[Unreleased]: https://github.com/PolycultureResearch/breakdown/compare/v0.1.1...HEAD

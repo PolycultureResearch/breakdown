@@ -71,6 +71,13 @@ dependencies = [
     "fastapi>=0.115.0",
     # Genuinely 2.x: `mcp.server.MCPServer` and the streamable-HTTP session
     # manager breakdown/mcp/server.py builds on do not exist in mcp 1.x.
+    # Deliberately **not** capped. 2.1.0 changed how a tool error reaches the
+    # caller and turned six refusals opaque (roadmap C28); an upper bound would
+    # have hidden that from CI while quietly denying users the current SDK, and
+    # the `sdist` / `base-install` jobs — which resolve fresh rather than from
+    # `uv.lock` — reported it within hours of the release. Keep the range open
+    # and the lock current; that pair is the detector. Pin only for a defect
+    # that the suite cannot be made to catch.
     "mcp>=2.0.0",
     "networkx>=3.1",
     "numpy>=1.26.0",

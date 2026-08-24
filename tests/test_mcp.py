@@ -6,12 +6,17 @@ is exactly the roadmap's Horizon-2 exit criterion. base_url matters: the
 transport's DNS-rebinding protection only admits localhost hosts.
 """
 
+import asyncio
+
 import pytest
 
 pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
+from mcp.server.mcpserver.exceptions import ToolError
 
 from breakdown.api.main import app
+from breakdown.data_fetch import SliceNotSupported
+from breakdown.mcp.server import _known_metric, _require_data, _state, _surface_refusals
 
 HEADERS = {
     "Accept": "application/json, text/event-stream",
@@ -328,3 +333,85 @@ def test_slice_metric(sliced_env):
         )
         assert res["isError"] is True
         assert "declares no dimension" in res["content"][0]["text"]
+
+
+# ---------------------------------------------------------------------------
+# The refusal channel itself
+
+
+def test_refusals_travel_on_the_sdk_anticipated_failure_channel():
+    """The transport contract, not the message text.
+
+    Every "is the message there?" assertion above passed for a year and then
+    five of them broke on a day this repo did not change: mcp 2.1.0 stopped
+    forwarding the text of an *unexpected* exception to the caller, and every
+    refusal in `mcp/server.py` was raising `ValueError`/`RuntimeError`, which
+    is what the SDK calls unexpected. The model was left with `Error executing
+    tool run_rca` — no offending value, no remedy, nothing to recover from.
+
+    So pin the channel, not the string. A refusal must raise the SDK's
+    anticipated-failure type at the point it is decided; a message assertion
+    can only notice after an SDK release moves the line.
+    """
+    with _client() as client:
+        client.get("/health")  # drive the lifespan so a tree is loaded
+        tree_state = app.state.trees[app.state.default_tree]
+        with pytest.raises(ToolError, match="Known metrics"):
+            _known_metric(tree_state, "nope")
+
+        # unknown tree: decided before anything is awaited
+        with pytest.raises(ToolError, match="list_trees"):
+            asyncio.run(_state("nope"))
+
+    class _ColdStart:
+        data = None
+
+    with pytest.raises(ToolError, match="no data provider"):
+        _require_data(_ColdStart())
+
+
+def test_a_deep_refusal_is_surfaced_and_a_crash_is_not():
+    """`@_surface_refusals` translates what the engine and the providers raise,
+    where the raise site knows nothing about MCP and shouldn't. The set is not
+    a new judgement — it is the one `api/main.py` already makes, where exactly
+    `ValueError` and `SliceNotSupported` become a 422 carrying `str(e)`.
+
+    The other half matters as much: a crash stays a crash. `Error executing
+    tool <name>` is the right answer to a `KeyError` on an engine internal —
+    there is nothing there for a model to act on, and the SDK logs the
+    traceback for the person who can."""
+
+    @_surface_refusals
+    async def refuses():
+        raise ValueError("windows must lie inside the loaded data")
+
+    @_surface_refusals
+    async def cannot_slice():
+        raise SliceNotSupported("provider 'mock' cannot group 'signups' by 'geo'")
+
+    @_surface_refusals
+    async def crashes():
+        raise KeyError("beta_raw")
+
+    with pytest.raises(ToolError, match="inside the loaded data"):
+        asyncio.run(refuses())
+    with pytest.raises(ToolError, match="cannot group"):
+        asyncio.run(cannot_slice())
+    with pytest.raises(KeyError):
+        asyncio.run(crashes())
+
+
+def test_an_engine_refusal_reaches_the_caller_with_its_remedy():
+    """End to end over the wire: the engine's window validation is written for
+    a model to read and act on, and it has to arrive that way."""
+    with _client() as client:
+        res = _call_tool(
+            client,
+            "run_rca",
+            {"target": "revenue", "analysis_start": "2099-01-01", "analysis_end": "2099-02-01"},
+        )
+        assert res["isError"] is True
+        text = res["content"][0]["text"]
+        # the SDK prefixes the tool name; what follows must be ours
+        assert text != "Error executing tool run_rca"
+        assert "2024-01-01" in text and "2024-04-09" in text

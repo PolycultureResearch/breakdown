@@ -39,6 +39,32 @@ tree's declared `expected_signs` arrives with its `sign_warnings`, a
 mostly-zero series with its `likelihood_warnings`, a withheld interval with
 its `ci_status`.
 
+### When a tool refuses
+
+A refusal is part of the contract, not a dead end. Ask for a metric that
+isn't in the tree, a dimension it doesn't declare, a window outside the
+loaded data, or an RCA on a tree with no data provider, and the tool comes
+back with `isError` and a message naming the offending value and — where
+there is one — the remedy. Against the bundled example trees — the first from
+the mock-provider tree, the second from the cold-start one:
+
+```
+Error executing tool explain_metric: Metric 'reveneu' not found.
+Known metrics: average_order_value, daily_sessions, order_count, revenue
+
+Error executing tool run_rca: This tree declares no data provider (cold start
+mode); this tool needs time-series data. run_whatif works — it simulates over
+the tree's declared beliefs.
+```
+
+That is written for an assistant to act on: correct the name, switch tools,
+move the window. An error is only useful to a model if it says what to do
+next, so the tools raise these as *anticipated* failures, which is what makes
+the SDK hand the text to the caller rather than keeping it in the server log.
+Genuine bugs are the other case and stay deliberately terse — `Error
+executing tool run_rca` with the traceback in the server's log, because there
+is nothing there for an assistant to fix.
+
 ## Connecting
 
 Four paths, ordered by how little the person connecting should have to know.
