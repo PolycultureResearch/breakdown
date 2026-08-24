@@ -8,11 +8,14 @@ asyncio.to_thread.
 """
 
 import asyncio
+import functools
 import math
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
+from breakdown.data_fetch import SliceNotSupported
 from breakdown.engine.rca import run_rca as _engine_run_rca
 from breakdown.engine.simulate import Assumption, Intervention, ScenarioRequest, run_scenario
 from breakdown.mcp.shaping import (
@@ -52,6 +55,52 @@ mcp = MCPServer(
 )
 
 
+_ToolFn = TypeVar("_ToolFn", bound=Callable[..., Any])
+
+#: The exceptions that mean "the caller asked for something this tree cannot
+#: answer", as opposed to "breakdown broke". Not a new judgement: it is the one
+#: `api/main.py` already makes one file over, where exactly these two become a
+#: 422 carrying `str(e)` and everything else becomes a 500.
+_REFUSALS = (ValueError, SliceNotSupported)
+
+
+def _surface_refusals(fn: _ToolFn) -> _ToolFn:
+    """Re-raise a deliberate refusal as the SDK's *anticipated*-failure type.
+
+    An MCP tool has two ways to fail and the SDK tells them apart by exception
+    type. `ToolError` means "I saw this coming": the caller gets `isError` with
+    the message text, which is the whole point of writing messages that name the
+    offending value and the remedy. Anything else is a crash: since **mcp
+    2.1.0** the caller gets only `Error executing tool <name>` and the text
+    stays in the server log. mcp 2.0.0 forwarded every exception's text, so
+    every refusal here read as anticipated by accident, and the hardening turned
+    six carefully-worded refusals opaque at once.
+
+    Opaque is worse here than at an HTTP boundary because the caller is a model.
+    A person reading `Error executing tool run_rca` opens the log; a model has
+    no log, so it cannot recover, cannot explain, and cannot stop — it guesses.
+    That is the failure mode this project exists to avoid, and it is the same
+    instinct as the provider-boundary rule: refuse, and say what was refused.
+
+    Guards in this module raise `ToolError` directly, at the point they decide.
+    This wrapper covers what is raised deeper — the engine's window and scenario
+    validation, a provider that cannot slice — where the raise site knows
+    nothing about MCP and shouldn't.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await fn(*args, **kwargs)
+        except _REFUSALS as e:
+            raise ToolError(str(e)) from e
+
+    # `tests/test_project_invariants.py` enumerates the `@mcp.tool()`
+    # decorations and requires this one beside each: a seventh tool added
+    # without it is a refusal the caller will never see.
+    return wrapper  # type: ignore[return-value]
+
+
 async def _state(tree: Optional[str] = None):
     """The `TreeState` a tool addresses: the named tree, else the default.
 
@@ -69,20 +118,20 @@ async def _state(tree: Optional[str] = None):
     state = app.state
     trees = state.trees
     if not trees:
-        raise RuntimeError(
+        raise ToolError(
             f"breakdown started without a metric tree: {state.startup_error}. "
             "Check the --tree path and restart."
         )
     tree_id = tree or state.default_tree
     tree_state = trees.get(tree_id)
     if tree_state is None:
-        raise ValueError(
+        raise ToolError(
             f"No tree '{tree_id}'. Known trees: {', '.join(sorted(trees))}. "
             "Call list_trees for their titles and goals."
         )
     await _ensure_loaded(tree_state)
     if tree_state.load_error is not None:
-        raise RuntimeError(
+        raise ToolError(
             f"Tree '{tree_state.id}' started without data: {tree_state.load_error}. "
             f"Run `breakdown doctor --tree {tree_state.path}` to diagnose."
         )
@@ -92,14 +141,14 @@ async def _state(tree: Optional[str] = None):
 def _known_metric(state, name: str) -> None:
     if name not in state.parser.dag:
         known = ", ".join(sorted(state.parser.dag.nodes))
-        raise ValueError(f"Metric '{name}' not found. Known metrics: {known}")
+        raise ToolError(f"Metric '{name}' not found. Known metrics: {known}")
 
 
 def _require_data(state) -> None:
     """Mirror of the API's cold-start guard: analyses that consume history
     cannot exist on a tree that declares no data provider."""
     if state.data is None:
-        raise RuntimeError(
+        raise ToolError(
             "This tree declares no data provider (cold start mode); this tool "
             "needs time-series data. run_whatif works — it simulates over the "
             "tree's declared beliefs."
@@ -107,6 +156,7 @@ def _require_data(state) -> None:
 
 
 @mcp.tool()
+@_surface_refusals
 async def list_trees() -> Dict[str, Any]:
     """List every metric tree this server holds: id, title, owner, and (when
     it declares them) a period and a goal. Trees are different lenses on the
@@ -127,7 +177,7 @@ async def list_trees() -> Dict[str, Any]:
 
     state = app.state
     if not state.trees:
-        raise RuntimeError(f"breakdown started without a metric tree: {state.startup_error}.")
+        raise ToolError(f"breakdown started without a metric tree: {state.startup_error}.")
     return round_floats(
         {
             "default": state.default_tree,
@@ -137,6 +187,7 @@ async def list_trees() -> Dict[str, Any]:
 
 
 @mcp.tool()
+@_surface_refusals
 async def get_tree(tree: Optional[str] = None) -> Dict[str, Any]:
     """Get the metric tree: every metric with its grain, kind, parents, and
     formula, plus the DAG edges and the loaded data window. Call this first,
@@ -186,6 +237,7 @@ async def get_tree(tree: Optional[str] = None) -> Dict[str, Any]:
 
 
 @mcp.tool()
+@_surface_refusals
 async def explain_metric(name: str, tree: Optional[str] = None) -> Dict[str, Any]:
     """Explain one metric: its definition, place in the tree (parents and
     children), a summary of its recent series, and whether a Bayesian fit is
@@ -259,6 +311,7 @@ async def explain_metric(name: str, tree: Optional[str] = None) -> Dict[str, Any
 
 
 @mcp.tool()
+@_surface_refusals
 async def run_rca(
     target: str,
     analysis_start: str,
@@ -337,6 +390,7 @@ async def run_rca(
 
 
 @mcp.tool()
+@_surface_refusals
 async def slice_metric(
     name: str,
     dimension: str,
@@ -370,7 +424,7 @@ async def slice_metric(
     _known_metric(state, name)
     defn = state.parser.dag.nodes[name]["definition"]
     if dimension not in defn.dimensions:
-        raise ValueError(
+        raise ToolError(
             f"Metric '{name}' declares no dimension '{dimension}' "
             f"(declared: {sorted(defn.dimensions) or 'none'})."
         )
@@ -396,6 +450,7 @@ async def slice_metric(
 
 
 @mcp.tool()
+@_surface_refusals
 async def run_whatif(
     baseline_start: Optional[str] = None,
     baseline_end: Optional[str] = None,

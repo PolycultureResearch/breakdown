@@ -1231,3 +1231,65 @@ def test_no_local_binding_shadows_the_global_state_object():
     assert sum(1 for line in app_js if re.match(r"const state\b", line)) == 1, (
         "the global `state` object should be declared exactly once at the top of app.js"
     )
+
+
+# --- Every MCP tool refuses through the SDK's anticipated-failure channel -----
+
+
+def test_every_mcp_tool_surfaces_its_refusals():
+    """The first rule, one boundary over, and a new SDK release found it.
+
+    `mcp/server.py`'s refusals are the provider boundary's discipline aimed at
+    a model instead of a warehouse: name the offending value, name the remedy,
+    never approximate. But an MCP tool has *two* failure channels and the SDK
+    picks between them by exception type — `ToolError` hands its text to the
+    caller, anything else is a crash whose text stays on the server. mcp 2.0.0
+    forwarded both, so six refusals raising `ValueError`/`RuntimeError` looked
+    correct; mcp 2.1.0 stopped forwarding crash text and all six went opaque at
+    once, leaving a model with `Error executing tool run_rca` and no way to
+    recover, explain, or stop.
+
+    `@_surface_refusals` is the one place that policy lives. Enumerate the
+    tools rather than pinning today's six: a seventh added without it is a
+    refusal nobody will ever read.
+    """
+    tree = ast.parse((PACKAGE / "mcp" / "server.py").read_text())
+
+    def _decorators(fn):
+        return {ast.unparse(d) for d in fn.decorator_list}
+
+    tools = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(d.startswith("mcp.tool") for d in _decorators(node))
+    ]
+    assert len(tools) >= 6, "the MCP tool scan found nothing — has the decorator moved?"
+
+    unguarded = [t.name for t in tools if "_surface_refusals" not in _decorators(t)]
+    assert not unguarded, (
+        "these MCP tools do not convert their refusals to the SDK's "
+        "anticipated-failure type, so the caller sees only 'Error executing "
+        f"tool <name>': {unguarded}"
+    )
+
+
+def test_no_mcp_guard_refuses_with_a_bare_exception():
+    """The wrapper covers what the engine raises; the module's own guards
+    decide *at the raise site* and say so there. A `raise ValueError` sitting
+    beside a `raise ToolError` in the same file is exactly the shape of defect
+    the four rules exist to catch — the right policy, one line from its
+    opposite, with no stated reason."""
+    tree = ast.parse((PACKAGE / "mcp" / "server.py").read_text())
+    bare = [
+        ast.unparse(node)[:80]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Raise)
+        and isinstance(node.exc, ast.Call)
+        and isinstance(node.exc.func, ast.Name)
+        and node.exc.func.id in {"ValueError", "RuntimeError"}
+    ]
+    assert not bare, (
+        "an MCP guard raises a bare exception; the SDK treats it as a crash "
+        f"and withholds the message from the calling model: {bare}"
+    )
