@@ -155,13 +155,13 @@ RCA names.
 > team argues about in every retro. Did trialists activate (upload their
 > first work), and how many days did they use the trial. Both moved.
 > Activation went from 53.5% to 72.7% of each cohort, up 35.9%; days active
-> from 1.31 to 2.32, up 76.1%. The fitted attribution hands 68.0% of the
+> from 1.31 to 2.32, up 76.1%. The fitted attribution hands about 70% of the
 > conversion gap to activation, with an interval clear of zero (roughly 0.02
 > to 0.10 points of conversion) and P(direction) 0.998. In the tree-wide
 > ranking, activation outranks trial volume itself.
 >
 > Now the part worth reading out loud. The second driver, days active,
-> carries 38.5% with an interval that straddles zero and P(direction) 0.89.
+> carries about 37% with an interval that straddles zero and P(direction) 0.89.
 > The two measures move together, since an activated trialist is an active
 > one, so the data pins their combined effect much harder than the split
 > between them. The tool says exactly that instead of manufacturing

@@ -906,10 +906,15 @@ def test_mcp_session_names_activation_with_an_honest_split(mcp_session):
 
     by = {c["parent"]: c for c in nodes["trial_conversion_rate"]["contributions"]}
     a, d = by["trial_activation_rate"], by["trial_days_active"]
-    assert a["share_of_gap"] == pytest.approx(0.680, abs=5e-3)
-    assert d["share_of_gap"] == pytest.approx(0.385, abs=8e-3)
-    mcp_doc_prints(a["share_of_gap"])
-    mcp_doc_prints(d["share_of_gap"])
+    # Banded, and deliberately *not* `mcp_doc_prints`-ed. This is the split of a
+    # collinear pair — the quantity a posterior ridge leaves undetermined — and
+    # seeded it measures 0.6804 / 0.6822 / 0.6967 across three numeric stacks.
+    # The doc therefore says "about 70%": a figure three numeric stacks disagree
+    # on by 1.6 points does not get a decimal place. Same
+    # reason the tour writes P(direction) as "≈0.84"; see
+    # tests/test_white_cube_demo.py's module docstring for the measurement.
+    assert a["share_of_gap"] == pytest.approx(0.689, abs=0.015)
+    assert d["share_of_gap"] == pytest.approx(0.377, abs=0.018)
     # The narration's whole argument: one interval clear of zero, one not.
     assert a["ci_95"][0] > 0
     assert a["prob_same_direction"] == pytest.approx(0.998, abs=0.04)

@@ -57,7 +57,8 @@ measurement says how much it does not:
 
 | quantity | this machine | CI |
 |---|---|---|
-| `share_of_gap` (posterior mean) | −0.0768 | agrees within 1e-3 |
+| `share_of_gap`, non-collinear parents | −0.0768 | agrees within 1e-3 |
+| `share_of_gap`, split of a collinear pair | 0.6804 | **0.6822** / **0.6967** |
 | β (posterior mean) | −0.036 | agrees within 1e-3 |
 | β HDI 2.5% (tail quantile) | −0.059 | **−0.061** |
 | `P(direction)` | 0.838 | just under **0.835** |
@@ -75,8 +76,34 @@ a red CI run to learn, which is why it is written down.
 
 Apply that split to **every** sampler-derived figure added here, not only the
 four measured above. A `share_of_gap`, a contribution `estimate` and a `beta`
-mean are posterior means and pin at TOUR; a `ci_95` bound, an HDI bound and a
-`prob_same_direction` near a rounding boundary are not, and get bands.
+mean are posterior means; a `ci_95` bound, an HDI bound and a
+`prob_same_direction` near a rounding boundary are tail quantiles and get bands.
+
+**And "posterior means pin at TOUR" has one large exception, which CI found.**
+The split of credit between two **collinear** parents is not a stable quantity
+across numeric stacks, even seeded. Story D's `trial_activation_rate` share —
+whose co-parent `trial_days_active` rides the same underlying engagement, on
+purpose — measured, from the same `random_seed=0`:
+
+| stack | share |
+|---|---|
+| macOS/arm64, py3.14 | 0.6804 |
+| CI Linux, py3.12 | 0.6822 |
+| CI Linux, py3.11 **and** py3.13 (bit-identical to each other) | **0.6967** |
+
+A **1.6-point** spread, sixteen times TOUR, with no run-to-run variance inside
+a stack. That is not Monte-Carlo noise in the ordinary sense; it is roadmap
+**S4**'s failure shape reproduced by a BLAS difference. On a ridge the *sum* of
+two collinear coefficients is well determined and the *split* is not, so a
+chain that traverses the ridge slightly differently lands somewhere else along
+it — which is exactly what this story exists to tell a prospect, now
+demonstrated at the tolerance level.
+
+So a share that is **one parent's half of a collinear pair** is banded to the
+measured cross-stack range and is never `prints()`-ed: 68.0% and 69.7% are
+different strings and both are true. A share on a node whose parents are not
+collinear keeps TOUR — story B's −0.0768 agrees within 1e-3 across machines,
+and story A's identities are deterministic.
 
 What must never be relaxed is the row of properties beside these values — sign,
 magnitude bound, the contribution interval straddling zero, `P(direction)`
@@ -812,7 +839,15 @@ def test_story_d_names_activation_as_the_mechanism(client):
     # keeping: its ADVI k̂ is 0.497 — inside the *good* band, the one node in
     # the demo the approximation genuinely represents — and the share still
     # moved 2.7 points. A passing k̂ bounds the error; it does not zero it.
-    assert act["share_of_gap"] == pytest.approx(0.680, **TOUR)
+    #
+    # Banded, not pinned at TOUR, and the module docstring says why: this is one
+    # parent's half of a *collinear* pair, and the split between two collinear
+    # parents is the quantity a ridge leaves undetermined. Seeded, it measures
+    # 0.6804 (macOS/arm64), 0.6822 (Linux py3.12) and 0.6967 (Linux py3.11 and
+    # py3.13) — a 1.6-point spread with no variance inside a stack. The tour
+    # says "about 70%" rather than a decimal the stacks disagree on, and the
+    # assertions that carry the beat are the properties below, not this number.
+    assert act["share_of_gap"] == pytest.approx(0.689, abs=0.015)
     assert act["ci_95"][0] > 0
     assert act["prob_same_direction"] > 0.99
     # ...and the collinear twin is reported unsurely, as it should be.

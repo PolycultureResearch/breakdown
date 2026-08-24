@@ -292,8 +292,13 @@ learned parents, the ones a subscription company argues about in every
 retro: did they *activate* (upload their first work), and how many days did
 they actually use the trial. In the window: `trial_activation_rate` **+35.9%**,
 `trial_days_active` **+76.1%**, conversion **+40.2%** — and the attribution
-on `trial_conversion_rate` hands **68.0%** of the gap to activation with
-`P(direction)` **0.998** and an interval clear of zero. The story reads
+on `trial_conversion_rate` hands **about 70%** of the gap to activation with
+`P(direction)` **0.998** and an interval clear of zero. (Say "about", and mean
+it: this is one half of a deliberately collinear pair, so it is the number the
+posterior ridge is least sure of — the same seeded analysis measures anywhere
+from 68% to 70% depending on the machine's numeric library. What does not move
+is that the interval stays clear of zero, and that activation carries more of
+the gap than days-active does. Those are the claims.) The story reads
 straight off the screen: *the revamp moved activation, and conversion
 followed.*
 
