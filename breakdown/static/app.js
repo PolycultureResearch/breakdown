@@ -1145,7 +1145,16 @@ function khatNote(status) {
 /* The k̂ verdict as an inline chip (what-if table) and as a block (what-if
    card). Shared so the table and the card cannot say different things about
    the same node — the drift that let the export carry component rows the live
-   table lacked. */
+   table lacked.
+
+   Two of the three labels carry their own ⚠ and `unavailable` does not, so
+   anything that prefixes a glyph strips first: `khatLabel` is the one place
+   that decides, and "⚠ ⚠ approximation not usable" is what happens without
+   it. */
+function khatLabel(kn) {
+  return kn.text.replace(/^⚠\s*/, "");
+}
+
 function khatChipHtml(node) {
   const kn = khatNote(node.khat_status);
   if (!kn) return "";
@@ -1159,7 +1168,7 @@ function khatBlockHtml(name, node) {
   const body = (node.khat_warnings || []).length
     ? node.khat_warnings.map((w) => esc(w)).join(" ")
     : esc(kn.why);
-  return `<div class="wf-warning">⚠ ${esc(kn.text)} for <code>${esc(name)}</code>: ${body}</div>`;
+  return `<div class="wf-warning">⚠ ${esc(khatLabel(kn))} for <code>${esc(name)}</code>: ${body}</div>`;
 }
 
 /* k̂ formatted for display: it ranges over roughly (−1, ∞) and the demo trees
@@ -1406,7 +1415,8 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     // single fact that decides how much of this section a reader should act
     // on. Every k̂ state is a warning now — a k̂ exists only where the run
     // asked for the approximation — so these join `out` rather than needing a
-    // second, un-glyphed channel beside it.
+    // second, un-glyphed channel beside it. Through `khatLabel`, because `out`
+    // stamps its own ⚠ and two of the three labels already carry one.
     const knFull = khatNote(node.khat_status);
     if (knFull) {
       // `out`'s renderer stamps its own ⚠, and two of the three k̂ labels
@@ -1414,7 +1424,7 @@ function buildRcaReportHtml(res, treePng, stripPng) {
       // "⚠ ⚠" in the one place the report is read without its author is the
       // fifth rule's failure mode in miniature.
       out.push(
-        `<strong>${esc(knFull.text.replace(/^⚠\s*/, ""))}` +
+        `<strong>${esc(khatLabel(knFull))}` +
           `${fmtKhat(node.khat) ? ` (PSIS k̂ = ${fmtKhat(node.khat)})` : ""}.</strong> ` +
           esc(knFull.why),
       );
