@@ -293,9 +293,14 @@ container or a scheduled job uses. The flag wins where both are set.
 box.** Fitted models are cached so a second RCA is fast, and the cache is
 bounded by total bytes rather than by entry count, with a 256-entry backstop
 behind it. That is not a stylistic choice. One entry's size scales with the
-loaded data window: a single ADVI fit over an 830-day window measures ~13 MB of
-posterior, so no fixed entry count is safe for every window, and tuning the
-count down only moves the cliff to a wider one. With a byte budget, a wider
+loaded data window *and* with the sampler: over an 830-day window, one **NUTS**
+fit at the engine's own defaults (500 draws x 4 chains) measures **~27 MB** of
+posterior, against ~13 MB for a 1000-draw ADVI fit. So no fixed entry count is
+safe for every window, and tuning the count down only moves the cliff to a
+wider one. **Re-size when you upgrade from a version older than the NUTS
+default** (roadmap S2, 2026-08-24): the same budget now holds roughly half as
+many fits, because exact sampling keeps four chains where the approximation
+kept one. With a byte budget, a wider
 window caches fewer fits instead of OOM-killing the process. The 512 MiB
 default assumes the smallest box this is expected to run on, a 2 GB VM where
 the interpreter plus PyMC and one tree's frames sit near 0.5–0.7 GB resident;
