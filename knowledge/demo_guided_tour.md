@@ -187,17 +187,20 @@ it just did not fire in this window, and the product distinguishes those two
 things instead of collapsing them. Do not say "the posterior is unsure of the
 sign" — the coefficient's posterior is not, and the screen says so.
 
-*If a prospect asks where those numbers come from:* `customer_churn_rate` is
-one of the nodes breakdown refuses to serve from a fast approximation. Its
-mean-field PSIS k̂ is 1.26, well past the 0.7 the engine trusts, so the RCA
-throws that fit away and re-samples the node with full MCMC — the node card
-carries a **Re-fitted with NUTS** note and the RCA table an
-`↑ re-fitted with NUTS (k̂ 1.26)` badge. It is worth pointing at, because the
-approximation reported this same contribution as **−4.9%** and put β's HDI at
-[−0.053, **+0.005**] — a point estimate a third too small *and* a coefficient
-interval that failed to exclude zero where the exact one does. The fast answer
-was wrong in the direction that would have weakened this exact beat, and only
-k̂ could tell.
+*If a prospect asks where those numbers come from:* every fitted node here is
+sampled with full MCMC (NUTS), which is breakdown's default and the reason an
+RCA takes the minute it takes. The Metric tab shows `max R̂ · divergences ·
+min ESS` and no PSIS k̂ at all, because there is no approximation to check.
+
+That default was a decision, and `customer_churn_rate` is the node that made
+the case. Run the same window with the fast mean-field approximation
+(`?inference_method=advi`) and it scores PSIS k̂ **1.26**, well past the 0.7
+bar — and it reports this same contribution as **−4.9%** with β's HDI at
+[−0.053, **+0.005**]. A point estimate a third too small *and* a coefficient
+interval that fails to exclude zero where the exact one does. The fast answer
+was wrong in exactly the direction that would have weakened this beat, and
+nothing but k̂ could tell. So the fast path is opt-in, and when you take it
+every node it touches shows its k̂ beside the numbers.
 
 *Worth knowing if a prospect presses on it:* this is a real edge declining a
 real window, not an edge too weak to say anything either way. The generator
@@ -289,7 +292,7 @@ learned parents, the ones a subscription company argues about in every
 retro: did they *activate* (upload their first work), and how many days did
 they actually use the trial. In the window: `trial_activation_rate` **+35.9%**,
 `trial_days_active` **+76.1%**, conversion **+40.2%** — and the attribution
-on `trial_conversion_rate` hands **70.7%** of the gap to activation with
+on `trial_conversion_rate` hands **68.0%** of the gap to activation with
 `P(direction)` **0.998** and an interval clear of zero. The story reads
 straight off the screen: *the revamp moved activation, and conversion
 followed.*

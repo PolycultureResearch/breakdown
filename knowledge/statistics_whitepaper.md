@@ -3,7 +3,7 @@
 **A white paper on the models behind Bayesian metric trees, why each was chosen,
 and where each one stops being trustworthy.**
 
-> **Written:** 2026-08-04 · **Last updated:** 2026-08-22 ·
+> **Written:** 2026-08-04 · **Last updated:** 2026-08-24 ·
 > **Engine version:** 0.1.0
 >
 > **This is a living document.** The assessment in §3 and the improvements in §4
@@ -231,9 +231,12 @@ the latter: fit the normal regime, then ask what the departure means.
 
 ### 2.2 Inference: NUTS and ADVI
 
-**Where they are used.** NUTS is the default for `POST /analyze` — the
-"I want the real answer" path. ADVI is the default for on-demand fits inside
-RCA and simulation, where a tree may need a dozen fits to answer one question.
+**Where they are used.** **NUTS is the default everywhere** — `POST /analyze`,
+`POST /rca/{name}`, `POST /simulate` and the MCP tools alike. ADVI is an
+explicit `?inference_method=advi` opt-in on the three HTTP routes, for a tree
+wide or fine-grained enough that exact sampling is impractical. That was not
+always so: until 2026-08-24 the on-demand fits inside RCA and simulation used
+ADVI, and §3.2 #1 records what the PSIS measurement said about it.
 
 **What they are.** **NUTS** — the No-U-Turn Sampler (**Hoffman & Gelman, 2014**)
 — is an adaptive form of Hamiltonian Monte Carlo that explores the posterior by
@@ -244,13 +247,23 @@ al., 2017**) — instead *optimizes*: it fits the closest tractable distribution
 (here, a mean-field Gaussian, i.e. independent per parameter) to the posterior
 by maximizing a lower bound on the evidence (the ELBO).
 
-**Why both.** This is a straightforward accuracy/latency trade, made explicit
-rather than hidden. An RCA over a ten-node subtree needs a fit per probabilistic
-node; NUTS everywhere would make the interaction unusable, and ADVI is roughly
-5–10× faster. The engine's posture is **triage with ADVI, confirm with NUTS** —
-and the API makes confirming a one-parameter change
-(`?inference_method=nuts&fit_end=<analysis_start>`), so a finding that matters
-can always be re-run exactly.
+**Why both, and why the default is the exact one.** The obvious posture is
+*triage with ADVI, confirm with NUTS*, and that is what this engine did. Two
+measurements retired it (2026-08-22 to -24, §3.2 #1). First, mean-field fails
+its PSIS k̂ check on essentially every real node here — a factorized Gaussian
+cannot hold one correlated local-level latent per period — and the damage
+reaches published point estimates, in both directions, by tens of percent.
+Second, the latency it was bought with is small: the 106-metric reference tree
+holds exactly five probabilistic fits, and fitting all five measured 31.3s under
+ADVI against 28.0s under NUTS — the exact sampler was the *faster* of the two.
+Where the approximation does still save time (an RCA's shorter fit windows) it
+is tens of seconds, and it does not pay for coefficients that move by 57%.
+
+So ADVI stays, as a stated opt-in for the case where the trade really does
+bite, and every fit it produces reports its k̂. `?inference_method=advi` is a
+one-parameter change on `/rca`, `/simulate` and `/analyze` alike, and
+`?inference_method=nuts&fit_end=<analysis_start>` still re-runs a single node
+exactly.
 
 **Diagnostics.** Every fit returns `fit_quality`, and nothing is silently
 returned as trustworthy:
@@ -267,19 +280,23 @@ returned as trustworthy:
 
 **Limitations.**
 
-- **Mean-field ADVI understates uncertainty.** This is the important one. By
-  assuming parameters are independent, it cannot represent posterior
-  correlations, and it systematically produces *too-narrow* intervals. Since
-  ADVI is the RCA default, **the credible intervals in a default RCA response
-  are, if anything, optimistic.** Yao et al. (2018) is the standard treatment of
-  how badly this can go and how little the ELBO tells you about it.
+- **Mean-field ADVI misstates uncertainty, and misplaces point estimates.**
+  This is the important one, and it is why ADVI is no longer a default. By
+  assuming parameters are independent it cannot represent posterior
+  correlation, so on this engine's β-vs-trend ridge it collapses the trend
+  delta toward zero and lets β absorb the difference — in whichever direction
+  that node's ridge runs, which is why the error is not correctable from the
+  payload. Yao et al. (2018) is the standard treatment.
   [`advi_vs_nuts_in_breakdown.md`](advi_vs_nuts_in_breakdown.md) works through
-  the mechanism, why breakdown's β-vs-trend geometry is the worst case for it,
-  and a decision it would send the wrong way.
-- **The ADVI diagnostic is weak.** An ELBO-convergence check confirms the
-  optimizer stopped moving. It does *not* confirm the approximation is close to
-  the true posterior — a well-converged bad approximation passes. Stronger
-  diagnostics exist (PSIS-based k̂, Yao et al. 2018) and are not implemented.
+  the mechanism and a decision it would send the wrong way; §3.2 #1 carries the
+  measurements. **A response is only exposed to this when it was asked for**,
+  and it then reports the k̂ that says how far off it is.
+- **The ADVI diagnostic used to be weak, and is not any more.** An
+  ELBO-convergence check confirms the optimizer stopped moving; it does *not*
+  confirm the approximation is close to the true posterior, and a
+  well-converged bad approximation passes. Every variational fit now also
+  carries **PSIS k̂** (Yao et al., 2018) in three bands, and `fit_quality` goes
+  `suspect` when either check fails (§3.2 #4).
 - **R̂/ESS need multiple chains.** They are NaN on single-chain traces, and
   missing values do not flag.
 
@@ -687,11 +704,13 @@ describes wrongly, or a number the engine cannot defend at all. C items block th
 S track. Several weaknesses below were found or sharpened by a hostile external
 review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
 
-1. **The default inference method misstates uncertainty — now detected, and
-   mostly replaced.** — ◐ **substantially closed 2026-08-22**
-   ([S1](roadmap.md#statistical-rigor-s--a-standing-workstream) ✅ benchmarked
-   2026-08-18; [S2](roadmap.md#statistical-rigor-s--a-standing-workstream) ✅
-   shipped 2026-08-22), with a named residual.
+1. **The default inference method misstates uncertainty.** — ✅ **fixed
+   2026-08-24** ([S1](roadmap.md#statistical-rigor-s--a-standing-workstream) ✅
+   benchmarked 2026-08-18;
+   [S2](roadmap.md#statistical-rigor-s--a-standing-workstream) ✅ shipped
+   2026-08-22 and closed 2026-08-24). **The default is now exact MCMC, so
+   there is no approximation error on it to state or misstate.**
+
    RCA defaulted to mean-field ADVI, which cannot represent posterior
    correlation and produces systematically *wrong* intervals — narrow on the
    short ridge, over-wide at long windows, unpredictable even in direction. The
@@ -705,62 +724,82 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
    settings, and the candidate fix was rejected: full-rank ADVI reproduces the
    NUTS interval on the synthetic ridge but, on the real White Cube nodes,
    costs more than NUTS itself while landing **7.8× too wide** with a clean
-   ELBO. So the fix was S2's diagnostic-plus-escalation, not a different
-   variational family — and that is what shipped.
+   ELBO.
 
-   **What changed.** Every variational fit is now scored with PSIS k̂ (Yao et
-   al., 2018), and RCA and what-if — the paths that choose ADVI on the user's
-   behalf — discard an approximation whose k̂ exceeds 0.7 and re-fit that node
-   with NUTS. On real trees this fires on **nearly every probabilistic node**:
-   k̂ on the White Cube tree's four is 10.18, 1.07, 0.85, 1.36 at full window
-   (`random_seed=0`), and on the bundled demo's `order_count` it is 1.04.
-   The engine's own
-   geometry is why — one latent trend state per fitted period, strongly
-   correlated between neighbours, is the shape a factorized Gaussian cannot
-   hold — and it is not an artifact of dimension: the same code returns 0.31 on
-   a 30-dimensional posterior mean-field *can* represent. So in practice the
-   default path is now mostly NUTS on a small tree, and the optimistic default
-   is gone rather than merely labelled. The size of what was being missed, on
-   the demo's own story: `sessions ← marketing_spend` moves from −108.2 to
-   −68.8 (0.68 → 0.43 of the gap) once the node is fitted exactly, with the
-   difference going to the trend. That is a *point estimate* off by 57%, not an
-   interval off by 20%.
+   **What S2 measured, and what it forced.** Every variational fit is now
+   scored with PSIS k̂ (Yao et al., 2018). On real trees the diagnostic does not
+   flag *some* nodes — it flags **nearly every one**: k̂ on White Cube's four is
+   10.18, 1.07, 0.85, 1.36 at full window (`random_seed=0`), 1.26 / 0.88 / 1.11
+   / 10.43 on a second window, and 1.04 on the bundled demo's `order_count`.
+   The engine's own geometry is why — one latent trend state per fitted period,
+   strongly correlated between neighbours, is the shape a factorized Gaussian
+   cannot hold — and it is not an artifact of dimension: the same code returns
+   0.31 on a 30-dimensional posterior mean-field *can* represent, 0.95 on
+   Neal's funnel and 4.1 on a collinear ridge.
 
-   **And the bias has no fixed sign**, which is what rules out documenting it
-   instead of fixing it. On the same tree's story B, the learned
+   The first cut of S2 answered that with automatic escalation — re-fit a
+   rejected node with NUTS, capped at four per analysis. **That was the wrong
+   shape once the measurement was in.** A rescue that fires on essentially
+   every node is not a rescue, it is a default in disguise, and it was
+   *slower* than the default it disguised: an escalated node pays for the
+   approximation and then the exact fit. And the speed the approximation was
+   being kept for turned out not to be there. The 106-metric B2B reference
+   tree — the widest in this repo — contains exactly five probabilistic fits,
+   and fitting all five over the full window measured **31.3s under ADVI
+   against 28.0s under NUTS**: the exact sampler was the *faster* of the two,
+   on four of the five nodes, and ADVI flagged all five `suspect` where NUTS
+   returned four of five `ok`. The approximation does still save time on the
+   shorter windows an RCA fits (`total_mrr` over its ancestors: 10.4s against
+   19.4s), but that is tens of seconds against every published coefficient on
+   the tree.
+
+   **So the default became NUTS everywhere** — `run_rca`, `run_scenario` and
+   `POST /analyze/{name}` — and ADVI became an explicit `?inference_method=advi`
+   opt-in on all three, with k̂ reported on every node it fits. Escalation was
+   deleted: on the default path there is nothing to escalate, and on the opt-in
+   path escalating spends 2–20× the cost the caller just declined.
+
+   **The size of what was being missed.** Across all four demo stories, the
+   `sessions ← marketing_spend` contribution moves −108.2 → −68.8 (0.678 →
+   0.431 of the gap), 178.1 → 114.0, 88.4 → 62.7 and 202.0 → 129.0. Those are
+   *point estimates* off by tens of percent, not intervals off by 20%.
+
+   **And the bias has no fixed sign**, which is what ruled out documenting it
+   instead of fixing it. On story B the learned
    `member_activity_rate → customer_churn_rate` contribution moves the other
    way — −0.049 to −0.077 of the gap, 57% *larger* under NUTS. What is
-   consistent across all four measured edges is the **trend** delta, which
-   mean-field collapses toward zero every time; β then absorbs the discrepancy
-   in whichever direction the ridge happens to run at that node. A reader
-   holding only the payload cannot tell which way their number is wrong, or by
-   how much, so no caveat short of a re-fit recovers the estimate. On that
-   second edge the coefficient's interval changes *verdict*, not just width:
-   mean-field's 95% HDI on β is [−0.053, +0.005] and the exact fit's is
-   [−0.059, −0.013], so the approximation was under-confident about an
-   effect that is really there — the reverse of the under-dispersion this
-   weakness is usually stated as. §4.1 carries all four measurements.
+   consistent is the **trend** delta, which mean-field collapses toward zero;
+   β then absorbs the discrepancy in whichever direction the ridge happens to
+   run at that node. A reader holding only the payload cannot tell which way
+   their number is wrong, or by how much, so no caveat short of a re-fit
+   recovers the estimate. On that same edge the coefficient's interval changes
+   *verdict*, not just width: mean-field's 95% HDI on β is [−0.053, +0.005] and
+   the exact fit's is [−0.059, −0.013] — the approximation was
+   **under**-confident about an effect that is really there, the reverse of the
+   under-dispersion this weakness is usually stated as. And the flip runs both
+   ways: on the same story's `trial_conversion_rate ← trial_days_active`, ADVI's
+   interval *excludes* zero and NUTS's straddles it. §4.1 carries all of it.
 
-   **The residual, and why this is ◐ rather than ✅.** Four things stay open.
-   Escalation is capped at four nodes per analysis (NUTS costs seconds to a
-   minute per node, inside a request holding the tree's lock), so a wide tree
-   publishes its fifth flagged node from the approximation — labelled
-   `unusable`, with the remedy named, but published. A `suspect` node
-   (0.5 < k̂ ≤ 0.7) is likewise published from its approximation with a warning
-   rather than re-fitted. Third, k̂ is a verdict on the **joint** posterior: it
-   can say the approximation is not close, and cannot say how wrong any
-   particular marginal is. Fourth, k̂ is itself a Monte-Carlo estimate — 1000
-   draws from the approximation — published as a bare number with no error
-   attached; on the unseeded `POST /analyze` path two consecutive calls
-   measured 1.23 and 0.79 for the same node, a spread that straddles the
-   0.7 band edge
-   ([S22](roadmap.md#statistical-rigor-s--a-standing-workstream)). The RCA and
-   what-if paths seed their fits, so the escalation decisions this section's
-   figures rest on are reproducible. The weakness is no longer *silent*, which
-   was the whole of the complaint; it is no longer *the default*, which was
-   most of it; what remains is that a bounded number of nodes per run still
-   ship an interval the engine itself has flagged, and that the flag has an
-   unstated precision of its own.
+   **What is left, and why it is not this weakness.** Three things survive, and
+   each is now a property of a path the caller explicitly chose rather than of
+   the default. A `suspect` node (0.5 < k̂ ≤ 0.7) on the opt-in path is
+   published from its approximation with a warning. k̂ is a verdict on the
+   **joint** posterior, so it can say the approximation is not close and cannot
+   say how wrong any particular marginal is. And k̂ is itself a Monte-Carlo
+   estimate — 1000 draws — published as a bare number with no error attached:
+   on the unseeded `POST /analyze` path two consecutive calls measured 1.23 and
+   0.79 for the same node
+   ([S22](roadmap.md#statistical-rigor-s--a-standing-workstream), whose stakes
+   this change lowers — k̂ no longer decides anything, it discloses). A fourth
+   caveat is honest to state: a **passing** k̂ bounds the approximation error
+   but does not zero it. Story D's `trial_conversion_rate` is the one demo node
+   mean-field genuinely represents (k̂ 0.497, `ok`), and its published share
+   still moved 70.7% → 68.0% between the two samplers.
+
+   None of that is "the default inference method misstates uncertainty". The
+   default states it exactly, subject to the ordinary MCMC diagnostics it
+   reports (R̂, divergences, ESS); the approximation is available, and it says
+   how far off it is. That is the weakness closed.
 2. **The short-window block bootstrap is attenuated by construction.** — ✅ the
    two named defects are fixed
    ([C4](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend),
@@ -817,7 +856,7 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
    pass a bad approximation and flag a usable one.
 
    There is now a real one beside it. `khat` / `khat_status` report PSIS k̂ per
-   fit in three bands plus `escalated` and `unavailable`, and `fit_quality`
+   fit in three bands plus `unavailable`, and `fit_quality`
    goes `suspect` when *either* check fails, so the two-valued gate every
    consumer already branches on cannot come back clean on an approximation the
    engine knows is far from the posterior. The confirming case is measured, not
@@ -835,9 +874,12 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
 6. **No collinearity diagnostic on parents.** — ○ open
    ([S4](roadmap.md#statistical-rigor-s--a-standing-workstream))
    Correlated parents produce a well-determined *sum* and an unstable *split*,
-   and the split is exactly what RCA reports. Nothing warns — and mean-field
-   ADVI will report a *narrow* interval around whichever arbitrary split it
-   landed on, so weakness #1 and this one compound rather than add. Until
+   and the split is exactly what RCA reports. Nothing warns. Since the default
+   became exact MCMC (#1) the *interval* on each parent is at least honest —
+   wide, as it should be on a ridge — so this no longer compounds with #1 on
+   the default path; on the `advi` opt-in it still does, and k̂ catches the
+   ridge (4.1 on the collinear fixture) without saying which pair causes it.
+   Until
    2026-08-08 the reference tree in `knowledge/` contained the structure itself
    — a conversion rate regressed on a parent that was *defined* as a product
    involving another of its parents — which is how easily it is authored
@@ -1059,14 +1101,14 @@ which is the source of truth for status and sequencing. This section holds the
 *rationale* — why each gap matters and what "fixed" would mean. The IDs are
 stable; the statuses here are a snapshot as of the last-updated date.
 
-**Current state (2026-08-22):** the workstream has started, and its first two
+**Current state (2026-08-24):** the workstream has started, and its first two
 items have closed. **S1 — benchmarking full-rank ADVI — ran 2026-08-18 and the
 decision is not to adopt** (measurement in
 [`s1_fullrank_advi_benchmark.md`](s1_fullrank_advi_benchmark.md); rationale in
-§4.1). **S2 shipped 2026-08-22**: PSIS k̂ on every variational fit, with capped
-escalate-to-NUTS on the paths that chose ADVI for the user. It closes §3.2 #4
-outright and takes §3.2 #1 most of the way — see both for what remains. **S3 is
-next.** One other item has shipped its first half: S20's
+§4.1). **S2 shipped 2026-08-22 and closed 2026-08-24**: PSIS k̂ on every
+variational fit — and, because it rejects essentially every real node, **NUTS
+as the default sampler on every path**, with ADVI a stated opt-in that reports
+its k̂. It closes §3.2 #4 and §3.2 #1 outright. **S3 is next.** One other item has shipped its first half: S20's
 *disclosure* (2026-08-17) — a fit whose window is ≥25% exact zeros now carries
 `likelihood_warnings` on every surface that shows its numbers, because the
 misspecification was silent and that failed this track's own
@@ -1085,7 +1127,7 @@ scheduled start.
 | ID | Item | Status |
 |---|---|---|
 | S1 | Benchmark full-rank ADVI as the RCA default | ✅ benchmarked 2026-08-18 — **not adopted** |
-| S2 | PSIS k̂ approximation diagnostic + auto-escalation | ✅ shipped 2026-08-22 |
+| S2 | PSIS k̂ approximation diagnostic; NUTS by default, ADVI by request | ✅ closed 2026-08-24 |
 | S3 | Posterior predictive checks on every fit | ○ open — **next up** |
 | S4 | Parent collinearity diagnostic | ○ open — **promoted** |
 | S5 | Simulation-based calibration | ○ open |
@@ -1128,64 +1170,86 @@ reproduction script and decision:
 keeps `inference_method="fullrank_advi"` as a benchmarked experimental option;
 no default changed.
 
-**A real ADVI approximation diagnostic** — `S2`, ✅ **shipped 2026-08-22**.
-The PSIS-based k̂ diagnostic of Yao et al. (2018) now scores every variational
-fit, so a bad approximation is *detected* rather than assumed away, and the
-paths that chose ADVI on the user's behalf (`run_rca`, `run_scenario`)
-re-fit an `unusable` node with NUTS instead of publishing its intervals.
-Implementation note worth keeping: both terms of the log ratio come from PyMC's
-own symbolic graph (`sized_symbolic_logp`, `symbolic_logq`) cloned against a
-single shared sample, so the ratio is between comparable densities in the
-unconstrained space and the same code serves mean-field and full-rank without
-a per-family branch.
+**A real ADVI approximation diagnostic** — `S2`, ✅ **shipped 2026-08-22,
+closed 2026-08-24**. The PSIS-based k̂ diagnostic of Yao et al. (2018) now
+scores every variational fit, so a bad approximation is *detected* rather than
+assumed away. Implementation note worth keeping: both terms of the log ratio
+come from PyMC's own symbolic graph (`sized_symbolic_logp`, `symbolic_logq`)
+cloned against a single shared sample, so the ratio is between comparable
+densities in the unconstrained space and the same code serves mean-field and
+full-rank without a per-family branch.
 
 **The measurement did to this item roughly what S1's did to S1** — it held the
 premise and broke the framing. The premise was that k̂ would flag *some* nodes
-and escalation would be an occasional rescue. It flags nearly all of them:
+and re-fitting them would be an occasional rescue. It flags nearly all of them:
 10.18, 1.07, 0.85 and 1.36 on the White Cube tree's four probabilistic nodes at
-full window (`random_seed=0`), 1.04 on
-the bundled demo's `order_count`. The cause is this engine's own model — one
-latent trend state per fitted period, strongly correlated between neighbours,
-which is exactly the geometry a factorized Gaussian cannot represent — and it
-is not a high-dimension artifact: the same code returns 0.31 on a
-30-dimensional posterior mean-field can represent and 0.95 on Neal's funnel.
-So S2 has, in practice, made RCA on a small tree mostly-NUTS, at 3–6× the wall
-clock (10.8s → 46.6s on the demo's story A, 8.2s → 52.0s on story B). S1's timings are what make that
-tolerable, and S1's own closing note — "NUTS-by-default for small trees is
-worth a look" — turns out to describe where this landed by a different route.
+full window (`random_seed=0`), 1.26 / 0.88 / 1.11 / 10.43 on a second window,
+1.04 on the bundled demo's `order_count`. The cause is this engine's own model
+— one latent trend state per fitted period, strongly correlated between
+neighbours, which is exactly the geometry a factorized Gaussian cannot
+represent — and it is not a high-dimension artifact: the same code returns 0.31
+on a 30-dimensional posterior mean-field can represent, 0.95 on Neal's funnel
+and 4.1 on a collinear ridge.
 
-What it bought is larger than interval width: on story A the `sessions ←
-marketing_spend` contribution moves from −108.2 to −68.8 once the node is
-fitted exactly, with the difference reassigned to the trend. The ridge failure
-was distorting a published *point estimate* by 57%, and nothing before this
-could see it. **Nor is that a one-off, and nor does it shrink.** On story B the
-learned `member_activity_rate → customer_churn_rate` contribution moves
-−0.049 → −0.077 of the gap, 57% larger in the other direction; story B's own
-`sessions ← marketing_spend` moves 178.1 → 114.0 and story C's 89.6 → 63.6.
-The trend delta is the term that behaves consistently — mean-field collapses it
-toward zero in every case measured — and β takes up the slack in whichever
-direction that node's ridge runs. Two independent edges, each with a published
-*point estimate* materially wrong, in opposite directions: a reader cannot
-correct for this by hand, which is the argument for escalating rather than
-disclosing.
+**So the item's own "or" resolved the other way, and it took two more
+measurements to see it.** The first cut escalated: `run_rca` and `run_scenario`
+discarded an `unusable` approximation and re-fitted that node with NUTS, capped
+at four per analysis. A rescue firing on essentially every node is a default in
+disguise — and a *slower* one, because an escalated node pays for the
+approximation and then the exact fit (the demo suite ran 225s escalating and
+runs 175s now). Then the latency case fell over. The 106-metric B2B reference
+tree, the widest here, holds exactly five probabilistic fits, and fitting all
+five measured **31.3s under ADVI against 28.0s under NUTS** — the exact sampler
+was the *faster* of the two, on four of the five nodes, and ADVI flagged all
+five `suspect` where NUTS returned four of five `ok`.
 
-**One of the two also changes a verdict, not just a number.** On the
-`member_activity_rate → customer_churn_rate` edge, mean-field put β at −0.0233
-with a 95% HDI of [−0.053, **+0.005**] — an interval that fails to exclude
-zero. The exact fit puts it at −0.0361, [−0.059, **−0.013**], clear of zero.
-The approximation was *under-confident about a real effect*, which is the
-opposite of the under-dispersion mean-field is usually charged with, and it
-happened on the one edge the demo exists to show the engine recovering. This
-is worth stating plainly because §3.2 #1's complaint has always been phrased
-as intervals that are too narrow. On a ridge, mean-field does not simply
-shrink an interval — it puts it in the wrong place, and which way is a
-property of the geometry rather than of the method. What it did not buy: k̂ is a verdict on the joint posterior, so it
-cannot say which marginal is wrong; the escalation cap (four nodes per
-analysis) means a wide tree still publishes flagged approximations — labelled,
-with a remedy, but published, and the demo's own story B now sits exactly on
-that cap with four flagged nodes and no budget spare; and k̂ carries no error
-term of its own ([S22](roadmap.md#statistical-rigor-s--a-standing-workstream)).
-All are recorded on §3.2 #1.
+**NUTS is therefore the default on every path**, ADVI an explicit
+`?inference_method=advi` opt-in on `/rca`, `/simulate` and `/analyze` alike,
+and escalation is gone: on the default path there is nothing to escalate, and
+on the opt-in path escalating spends 2–20× the cost the caller just declined.
+k̂ is now a disclosure on a chosen path rather than a trigger. S1's own closing
+note — "NUTS-by-default for small trees is worth a look" — turns out to
+describe where this landed, by a longer route.
+
+What exactness buys is larger than interval width. Across the demo's four
+stories the `sessions ← marketing_spend` contribution moves −108.2 → −68.8
+(0.678 → 0.431 of the gap), 178.1 → 114.0, 88.4 → 62.7 and 202.0 → 129.0. The
+ridge failure was distorting published *point estimates* by tens of percent,
+and nothing before this could see it. **Nor does it shrink consistently.** On
+story B the learned `member_activity_rate → customer_churn_rate` contribution
+moves −0.049 → −0.077 of the gap, 57% larger in the other direction. The trend
+delta is the term that behaves consistently — mean-field collapses it toward
+zero in every case measured — and β takes up the slack in whichever direction
+that node's ridge runs. A reader cannot correct for this by hand, which is the
+argument for re-fitting rather than disclosing.
+
+**One edge also changes a verdict, not just a number.** On
+`member_activity_rate → customer_churn_rate`, mean-field put β at −0.0233 with
+a 95% HDI of [−0.053, **+0.005**] — an interval that fails to exclude zero. The
+exact fit puts it at −0.0361, [−0.059, **−0.013**], clear of zero. The
+approximation was *under-confident about a real effect*, the opposite of the
+under-dispersion mean-field is usually charged with, and it happened on the one
+edge the demo exists to show the engine recovering. §3.2 #1's complaint has
+always been phrased as intervals that are too narrow; on a ridge, mean-field
+does not simply shrink an interval — it puts it in the wrong place, and which
+way is a property of the geometry rather than of the method. **And the flip
+runs both ways**: on the same story's `trial_conversion_rate ←
+trial_days_active`, ADVI's interval *excludes* zero ([3.1e−5, 0.0084], P(dir)
+0.98) and NUTS's straddles it ([−0.00035, 0.0104], 0.949). Two edges, two
+directions, no rule a reader could apply.
+
+**A passing k̂ bounds the error; it does not zero it.** Story D's
+`trial_conversion_rate` is the one demo node mean-field genuinely represents —
+k̂ 0.497, inside the good band — and its published activation share still moved
+70.7% → 68.0% between the samplers. Worth stating, because "k̂ came back `ok`"
+is the strongest thing the opt-in path can say about itself.
+
+What it did not buy: k̂ is a verdict on the joint posterior, so it cannot say
+which marginal is wrong; a `suspect` (0.5–0.7) node on the opt-in path is still
+published from its approximation with a warning; and k̂ carries no error term of
+its own ([S22](roadmap.md#statistical-rigor-s--a-standing-workstream), whose
+stakes this lowers — it no longer decides anything). All are recorded on
+§3.2 #1.
 
 **Posterior predictive checks on every fit** — `S3`, ○ open. For each fitted
 node, simulate replicated series from the posterior and compare summary
@@ -1392,6 +1456,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-08-24 | **S2 closed by reversing its own second half: NUTS is now the default sampler, ADVI an opt-in that reports its k̂.** The escalation shipped on 2026-08-22 — re-fit a k̂-rejected node with NUTS, capped at four per analysis — was the wrong shape once its own measurement was in. k̂ rejects essentially every real node (10.18 / 1.07 / 0.85 / 1.36 on White Cube at full window, 1.26 / 0.88 / 1.11 / 10.43 on a second, 1.04 on the bundled demo), so a rescue that fires on almost everything is a default in disguise — and a **slower** one, since an escalated node pays for the approximation and then the exact fit (the demo suite ran 225s escalating and runs 175s now). Then the latency case fell over: the 106-metric reference tree, the widest here, contains exactly **five** probabilistic fits, and fitting all five measured **31.3s under ADVI against 28.0s under NUTS** — the exact sampler was the *faster* of the two, on four of the five nodes, and ADVI flagged all five `suspect` where NUTS returned four of five `ok`. So `run_rca`, `run_scenario` and `POST /analyze/{name}` all default to exact MCMC; `?inference_method=advi` is available on all three and reports k̂ on every node it fits; and escalation, its cap, the `escalated` status and the "re-fitted with NUTS" UI badge were deleted. k̂ is a disclosure on a chosen path, not a trigger. **§3.2 #1 moves from ◐ to ✅** — "the default inference method misstates uncertainty" cannot be true of a default with no approximation in it — and its residuals are restated as properties of the opt-in path. §2.2 is rewritten (the *triage with ADVI, confirm with NUTS* posture is retired), §4's current state and §4.1's S2 entry carry the new measurements, and §3.2 #6 no longer compounds with #1 on the default path. Three figures worth keeping. Across the four demo stories `sessions ← marketing_spend` moves −108.2 → −68.8, 178.1 → 114.0, 88.4 → 62.7 and 202.0 → 129.0 between the samplers; the story B engagement edge moves the *other* way, −0.049 → −0.077; and the verdict flips in both directions — that edge's β HDI goes from straddling zero to excluding it, while `trial_conversion_rate ← trial_days_active` goes from excluding it to straddling it. A fourth is the honest limit of the opt-in: story D's `trial_conversion_rate` has k̂ **0.497**, inside the good band, and its published share still moved 70.7% → 68.0%. A passing k̂ bounds the error; it does not zero it. |
 | 2026-08-22 | **S2 shipped — the engine can now tell a good approximation from a bad one, and the answer on real trees is "bad".** Every variational fit is scored with PSIS k̂ (Yao et al., 2018), computed from PyMC's own `sized_symbolic_logp` / `symbolic_logq` cloned against one shared sample and smoothed with `arviz.psislw`; three bands (`ok` ≤ 0.5, `suspect` ≤ 0.7, `unusable` above) plus `escalated` and `unavailable`, on the fit's diagnostics, on every RCA and what-if node, over MCP with its own `how_to_read` entry, and in the UI beside R̂. `run_rca` and `run_scenario` re-fit an `unusable` node with NUTS, capped at four per analysis. **§3.2 #4 is closed outright** — the ELBO-only check is no longer the only thing standing between an approximation and its published intervals — and **§3.2 #1 moves from ○ to ◐**, because the default path is no longer the optimistic one. It is not ✅, and the paper says why: the escalation cap, the un-escalated `suspect` band, the fact that k̂ judges the *joint* posterior and cannot say which marginal is wrong, and k̂'s own unreported Monte-Carlo error (new **S22**). The measurement is the part worth recording. k̂ flags **nearly every probabilistic node on every tree this repo ships** — 10.18 / 1.07 / 0.85 / 1.36 on White Cube at full window (`random_seed=0`), 1.04 on the bundled demo — including the two whose ELBO check said `ok`, which is exactly the failure S2 was specified to catch. The cause is the engine's own geometry (one correlated trend latent per period), not the diagnostic: the same code returns 0.31 on a 30-dimensional posterior mean-field can represent and 0.95 on Neal's funnel. So S2 did not become an occasional rescue; it made RCA on a small tree mostly-NUTS, at 3–6× the wall clock. What that buys is bigger than interval width: on the demo's story A, `sessions ← marketing_spend` moves from −108.2 to −68.8 (0.68 → 0.43 of the gap), and on story B the learned `member_activity_rate → customer_churn_rate` contribution moves −0.049 → −0.077 — two independent published **point estimates**, each off by 57%, and in *opposite* directions. The trend delta is what moves consistently (mean-field collapses it toward zero every time); β absorbs the rest in whichever direction that node's ridge runs, so the sign of the error is not recoverable from the payload. That is the β-vs-trend ridge S1 predicted, and it rules out disclosing the bias in place of fixing it. §4.1's S2 entry carries the full account and §4's current-state paragraph moves to S3. |
 | 2026-08-18 | **S1 ran — the S track's first item closed with a rejection, and the paper is more precise for it.** Full-rank ADVI was benchmarked against mean-field and NUTS on the calibration DGP, a drifting-parent (β-vs-trend ridge) suite, and the White Cube tree's three probabilistic nodes ([`s1_fullrank_advi_benchmark.md`](s1_fullrank_advi_benchmark.md)). §3.2 #1 now carries measured numbers instead of theory — mean-field ≈0.8× the NUTS width on the ridge — and stays open; §3.2 #4 gained its strongest evidence yet, in both directions: a full-rank fit passed the ELBO check while 7.8× over-dispersed on a real node, and mean-field at its shipped step count is `suspect` on all three real nodes. §4.1's S1 entry records why the candidate fix failed on the real tree (the O(d²) covariance over per-period trend latents is slow *and* mis-fit at real window sizes — the same paragraph's "far faster than NUTS" prior was false there), and S2 — detection plus escalation — is next, repriced by S1's timing data: NUTS at 11s on an 830-day daily fit and 11–66s per real weekly node makes escalation affordable. The measurement's sharpest single fact: across the suites, VI error on this model is unpredictable even in *direction* — mean-field 0.8× the NUTS width on the short ridge, 2.1× over at 830 periods (unconverged at its shipped step count, and flagged), full-rank 7.8–12× over at realistic sizes (converged, and not flagged) — which is the case for measuring distance-to-posterior rather than optimizer convergence, i.e. for S2 as specified. |
 | 2026-08-17 | **C7 shipped — and with it Horizon 0 closed, every row ✅.** §2.7 and §3.2 #12 updated: cold-start baseline draws are truncated to declared `plausible` bounds by rejection resampling (not clipping — clipping piles a point mass on the bound, a belief the author never stated), a `LogNormal` baseline reads `[low, high]` on the log scale for order-of-magnitude beliefs, and a formula dividing by a belief whose draws cross zero is refused with the remedies named. The decision worth recording: the roadmap row said "stop reporting the Monte-Carlo mean as the central number on ratio nodes," and the shipped fix deliberately does not — it makes the mean *exist* instead (truncation + refusal), because the mean's linearity is what keeps per-source Shapley contributions summing exactly to the delta; a median centre was considered and rejected for breaking that property on the one surface whose numbers are already the least evidential. §4's gate paragraph now records the correctness gate as closed; what remains at cold start is S7's correlation gap, unchanged. |

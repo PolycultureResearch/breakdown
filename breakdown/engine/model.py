@@ -375,12 +375,16 @@ def _zero_inflation_warnings(values: np.ndarray, target: str, grain: str) -> lis
 #              approximation cannot be trusted and cannot be *rescued* by
 #              reweighting either; the only fix is a better posterior.
 #
-# The 0.7 bar is the conventional PSIS threshold and is the one this engine
-# escalates on. Three bands rather than one because 0.5-0.7 and >0.7 call for
-# different things — "read the interval as approximate" versus "this interval
-# is not evidence" — and collapsing them would either over- or under-warn.
+# The 0.7 bar is the conventional PSIS threshold. Three bands rather than one
+# because 0.5-0.7 and >0.7 call for different things — "read the interval as
+# approximate" versus "this interval is not evidence" — and collapsing them
+# would either over- or under-warn.
+#
+# Nothing in the engine *acts* on these bands: k-hat is a disclosure on a
+# sampler the caller chose on purpose, not a trigger. See `fit_metric`'s
+# `inference_method` docstring for why.
 _KHAT_GOOD = 0.5
-_KHAT_ESCALATE = 0.7
+_KHAT_UNUSABLE = 0.7
 
 # Draws used for the k-hat estimate. The Pareto fit uses the largest 20% of
 # the ratios, so 1000 draws fit the tail on ~200 points — the same order as
@@ -446,49 +450,30 @@ def _psis_khat(
         return None, "unavailable", "the generalized Pareto fit returned a non-finite shape"
     if k <= _KHAT_GOOD:
         return k, "ok", None
-    if k <= _KHAT_ESCALATE:
+    if k <= _KHAT_UNUSABLE:
         return k, "suspect", None
     return k, "unusable", None
 
 
-# The cost ceiling on S2's escalation, shared by `run_rca` and `run_scenario`
-# so the two cannot drift apart (the meta-defect the four rules exist for).
-#
-# Escalation runs NUTS inside a request that already holds the tree's lock, and
-# NUTS on a real weekly node measured 3-62s against 1.4-6s for the mean-field
-# fit it replaces. That is affordable a few times and not affordable N times:
-# a wide tree with a dozen probabilistic nodes would serialize ten minutes of
-# sampling behind one lock, and every other viewer of that process would see a
-# hung server. This is rule 4's shape — bounded work behind a lock, refused
-# above the cap with a remedy rather than silently approximated — applied to
-# the one new unbounded thing S2 introduces.
-#
-# Four, because it is the count that covers every tree this repo ships (the
-# White Cube demo fits exactly four probabilistic nodes; the bundled jaffle
-# tree fits one) while capping the worst case at ~4 minutes rather than
-# ~10. It is a ceiling on the *analysis*, not on the tree: a fifth flagged
-# node keeps its approximation, is published `suspect` with its k-hat, and
-# names the per-node NUTS route as the remedy — and because escalated fits are
-# cached under the same key as the approximations they replace, the next
-# analysis of the same window escalates the next four.
-MAX_ESCALATIONS = 4
+def cached_fit_is_usable(fit: Any, inference_method: str) -> bool:
+    """May a cached fit stand in for one the caller asked to run with `inference_method`?
 
+    Only upward. A cached NUTS fit answers a request for `"advi"` — it is the
+    exact posterior the approximation is approximating, and reusing it costs
+    nothing. A cached approximation does **not** answer a request for NUTS:
+    `traces` is shared by every viewer of a process, so one colleague's
+    deliberate `?inference_method=advi` triage run would otherwise silently
+    decide the sampler behind everybody else's default analysis of the same
+    window, with the payload reporting a method nobody chose.
 
-def escalation_budget_warning(target: str, method: str, khat: Optional[float], cap: int) -> str:
-    """Why a k-hat-flagged node was *not* escalated: the budget ran out.
-
-    A node that fails the PSIS check and is not re-fitted must say which of the
-    two reasons it is — the caller never asked for escalation, or the analysis
-    had already spent its cap — because only the second has "run this again and
-    it may be escalated" as a next move.
+    Imported by both `run_rca` and `run_scenario` so the policy cannot drift
+    between them. It is the read-side twin of `_fit_rank` in
+    `breakdown/api/main.py`, which orders the same two methods for the same
+    reason on the write side.
     """
-    return (
-        f"'{target}' failed the PSIS check (k-hat = {khat:.2f}) but was not re-fitted with "
-        f"NUTS: this analysis had already escalated {cap} node(s), the per-analysis cap. Its "
-        f"numbers still come from the {method} approximation. Re-fit it directly with "
-        f"POST /analyze/{target}?inference_method=nuts, then re-run the analysis — the "
-        "cached NUTS fit is used in preference to a new approximation."
-    )
+    if inference_method == "nuts":
+        return getattr(fit, "inference_method", None) == "nuts"
+    return True
 
 
 def _khat_warning(target: str, method: str, khat: Optional[float], status: str, reason) -> str:
@@ -509,11 +494,13 @@ def _khat_warning(target: str, method: str, khat: Optional[float], status: str, 
         )
     return (
         f"The {method} approximation for '{target}' has PSIS k-hat = {khat:.2f} "
-        f"(> {_KHAT_ESCALATE}): the importance ratios against the true posterior have "
+        f"(> {_KHAT_UNUSABLE}): the importance ratios against the true posterior have "
         "neither finite variance nor a usable mean, so the approximation is not close to "
         "the posterior and cannot be corrected by reweighting. Its credible intervals are "
-        "not evidence about the width of the real ones. Re-fit this node with NUTS "
-        "(POST /analyze/{name}?inference_method=nuts) before relying on it."
+        "not evidence about the width of the real ones. This fit ran a variational "
+        "approximation because one was asked for; drop `inference_method=advi` to get "
+        f"the NUTS default, or re-fit this node alone with "
+        f"POST /analyze/{target}?inference_method=nuts."
     )
 
 
@@ -835,7 +822,6 @@ def fit_metric(
     chains: int = 4,
     random_seed: Optional[int] = None,
     vi_iterations: int = 20_000,
-    escalate_on_khat: bool = False,
 ) -> FitResult:
     """
     Fit the Bayesian structural time series for one metric.
@@ -855,7 +841,7 @@ def fit_metric(
 
     The trend is a non-centered random walk: sampling unit normals and scaling
     by `sigma_trend` avoids the Neal's-funnel geometry of a centered walk, which
-    NUTS handles poorly and mean-field ADVI (the RCA default) fails on outright.
+    NUTS handles poorly and mean-field ADVI (the opt-in fast path) fails on outright.
     `pm.Deterministic("trend", ...)` preserves the `trend` posterior variable so
     downstream decomposition reads it unchanged.
 
@@ -882,9 +868,10 @@ def fit_metric(
     `fit_failed` status, so a thin node costs its own attribution and nothing
     else.
 
-    Inference: "nuts" (exact MCMC, use when accuracy matters), "advi"
-    (mean-field variational approximation, ~5-10x faster, use for triage) or
-    "fullrank_advi" (variational with a full covariance matrix — can represent
+    Inference: "nuts" (exact MCMC — the default here and on every orchestrator
+    that fits on the caller's behalf), "advi" (mean-field variational
+    approximation, an explicit opt-in for triage speed on a wide or day-grain
+    tree) or "fullrank_advi" (variational with a full covariance matrix — can represent
     the beta/trend posterior ridge mean-field collapses, and reproduces the
     NUTS interval on small synthetic fits; benchmarked under roadmap S1 and
     NOT adopted as a default, because on real-sized windows the O(d^2)
@@ -900,17 +887,15 @@ def fit_metric(
 
     Every variational fit is scored with **PSIS k-hat** (Yao et al., 2018;
     roadmap S2) and reports it as `diagnostics["khat"]` / `["khat_status"]`.
-    `escalate_on_khat` is what the caller does about a bad one: with it set,
-    a fit whose `khat_status` is `"unusable"` (k-hat > 0.7) is thrown away and
-    re-fitted with NUTS, the returned `inference_method` says `"nuts"`, and
-    `diagnostics["escalated_from"]` records the approximation that was
-    rejected. It defaults to **off** here because `inference_method` is a
-    promise about which sampler runs, and a primitive that silently runs a
-    different one — at 2-20x the cost — breaks every caller that asked for
-    ADVI on purpose (the S1 benchmark, the "I want triage speed" path). The
-    callers that pick ADVI *on the user's behalf* — `run_rca` and
-    `run_scenario` — turn it on, under a per-analysis cap; see
-    `_MAX_ESCALATIONS` there.
+    It is a *disclosure*, never a trigger: `inference_method` is a promise
+    about which sampler runs, and a function that silently runs a different one
+    at 2-20x the cost breaks every caller who asked for the fast path on
+    purpose. Measurement (roadmap S2) says mean-field fails the check on
+    essentially every real node in this engine — one correlated local-level
+    latent per period is not representable by a factorized Gaussian — so the
+    honest response was to make NUTS the default everywhere rather than to
+    re-fit behind the caller's back. What k-hat buys now is that choosing
+    `"advi"` anyway is an informed choice rather than a trap.
 
     Returns a `FitResult`. Its trace's posterior includes `beta_raw`
     (= beta / scale): the coefficient on each parent in business units,
@@ -1027,59 +1012,6 @@ def fit_metric(
             diagnostics = _advi_diagnostics(
                 approx, method=inference_method, target=target, random_seed=random_seed
             )
-            # S2's second half. `khat_status: "unusable"` is a measurement that
-            # this approximation's intervals are not evidence about the real
-            # ones, so where the caller asked for escalation the node is re-fit
-            # with the reference method and the VI result is discarded — not
-            # blended, not averaged, and not kept as a fallback, because two
-            # posteriors for one node is a choice nobody downstream can make.
-            # `"suspect"` (0.5 < k-hat <= 0.7) does *not* escalate: the fit is
-            # off but not uninformative, and 3-62s per node is too much to
-            # spend on a band whose remedy is "read it as approximate".
-            #
-            # The escalated fit reports its own NUTS diagnostics — including
-            # `fit_quality: "suspect"` when R-hat/ESS/divergences say so. There
-            # is no third method to escalate to, and falling back to the VI fit
-            # that k-hat just rejected would be strictly worse, so a suspect
-            # NUTS fit is published as a suspect NUTS fit, honestly flagged.
-            # `escalated_from` keeps the reason visible: without it the response
-            # would show a NUTS fit where the caller asked for ADVI, with
-            # nothing anywhere saying why.
-            if escalate_on_khat and diagnostics["khat_status"] == "unusable":
-                logger.info(
-                    "Escalating '%s' to NUTS: %s k-hat = %.2f > %.1f",
-                    target,
-                    inference_method,
-                    diagnostics["khat"],
-                    _KHAT_ESCALATE,
-                )
-                rejected_khat = diagnostics["khat"]
-                trace = pm.sample(
-                    draws=draws,
-                    tune=tune,
-                    target_accept=0.9,
-                    chains=chains,
-                    random_seed=random_seed,
-                )
-                diagnostics = _nuts_diagnostics(trace, draws, chains)
-                # `khat` survives the swap and `khat_status` becomes
-                # "escalated": the number describes the approximation that was
-                # *rejected*, not the NUTS fit that replaced it (NUTS has no
-                # k-hat — it is not an approximation), and the status is what
-                # says so. One field, one vocabulary, no reader left guessing
-                # whether a k-hat printed beside `inference_method: "nuts"`
-                # condemns the fit they are looking at.
-                diagnostics["khat"] = rejected_khat
-                diagnostics["khat_status"] = "escalated"
-                diagnostics["escalated_from"] = inference_method
-                diagnostics["khat_warnings"] = [
-                    f"'{target}' was re-fitted with NUTS because its {inference_method} "
-                    f"approximation failed the PSIS check (k-hat = {rejected_khat:.2f} > "
-                    f"{_KHAT_ESCALATE}). Every number here comes from the NUTS fit; the "
-                    "discarded approximation's intervals were off by an unknown amount in "
-                    "an unknown direction."
-                ]
-                inference_method = "nuts"
         else:
             trace = pm.sample(
                 draws=draws,

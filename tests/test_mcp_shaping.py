@@ -319,13 +319,13 @@ def test_how_to_read_guides():
         #
         # Raised to 4000 for `khat_status` (roadmap S2), which is that shape a
         # third time and is the only entry here that changes whether a `ci_95`
-        # should be quoted at all. Two of its five values invert the reading of
-        # the same payload: `escalated` marks the *most* trustworthy node on
-        # the page (its approximation was thrown away and the node re-fitted
-        # with NUTS), `unusable` marks an interval that is not evidence about
-        # the real one — and an agent seeing only the enum would guess the
-        # first is a warning and the second a quibble, exactly backwards. The
-        # what-if guide carries the short form of the same thing.
+        # should be quoted at all. Its `unusable` value marks an interval that
+        # is not evidence about the real one, which an agent seeing the bare
+        # enum would read as a quibble. It also has to say what the *absence*
+        # of the field means: since NUTS became the default, most nodes carry
+        # no `khat_status`, and "no verdict" and "clean" are the same silence
+        # unless the guide separates them. The what-if guide carries the short
+        # form of the same thing.
         assert 400 < len(guide) < 4000
     assert "unexplained" in RCA_HOW_TO_READ
     assert "window_aggregate" in RCA_HOW_TO_READ

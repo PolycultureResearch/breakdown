@@ -171,10 +171,25 @@
                         <input type="date" id="ref-end">
                         <button id="ref-auto" class="chip active" type="button" title="Matched adjacent block: ~4× the analysis length (min 28 days, whole weeks when seasonality is in scope), ending the day before the analysis window">auto</button>
                     </div>
+                    <!-- The sampler for any node this run has to fit. NUTS is
+                         the default here, on the route, and everywhere else
+                         (roadmap S2); the fast approximation is reachable
+                         because a wide day-grain tree can make exact sampling
+                         genuinely impractical, and because a k-hat flag the UI
+                         can render is worth nothing if no UI path can produce
+                         one. -->
+                    <div class="rca-ctl">
+                        <label for="rca-method">Fits</label>
+                        <select id="rca-method">
+                            <option value="nuts">NUTS — exact (default)</option>
+                            <option value="advi">ADVI — fast, approximate</option>
+                        </select>
+                    </div>
                     <div class="rca-actions">
                         <button id="run-rca" class="primary">Run RCA</button>
                         <button id="clear-rca" style="display:none">Clear</button>
                     </div>
+                    <p class="control-note" id="rca-method-note"></p>
                     <p class="inline-status">The model trains on all loaded history before the analysis window. The reference is only the comparison baseline the gap is measured against — by default the matched block just before the analysis window.</p>
                     <!-- Window advisories live here, not in the transient
                          #status slot: they qualify the answer, and #status is

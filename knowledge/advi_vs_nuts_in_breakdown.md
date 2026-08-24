@@ -1,9 +1,18 @@
-# ADVI vs NUTS in breakdown: why the default RCA is the optimistic one
+# ADVI vs NUTS in breakdown: why mean-field is the optimistic one
 
-**A deep dive on the single largest gap between what breakdown's credible
-intervals claim and what they deliver.**
+**A deep dive on what was, until 2026-08-24, the single largest gap between
+what breakdown's credible intervals claimed and what they delivered.**
 
-RCA fits probabilistic nodes with mean-field ADVI by default. Mean-field
+> **Status: the argument stands; the situation it describes no longer does.**
+> This page was written while RCA and what-if fitted with mean-field ADVI by
+> default. Roadmap **S2** measured that assumption and closed it the other way:
+> **NUTS is now the default on every path**, and ADVI is an explicit
+> `?inference_method=advi` opt-in that reports its PSIS k̂. Everything below
+> about *why* mean-field fails on this model is unchanged and, if anything,
+> understated — see §5. Read §1–§3 as the mechanism, §4 as history, and
+> [`docs/model.md`](../docs/model.md) for what the engine does today.
+
+RCA used to fit probabilistic nodes with mean-field ADVI by default. Mean-field
 variational inference is *systematically* underdispersed — not occasionally,
 not by accident, but by construction — and breakdown's model has exactly the
 posterior geometry that makes the effect worst. This page explains the
@@ -263,26 +272,47 @@ to see it. Full measurement:
 `fit_metric` keeps `inference_method="fullrank_advi"` as a benchmarked
 experimental option; the RCA default is unchanged.
 
-**S2 — A real approximation diagnostic (shipped 2026-08-22).** The PSIS-based
-k̂ diagnostic of Yao et al. (2018) now scores every variational fit: it
-estimates how far the approximation is from the true posterior — the thing the
-ELBO check cannot see, in either direction, as S1 measured. Where k̂ exceeds
-0.7, `run_rca` and `run_scenario` discard the approximation and re-fit the node
-with NUTS (capped at four per analysis); everywhere else the verdict is
-reported as `khat` / `khat_status` and the intervals are labelled.
+**S2 — A real approximation diagnostic (shipped 2026-08-22), and the default
+change it forced (2026-08-24).** The PSIS-based k̂ diagnostic of Yao et al.
+(2018) now scores every variational fit: it estimates how far the approximation
+is from the true posterior — the thing the ELBO check cannot see, in either
+direction, as S1 measured. It is reported as `khat` / `khat_status` on the fit,
+on every RCA and what-if node, over MCP and in the UI.
 
 **And the measurement turned this page's central claim into a stronger one.**
 This document argued that mean-field's under-dispersion is *constructional* and
 worst on the β-vs-trend ridge. k̂ agrees, and puts a number on how general it
 is: on the White Cube tree it flags **all four** probabilistic nodes (k̂ 10.18,
-1.07, 0.85, 1.36 at full window, `random_seed=0`) and on the bundled demo's
-`order_count` it reads 1.04. So the
-ridge is not an occasional geometry this model wanders into — a local-level
-random walk with one latent per period *is* a ridge, everywhere, and mean-field
-is not a usable approximation to it at real window sizes. §4's escape hatch is
-now the engine's own default behaviour on the paths that chose ADVI for you,
-and the honest framing has changed accordingly: the default path is no longer
-the optimistic one, at the price of an RCA that is 3–5× slower.
+1.07, 0.85, 1.36 at full window, `random_seed=0`), all four again on a second
+window (1.26, 0.88, 1.11, 10.43), and on the bundled demo's `order_count` it
+reads 1.04. So the ridge is not an occasional geometry this model wanders into
+— a local-level random walk with one latent per period *is* a ridge,
+everywhere, and mean-field is not a usable approximation to it at real window
+sizes.
+
+**Which retired §4's escape hatch by making it the road.** A first cut of S2
+escalated: re-fit a k̂-rejected node with NUTS, capped at four per analysis. But
+a rescue that fires on essentially every node is a default in disguise, and a
+slower one — an escalated node pays for the approximation *and* the exact fit.
+And the latency ADVI was being kept for turned out to be small: the 106-metric
+reference tree, the widest here, holds exactly five probabilistic fits, and
+fitting all five measured 31.3s under ADVI against 28.0s under NUTS — the exact
+sampler was the *faster* of the two. So the default moved to NUTS
+outright, ADVI became a stated opt-in on `/rca`, `/simulate` and `/analyze`,
+and escalation was deleted.
+
+**Two things this page got slightly wrong, worth recording.** First, it framed
+the damage as *intervals*; the larger damage is to **point estimates**. Across
+the demo's four stories the `sessions ← marketing_spend` contribution moves
+−108.2 → −68.8, 178.1 → 114.0, 88.4 → 62.7 and 202.0 → 129.0 between the two
+samplers, because mean-field collapses the trend delta toward zero and β
+absorbs the difference. Second, it framed mean-field as reliably
+*under*-dispersed. On the demo's `member_activity_rate → customer_churn_rate`
+edge the approximation's β HDI **straddles zero** where the exact fit's
+excludes it — under-confident about a real effect — while on
+`trial_conversion_rate ← trial_days_active` the flip runs the other way. On a
+ridge mean-field does not shrink an interval so much as *move* it, and which
+way is a property of the geometry rather than of the method.
 
 ---
 

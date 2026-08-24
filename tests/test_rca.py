@@ -48,7 +48,7 @@ def make_tree():
 
 
 def rca_on(dag, data, traces, target):
-    return run_rca(dag, data, traces, target, **win(REF, AN), advi_draws=300)
+    return run_rca(dag, data, traces, target, **win(REF, AN), draws=300)
 
 
 def test_rca_formula_attribution():
@@ -236,7 +236,7 @@ metrics:
     ref = (str(dates[56].date()), str(dates[83].date()))  # 4 whole weeks
     an = (str(dates[84].date()), str(dates[93].date()))  # 10 days, weekday-skewed
 
-    result = run_rca(parser.dag, data, {}, "y", **win(ref, an), advi_draws=300)
+    result = run_rca(parser.dag, data, {}, "y", **win(ref, an), draws=300)
 
     node = result["nodes"]["y"]
     comps = node["components"]
@@ -272,7 +272,7 @@ metrics:
             {},
             "order_count",
             **win(("2024-01-01", "2024-02-15"), ("2024-02-16", "2024-03-14")),
-            advi_draws=100,
+            draws=100,
         )
     message = str(excinfo.value)
     assert "daily_sessions" in message
@@ -469,11 +469,9 @@ metrics:
     ref = ("2024-01-01", "2024-02-29")
     # Both analyses start 2024-03-01 -> same fit_end -> the same cached fit,
     # so the only difference is window-sampling uncertainty.
-    r3 = run_rca(
-        parser.dag, data, traces, "y", **win(ref, ("2024-03-01", "2024-03-03")), advi_draws=300
-    )
+    r3 = run_rca(parser.dag, data, traces, "y", **win(ref, ("2024-03-01", "2024-03-03")), draws=300)
     r28 = run_rca(
-        parser.dag, data, traces, "y", **win(ref, ("2024-03-01", "2024-03-28")), advi_draws=300
+        parser.dag, data, traces, "y", **win(ref, ("2024-03-01", "2024-03-28")), draws=300
     )
 
     def ci_width(result):
@@ -545,9 +543,7 @@ def test_rca_defaults_reference_to_matched_adjacent_block():
     analysis wants a 216-day reference, so it clamps to the loaded data."""
     dag, data = make_tree()
 
-    result = run_rca(
-        dag, data, {}, "revenue", analysis_start=AN[0], analysis_end=AN[1], advi_draws=300
-    )
+    result = run_rca(dag, data, {}, "revenue", analysis_start=AN[0], analysis_end=AN[1], draws=300)
 
     assert result["reference_defaulted"] is True
     # Adjacent (ends the day before the analysis window), clamped to the
@@ -560,7 +556,7 @@ def test_rca_explicit_reference_is_unchanged_and_not_flagged():
     dag, data = make_tree()
 
     defaulted = run_rca(
-        dag, data, {}, "revenue", analysis_start=AN[0], analysis_end=AN[1], advi_draws=300
+        dag, data, {}, "revenue", analysis_start=AN[0], analysis_end=AN[1], draws=300
     )
     explicit = run_rca(
         dag,
@@ -568,7 +564,7 @@ def test_rca_explicit_reference_is_unchanged_and_not_flagged():
         {},
         "revenue",
         **win((defaulted["reference_window"]["start"], defaulted["reference_window"]["end"]), AN),
-        advi_draws=300,
+        draws=300,
     )
 
     assert explicit["reference_defaulted"] is False
@@ -634,7 +630,7 @@ metrics:
     parser = Parser(yaml_content)
     data = generate_mock_data(n_days=100)
 
-    result = run_rca(parser.dag, data, {}, "revenue", **win(REF, AN), advi_draws=300)
+    result = run_rca(parser.dag, data, {}, "revenue", **win(REF, AN), draws=300)
 
     oc = result["nodes"]["order_count"]
     # Fit = whole days from data start to the day before the analysis window,
@@ -822,7 +818,7 @@ def test_zero_variance_parent_leaves_the_rest_of_the_tree_intact():
     parser = Parser(_ZERO_VARIANCE_YAML)
     traces = {}
 
-    result = run_rca(parser.dag, data, traces, "revenue", **win(REF, AN), advi_draws=300)
+    result = run_rca(parser.dag, data, traces, "revenue", **win(REF, AN), draws=300)
 
     signups = result["nodes"]["signups"]
     assert signups["status"] == "fit_failed"
@@ -852,7 +848,7 @@ def test_out_of_range_window_is_refused_before_any_fit():
             traces,
             "revenue",
             **win(("2024-01-01", "2024-01-31"), ("2024-02-01", "2024-05-31")),
-            advi_draws=300,
+            draws=300,
         )
 
     assert traces == {}
@@ -1064,9 +1060,7 @@ metrics:
     parents: [x]
 """
 
-    result = run_rca(
-        Parser(yaml_content).dag, data, {}, "y", **win(_C4_REF, _C4_AN), advi_draws=300
-    )
+    result = run_rca(Parser(yaml_content).dag, data, {}, "y", **win(_C4_REF, _C4_AN), draws=300)
 
     node = result["nodes"]["y"]
     assert node["ci_status"] == "degenerate_bootstrap_spread"
@@ -1262,7 +1256,7 @@ def test_defaulted_reference_window_leaves_room_for_the_lags():
         "signups",
         analysis_start="2024-02-01",
         analysis_end="2024-02-14",
-        advi_draws=300,
+        draws=300,
     )
 
     assert result["reference_defaulted"]
@@ -1289,7 +1283,7 @@ def test_defaulted_reference_window_is_unchanged_when_the_lags_fit():
         "signups",
         analysis_start="2024-06-01",
         analysis_end="2024-06-14",
-        advi_draws=300,
+        draws=300,
     )
 
     assert long_result["reference_window"] == {"start": "2024-04-06", "end": "2024-05-31"}
@@ -1309,7 +1303,7 @@ def test_no_readable_reference_window_says_so_in_terms_of_the_lags():
             "signups",
             analysis_start="2024-01-06",
             analysis_end="2024-01-12",
-            advi_draws=300,
+            draws=300,
         )
 
     message = str(excinfo.value)
@@ -1331,7 +1325,7 @@ def test_an_explicit_reference_window_still_fails_coverage():
             {},
             "signups",
             **win(("2024-01-01", "2024-01-31"), ("2024-02-01", "2024-02-14")),
-            advi_draws=300,
+            draws=300,
         )
 
 

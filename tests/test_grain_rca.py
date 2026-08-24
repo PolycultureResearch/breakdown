@@ -255,7 +255,7 @@ def test_monthly_lag_shifts_whole_months_across_year_boundary():
         {},
         "signups",
         **win(("2024-01-01", "2024-06-30"), ("2024-11-01", "2025-01-31")),
-        advi_draws=300,
+        draws=300,
     )
 
     node = result["nodes"]["signups"]
@@ -313,7 +313,7 @@ def test_simulate_scales_flow_delta_across_grains():
         baseline_end="2024-07-28",
         interventions=[{"metric": "daily_starts", "mode": "delta", "value": 10.0}],
     )
-    result = run_scenario(dag, data, {}, scenario, advi_draws=300)
+    result = run_scenario(dag, data, {}, scenario, draws=300)
 
     node = result["nodes"]["weekly_total"]
     assert node["status"] == "affected"

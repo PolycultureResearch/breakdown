@@ -1561,6 +1561,14 @@ async def root_cause_analysis(
     reference_end: Annotated[
         OptionalIsoDate, Query(description="End of baseline window (YYYY-MM-DD)")
     ] = None,
+    inference_method: str = Query(
+        default="nuts",
+        pattern="^(nuts|advi)$",
+        description="Sampler for any node this analysis has to fit. `nuts` (default) is "
+        "exact MCMC; `advi` is the mean-field approximation — faster, and reported with "
+        "its PSIS k-hat so you can see how far off it is. Same values and same default as "
+        "POST /analyze/{name} and POST /simulate.",
+    ),
     run_id: Optional[str] = Query(
         default=None,
         description="Opaque client-generated id. Poll GET /progress/{run_id} for "
@@ -1597,6 +1605,7 @@ async def root_cause_analysis(
                     analysis_end=analysis_end,
                     reference_start=reference_start,
                     reference_end=reference_end,
+                    inference_method=inference_method,
                     progress=report,
                 )
             except ValueError as e:
@@ -1851,6 +1860,14 @@ async def slice_metric_gap(
 async def simulate(
     scenario: ScenarioRequest,
     request: Request,
+    inference_method: str = Query(
+        default="nuts",
+        pattern="^(nuts|advi)$",
+        description="Sampler for any node this scenario has to fit. `nuts` (default) is "
+        "exact MCMC; `advi` is the mean-field approximation — faster, and reported with "
+        "its PSIS k-hat so you can see how far off it is. Same values and same default as "
+        "POST /analyze/{name} and POST /rca/{name}.",
+    ),
     run_id: Optional[str] = Query(
         default=None,
         description="Opaque client-generated id. Poll GET /progress/{run_id} for "
@@ -1876,6 +1893,7 @@ async def simulate(
                     data,
                     tree.traces,
                     scenario,
+                    inference_method=inference_method,
                     progress=report,
                 )
             except ValueError as e:

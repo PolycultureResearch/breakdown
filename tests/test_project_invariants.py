@@ -561,7 +561,7 @@ def test_every_published_direction_probability_is_representable():
         {},
         "revenue",
         **win(("2024-01-01", "2024-02-15"), ("2024-02-16", "2024-04-09")),
-        advi_draws=300,
+        draws=300,
     )
     ceiling = 1.0 - 1.0 / rca_mod._N_BOOT
     published = [
@@ -1292,4 +1292,81 @@ def test_no_mcp_guard_refuses_with_a_bare_exception():
     assert not bare, (
         "an MCP guard raises a bare exception; the SDK treats it as a crash "
         f"and withholds the message from the calling model: {bare}"
+    )
+
+
+# --- No orchestrator hardcodes a sampler, and none reuses a fit downward -----
+#
+# Roadmap S2's second half. `run_rca` and `run_scenario` both passed
+# `inference_method="advi"` as a literal, chosen once for speed and never
+# revisited; when the choice turned out to be wrong the fix had to be made in
+# two files, and making it in one would have been the meta-defect exactly.
+# Both properties below are enumerated rather than pinned to today's two call
+# sites, because a third orchestrator is the case that matters.
+
+_ENGINE = PACKAGE / "engine"
+
+
+def _engine_fit_metric_calls():
+    """Every `fit_metric(...)` call in the engine, as (module, ast.Call)."""
+    out = []
+    for path in sorted(_ENGINE.glob("*.py")):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "fit_metric"
+            ):
+                out.append((path.name, node))
+    return out
+
+
+def test_no_orchestrator_hardcodes_the_sampler():
+    """The sampler a caller gets is the sampler they asked for.
+
+    `inference_method` is a promise about which sampler runs. An orchestrator
+    that writes a literal there has decided on the user's behalf, silently, and
+    the decision then lives in as many files as there are orchestrators — which
+    is how `run_rca` and `run_scenario` came to share a wrong default for a
+    release. Passing the parameter through is what makes the choice reachable
+    (`POST /rca/{name}?inference_method=advi`) and reviewable in one place.
+    """
+    calls = _engine_fit_metric_calls()
+    assert calls, "expected to find fit_metric calls in the engine; did the import style change?"
+    hardcoded = [
+        f"{mod}:{kw.value.lineno} inference_method={kw.value.value!r}"
+        for mod, call in calls
+        for kw in call.keywords
+        if kw.arg == "inference_method" and isinstance(kw.value, ast.Constant)
+    ]
+    assert not hardcoded, (
+        "an engine orchestrator passes a literal `inference_method` to fit_metric: "
+        f"{hardcoded}. Thread the caller's choice through instead — a sampler picked "
+        "on the user's behalf is a promise broken in whatever file it is written in "
+        "(roadmap S2)."
+    )
+
+
+def test_every_orchestrator_that_reuses_a_cached_fit_checks_it_is_good_enough():
+    """A cached approximation must not answer a request for exact sampling.
+
+    `traces` is shared by every viewer of a process, so without this one
+    colleague's deliberate `?inference_method=advi` triage run decides the
+    sampler behind everybody else's default analysis of the same window — and
+    the payload then names a method nobody chose. Reuse is allowed only
+    *upward*, and `cached_fit_is_usable` is the single place that says so.
+    """
+    users = []
+    for mod, _call in _engine_fit_metric_calls():
+        text = (_ENGINE / mod).read_text()
+        # An orchestrator is a module that both fits on demand and consults a
+        # `traces` cache before doing it. A module that only fits (no cache)
+        # has no reuse decision to get wrong.
+        if "traces" in text and "cached_fit_is_usable" not in text:
+            users.append(mod)
+    assert not users, (
+        f"{users} fit on demand against a `traces` cache without going through "
+        "`cached_fit_is_usable`. Reuse is upward-only: a NUTS fit answers an ADVI "
+        "request, an approximation does not answer a NUTS one (roadmap S2)."
     )

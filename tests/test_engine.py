@@ -1332,78 +1332,115 @@ def test_a_khat_that_cannot_be_computed_is_withheld_not_zeroed(monkeypatch):
     assert "could not be checked" in msg and "pytensor said no" in msg
 
 
-def test_fit_metric_escalates_a_flagged_node_to_nuts():
-    """The policy: a rejected approximation is replaced, not annotated.
+def test_fit_metric_never_substitutes_the_sampler_asked_for():
+    """The policy k-hat's measurement forced: a rejected approximation is
+    *reported*, never silently replaced.
 
-    Off by default, because `inference_method` is a promise about which
-    sampler runs — a caller who asked for ADVI and got a NUTS bill would have
-    had no way to ask otherwise.
+    `inference_method` is a promise about which sampler runs. An earlier draft
+    of S2 re-fitted a k-hat-rejected node with NUTS behind the caller's back;
+    the measurement then showed mean-field failing on essentially every real
+    node, which made "escalation" the common path rather than a rescue. The
+    honest response was to make NUTS the default everywhere and leave the fast
+    path fast — so this asserts the substitution does not happen in either
+    direction.
     """
     parser = Parser(RIDGE_YAML)
     frame = _ridge_frame()
 
-    kept = fit_metric(parser.dag, frame, "y", draws=200, inference_method="advi", random_seed=0)
-    assert kept.inference_method == "advi"
-    assert kept.diagnostics["khat_status"] == "unusable"
-    assert np.isfinite(kept.diagnostics["khat"]) and kept.diagnostics["khat"] > 0.7
-    assert kept.diagnostics["fit_quality"] == "suspect"
+    approx = fit_metric(parser.dag, frame, "y", draws=200, inference_method="advi", random_seed=0)
+    assert approx.inference_method == "advi"
+    assert approx.diagnostics["khat_status"] == "unusable"
+    assert np.isfinite(approx.diagnostics["khat"]) and approx.diagnostics["khat"] > 0.7
+    assert approx.diagnostics["fit_quality"] == "suspect"
+    # Rejected, and it says what to do about it rather than doing it.
+    (msg,) = approx.diagnostics["khat_warnings"]
+    assert "inference_method=advi" in msg or "inference_method=nuts" in msg
 
-    escalated = fit_metric(
-        parser.dag,
-        frame,
-        "y",
-        draws=200,
-        tune=300,
-        inference_method="advi",
-        random_seed=0,
-        escalate_on_khat=True,
+    exact = fit_metric(
+        parser.dag, frame, "y", draws=200, tune=300, inference_method="nuts", random_seed=0
     )
-    assert escalated.inference_method == "nuts"
-    assert escalated.diagnostics["method"] == "nuts"
-    assert escalated.diagnostics["escalated_from"] == "advi"
-    # `khat` survives, describing the *discarded* approximation — and the
-    # status is what says so, so nobody reads it as a verdict on the NUTS fit.
-    assert escalated.diagnostics["khat_status"] == "escalated"
-    assert escalated.diagnostics["khat"] == pytest.approx(kept.diagnostics["khat"])
-    assert "max_rhat" in escalated.diagnostics  # real NUTS diagnostics, not a copy
-    (msg,) = escalated.diagnostics["khat_warnings"]
-    assert "re-fitted with NUTS" in msg
+    assert exact.inference_method == "nuts"
+    assert exact.diagnostics["method"] == "nuts"
+    # NUTS is not an approximation, so it carries no k-hat at all. The absence
+    # is the honest render: an `unavailable` here would say "we tried to check
+    # and could not", which is a different and worse fact.
+    assert "khat" not in exact.diagnostics
+    assert "khat_status" not in exact.diagnostics
+    assert "max_rhat" in exact.diagnostics
 
-    # And the replacement is a different posterior, not a relabelling of the
-    # same one: the ridge is exactly where mean-field and MCMC disagree.
+    # And they are genuinely different posteriors, not two labels on one: the
+    # ridge is exactly where mean-field and MCMC disagree. This is the
+    # measurement that made NUTS the default.
     def widths(arr):
         return np.percentile(arr, 97.5, axis=0) - np.percentile(arr, 2.5, axis=0)
 
-    a = widths(kept.trace.posterior["beta_raw"].values.reshape(-1, 2))
-    b = widths(escalated.trace.posterior["beta_raw"].values.reshape(-1, 2))
+    a = widths(approx.trace.posterior["beta_raw"].values.reshape(-1, 2))
+    b = widths(exact.trace.posterior["beta_raw"].values.reshape(-1, 2))
     assert not np.allclose(a, b, rtol=0.05)
 
 
-def test_escalation_is_capped_per_analysis(monkeypatch):
-    """Rule 4's shape, applied to S2: bounded work behind the tree's lock.
+def test_run_rca_defaults_to_nuts_and_the_opt_in_is_reachable():
+    """The orchestrators fit exactly, unless asked not to.
 
-    NUTS inside a request costs seconds to a minute per node. Uncapped, a wide
-    tree whose every probabilistic node flags would serialize all of them
-    behind one lock. Above the cap the node keeps its approximation and *says
-    so*, with the per-node remedy named — never silently, and never by
-    escalating anyway.
+    Both call sites moved together — `run_rca` here, `run_scenario` in
+    test_simulate.py — because a default chosen in one file and not its
+    neighbour is the meta-defect the four rules exist for.
     """
-    import breakdown.engine.rca as rca_mod
+    from breakdown.engine.rca import run_rca
 
     parser = Parser(RIDGE_YAML)
     frame = _ridge_frame(n=90)
     windows = win(("2024-01-08", "2024-02-04"), ("2024-02-05", "2024-03-03"))
 
-    monkeypatch.setattr(rca_mod, "MAX_ESCALATIONS", 0)
-    spent = rca_mod.run_rca(parser.dag, frame, {}, "y", **windows)["nodes"]["y"]
-    assert spent["inference_method"] == "advi"
-    assert spent["khat_status"] == "unusable"
-    budget = [w for w in spent["khat_warnings"] if "cap" in w]
-    assert budget and "inference_method=nuts" in budget[0]
+    exact = run_rca(parser.dag, frame, {}, "y", **windows, draws=200)["nodes"]["y"]
+    assert exact["inference_method"] == "nuts"
+    assert exact["khat_status"] is None and exact["khat"] is None
 
-    monkeypatch.setattr(rca_mod, "MAX_ESCALATIONS", 1)
-    got = rca_mod.run_rca(parser.dag, frame, {}, "y", **windows)["nodes"]["y"]
-    assert got["inference_method"] == "nuts"
-    assert got["khat_status"] == "escalated"
-    assert np.isfinite(got["khat"])
-    assert not any("cap" in w for w in got["khat_warnings"])
+    fast = run_rca(parser.dag, frame, {}, "y", **windows, draws=200, inference_method="advi")[
+        "nodes"
+    ]["y"]
+    assert fast["inference_method"] == "advi"
+    # The opt-in is honest rather than silent: the approximation is published
+    # with the verdict that says not to trust its intervals.
+    assert fast["khat_status"] == "unusable"
+    assert np.isfinite(fast["khat"])
+    assert fast["khat_warnings"]
+
+
+def test_a_cached_approximation_does_not_answer_a_request_for_nuts():
+    """`traces` is shared by every viewer of a process.
+
+    One colleague's deliberate `?inference_method=advi` triage run must not
+    decide the sampler behind everybody else's default analysis of the same
+    window — the payload would then report a method nobody asked for. Reuse is
+    allowed only upward, and `cached_fit_is_usable` is imported by both
+    orchestrators so the rule cannot differ between them.
+    """
+    from breakdown.engine.model import cached_fit_is_usable
+    from breakdown.engine.rca import run_rca
+
+    parser = Parser(RIDGE_YAML)
+    frame = _ridge_frame(n=90)
+    windows = win(("2024-01-08", "2024-02-04"), ("2024-02-05", "2024-03-03"))
+    traces: dict = {}
+
+    fast = run_rca(parser.dag, frame, traces, "y", **windows, draws=200, inference_method="advi")[
+        "nodes"
+    ]["y"]
+    assert fast["inference_method"] == "advi"
+    assert traces[("y", windows["analysis_start"])].inference_method == "advi"
+
+    # The default request re-fits rather than inheriting the approximation...
+    exact = run_rca(parser.dag, frame, traces, "y", **windows, draws=200)["nodes"]["y"]
+    assert exact["inference_method"] == "nuts"
+    assert traces[("y", windows["analysis_start"])].inference_method == "nuts"
+
+    # ...and the reverse is free: an exact fit answers a request for the
+    # approximation, because it is the thing being approximated.
+    reused = run_rca(parser.dag, frame, traces, "y", **windows, draws=200, inference_method="advi")[
+        "nodes"
+    ]["y"]
+    assert reused["inference_method"] == "nuts"
+
+    nuts_fit = traces[("y", windows["analysis_start"])]
+    assert cached_fit_is_usable(nuts_fit, "nuts") and cached_fit_is_usable(nuts_fit, "advi")

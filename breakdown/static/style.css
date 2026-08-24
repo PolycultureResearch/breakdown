@@ -786,6 +786,13 @@ button.chip.active { background: var(--accent-soft); color: var(--accent); borde
   font-variant-numeric: tabular-nums;
 }
 
+/* The variant for a setting that costs accuracy rather than time. `--faint` is
+   the colour of "detail you may skip", which is the wrong register for "the
+   numbers this produces can be tens of percent out". */
+.control-note.warn {
+  color: var(--warn);
+}
+
 .attr-head { display: flex; align-items: center; justify-content: space-between; }
 .rca-view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .rca-view-btn {

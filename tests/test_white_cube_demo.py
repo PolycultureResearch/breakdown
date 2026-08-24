@@ -45,12 +45,14 @@ deliberate choice at both ends:
   0.001 is ten orders of magnitude of headroom for a different BLAS or a
   summation reorder.
 
-**Story B's engagement figures do have a sampler in their path**, and they are
-called out here because the tolerance argument above does not cover them. That
-node's mean-field k̂ is 1.26, so roadmap S2's escalation discards the
-approximation and re-fits it with **NUTS**; `run_rca` seeds (`random_seed=0`),
-so a rerun on *this* machine reproduces bit-for-bit — but a seed does not make
-a NUTS chain reproducible across a different CPU, BLAS or PyMC build, and
+**Every fitted node in this suite has a sampler in its path**, and the
+tolerance argument above does not cover them. Since roadmap S2's second half
+the engine samples with NUTS by default — mean-field ADVI fails its PSIS check
+on essentially every real node here, and moves point estimates by tens of
+percent — so `sessions`, `trials_started`, `trial_conversion_rate` and
+`customer_churn_rate` are all MCMC-derived. `run_rca` seeds (`random_seed=0`),
+so a rerun on *this* machine reproduces bit-for-bit; a seed does **not** make a
+NUTS chain reproducible across a different CPU, BLAS or PyMC build, and
 measurement says how much it does not:
 
 | quantity | this machine | CI |
@@ -58,7 +60,7 @@ measurement says how much it does not:
 | `share_of_gap` (posterior mean) | −0.0768 | agrees within 1e-3 |
 | β (posterior mean) | −0.036 | agrees within 1e-3 |
 | β HDI 2.5% (tail quantile) | −0.059 | **−0.061** |
-| `P(direction)` | 0.838 | just under 0.835 |
+| `P(direction)` | 0.838 | just under **0.835** |
 
 So the two kinds of number get two treatments, and the line between them is
 statistical rather than convenient. **Posterior means** are averages over
@@ -70,6 +72,11 @@ so they get a band sized to the measured spread. And a value sitting on a
 any precision, because the two machines print different second decimals from
 the same seed; the tour writes it "≈0.84" and the test bands it. That one cost
 a red CI run to learn, which is why it is written down.
+
+Apply that split to **every** sampler-derived figure added here, not only the
+four measured above. A `share_of_gap`, a contribution `estimate` and a `beta`
+mean are posterior means and pin at TOUR; a `ci_95` bound, an HDI bound and a
+`prob_same_direction` near a rounding boundary are not, and get bands.
 
 What must never be relaxed is the row of properties beside these values — sign,
 magnitude bound, the contribution interval straddling zero, `P(direction)`
@@ -495,12 +502,14 @@ def test_story_b_churn_spike_is_plan_localized_and_engagement_is_cleared(client)
     # correlation is +0.74 and the mechanism is genuinely strong, so declining
     # it here is a statement about *this window*, not about a squashed driver.
     #
-    # And the numbers below now come from **NUTS**. `customer_churn_rate`'s
-    # mean-field k̂ is 1.26, so roadmap S2's escalation discards the
-    # approximation and re-fits the node exactly (`khat_status: "escalated"`).
-    # The value moved a long way — the contribution is −7.7% of the gap, not
-    # the −4.9% the approximation reported — while every property held. See
-    # the module docstring for what that means for the tolerance.
+    # And the numbers below come from **NUTS**, which is what every fitted
+    # node in this suite now runs (roadmap S2's second half). This node is the
+    # one that made the case for that default: run the same window with
+    # `?inference_method=advi` and it scores PSIS k̂ 1.26, reporting this
+    # contribution as −4.9% of the gap instead of −7.7% — a point estimate a
+    # third too small, with every property still holding, which is exactly why
+    # properties alone were not enough. See the module docstring for what a
+    # sampler in the path means for the tolerance.
     mar = d["nodes"]["member_activity_rate"]
     assert mar["relative_change"] > 0, "activity rose — the wrong way for the churn story"
     assert mar["relative_change"] == pytest.approx(0.025, **TOUR)
@@ -510,11 +519,13 @@ def test_story_b_churn_spike_is_plan_localized_and_engagement_is_cleared(client)
     assert mar["baseline"] == pytest.approx(0.254, **TOUR)
     assert mar["actual"] == pytest.approx(0.260, **TOUR)
     ccr = d["nodes"]["customer_churn_rate"]
-    # The node the beat rests on is the one S2 re-fits, so assert that it did:
-    # a `suspect` here would mean the tour is quoting an approximation the
-    # engine itself says is not evidence about its own interval width.
-    assert ccr["khat_status"] == "escalated"
+    # The node the beat rests on must be exactly sampled, and must say so with
+    # the *absence* of a k-hat rather than a good one: a `khat_status` here at
+    # all would mean the tour is quoting an approximation, and `unusable`
+    # would mean quoting one the engine says is not evidence about its own
+    # interval width.
     assert ccr["inference_method"] == "nuts"
+    assert ccr["khat_status"] is None and ccr["khat"] is None
     assert ccr["fit_quality"] == "ok"
     (eng,) = [c for c in ccr["contributions"] if c["parent"] == "member_activity_rate"]
     assert eng["share_of_gap"] < 0, "the edge pulls against the gap, not merely a little with it"
@@ -539,8 +550,8 @@ def test_story_b_churn_spike_is_plan_localized_and_engagement_is_cleared(client)
     # interval straddles zero (asserted above); the *coefficient* interval does
     # not. That distinction is the beat: the edge is real and its direction is
     # settled, and it still does not explain this window, because activity
-    # barely moved. Escalation is what made it true — the discarded mean-field
-    # fit put this same HDI at [-0.0530, +0.0050], failing to exclude zero.
+    # barely moved. The NUTS default is what made it true — the same fit under
+    # mean-field puts this HDI at [-0.0530, +0.0050], failing to exclude zero.
     m = client.get("/metrics/customer_churn_rate")
     assert m.status_code == 200, m.text
     summary = m.json()["summary"]
@@ -794,9 +805,14 @@ def test_story_d_names_activation_as_the_mechanism(client):
     assert ccr["status"] == "ok"
     by = {c["parent"]: c for c in ccr["contributions"]}
     act, days = by["trial_activation_rate"], by["trial_days_active"]
-    # "trial_activation_rate carries 70.7% of the conversion gap, interval
+    # "trial_activation_rate carries 68.0% of the conversion gap, interval
     # clear of zero, P(direction) 0.998."
-    assert act["share_of_gap"] == pytest.approx(0.707, **TOUR)
+    #
+    # 70.7% under mean-field, and this node is the counter-example worth
+    # keeping: its ADVI k̂ is 0.497 — inside the *good* band, the one node in
+    # the demo the approximation genuinely represents — and the share still
+    # moved 2.7 points. A passing k̂ bounds the error; it does not zero it.
+    assert act["share_of_gap"] == pytest.approx(0.680, **TOUR)
     assert act["ci_95"][0] > 0
     assert act["prob_same_direction"] > 0.99
     # ...and the collinear twin is reported unsurely, as it should be.

@@ -13,38 +13,75 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
 
 ## [Unreleased]
 
-### Added
+### Changed
 
-- **Every ADVI fit now says how far it landed from the posterior, and RCA
-  re-fits the ones that missed** (roadmap S2). The old check asked only whether
+- **NUTS is now the default sampler everywhere, ADVI is an explicit opt-in, and
+  PSIS k̂ is what keeps that choice honest** (roadmap S2). **Breaking for anyone
+  timing RCA or what-if**: `POST /rca/{name}` and `POST /simulate` used to fit
+  on-demand models with mean-field ADVI; they now use exact MCMC, and a cold
+  analysis takes several times longer.
+
+  It changed because of what got measured. The old fit check asked only whether
   the ELBO had stopped moving — a question about the optimizer, which a
   well-converged *bad* approximation passes. Fits now carry **PSIS k̂**
   (Yao et al., 2018) as `khat` / `khat_status`, in three bands (`ok` ≤ 0.5,
-  `suspect` ≤ 0.7, `unusable` above) plus `escalated` and `unavailable`, on the
-  fit's diagnostics, on every RCA and what-if node, over MCP with a
-  `how_to_read` entry, and in the UI beside R̂. `POST /rca/{name}` and
-  `POST /simulate` — the routes that pick ADVI on your behalf — **discard an
-  `unusable` approximation and re-fit that node with NUTS**, up to four nodes
-  per request; a fifth keeps its approximation, is labelled, and names the
-  per-node remedy. `POST /analyze/{name}?inference_method=advi` reports k̂ and
-  does not escalate: there you asked for ADVI.
+  `suspect` ≤ 0.7, `unusable` above) plus `unavailable`, on the fit's
+  diagnostics, on every RCA and what-if node, over MCP with a `how_to_read`
+  entry, and in the UI beside R̂. Against the 0.7 bar, mean-field scored **10.18
+  / 1.07 / 0.85 / 1.36** on the demo tree's four learned nodes, **1.04** on the
+  bundled jaffle tree's one, and **1.26 / 0.88 / 1.11 / 10.43** on a second demo
+  window. Not bad luck: one correlated local-level latent per period is not
+  representable by a factorized Gaussian, and the same code returns 0.31 on a
+  posterior mean-field *can* represent.
 
-  **This is slower, and it is slower because the old numbers were wrong.** On
-  this engine's model (one latent trend state per fitted period) k̂ flags
-  mean-field on most real nodes, so an RCA on a small tree is now mostly NUTS
-  and roughly 3–6× the wall clock. What that buys, measured on two different
-  edges of the demo tree: one headline contribution moves from −108.2 to −68.8
-  (0.68 → 0.43 of the gap), and a second moves −0.049 → −0.077 (57% *larger*).
-  Both times the difference is a trend delta the approximation had collapsed
-  toward zero — and because the coefficient absorbs that error in whichever
-  direction its own ridge runs, the sign of the bias is not something a reader
-  can infer from the payload. These are **point estimates**, not interval
-  widths. On the second edge the *verdict* changes too: the approximation's
-  95% interval on the coefficient straddled zero, and the exact fit's excludes
-  it — the approximation was under-confident about a real effect, not
-  over-confident about a spurious one. Full account in
-  [`docs/model.md`](docs/model.md) and §3.2 of the
+  **And the speed it was bought for was largely not there.** The 106-metric B2B
+  reference tree — the widest here — holds exactly five probabilistic fits, and
+  fitting all five took **31.3s under ADVI against 28.0s under NUTS**: exact
+  sampling was the *faster* of the two, on four of the five nodes, while ADVI
+  flagged all five `suspect` and NUTS returned four of five `ok`. The
+  approximation does still buy time on short fit windows — the demo tree's
+  cold RCAs go 10.9s → 42.3s, 8.2s → 46.2s, 2.2s → 9.8s and 5.9s → 24.1s — but
+  that is tens of seconds, against coefficients that move by tens of percent.
+
+  **What the exact sampler buys**, measured on two edges of the demo tree: one
+  headline contribution moves from −108.2 to −68.8 (0.68 → 0.43 of the gap), and
+  a second from −0.049 to −0.077 (57% *larger*). Both times the difference is a
+  trend delta the approximation had collapsed toward zero — and because the
+  coefficient absorbs that error in whichever direction its own ridge runs, the
+  sign of the bias is not something a reader can infer from the payload. These
+  are **point estimates**, not interval widths. On the second edge the *verdict*
+  changes too: the approximation's 95% interval on the coefficient straddled
+  zero and the exact fit's excludes it — under-confident about a real effect,
+  not over-confident about a spurious one.
+
+### Added
+
+- **`inference_method` on every fitting route.** `POST /rca/{name}` and
+  `POST /simulate` join `POST /analyze/{name}` in taking
+  `?inference_method=nuts|advi`, same values, same `nuts` default. Pass `advi`
+  when a tree is wide or fine-grained enough that exact sampling is impractical;
+  every node it fits then reports its k̂ and the warning that goes with it. A
+  cached fit is reused only *upward*: a NUTS fit answers an `advi` request, an
+  approximation does not answer a `nuts` one, so one viewer's triage run cannot
+  decide the sampler behind another's default analysis. The MCP tools carry no
+  such switch, deliberately.
+
+  Full account in [`docs/model.md`](docs/model.md) and §3.2 of the
   [statistics white paper](knowledge/statistics_whitepaper.md).
+
+### Removed
+
+- **Automatic escalation from ADVI to NUTS**, and with it `MAX_ESCALATIONS`,
+  the `khat_status: "escalated"` state, `diagnostics["escalated_from"]` and the
+  UI's "re-fitted with NUTS" badge. An earlier cut of S2 re-fitted a
+  k̂-rejected node with NUTS behind the caller's back, capped at four per
+  analysis. Once the measurement showed k̂ rejecting essentially every real
+  node, escalation stopped being a rescue and became the common path — at which
+  point making NUTS the default is the same behaviour, stated honestly, and
+  cheaper (an escalated node paid for both fits). On the opt-in path escalation
+  would be worse than useless: it spends 2–20× the cost the caller explicitly
+  declined. `khat_status` on a fitted node is now `ok` / `suspect` / `unusable`
+  / `unavailable`, and is absent entirely on a NUTS fit.
 
 ### Fixed
 

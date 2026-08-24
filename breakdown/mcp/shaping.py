@@ -62,16 +62,16 @@ RCA_HOW_TO_READ = (
     "An `attribution_failed` node still reports a real `gap`: the move is measured, only "
     "the split is missing. Nothing upstream of such a node is attributed either, so "
     "`ranked_causes` is incomplete whenever one is present.\n"
-    "- `khat_status`: how far this node's fast approximation sits from its true posterior "
-    "(PSIS k̂). `escalated` = it was rejected and the node **re-fitted with NUTS**, so these "
-    "are the reliable numbers (`khat` describes the discarded fit). `unusable` = rejected and "
-    "*not* re-fitted: its `ci_95` is not evidence about the real interval, so narrate the "
-    "point estimate as provisional and the uncertainty as unmeasured — never as precise. "
-    "`suspect` = measurably off; approximate. `unavailable` = unchecked, which is not clean. "
-    "`khat_warnings` gives the reason, including a node left un-escalated by the per-run NUTS "
-    "budget — for which re-fitting that node with NUTS is the fix worth naming.\n"
-    "- Nodes not marked `escalated` were fitted with ADVI, which can misstate uncertainty; "
-    "treat those as triage and confirm load-bearing findings with a NUTS fit."
+    "- Every fitted node ran exact MCMC (NUTS) unless it carries `inference_method: advi`, "
+    "which appears only when the caller asked for the fast approximation. A node with no "
+    "`inference_method` and no `khat_status` was sampled exactly — that absence is not a "
+    "missing check. Where `advi` does appear, `khat_status` says how far it landed from the "
+    "true posterior (PSIS k̂). `unusable` = not close and not correctable: "
+    "its `ci_95` is not evidence about the real interval, so narrate the point estimate as "
+    "provisional and the uncertainty as unmeasured — never as precise, and say the analysis "
+    "should be re-run without the approximation. `suspect` = measurably off; approximate. "
+    "`unavailable` = unchecked, which is not clean. `khat_warnings` gives the reason and the "
+    "remedy worth naming."
 )
 
 SLICE_HOW_TO_READ = (
@@ -135,10 +135,12 @@ WHATIF_HOW_TO_READ = (
     "number is the resolution ceiling of `n_draws` — a lower bound, not a measurement.\n"
     "- Interventions are do-operator: the metric is pinned, its usual drivers are severed, "
     "and effects propagate only downstream through the tree.\n"
-    "- `khat_status` is the PSIS check on the fit behind a node's slope. `escalated` = "
-    "re-fitted with NUTS, so trust it. `unusable` = the slope driving this outcome is not "
-    "close to its posterior and was not re-fitted (`khat_warnings` says why) — narrate the "
-    "direction, not the interval. `suspect` = approximate. `unavailable` = unchecked.\n"
+    "- `khat_status` is the PSIS check on the fit behind a node's slope, and is absent on "
+    "the NUTS default (exact MCMC has nothing to approximate). When present, the scenario "
+    "was run with the fast approximation: `unusable` = the slope driving this outcome is "
+    "not close to its posterior — narrate the direction, not the interval, and say a re-run "
+    "without the approximation is what would settle it. `suspect` = approximate. "
+    "`unavailable` = unchecked.\n"
     "- Fitted slopes are local to the observed operating range; `extrapolation: true` "
     "(detail in `warnings`) means the scenario leaves that range — call the result speculative.\n"
     "- Assumption edges are user-asserted beliefs sampled from the stated 90% range, not "
@@ -278,10 +280,20 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
             "relative_change": node["relative_change"],
             "attribution_method": node["attribution_method"],
             "fit_quality": node["fit_quality"],
-            # Roadmap S2. The verdict rides along on every fitted node, and the
-            # number only where it is bad news: `khat` on an `ok` fit is a
-            # token an agent has no decision to make with, while on a flagged
-            # one it is the difference between "slightly off" and "not
+            # Which sampler produced these numbers, stated only when it is not
+            # the exact one. NUTS is the default on every fitted node, so
+            # repeating `"nuts"` across a wide tree spends tokens to say
+            # "nothing to report"; `"advi"` is the fact an agent has a decision
+            # to make with, and it arrives with the k-hat below.
+            "inference_method": (
+                node.get("inference_method")
+                if node.get("inference_method") not in (None, "nuts")
+                else None
+            ),
+            # Roadmap S2. The verdict rides along on every *approximated* node,
+            # and the number only where it is bad news: `khat` on an `ok` fit
+            # is a token an agent has no decision to make with, while on a
+            # flagged one it is the difference between "slightly off" and "not
             # evidence". Never dropped when non-null-and-not-ok, for the same
             # reason `unexplained_status` is never dropped.
             "khat_status": node.get("khat_status"),

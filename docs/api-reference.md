@@ -97,17 +97,18 @@ Query parameters:
 
 | Param | Default | Description |
 |-------|---------|-------------|
-| `inference_method` | `nuts` | `nuts` (full MCMC) or `advi` (variational inference, faster but less accurate). This route takes you at your word: an `advi` fit here is **not** auto-escalated the way RCA's is, so you get ADVI, with its PSIS k̂ reported in `diagnostics`. |
+| `inference_method` | `nuts` | `nuts` (full MCMC) or `advi` (variational inference, faster but measurably less accurate — see [`docs/model.md`](model.md#assumptions-and-limitations-to-keep-in-mind)). Every route takes you at your word: an `advi` fit is never re-run as NUTS behind your back, and it reports its PSIS k̂ in `diagnostics` so you can see how far off it landed. Same values and same default on `POST /rca/{name}` and `POST /simulate`. |
 | `draws` | `500` | Posterior draws, which buy different things per method. Under `nuts` this is draws per chain after `tune` discarded steps, so 500 × 4 chains = 2,000 draws, and more of them tighten the Monte-Carlo error. Under `advi` the optimization is a fixed 20,000 steps regardless. There it only sets how many samples are drawn from the already-fitted approximation, so more is nearly free and does not make the answer more accurate. |
 | `tune` | `500` | Tuning steps (NUTS only) |
 | `chains` | `4` | Number of NUTS chains (NUTS only) |
 | `fit_end` | none | Exclusive date cutoff (`YYYY-MM-DD`). The fit uses only rows before it. Defaults to the full window; pass the analysis-window start to reproduce what RCA fits. |
 
 ```bash
-# Full MCMC (use for post-mortem analysis)
-curl -X POST "http://localhost:9090/analyze/order_count?inference_method=nuts&draws=1000"
+# Full MCMC — the default
+curl -X POST "http://localhost:9090/analyze/order_count?draws=1000"
 
-# Fast variational inference (use for live incident triage)
+# Fast variational inference, when exact sampling is impractical.
+# Read the k̂ it reports before quoting anything it produced.
 curl -X POST "http://localhost:9090/analyze/order_count?inference_method=advi"
 ```
 
@@ -117,10 +118,10 @@ reports `elbo_drop` (did the optimizer settle?) and **`khat` / `khat_status`**
 (did it settle anywhere near the posterior?) — the PSIS diagnostic of Yao et
 al. (2018). `khat_status` is one of `ok` (k̂ ≤ 0.5), `suspect` (≤ 0.7),
 `unusable` (> 0.7 — the intervals are not evidence about how wide the real
-ones are), `escalated` (the approximation was rejected and the node re-fitted
-with NUTS; `khat` then describes the *discarded* fit) or `unavailable` (the
-check could not run — an unchecked fit, not a clean one). Anything other than
-`ok` also carries `khat_warnings`, a list of self-contained sentences.
+ones are) or `unavailable` (the check could not run — an unchecked fit, not a
+clean one). Anything other than `ok` also carries `khat_warnings`, a list of
+self-contained sentences. A NUTS fit has no `khat` at all, and that absence is
+not a missing check: NUTS samples the posterior rather than approximating it.
 `fit_quality` stays the two-valued gate (`ok` | `suspect`) and goes `suspect`
 when either check fails. Full interpretation in
 [`docs/model.md`](model.md#assumptions-and-limitations-to-keep-in-mind).
@@ -176,18 +177,24 @@ Example response:
 
 ## `POST /rca/{name}`
 
-Walks the ancestor DAG of `name` and attributes the change between a reference window and an analysis window to upstream metrics. Any probabilistic node in scope that hasn't been fit yet is fit on demand with ADVI and its trace is cached (a second call is much faster). Because this route picks ADVI on your behalf, it also owns the consequence: a node whose PSIS k̂ exceeds 0.7 is re-fitted with NUTS and the NUTS fit is what gets cached and reported (`inference_method: "nuts"`, `khat_status: "escalated"`). Escalation is capped at **four nodes per request** — NUTS costs seconds to a minute per node — and a fifth flagged node keeps its approximation with `khat_status: "unusable"` and a `khat_warnings` entry naming the cap and the per-node remedy.
+Walks the ancestor DAG of `name` and attributes the change between a reference window and an analysis window to upstream metrics. Any probabilistic node in scope that hasn't been fit yet is fit on demand and its trace is cached (a second call is much faster). Those fits use **NUTS** unless you pass `?inference_method=advi`, and a cached fit is reused only when it is at least as good as the one your request would produce — a NUTS fit answers an `advi` request, but an approximation cached by someone else's triage run does not silently answer yours.
+
+Expect the first call on a cold cache to take a minute or more per learned node. That is the trade the default makes: mean-field ADVI fails its PSIS check on essentially every real node in this engine and moves point estimates by tens of percent, so exact sampling is what the numbers are worth. `?inference_method=advi` is there for a tree wide or fine-grained enough that NUTS is genuinely impractical; every node it fits then carries its k̂ and the warning that goes with it.
 
 Query parameters (`YYYY-MM-DD`): `analysis_start` and `analysis_end` are
 required; `reference_start` and `reference_end` are optional. Omitting both
 uses the matched adjacent block, exactly as on `GET /shapley/{name}` above,
-and the response carries `reference_defaulted`.
+and the response carries `reference_defaulted`. `inference_method` (`nuts` |
+`advi`, default `nuts`) picks the sampler for any node this call has to fit;
+`run_id` opts into progress polling.
 
 ```bash
 # explicit reference
 curl -X POST "http://localhost:9090/rca/revenue?reference_start=2024-01-01&reference_end=2024-02-15&analysis_start=2024-02-16&analysis_end=2024-04-09"
 # defaulted reference
 curl -X POST "http://localhost:9090/rca/revenue?analysis_start=2024-02-16&analysis_end=2024-04-09"
+# triage speed on a wide tree, with k̂ reported per node
+curl -X POST "http://localhost:9090/rca/revenue?analysis_start=2024-02-16&analysis_end=2024-04-09&inference_method=advi"
 ```
 
 Trimmed response:
@@ -227,8 +234,7 @@ Trimmed response:
       "attribution_method": "posterior",
       "inference_method": "nuts",
       "fit_quality": "ok",
-      "khat": 1.02, "khat_status": "escalated",
-      "khat_warnings": ["'order_count' was re-fitted with NUTS because …"],
+      "khat": null, "khat_status": null, "khat_warnings": null,
       "ci_status": "ok",
       "unexplained": 1.4, "unexplained_status": "measured",
       "components": {
@@ -248,7 +254,7 @@ Trimmed response:
 }
 ```
 
-Every fitted (`attribution_method: "posterior"`) node also reports which model produced its numbers and how much that model can be trusted: `inference_method`, `fit_quality` (`ok` | `suspect`), and the PSIS triple `khat` / `khat_status` / `khat_warnings` described under [`POST /analyze/{name}`](#post-analyzename). Read `khat_status` before quoting a `ci_95` from such a node: `unusable` means the interval is not a measurement of the real one, and `escalated` means the node was re-fitted with NUTS and is the trustworthy case, not a warning.
+Every fitted (`attribution_method: "posterior"`) node also reports which model produced its numbers and how much that model can be trusted: `inference_method`, `fit_quality` (`ok` | `suspect`), and the PSIS triple `khat` / `khat_status` / `khat_warnings` described under [`POST /analyze/{name}`](#post-analyzename). On the NUTS default the PSIS triple is `null` throughout. Where it is not — because the request asked for `advi` — read `khat_status` before quoting a `ci_95` from that node: `unusable` means the interval is not a measurement of the real one.
 
 Grain support adds two per-node fields: `grain` (the grain the node was analyzed at) and `effective_windows` (the whole periods the requested windows snapped to at that grain). Gaps are mean-per-period at each node's own grain, so in mixed-grain trees compare nodes via `share_of_gap` and `ranked_causes` scores, not raw gaps.
 
@@ -309,7 +315,7 @@ Every contribution is reported as an `estimate` (mean), a 95% interval (`ci_95`)
 
 `prob_same_direction` is a proportion over those 500 replicates, so it is never published as 1.0. There is no representable value between 0.998 and 1, and a saturated count is the estimator running out of resolution, not a measurement of certainty. A saturated estimate publishes the ceiling alongside `prob_same_direction_censored: true`, and the UI and the exported report both render it as the bound it is: `>99.8%`. `prob_concentrated` (slices) and `prob_direction` (what-if) follow the same rule with their own sample sizes. Read it as "no replicate crossed zero", not as "the sign is certain".
 
-Unfitted probabilistic nodes in scope are fit with ADVI on demand, on data strictly before the analysis window, and cached, so the endpoint works without a prior `/analyze` call — with the same k̂ escalation and the same four-node cap described above.
+Unfitted probabilistic nodes in scope are fitted on demand, on data strictly before the analysis window, and cached, so the endpoint works without a prior `/analyze` call — with the same `inference_method` parameter, the same NUTS default and the same reuse rule described above.
 
 `ranked_causes` is a documented heuristic. It propagates an influence score from the target up the ancestor tree, weighting each hop by the parent's `|share_of_gap|` (capped at 1) divided by the child's total gross parent movement, meaning the sum of every parent's `|share_of_gap|`, floored at 1 so a decomposition that sums tidily is never penalized. That divisor is what stops a parent scoring full marks on a gap its siblings cancelled: two parents at +165% and −62% both rank *below* a lone parent cleanly explaining 80%. Each row carries `via`, the child it was reached through, so a score can be traced back to the hop that produced it. A node no hop ever reached is omitted rather than listed at zero; `nodes` remains the full inventory of what was in scope. Use it as a triage ordering, not as a probability.
 
@@ -393,8 +399,11 @@ loaded, restart with a wider `--start-date`/`--end-date` for that tree.
 
 Do-operator what-if: intervene on one or more metrics, propagate the change
 through the downstream subgraph per posterior draw, and report the steady-state
-effect with credible intervals. The scenario is a JSON body; the only query
-parameter is the optional `run_id`.
+effect with credible intervals. The scenario is a JSON body; the query
+parameters are `inference_method` (`nuts` | `advi`, default `nuts` — the
+sampler for any node this scenario has to fit, with the same meaning and the
+same reuse rule as on [`POST /rca/{name}`](#post-rcaname)) and the optional
+`run_id`.
 
 | Body field | Type | Description |
 |---|---|---|
@@ -429,8 +438,8 @@ decomposition (each intervention's and assumption's signed share, summing
 exactly to the point delta by Shapley efficiency), per-node results
 (`status`, one of `baseline` | `affected` | `intervened`, plus `baseline`,
 `simulated`, `delta` with `ci_95`, `relative_delta`, `prob_direction`,
-`fit_quality`, `khat_status`, `khat_warnings`, `extrapolation`,
-`contributions`), plus `warnings` and
+`fit_quality`, `khat_status`, `khat_warnings` — the last two null on the
+NUTS default — `extrapolation`, `contributions`), plus `warnings` and
 always-on `caveats`. The run is seeded, so identical calls are byte-identical.
 
 On a fitted tree, every `kind: rate` node also carries `window_aggregate` and

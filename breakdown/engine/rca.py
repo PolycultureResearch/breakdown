@@ -72,9 +72,8 @@ import numpy as np
 import pandas as pd
 
 from breakdown.engine.model import (
-    MAX_ESCALATIONS,
+    cached_fit_is_usable,
     compute_shapley,
-    escalation_budget_warning,
     fit_metric,
     seasonal_window_delta,
 )
@@ -764,11 +763,10 @@ def _node_out(**fields) -> Dict[str, Any]:
         # these are the evidence behind it for a variational fit, the way R-hat
         # and ESS are for NUTS. `khat` is the PSIS shape parameter and
         # `khat_status` its band: `ok` (<= 0.5), `suspect` (<= 0.7), `unusable`
-        # (> 0.7), `unavailable` (could not be computed — an unchecked fit, not
-        # a clean one), or `escalated` — the one case where `khat` describes a
-        # fit that is *not* the one reported here: the approximation that
-        # failed, which this node was re-fitted with NUTS to replace.
-        # Both stay null on a fit that was NUTS from the start.
+        # (> 0.7) or `unavailable` (could not be computed — an unchecked fit,
+        # not a clean one). All three stay null on a NUTS fit, which is the
+        # default: NUTS is not an approximation, so it has no k-hat, and the
+        # absence of the field is not a missing check.
         "khat": None,
         "khat_status": None,
         "khat_warnings": None,
@@ -1125,16 +1123,27 @@ def run_rca(
     analysis_end: str,
     reference_start: Optional[str] = None,
     reference_end: Optional[str] = None,
-    advi_draws: int = 500,
+    inference_method: str = "nuts",
+    draws: int = 500,
     progress: Optional[ProgressFn] = None,
 ) -> Dict[str, Any]:
     """Attribute `target`'s window-over-window change to its ancestors.
 
     `traces` is the caller's cache, keyed by `(metric name, fit_end)` -> FitResult.
-    Probabilistic nodes in scope without a cached trace are fit with ADVI on data
+    Probabilistic nodes in scope without a usable cached trace are fitted on data
     strictly before `analysis_start` (so the anomaly window is excluded) and added
     to it. A full-window fit (`fit_end=None`) is never reused here — it is
     contaminated by the anomaly for attribution purposes.
+
+    `inference_method` is `"nuts"` — exact MCMC — by default, because roadmap S2
+    measured mean-field ADVI failing the PSIS k-hat check on essentially every
+    real node in this engine, moving *point estimates* by 37-57% and in one
+    demo case turning an interval that excludes zero into one that does not.
+    `"advi"` remains available for triage on a tree where NUTS is genuinely too
+    slow (a wide day-grain tree); every node it fits then carries its k-hat and
+    the warning that goes with it, so the trade is visible in the payload
+    rather than assumed. `draws` is the posterior draw count either way
+    (per chain under NUTS).
 
     Omitting both reference dates uses the default reference window: the
     matched adjacent block before the analysis window. The reference is only
@@ -1220,10 +1229,14 @@ def run_rca(
     for node in sorted(nodes_in_scope):
         defn = dag.nodes[node]["definition"]
         parents = list(dag.predecessors(node))
-        if parents and not defn.formula and (node, analysis_start) not in traces:
-            if scoped[node][2] is None:
-                continue
-            to_fit.append(node)
+        if not parents or defn.formula:
+            continue
+        cached = traces.get((node, analysis_start))
+        if cached is not None and cached_fit_is_usable(cached, inference_method):
+            continue
+        if scoped[node][2] is None:
+            continue
+        to_fit.append(node)
 
     # A node whose own fit raises is recorded and skipped, not propagated: one
     # unfittable node (a parent held flat all fit window has zero variance and
@@ -1232,15 +1245,20 @@ def run_rca(
     # the single `fit_metric` call and nothing else, so unrelated failures
     # elsewhere in the loop still surface.
     #
-    # The engine — not the user — chose ADVI here, for speed. So this is the
-    # path that owns the consequences of that choice: a node whose PSIS k-hat
-    # says the approximation is not close to its posterior (roadmap S2) is
-    # re-fitted with NUTS rather than published with intervals that are not
-    # evidence. `escalations_left` is the cost ceiling, held on the stack for
-    # this one call — `run_rca` stays a pure function of its arguments, so two
-    # concurrent analyses cannot spend each other's budget.
+    # `inference_method` reaches `fit_metric` unchanged — this path never
+    # substitutes a sampler for the one it was asked for, in either direction.
+    # It used to hardcode `"advi"` and then re-fit with NUTS whatever PSIS
+    # rejected; roadmap S2 measured that rejection firing on essentially every
+    # real node, which made the escalation the common case rather than the
+    # rescue, so the default moved to NUTS outright and the escalation went
+    # away with it. A caller who asks for `"advi"` gets ADVI, and gets its
+    # k-hat.
+    #
+    # The write is unconditional and that is safe under the reuse rule above:
+    # a node reaches this loop only when the cache held nothing usable for the
+    # method asked for, so the fit being stored is never worse than the one it
+    # replaces.
     fit_failures: Dict[str, str] = {}
-    escalations_left = MAX_ESCALATIONS
     for i, node in enumerate(to_fit, 1):
         _report(progress, stage="fitting", metric=node, current=i, total=len(to_fit))
         try:
@@ -1248,25 +1266,14 @@ def run_rca(
                 dag,
                 data,
                 node,
-                draws=advi_draws,
-                inference_method="advi",
+                draws=draws,
+                inference_method=inference_method,
                 fit_end=analysis_start,
                 random_seed=0,
-                escalate_on_khat=escalations_left > 0,
             )
         except ValueError as e:
             fit_failures[node] = str(e)
             continue
-        if fit.diagnostics.get("escalated_from"):
-            escalations_left -= 1
-        elif fit.diagnostics.get("khat_status") == "unusable":
-            # Flagged, and the budget was already spent. Say which — see
-            # `escalation_budget_warning`.
-            fit.diagnostics["khat_warnings"] = (fit.diagnostics.get("khat_warnings") or []) + [
-                escalation_budget_warning(
-                    node, fit.inference_method, fit.diagnostics.get("khat"), MAX_ESCALATIONS
-                )
-            ]
         traces[(node, analysis_start)] = fit
 
     _report(progress, stage="attributing", total=len(to_fit))

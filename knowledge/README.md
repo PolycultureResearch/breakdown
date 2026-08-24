@@ -39,14 +39,18 @@ roadmap. For how the codebase is built, see [`../AGENTS.md`](../AGENTS.md) and
   ridge is the geometry it handles worst. Covers the mechanism (reverse KL, the
   `σ²(1−ρ²)` result), why this engine is unusually exposed, a worked example of
   a decision it would send the wrong way, when to confirm with NUTS, and the
-  two candidate fixes (PSIS k̂ escalation, full-rank ADVI).
+  two candidate fixes (PSIS k̂, full-rank ADVI). **Historical framing since
+  2026-08-24**: the mechanism it describes is unchanged, but the default it
+  argues against is gone — NUTS is now the default sampler everywhere. The
+  page carries a banner saying so.
 - [`s1_fullrank_advi_benchmark.md`](s1_fullrank_advi_benchmark.md) — the
   measurement that closed roadmap S1 (2026-08-18): full-rank ADVI vs
   mean-field vs NUTS on fit time and interval width, across the calibration
   DGP, a ridge-geometry suite, and the White Cube tree. Outcome: full-rank
   reproduces NUTS on the synthetic ridge but is slower than NUTS and badly
-  over-dispersed on real nodes — not adopted; S2 (k̂ + escalation) is the
-  path, and shipped 2026-08-22. Reproducible via
+  over-dispersed on real nodes — not adopted; S2 (k̂) is the path, and shipped
+  2026-08-22, closing 2026-08-24 with NUTS as the default sampler. Reproducible
+  via
   [`benchmarks/s1_fullrank_advi.py`](benchmarks/s1_fullrank_advi.py).
 
 ## Design specs
