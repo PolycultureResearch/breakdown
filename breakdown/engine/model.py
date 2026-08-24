@@ -499,7 +499,7 @@ def _khat_warning(target: str, method: str, khat: Optional[float], status: str, 
         "the posterior and cannot be corrected by reweighting. Its credible intervals are "
         "not evidence about the width of the real ones. This fit ran a variational "
         "approximation because one was asked for; drop `inference_method=advi` to get "
-        f"the NUTS default, or re-fit this node alone with "
+        "the NUTS default, or re-fit this node alone with "
         f"POST /analyze/{target}?inference_method=nuts."
     )
 
