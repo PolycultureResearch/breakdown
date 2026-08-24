@@ -14,12 +14,33 @@ permissions:
 jobs:
   cla:
     runs-on: ubuntu-latest
+    # Signatures live in a separate private repo (see `remote-repository-name`
+    # below), which `GITHUB_TOKEN` cannot write to — so this action refuses to
+    # start unless `PERSONAL_ACCESS_TOKEN` is set, and it refuses *before* it
+    # consults `allowlist`. The result was that every PR went red, including
+    # ones from authors the allowlist exempts anyway.
+    #
+    # So skip the job for those authors instead of running it to reach the same
+    # verdict. This grants no one an exemption they did not already have: the
+    # two lists must agree, and `allowlist` below is the one a reader should
+    # treat as the policy. If you add a name there, add it here.
+    #
+    # This does NOT make the CLA work without the token. A contributor who is
+    # not on either list still needs `PERSONAL_ACCESS_TOKEN` present, and until
+    # it is, their PR fails with an error that reads like a signature problem
+    # rather than a missing credential.
+    if: >
+      (
+        github.event_name == 'pull_request_target' &&
+        github.event.pull_request.user.login != 'devonds' &&
+        !endsWith(github.event.pull_request.user.login, '[bot]')
+      ) || (
+        github.event_name == 'issue_comment' &&
+        (github.event.comment.body == 'recheck' ||
+         github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA')
+      )
     steps:
       - name: CLA Assistant
-        if: >
-          (github.event.comment.body == 'recheck' ||
-           github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') ||
-          github.event_name == 'pull_request_target'
         uses: contributor-assistant/github-action@v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
