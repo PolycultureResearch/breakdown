@@ -811,17 +811,68 @@ def _regression_component(defn: MetricDefinition, parents: List[str], X, scale):
     return pm.math.dot(X, beta)
 
 
+#: The sampler budget, written once (roadmap C27).
+#:
+#: These four numbers used to be spelled three times — `fit_metric`'s own
+#: defaults, `run_rca`/`run_scenario`'s pass-through defaults, and
+#: `POST /analyze/{name}`'s `Query(default=...)` — and the spellings disagreed.
+#: `/analyze` warmed up for 500 steps while every analysis route warmed up for
+#: 1000, so one node fitted over one window came back from a different
+#: adaptation depending on which URL asked. That was harmless while `/analyze`
+#: was the only NUTS path and the analyses ran ADVI (which never reads `tune`);
+#: roadmap S2's Option C put every route on NUTS and made it two defensible-
+#: but-unequal posteriors for one question, with nothing in either payload
+#: saying which one the reader got. The engine is supposed to be a pure
+#: function of (DAG, data, target).
+#:
+#: Every call site — orchestrator default, route default, and the numbers the
+#: UI prints at the reader — reads these, and
+#: `tests/test_project_invariants.py` fails on a literal written anywhere else.
+#:
+#: The values, and why each:
+#:
+#: * ``NUTS_TUNE = 1000`` is PyMC's own default and the more conservative of
+#:   the two budgets that were in the tree. Measured across 5 seeds on four
+#:   probabilistic nodes of `knowledge/b2b_mrr_tree.yml` (draws=500, 4 chains),
+#:   500 and 1000 warm-up steps are not distinguishable on adaptation quality:
+#:   two nodes improved at 1000, two got worse, and the seed-to-seed spread on
+#:   one node at fixed settings (3 to 196 divergences) is far larger than the
+#:   gap between the budgets. So the measurement does not pick a winner, and
+#:   the tie is broken on cost and honesty: standardizing *up* moves no RCA or
+#:   what-if figure (they already warm up 1000), costs ~15-30% wall clock on
+#:   `/analyze` alone, and makes the UI's own "after 1,000 discarded tuning
+#:   steps" true — it has been telling readers that while the route ran 500.
+#: * ``NUTS_DRAWS = 500`` per chain — 2,000 posterior draws over 4 chains, and
+#:   what every route already ran. `fit_metric`'s old `draws=1000` default was
+#:   reachable only by direct callers, all of which pass the parameter, so it
+#:   was a fourth number nobody sampled at. Measured bulk ESS at 500x4 on the
+#:   nodes above is 213-921, well clear of the 100 that flags a fit "suspect",
+#:   and the doubling is not free: one 830-day NUTS fit is 27.0 MB of posterior,
+#:   so 1000 draws would halve `MAX_CACHED_TRACE_BYTES`'s capacity from ~19
+#:   cached fits to ~9 (see `breakdown/api/trees.py`).
+#: * ``NUTS_CHAINS = 4`` — already agreed everywhere; hoisted so it cannot
+#:   start disagreeing.
+#: * ``ADVI_ITERATIONS = 20_000`` is the ADVI analogue and had *not* split: no
+#:   caller overrides it and no route exposes it. It is hoisted anyway, because
+#:   "one spelling today" is exactly what `tune` had before `/analyze` grew its
+#:   own, and the UI prints this number too.
+NUTS_DRAWS = 500
+NUTS_TUNE = 1000
+NUTS_CHAINS = 4
+ADVI_ITERATIONS = 20_000
+
+
 def fit_metric(
     dag: nx.DiGraph,
     data: pd.DataFrame,
     target: str,
-    draws: int = 1000,
-    tune: int = 1000,
+    draws: int = NUTS_DRAWS,
+    tune: int = NUTS_TUNE,
     inference_method: str = "nuts",
     fit_end: Optional[str] = None,
-    chains: int = 4,
+    chains: int = NUTS_CHAINS,
     random_seed: Optional[int] = None,
-    vi_iterations: int = 20_000,
+    vi_iterations: int = ADVI_ITERATIONS,
 ) -> FitResult:
     """
     Fit the Bayesian structural time series for one metric.
@@ -880,7 +931,12 @@ def fit_metric(
     knowledge/s1_fullrank_advi_benchmark.md before reaching for it). `tune`
     and `chains` apply to NUTS only; `vi_iterations` (optimizer steps) to the
     two ADVI variants only — full-rank needs roughly 2x mean-field's steps to
-    converge even on small fits. `random_seed` makes the fit reproducible on
+    converge even on small fits. The four budgets default to `NUTS_DRAWS` /
+    `NUTS_TUNE` / `NUTS_CHAINS` / `ADVI_ITERATIONS` above, which is where
+    every orchestrator and route default reads them from too (roadmap C27):
+    a fit is a pure function of (DAG, data, target), so the route the caller
+    arrived through must not change the answer. `random_seed` makes the fit
+    reproducible on
     a given platform/dependency set (RCA and simulate pass a fixed seed so
     their on-demand fits — and hence API responses — are deterministic even
     across empty trace caches; tests seed to kill stochastic flakes).

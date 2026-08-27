@@ -56,6 +56,7 @@ import pandas as pd
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from breakdown.engine.model import (
+    NUTS_DRAWS,
     cached_fit_is_usable,
     fit_metric,
 )
@@ -275,7 +276,7 @@ def run_scenario(
     traces: Dict[Tuple[str, Optional[str]], Any],
     scenario: ScenarioRequest,
     inference_method: str = "nuts",
-    draws: int = 500,
+    draws: int = NUTS_DRAWS,
     n_draws: int = _N_DRAWS,
     progress: Optional[ProgressFn] = None,
 ) -> Dict[str, Any]:
@@ -290,8 +291,12 @@ def run_scenario(
     fitted slope downstream, so an approximation that misstates one is a wrong
     number at every node below it. `"advi"` stays available for triage speed,
     with PSIS k-hat reported on each node it fits. `draws` is the posterior
-    draw count (per chain under NUTS); `n_draws` is the separate count of
-    Monte-Carlo propagation draws through the DAG.
+    draw count (per chain under NUTS), forwarded here for the same reason it
+    is on `run_rca` — this module resamples that posterior into `beta_draws` —
+    and defaulting to the engine's one `NUTS_DRAWS`; `n_draws` is the separate
+    count of Monte-Carlo propagation draws through the DAG. Warm-up and chains
+    come from `fit_metric`'s `NUTS_TUNE` / `NUTS_CHAINS`, so a scenario and an
+    RCA of the same node sample from the same adaptation (roadmap C27).
 
     **`data=None` selects cold-start mode** (a tree with no data): baselines come
     from the YAML `baseline` declarations, coefficients are sampled from the

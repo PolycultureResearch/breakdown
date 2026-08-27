@@ -72,6 +72,7 @@ import numpy as np
 import pandas as pd
 
 from breakdown.engine.model import (
+    NUTS_DRAWS,
     cached_fit_is_usable,
     compute_shapley,
     fit_metric,
@@ -1124,7 +1125,7 @@ def run_rca(
     reference_start: Optional[str] = None,
     reference_end: Optional[str] = None,
     inference_method: str = "nuts",
-    draws: int = 500,
+    draws: int = NUTS_DRAWS,
     progress: Optional[ProgressFn] = None,
 ) -> Dict[str, Any]:
     """Attribute `target`'s window-over-window change to its ancestors.
@@ -1143,7 +1144,13 @@ def run_rca(
     slow (a wide day-grain tree); every node it fits then carries its k-hat and
     the warning that goes with it, so the trade is visible in the payload
     rather than assumed. `draws` is the posterior draw count either way
-    (per chain under NUTS).
+    (per chain under NUTS); it is forwarded here rather than left to
+    `fit_metric` because this module resamples that posterior itself (see
+    `_N_BOOT` below), so its size is the orchestrator's business. The warm-up
+    and chain budgets are pure sampler mechanics and come from `fit_metric`'s
+    `NUTS_TUNE` / `NUTS_CHAINS` — one spelling for the whole engine, so that
+    the route a caller arrives through cannot change the posterior they get
+    (roadmap C27).
 
     Omitting both reference dates uses the default reference window: the
     matched adjacent block before the analysis window. The reference is only

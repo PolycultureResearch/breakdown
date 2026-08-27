@@ -264,7 +264,7 @@ DOCS = [
         curl_examples=2,
         not_replayed={
             "POST /analyze/order_count": (
-                "the bare form runs the NUTS default (4 chains x 500 draws after 500 tune) "
+                "the bare form runs the NUTS default (4 chains x 500 draws after 1000 tune) "
                 "and takes minutes; the documented ADVI form on the same route is replayed "
                 "from docs/api-reference.md"
             ),
