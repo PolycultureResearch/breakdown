@@ -316,9 +316,20 @@ def test_how_to_read_guides():
         # and cannot tell a metric that has no denominator *by nature* from a
         # tree nobody has finished configuring — so its remedy for a median
         # would be "declare a denominator", advice that cannot be followed.
-        assert 400 < len(guide) < 3200
+        #
+        # Raised to 4000 for `khat_status` (roadmap S2), which is that shape a
+        # third time and is the only entry here that changes whether a `ci_95`
+        # should be quoted at all. Its `unusable` value marks an interval that
+        # is not evidence about the real one, which an agent seeing the bare
+        # enum would read as a quibble. It also has to say what the *absence*
+        # of the field means: since NUTS became the default, most nodes carry
+        # no `khat_status`, and "no verdict" and "clean" are the same silence
+        # unless the guide separates them. The what-if guide carries the short
+        # form of the same thing.
+        assert 400 < len(guide) < 4000
     assert "unexplained" in RCA_HOW_TO_READ
     assert "window_aggregate" in RCA_HOW_TO_READ
+    assert "khat_status" in RCA_HOW_TO_READ and "khat_status" in WHATIF_HOW_TO_READ
     assert "prob_direction" in WHATIF_HOW_TO_READ
     # C9: contributions sum to the *point* delta (`delta.estimate`), and the
     # guide must not claim they sum to "the delta" as if it covered the

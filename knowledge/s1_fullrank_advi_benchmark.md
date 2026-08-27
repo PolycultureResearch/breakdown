@@ -11,10 +11,32 @@
 **Status: complete (2026-08-18). Decision: full-rank is not adopted; S2 is
 the path.**
 
+> **Follow-up (2026-08-22, closed 2026-08-24): S2 shipped, and it confirmed
+> this benchmark's reading of the model while breaking its assumption about
+> scope.** PSIS k̂ flags mean-field on *all four* White Cube probabilistic nodes
+> (10.18, 1.07, 0.85, 1.36 at full window, `random_seed=0`), all four again on
+> a second window (1.26, 0.88, 1.11, 10.43), and on the bundled demo's
+> `order_count` (1.04) — including the two whose ELBO check came back `ok`,
+> which is the failure this page argued S2 was needed for.
+>
+> **So this page's closing note is what happened.** Per-node escalation was not
+> the occasional rescue the "adopt if cheap enough" framing below imagined; a
+> rescue firing on every node is a default in disguise, and a slower one, since
+> an escalated node pays for the approximation and then the exact fit. The
+> engine went to **NUTS by default on every path** on 2026-08-24, with ADVI an
+> explicit opt-in that reports its k̂ — "NUTS-by-default for small trees is
+> worth a look", arrived at by a longer route. One measurement this page did
+> not have sealed it: the 106-metric reference tree, the widest here, contains
+> only **five** probabilistic fits, and fitting all five measured **31.3s under
+> ADVI against 28.0s under NUTS** — the exact sampler was the faster of the
+> two, on four of the five nodes. The prices quoted here are what makes that
+> survivable. See
+> [`statistics_whitepaper.md`](statistics_whitepaper.md) §4.1.
+
 ## Why this measurement exists
 
-Mean-field ADVI — the RCA default — approximates the posterior as independent
-Gaussians, and is underdispersed by construction
+Mean-field ADVI — the RCA default at the time of this benchmark, an opt-in
+since 2026-08-24 — approximates the posterior as independent Gaussians, and is underdispersed by construction
 ([`advi_vs_nuts_in_breakdown.md`](advi_vs_nuts_in_breakdown.md)). breakdown's
 model deliberately builds the geometry mean-field handles worst: a slowly
 drifting parent and the local-level trend compete for the same variance, so
@@ -185,13 +207,13 @@ ranking changed. Two implications for the roadmap:
 1. **S2 is not made unnecessary — it is made more urgent, and its scope is
    set.** Across the suites, VI error on this model is unpredictable even in
    direction, and the ELBO check misses it both ways. Detection
-   (PSIS-k̂) plus escalate-to-NUTS is the path; a richer variational family
-   is not.
+   (PSIS-k̂) is the path; a richer variational family is not.
 2. **NUTS is cheaper than the working assumption.** 3.4s on 130-period
    synthetic nodes, 11s at 830 daily periods, 11–66s on real weekly seasonal
-   nodes. "Triage with ADVI, confirm with NUTS" stands, but per-node NUTS
-   escalation (S2) is affordable, and NUTS-by-default for small trees is
-   worth a look while scoping S2.
+   nodes. "Triage with ADVI, confirm with NUTS" stands, but per-node NUTS is
+   affordable, and NUTS-by-default for small trees is worth a look while
+   scoping S2. *(Taken up 2026-08-24, and the answer was yes — for every tree,
+   not only small ones. See the follow-up at the top.)*
 
 ---
 

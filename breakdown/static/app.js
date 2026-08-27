@@ -33,6 +33,11 @@ const state = {
     assumptions: [],   // {source, target, effect: {kind, low, high}, note}
     adjusting: null,   // metric name open in the adjust panel
     result: null,      // last POST /simulate response
+    // Which sampler the next run should use. Held in state rather than read
+    // off the control, because `renderWhatifTab` rebuilds this tab's markup
+    // after every run — a control that silently reset to the default would
+    // tell a reader their last result came from a sampler it did not.
+    method: "nuts",
     readerMode: false, // entered via deep link: results first, builder collapsed
   },
 };
@@ -338,7 +343,7 @@ function setContext(chips) {
 
    The copy rotates, in the spirit of Claude Code's "percolating" — but every
    phrase here is *literally true of the stage it belongs to*. `descending the
-   ELBO` is what ADVI does; `permuting coalitions` is what exact Shapley
+   exploring the typical set` is what NUTS does; `permuting coalitions` is what exact Shapley
    attribution does. The joke and the status are the same string, so a curious
    reader picks up how the engine works instead of watching a lie. Keep it that
    way: if a phrase moves to a stage where it stops being true, it is no longer
@@ -346,11 +351,17 @@ function setContext(chips) {
 const PROGRESS_PHRASES = {
   waiting: ["queued behind another run"],
   resolving: ["snapping windows to grain", "resolving the reference window", "reading the tree"],
-  // Every on-demand fit is ADVI, so the vocabulary is variational, not MCMC.
+  // The `fitting` stage is NUTS unless the request asked for the
+  // approximation, which is the rarer path — roadmap S2 measured mean-field
+  // failing its PSIS check on essentially every real node, so the default
+  // moved to exact MCMC. "descending the ELBO" therefore describes a stage
+  // this almost never runs, and it used to sit on screen for 30 of the 35
+  // seconds a `sessions` fit takes: the exact failure the paragraph above
+  // forbids. These four are each true of NUTS.
   fitting: [
-    "descending the ELBO",
-    "fitting the mean field",
-    "tuning the approximation",
+    "tuning the step size",
+    "warming up the chains",
+    "exploring the typical set",
     "letting the posterior settle",
   ],
   attributing: [
@@ -461,7 +472,7 @@ const DOC = "https://github.com/PolycultureResearch/breakdown/blob/main/docs/mod
 
 const HINTS = {
   method: {
-    title: "ADVI vs NUTS",
+    title: "NUTS vs ADVI",
     body: () => `
       <p><strong>NUTS</strong> is exact MCMC: it walks the posterior and, given
       enough draws, converges on the true shape. It is the slower one — a minute
@@ -469,9 +480,18 @@ const HINTS = {
       convergence diagnostics (R̂, divergences, effective sample size).</p>
       <p><strong>ADVI</strong> fits a simpler stand-in distribution by
       optimization. Seconds instead of minutes, but it is an approximation:
-      mean-field ADVI assumes the parameters are independent, so it tends to
-      <em>understate</em> uncertainty — intervals come out too narrow.</p>
-      <p>Explore with ADVI; quote NUTS.</p>`,
+      mean-field ADVI assumes the parameters are independent, and this engine's
+      model has one trend latent per period, strongly correlated with its
+      neighbours. That is exactly what a factorized Gaussian cannot hold.</p>
+      <p>Measured on this repo's own trees, mean-field fails the PSIS k̂ check
+      on essentially every real node, and the damage reaches the point
+      estimates, not only the intervals: coefficients moved by 37–57%, in both
+      directions, with the trend absorbing the difference. On one demo edge it
+      turned an interval that excludes zero into one that does not.</p>
+      <p>So NUTS is the default here and everywhere else in the engine. Reach
+      for ADVI when a tree is wide or day-grain enough that exact sampling is
+      genuinely impractical — and read the k̂ it reports before quoting
+      anything it produced.</p>`,
   },
   draws: {
     title: "What the draws number does",
@@ -522,8 +542,20 @@ const HINTS = {
       accurately — a handful is tolerable, and the engine flags more than 1% of
       draws. <strong>ESS</strong> is how many independent draws the correlated
       ones are worth; under 100 gets flagged.</p>
-      <p>These are MCMC diagnostics, so an ADVI fit has none. That is not a
-      clean bill of health — it is the absence of a check.</p>`,
+      <p>Those three are MCMC diagnostics, so an ADVI fit has none of them.</p>
+      <p><strong>PSIS k̂</strong> is the one that applies to an ADVI fit, and it
+      asks the harder question: not "did the optimizer stop?" but "how far did
+      it stop from the real posterior?" It is the shape of the tail of the
+      importance ratios between the approximation and the true posterior
+      (Yao et al., 2018). At or below 0.5 the approximation is close; above
+      0.7 it is not close and cannot be corrected by reweighting, so its
+      intervals are not evidence about the real ones.</p>
+      <p>A <strong>NUTS</strong> fit has no k̂ and needs none — it samples the
+      posterior rather than approximating it, and that is the default. k̂ only
+      appears when the fast approximation was asked for. The one case to read
+      carefully is <em>"approximation unchecked"</em>: that is an ADVI fit whose
+      k̂ could not be computed, which is the absence of a check rather than a
+      clean bill of health.</p>`,
     more: `${DOC}#what-gets-fitted`,
   },
 };
@@ -1067,6 +1099,88 @@ function ciStatusNote(status) {
   );
 }
 
+/* The PSIS k̂ verdict on a variational fit (engine: roadmap S2).
+   `fit_quality: "suspect"` already flags a bad approximation, but it flags an
+   unconverged optimizer with the same word, and the two have different
+   remedies — one is "run the optimizer longer", the other is "this sampler
+   cannot represent this posterior, use the exact one". So k̂ gets its own chip,
+   in three states plus the unknown-status fallback ciStatusNote pioneered: a
+   status this build cannot name is shown verbatim rather than silently treated
+   as fine.
+
+   Every state here is a warning, because a k̂ only exists at all when the fast
+   approximation was deliberately asked for — NUTS is the default and has no
+   k̂. Returns null for `ok` and for a node with no k̂ (a NUTS fit, a formula
+   node): nothing to say is the honest render there, and it is the common
+   case. */
+const KHAT_NOTE = {
+  suspect: {
+    text: "⚠ approximation off",
+    cls: "sign-flag",
+    why: "PSIS k̂ is above 0.5: the ADVI approximation sits measurably away from the posterior it approximates, so the importance ratios against the true posterior have no finite variance. Read this node's intervals as approximate.",
+  },
+  unusable: {
+    text: "⚠ approximation not usable",
+    cls: "sign-flag",
+    why: "PSIS k̂ is above 0.7: the ADVI approximation is not close to the posterior and cannot be corrected by reweighting. Its credible intervals are not evidence about how wide the real ones are. This node was approximated because the run asked for it — re-run without the fast approximation, or re-fit this node with NUTS from the Analyze panel, before relying on it.",
+  },
+  unavailable: {
+    text: "approximation unchecked",
+    cls: "sign-flag",
+    why: "The engine could not compute PSIS k̂ for this fit, so how close the approximation is to the posterior is unknown. That is the absence of a check, not a clean bill of health.",
+  },
+};
+
+function khatNote(status) {
+  if (!status || status === "ok") return null;
+  return (
+    KHAT_NOTE[status] || {
+      text: `approximation check: ${status}`,
+      cls: "sign-flag",
+      why: "This build does not recognise that approximation status, so it is shown verbatim. It is not 'ok' — a newer engine flagged something about the fit behind this node that this UI cannot explain yet.",
+    }
+  );
+}
+
+/* The k̂ verdict as an inline chip (what-if table) and as a block (what-if
+   card). Shared so the table and the card cannot say different things about
+   the same node — the drift that let the export carry component rows the live
+   table lacked.
+
+   Two of the three labels carry their own ⚠ and `unavailable` does not, so
+   anything that prefixes a glyph strips first: `khatLabel` is the one place
+   that decides, and "⚠ ⚠ approximation not usable" is what happens without
+   it. */
+function khatLabel(kn) {
+  return kn.text.replace(/^⚠\s*/, "");
+}
+
+function khatChipHtml(node) {
+  const kn = khatNote(node.khat_status);
+  if (!kn) return "";
+  const title = kn.why + (node.khat_warnings || []).map((w) => `\n\n${w}`).join("");
+  return ` <span class="cause-flag" title="${esc(title)}">${esc(kn.text)}</span>`;
+}
+
+function khatBlockHtml(name, node) {
+  const kn = khatNote(node.khat_status);
+  if (!kn) return "";
+  const body = (node.khat_warnings || []).length
+    ? node.khat_warnings.map((w) => esc(w)).join(" ")
+    : esc(kn.why);
+  return `<div class="wf-warning">⚠ ${esc(khatLabel(kn))} for <code>${esc(name)}</code>: ${body}</div>`;
+}
+
+/* k̂ formatted for display: it ranges over roughly (−1, ∞) and the demo trees
+   produce values from −0.79 to 10.2, so two decimals everywhere and no
+   thousands separator. A non-finite k̂ never reaches here — the engine
+   withholds it and sends `khat_status: "unavailable"` instead — but a null
+   still does (an `unavailable` fit, whose k̂ is null by construction), and a
+   literal "null" printed as a diagnostic would be worse than silence. */
+function fmtKhat(k) {
+  return typeof k === "number" && Number.isFinite(k) ? k.toFixed(2) : null;
+}
+
 /* Trend and seasonal rows for a posterior node's attribution table. They are
    part of the arithmetic — `unexplained = gap − Σcontributions − trend −
    seasonal` — so a table without them does not reconcile to the gap and hands
@@ -1255,6 +1369,12 @@ function buildRcaReportHtml(res, treePng, stripPng) {
       bits.push(`${node.grain} grain, snapped to ${ew.reference.n_periods}+${ew.analysis.n_periods} whole ${node.grain}s`);
     }
     if (node.fit_quality === "suspect") bits.push("⚠ suspect fit — the engine's own fit check failed for this node's model");
+    // The approximation verdict travels into the export: "this run used the
+    // fast approximation on this node" is the reason its numbers differ from a
+    // colleague's default run, and a report that omits it makes that look like
+    // drift.
+    const kn = khatNote(node.khat_status);
+    if (kn) bits.push(`${kn.text}${fmtKhat(node.khat) ? ` (PSIS k̂ ${fmtKhat(node.khat)})` : ""}`);
     if (node.sign_warnings && node.sign_warnings.length) bits.push("⚠ learned sign contradicts declared expectation");
     if (node.seasonality_warnings && node.seasonality_warnings.length) bits.push("⚠ seasonality unidentifiable from fitted history");
     if (node.likelihood_warnings && node.likelihood_warnings.length) bits.push("⚠ zero-inflated fit window — intervals approximate");
@@ -1283,12 +1403,33 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     if (node.fit_quality === "suspect") {
       out.push(
         "<strong>Suspect fit.</strong> The engine's own fit check failed for this node's model " +
-        "(NUTS: R̂, divergences or effective sample size; ADVI: an ELBO that had not settled). " +
+        "(NUTS: R̂, divergences or effective sample size; ADVI: an ELBO that had not settled, " +
+        "or a PSIS k̂ saying the approximation is far from the posterior). " +
         "The contributions in this section rest on that fit.",
       );
     }
     (node.seasonality_warnings || []).forEach((w) => out.push(esc(w)));
     (node.likelihood_warnings || []).forEach((w) => out.push(esc(w)));
+    // Printed in full, not as a tooltip: whether these intervals came from a
+    // rejected approximation or from one the engine could not check is the
+    // single fact that decides how much of this section a reader should act
+    // on. Every k̂ state is a warning now — a k̂ exists only where the run
+    // asked for the approximation — so these join `out` rather than needing a
+    // second, un-glyphed channel beside it. Through `khatLabel`, because `out`
+    // stamps its own ⚠ and two of the three labels already carry one.
+    const knFull = khatNote(node.khat_status);
+    if (knFull) {
+      // `out`'s renderer stamps its own ⚠, and two of the three k̂ labels
+      // already carry one, so the label is stripped rather than doubled — a
+      // "⚠ ⚠" in the one place the report is read without its author is the
+      // fifth rule's failure mode in miniature.
+      out.push(
+        `<strong>${esc(khatLabel(knFull))}` +
+          `${fmtKhat(node.khat) ? ` (PSIS k̂ = ${fmtKhat(node.khat)})` : ""}.</strong> ` +
+          esc(knFull.why),
+      );
+      (node.khat_warnings || []).forEach((w) => out.push(esc(w)));
+    }
     return out.map((t) => `<p class="warn">⚠ ${t}</p>`).join("");
   };
 
@@ -2559,8 +2700,8 @@ function renderMetricTab(name, data) {
       <div class="analyze-row">
         <label for="an-method">Method</label>
         <select id="an-method">
+          <option value="nuts">NUTS — exact (default)</option>
           <option value="advi">ADVI — fast, approximate</option>
-          <option value="nuts">NUTS — slow, exact</option>
         </select>
         ${hintHTML("method")}
       </div>
@@ -2742,8 +2883,23 @@ function renderPosterior(name, data) {
   if (typeof dx.min_ess_bulk === "number" && Number.isFinite(dx.min_ess_bulk)) {
     bits.push(`min ESS ${Math.round(dx.min_ess_bulk).toLocaleString()}`);
   }
+  // PSIS k̂ (roadmap S2), the one diagnostic here that measures the
+  // approximation rather than the sampler. It belongs beside R̂/ESS because it
+  // answers the question those cannot: R̂ says the chains agree, k̂ says how far
+  // the thing they agree on is from the posterior. Rendered with its band, so
+  // the number is never left for the reader to threshold from memory.
+  if (typeof dx.khat === "number" && Number.isFinite(dx.khat)) {
+    const st = dx.khat_status;
+    const cls = st === "ok" ? "ok" : "warn";
+    const band =
+      st === "ok" ? "close to the posterior"
+        : st === "suspect" ? "measurably off"
+        : st === "unusable" ? "not usable"
+        : esc(String(st));
+    bits.push(`PSIS k̂ = <span class="${cls}">${dx.khat.toFixed(2)}</span> (${band})`);
+  }
   // The engine's own verdict on the fit. It is computed for every fit — NUTS
-  // thresholds R̂/divergences/ESS, ADVI checks whether the ELBO settled — and
+  // thresholds R̂/divergences/ESS, ADVI checks the ELBO *and* PSIS k̂ — and
   // was rendered nowhere in this UI, so a model the engine itself called
   // `suspect` looked exactly like one it was happy with. UC4's whole job is
   // telling a healthy fit from a broken one; a verdict the engine reached and
@@ -2751,8 +2907,10 @@ function renderPosterior(name, data) {
   let verdict = "";
   if (dx.fit_quality === "suspect") {
     verdict = `<div class="diag"><span class="warn">⚠ The engine flagged this fit as suspect.</span>
-      ${dx.method === "advi"
-        ? "The ADVI objective (the ELBO) had not settled by the end of optimization, so the approximation may not have converged on anything."
+      ${dx.method === "advi" || dx.method === "fullrank_advi"
+        ? (dx.khat_status === "unusable" || dx.khat_status === "suspect"
+          ? `Its PSIS k̂ is ${esc(fmtKhat(dx.khat) || "above the threshold")}: the approximation sits away from the posterior it approximates, so its credible intervals are not a measurement of the real ones. Re-run this metric with NUTS.`
+          : "The ADVI objective (the ELBO) had not settled by the end of optimization, so the approximation may not have converged on anything.")
         : "One of R̂, the divergence count or the effective sample size crossed the engine's threshold."}
       Numbers derived from this fit — coefficients, intervals, and any RCA contribution through this node — inherit that.</div>`;
   } else if (dx.fit_quality === "ok") {
@@ -2766,10 +2924,15 @@ function renderPosterior(name, data) {
   let diag = "";
   if (bits.length) {
     diag = `<div class="diag">${bits.join(" · ")} ${hintHTML("diagnostics")}</div>${hintSlot("diagnostics")}`;
-  } else if (dx.method === "advi") {
-    diag = `<div class="diag">ADVI approximation — <span class="warn">no convergence
-      diagnostics</span>; R̂, divergences and ESS are MCMC-only. Re-run with NUTS to
-      check the fit. ${hintHTML("diagnostics")}</div>${hintSlot("diagnostics")}`;
+  } else if (dx.method === "advi" || dx.method === "fullrank_advi") {
+    // Reached only when the PSIS check could not run either (`khat_status:
+    // "unavailable"`), because a computed k̂ puts a bit in `bits`. So this is
+    // now the genuinely unchecked case, and it says exactly that.
+    diag = `<div class="diag">ADVI approximation — <span class="warn">unchecked</span>:
+      R̂, divergences and ESS are MCMC-only, and the PSIS k̂ check could not be computed
+      for this fit either. That is the absence of a check, not a clean bill of health.
+      Re-run with NUTS to fit this metric exactly.
+      ${hintHTML("diagnostics")}</div>${hintSlot("diagnostics")}`;
   } else if (summary) {
     // A fit exists but reported no diagnostics and no method. Saying nothing
     // here is the exact failure the ADVI branch above was written to fix.
@@ -2860,7 +3023,12 @@ async function runRCA() {
   btn.disabled = true;
   const runId = startRunProgress("resolving");
   try {
-    const qs = new URLSearchParams({ ...win, run_id: runId }).toString();
+    // `inference_method` is deliberately *not* in the deep link below: the
+    // link's job is to replay an analysis, and the same windows under either
+    // sampler are the same analysis asked at different precision. A shared
+    // link therefore always replays at the default, which is the exact one.
+    const method = ($("rca-method") || {}).value || "nuts";
+    const qs = new URLSearchParams({ ...win, inference_method: method, run_id: runId }).toString();
     state.slices = {}; // a new analysis invalidates any slice of the old one
     state.rca = await api(treePath(`/rca/${encodeURIComponent(target)}?${qs}`), { method: "POST" });
     // The resolved reference comes back either way; reflect it in the inputs
@@ -3465,8 +3633,16 @@ function renderRcaTab() {
       // engine itself flagged looked exactly like one it was happy with.
       const fitNote2 =
         node.fit_quality === "suspect"
-          ? ` · <span class="sign-flag" title="The engine's own fit check failed for this node's model — for NUTS that is R̂, divergences or effective sample size; for ADVI it is an ELBO that had not settled. The contributions below rest on this fit.">⚠ suspect fit</span>`
+          ? ` · <span class="sign-flag" title="The engine's own fit check failed for this node's model — for NUTS that is R̂, divergences or effective sample size; for ADVI it is an ELBO that had not settled, or a PSIS k̂ saying the approximation is far from the posterior. The contributions below rest on this fit.">⚠ suspect fit</span>`
           : "";
+      // The approximation check, beside the convergence check and never folded
+      // into it: they fail for different reasons and have different remedies,
+      // and only this one says "the sampler you chose cannot represent this
+      // posterior". Absent entirely on the NUTS default, which is the point.
+      const kn = khatNote(node.khat_status);
+      const khatFlag = kn
+        ? ` · <span class="${kn.cls}" title="${esc(kn.why + (fmtKhat(node.khat) ? `\n\nPSIS k̂ = ${fmtKhat(node.khat)}.` : "") + (node.khat_warnings && node.khat_warnings.length ? "\n\n" + node.khat_warnings.join("\n\n") : ""))}">${esc(kn.text)}${fmtKhat(node.khat) ? ` (k̂ ${fmtKhat(node.khat)})` : ""}</span>`
+        : "";
       const signNote =
         node.sign_warnings && node.sign_warnings.length
           ? ` · <span class="sign-flag" title="${esc(node.sign_warnings.join("\n\n"))}">⚠ learned sign contradicts expectation</span>`
@@ -3573,7 +3749,7 @@ function renderRcaTab() {
       }
       return `
         <div class="attr-block">
-          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${fitNote2}${signNote}${seasNote}${zeroNote}</span></h4>
+          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${fitNote2}${khatFlag}${signNote}${seasNote}${zeroNote}</span></h4>
           <table class="data-table">
             ${header}
             ${rows}
@@ -3807,6 +3983,14 @@ function renderWhatifTab() {
       <h3>Scenario</h3>
       ${items || '<p class="placeholder">Empty — adjust a metric or add an assumption.</p>'}
       <div class="wf-row" style="margin-top:10px">
+        <label for="wf-method">Fits</label>
+        <select id="wf-method">
+          <option value="nuts"${w.method === "advi" ? "" : " selected"}>NUTS — exact (default)</option>
+          <option value="advi"${w.method === "advi" ? " selected" : ""}>ADVI — fast, approximate</option>
+        </select>
+      </div>
+      <p class="control-note" id="wf-method-note"></p>
+      <div class="wf-row" style="margin-top:10px">
         <button id="wf-run" class="primary" ${w.interventions.length + w.assumptions.length ? "" : "disabled"}>Run simulation</button>
         <button id="wf-clear" title="Remove all adjustments and assumptions (and any result)">Clear scenario</button>
       </div>
@@ -3838,6 +4022,14 @@ function wireWhatifEvents() {
     if (w.adjusting) renderAdjustPanel(w.adjusting);
   });
   on("wf-run", "click", () => runWhatif());
+  // The sampler control is the RCA tab's, on its peer surface. A scenario
+  // propagates every fitted slope downstream, so if anything it matters more
+  // here — leaving one of the two orchestrators without the choice is the
+  // meta-defect the four rules exist for, one layer up in the UI.
+  wireMethodNote("wf-method", "wf-method-note", "scenario");
+  on("wf-method", "change", (e) => {
+    state.whatif.method = e.target.value;
+  });
   on("wf-clear", "click", clearWhatif);
   on("wf-clear-result", "click", clearWhatifResult);
   on("wf-a-add", "click", addAssumption);
@@ -4078,7 +4270,13 @@ async function runWhatif() {
   if (btn) btn.disabled = true;
   const runId = startRunProgress("resolving");
   try {
-    state.whatif.result = await api(treePath(`/simulate?run_id=${encodeURIComponent(runId)}`), {
+    // Not in the deep link, for the same reason as the RCA tab's: a shared
+    // scenario replays at the default, which is the exact sampler.
+    const qs = new URLSearchParams({
+      inference_method: state.whatif.method,
+      run_id: runId,
+    }).toString();
+    state.whatif.result = await api(treePath(`/simulate?${qs}`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(scenario),
@@ -4294,9 +4492,9 @@ function renderWhatifResults() {
           bci ? ` · baseline belief [${fmt(bci[0])}, ${fmt(bci[1])}]` : ""
         }</div>${
           node.fit_quality === "suspect"
-            ? `<div class="wf-warning">⚠ The engine flagged the model behind <code>${esc(name)}</code> as suspect (ADVI: the ELBO had not settled; NUTS: R̂ / divergences / ESS over threshold). This outcome is propagated through that fit.</div>`
+            ? `<div class="wf-warning">⚠ The engine flagged the model behind <code>${esc(name)}</code> as suspect (ADVI: the ELBO had not settled, or PSIS k̂ says the approximation is far from the posterior; NUTS: R̂ / divergences / ESS over threshold). This outcome is propagated through that fit.</div>`
             : ""
-        }
+        }${khatBlockHtml(name, node)}
         ${waterfallHtml(name, node, labelFor)}
       </div>`;
     })
@@ -4312,9 +4510,9 @@ function renderWhatifResults() {
       return `<tr>
         <td><code>${esc(n)}</code>${node.status === "intervened" ? ' <span class="chip lag">⊙ set</span>' : ""}${node.extrapolation && node.extrapolation.flag ? " ⚠" : ""}${
           node.fit_quality === "suspect"
-            ? ' <span class="cause-flag" title="The engine flagged the model behind this node as suspect — for ADVI, an ELBO that had not settled; for NUTS, R̂ / divergences / ESS over threshold. This row is propagated through that fit.">⚠ suspect fit</span>'
+            ? ' <span class="cause-flag" title="The engine flagged the model behind this node as suspect — for ADVI, an ELBO that had not settled or a PSIS k̂ far from the posterior; for NUTS, R̂ / divergences / ESS over threshold. This row is propagated through that fit.">⚠ suspect fit</span>'
             : ""
-        }</td>
+        }${khatChipHtml(node)}</td>
         <td class="num">${fmt(node.baseline)} → ${fmt(node.simulated)}${
           node.window_aggregate ? `<br><span class="muted">${windowBasisHtml(node)}</span>` : ""
         }</td>
@@ -4471,8 +4669,30 @@ function initControls() {
 
   $("run-rca").addEventListener("click", runRCA);
   $("clear-rca").addEventListener("click", clearRCA);
+  wireMethodNote("rca-method", "rca-method-note", "run");
   initShareMenu();
   validateWindows();
+}
+
+/* What the sampler choice costs, said where the choice is made — the same
+   contract as `wireAnalyzeNote`. The ADVI line has to name the *consequence*
+   and not only the speed: roadmap S2 measured mean-field failing its PSIS
+   check on essentially every real node here and moving published point
+   estimates by tens of percent, so a note that said only "faster" would be
+   selling the trade on one of its two terms. */
+function wireMethodNote(selId, noteId, what) {
+  const sel = $(selId),
+    note = $(noteId);
+  if (!sel || !note) return;
+  const paint = () => {
+    note.textContent =
+      sel.value === "nuts"
+        ? `Exact MCMC for every node this ${what} has to fit. A minute or more per learned node on a cold cache; cached fits are reused.`
+        : "Mean-field approximation — seconds instead of minutes, and measurably wrong on this model: it fails the PSIS k̂ check on nearly every real node and can move a published estimate by tens of percent. Each fitted node reports its k̂. Use it to triage a wide tree, not to quote a number.";
+    note.className = sel.value === "nuts" ? "control-note" : "control-note warn";
+  };
+  sel.addEventListener("change", paint);
+  paint();
 }
 
 /* Share menu: copy the deep link, download the last RCA response. Wired on

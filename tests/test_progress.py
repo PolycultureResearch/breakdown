@@ -59,7 +59,7 @@ def test_report_swallows_a_broken_consumer():
 def test_rca_reports_real_stages_and_a_real_denominator():
     dag, data = make_tree()
     updates = []
-    run_rca(dag, data, {}, "revenue", **win(REF, AN), advi_draws=300, progress=updates.append)
+    run_rca(dag, data, {}, "revenue", **win(REF, AN), draws=300, progress=updates.append)
 
     stages = [u["stage"] for u in updates]
     assert "fitting" in stages
@@ -75,10 +75,8 @@ def test_progress_does_not_change_the_answer():
     """The callback is passed explicitly and read by nothing, so a run with
     progress must be identical to one without."""
     dag, data = make_tree()
-    quiet = run_rca(dag, data, {}, "revenue", **win(REF, AN), advi_draws=300)
-    noisy = run_rca(
-        dag, data, {}, "revenue", **win(REF, AN), advi_draws=300, progress=lambda _u: None
-    )
+    quiet = run_rca(dag, data, {}, "revenue", **win(REF, AN), draws=300)
+    noisy = run_rca(dag, data, {}, "revenue", **win(REF, AN), draws=300, progress=lambda _u: None)
     assert quiet == noisy
 
 

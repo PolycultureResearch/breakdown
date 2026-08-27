@@ -166,11 +166,41 @@ in this window the tree checks that explanation and declines it. Member
 activity moved the **wrong way for the story**: it is *up* **+2.5%** (25.4% →
 26.0% of members active on an average day) in the four weeks churn spiked. The
 edge's declared sign is negative, so a rise predicts churn *falling* — its
-contribution comes back at **−4.9%** of the gap, pulling against it rather
-than explaining it, and the posterior is unsure of even that sign (interval
-crossing zero, `P(direction)` **0.82**). The obvious wrong story ("our members
-are drifting away") is examined and rejected on screen; what remains is a
+contribution comes back at **−7.7%** of the gap, pulling against it rather
+than explaining it, and the RCA's own interval on that contribution crosses
+zero (`P(direction)` **≈0.84**). The obvious wrong story ("our members are
+drifting away") is examined and rejected on screen; what remains is a
 tier-shaped problem, which the slice below names.
+
+**Two intervals here, and a prospect who opens the Metric tab will see both**,
+so say which is which before they ask. The **coefficient** β is about **−0.036**
+with a 95% HDI of roughly **[−0.06, −0.013]** — clear of zero. (These come off
+an MCMC fit, so read them as "about"; the interval's far end moves in its last
+digit between machines. What does not move is that it stays clear of zero, and
+that is the claim.) The tree is *sure the edge
+exists* and sure of its direction: disengagement really does drive churn in
+this business. The **contribution** interval is the one that straddles zero,
+because it also carries the uncertainty in how much activity actually moved
+over four weeks, and activity barely moved. That is the honest shape of the
+answer and a better beat than "the model isn't sure": the mechanism is real,
+it just did not fire in this window, and the product distinguishes those two
+things instead of collapsing them. Do not say "the posterior is unsure of the
+sign" — the coefficient's posterior is not, and the screen says so.
+
+*If a prospect asks where those numbers come from:* every fitted node here is
+sampled with full MCMC (NUTS), which is breakdown's default and the reason an
+RCA takes the minute it takes. The Metric tab shows `max R̂ · divergences ·
+min ESS` and no PSIS k̂ at all, because there is no approximation to check.
+
+That default was a decision, and `customer_churn_rate` is the node that made
+the case. Run the same window with the fast mean-field approximation
+(`?inference_method=advi`) and it scores PSIS k̂ **1.26**, well past the 0.7
+bar — and it reports this same contribution as **−4.9%** with β's HDI at
+[−0.053, **+0.005**]. A point estimate a third too small *and* a coefficient
+interval that fails to exclude zero where the exact one does. The fast answer
+was wrong in exactly the direction that would have weakened this beat, and
+nothing but k̂ could tell. So the fast path is opt-in, and when you take it
+every node it touches shows its k̂ beside the numbers.
 
 *Worth knowing if a prospect presses on it:* this is a real edge declining a
 real window, not an edge too weak to say anything either way. The generator
@@ -262,8 +292,13 @@ learned parents, the ones a subscription company argues about in every
 retro: did they *activate* (upload their first work), and how many days did
 they actually use the trial. In the window: `trial_activation_rate` **+35.9%**,
 `trial_days_active` **+76.1%**, conversion **+40.2%** — and the attribution
-on `trial_conversion_rate` hands **70.7%** of the gap to activation with
-`P(direction)` **0.998** and an interval clear of zero. The story reads
+on `trial_conversion_rate` hands **about 70%** of the gap to activation with
+`P(direction)` **0.998** and an interval clear of zero. (Say "about", and mean
+it: this is one half of a deliberately collinear pair, so it is the number the
+posterior ridge is least sure of — the same seeded analysis measures anywhere
+from 68% to 70% depending on the machine's numeric library. What does not move
+is that the interval stays clear of zero, and that activation carries more of
+the gap than days-active does. Those are the claims.) The story reads
 straight off the screen: *the revamp moved activation, and conversion
 followed.*
 

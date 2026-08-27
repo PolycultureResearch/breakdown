@@ -91,6 +91,9 @@ applying the right decomposition to each:
 - whatever the modeled parents don't account for is reported as
   **`unexplained`** — a first-class finding, not a residual swept under a rug.
 
+The first analysis fits models on demand with exact MCMC and can take a minute
+or more per learned node; fits are cached, so everything after it is fast.
+
 Each piece is also addressable on its own when you want to inspect it:
 `POST /analyze/{name}` fits and returns one metric's posterior (trend,
 seasonality, coefficients), and `GET /shapley/{name}` decomposes one formula

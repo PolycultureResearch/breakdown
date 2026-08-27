@@ -28,7 +28,7 @@ every subset of active sources, so per-source contributions sum exactly to the
 node's point delta, with interactions through nonlinear formulas apportioned.
 
 Like `run_rca`, this module is stateless: the caller passes its trace cache,
-keyed by `(name, fit_end)`, and on-demand ADVI fits are added to it in place.
+keyed by `(name, fit_end)`, and on-demand fits are added to it in place.
 The fit window runs through `baseline_end` — the baseline is "current normal",
 not an anomaly, so nothing is excluded.
 
@@ -55,7 +55,10 @@ import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from breakdown.engine.model import fit_metric
+from breakdown.engine.model import (
+    cached_fit_is_usable,
+    fit_metric,
+)
 from breakdown.engine.progress import ProgressFn
 from breakdown.engine.progress import report as _report
 from breakdown.engine.rca import (
@@ -271,15 +274,24 @@ def run_scenario(
     data: Optional[pd.DataFrame],
     traces: Dict[Tuple[str, Optional[str]], Any],
     scenario: ScenarioRequest,
-    advi_draws: int = 500,
+    inference_method: str = "nuts",
+    draws: int = 500,
     n_draws: int = _N_DRAWS,
     progress: Optional[ProgressFn] = None,
 ) -> Dict[str, Any]:
     """Simulate a scenario and return the `POST /simulate` response shape.
 
     `traces` is the caller's cache, keyed by `(metric name, fit_end)` ->
-    FitResult. Probabilistic nodes on affected paths without a cached trace
-    are fit with ADVI on data through `baseline_end` and added to it.
+    FitResult. Probabilistic nodes on affected paths without a usable cached
+    trace are fitted on data through `baseline_end` and added to it.
+
+    `inference_method` defaults to `"nuts"` and carries the same meaning and
+    the same reasoning as it does on `run_rca` — a scenario propagates every
+    fitted slope downstream, so an approximation that misstates one is a wrong
+    number at every node below it. `"advi"` stays available for triage speed,
+    with PSIS k-hat reported on each node it fits. `draws` is the posterior
+    draw count (per chain under NUTS); `n_draws` is the separate count of
+    Monte-Carlo propagation draws through the DAG.
 
     **`data=None` selects cold-start mode** (a tree with no data): baselines come
     from the YAML `baseline` declarations, coefficients are sampled from the
@@ -492,18 +504,26 @@ def run_scenario(
         parents = list(dag.predecessors(node))
         if parents and not defn.formula and set(parents) & affected:
             needs_beta.add(node)
-            if not cold_start and (node, fit_end_key) not in traces:
-                to_fit.append(node)
+            if cold_start:
+                continue
+            cached = traces.get((node, fit_end_key))
+            if cached is not None and cached_fit_is_usable(cached, inference_method):
+                continue
+            to_fit.append(node)
 
+    # Same policy as `run_rca`, imported from the same helper so the two cannot
+    # drift: the sampler the caller asked for is the sampler that runs, and a
+    # cached fit is reused only when it is at least as good as the one the
+    # request would produce.
     for i, node in enumerate(to_fit, 1):
         _report(progress, stage="fitting", metric=node, current=i, total=len(to_fit))
         try:
-            traces[(node, fit_end_key)] = fit_metric(
+            fit = fit_metric(
                 dag,
                 data,
                 node,
-                draws=advi_draws,
-                inference_method="advi",
+                draws=draws,
+                inference_method=inference_method,
                 fit_end=fit_end_key,
                 random_seed=0,
             )
@@ -530,6 +550,7 @@ def run_scenario(
                 "missing. Widen the window so the node varies, or intervene "
                 "somewhere that does not route through it."
             ) from e
+        traces[(node, fit_end_key)] = fit
 
     _report(progress, stage="simulating", total=len(to_fit))
 
@@ -721,6 +742,8 @@ def run_scenario(
                 "relative_delta": 0.0,
                 "prob_direction": None,
                 "fit_quality": None,
+                "khat_status": None,
+                "khat_warnings": None,
                 "extrapolation": {"flag": False, **hist},
                 "contributions": [],
             }
@@ -792,8 +815,19 @@ def run_scenario(
                 )
 
         fit_quality = None
+        khat_status = None
+        khat_warnings = None
         if not cold_start and node in needs_beta:
-            fit_quality = traces[(node, fit_end_key)].diagnostics.get("fit_quality")
+            dx = traces[(node, fit_end_key)].diagnostics
+            fit_quality = dx.get("fit_quality")
+            # Roadmap S2's verdict on the approximation this node's slope came
+            # from, and null on the NUTS default (NUTS is not an
+            # approximation). See `_node_out` in rca.py for the vocabulary; the
+            # numeric k-hat stays in the fit's own diagnostics
+            # (GET /metrics/{name}) rather than on every scenario node, because
+            # what a scenario reader needs is the verdict.
+            khat_status = dx.get("khat_status")
+            khat_warnings = dx.get("khat_warnings")
 
         contribs = [
             {"source": sid, "estimate": est}
@@ -823,6 +857,8 @@ def run_scenario(
             # shared helper draws that line.
             **direction_fields(d, key="prob_direction", n_effective=n_effective),
             "fit_quality": fit_quality,
+            "khat_status": khat_status,
+            "khat_warnings": khat_warnings,
             "extrapolation": {"flag": bool(flag), **hist},
             "contributions": contribs,
         }

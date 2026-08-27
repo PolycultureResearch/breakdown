@@ -13,7 +13,7 @@ from breakdown.engine.model import (
     summarize_trace,
 )
 from breakdown.parser import Parser, Seasonality
-from tests.synthetic import generate_mock_data
+from tests.synthetic import generate_mock_data, win
 
 SIMPLE_YAML = """
 metrics:
@@ -722,16 +722,32 @@ def test_nuts_diagnostics_ok_on_well_behaved_data():
 
 
 def test_advi_diagnostics_present():
-    """ADVI fits report a fit_quality verdict and the recent ELBO movement."""
+    """ADVI fits report both checks: the optimizer's, and the approximation's.
+
+    `elbo_drop` says whether the optimizer settled; `khat` / `khat_status` say
+    how far from the posterior it settled (roadmap S2). The second is the one
+    the intervals depend on, so it is present on every variational fit, and
+    `khat` is a finite float or is withheld under a named status — never a NaN
+    on its way to an encoder.
+    """
     parser = Parser(SIMPLE_YAML)
     data = generate_mock_data(n_days=50)
 
-    result = fit_metric(parser.dag, data, "order_count", draws=200, inference_method="advi")
+    result = fit_metric(
+        parser.dag, data, "order_count", draws=200, inference_method="advi", random_seed=0
+    )
 
     d = result.diagnostics
     assert d["method"] == "advi"
     assert d["fit_quality"] in ("ok", "suspect")
     assert "elbo_drop" in d and isinstance(d["elbo_drop"], float)
+    assert d["khat_status"] in ("ok", "suspect", "unusable", "unavailable")
+    if d["khat_status"] == "unavailable":
+        assert d["khat"] is None
+    else:
+        assert isinstance(d["khat"], float) and np.isfinite(d["khat"])
+    # `ok` is the only band that travels without an explanation attached.
+    assert ("khat_warnings" in d) == (d["khat_status"] != "ok")
 
 
 # --- Grain-aware fitting (1.7 phase 3) ---
@@ -1148,3 +1164,283 @@ def test_zero_inflated_fit_carries_likelihood_warnings():
 
     clean = fit_metric(parser.dag, data, "daily_sessions", draws=100, tune=100)
     assert "likelihood_warnings" not in clean.diagnostics
+
+
+# --- PSIS k-hat: does the approximation match the posterior? (roadmap S2) ---
+#
+# The ELBO check answers "did the optimizer stop?"; these answer "did it stop
+# anywhere near the posterior?". The tests below need a *failing* case above
+# all — a diagnostic that has never said no is not evidence that it can.
+
+RIDGE_YAML = """
+metrics:
+  - name: x1
+    source: dbt.metric.x1
+  - name: x2
+    source: dbt.metric.x2
+  - name: y
+    source: dbt.metric.y
+    parents: [x1, x2]
+"""
+
+
+def _ridge_frame(n: int = 60, seed: int = 7) -> pd.DataFrame:
+    """Two near-collinear drifting parents: the posterior is a ridge.
+
+    `x2` is `x1` plus a little noise, so the data pins the *sum* of the two
+    coefficients tightly and says almost nothing about the split — and the
+    split is exactly what RCA reports. A factorized (mean-field) approximation
+    cannot represent a diagonal ridge at all: it collapses to an axis-aligned
+    blob somewhere on it. This is the geometry roadmap S4 warns about and the
+    one white-paper weakness #1 is about, built small enough to fit in a test.
+    """
+    rng = np.random.default_rng(seed)
+    x1 = 100 + np.cumsum(rng.normal(0, 3, n))
+    x2 = x1 * 0.5 + rng.normal(0, 0.4, n)
+    y = 1.0 * x1 + 0.5 * x2 + rng.normal(0, 1.0, n)
+    return pd.DataFrame(
+        {"date": pd.date_range("2024-01-01", periods=n), "x1": x1, "x2": x2, "y": y}
+    )
+
+
+def test_psis_khat_passes_an_approximation_that_is_exact():
+    """The diagnostic must be able to say yes, or its no means nothing.
+
+    Independent standard normals with no likelihood: the posterior *is* the
+    prior, a product of independent Gaussians, which is exactly the family
+    mean-field ADVI optimizes over. So q converges to p, the importance ratios
+    are near-constant, and k-hat lands well inside the good band. Thirty
+    dimensions, to rule out "k-hat just fails in high dimension" as the
+    explanation for the failing cases below.
+    """
+    import pymc as pm
+
+    from breakdown.engine.model import _psis_khat
+
+    with pm.Model():
+        pm.Normal("z", 0.0, 1.0, shape=30)
+        approx = pm.fit(n=20_000, method="advi", progressbar=False, random_seed=0)
+
+    khat, status, reason = _psis_khat(approx, n_draws=1000, random_seed=0)
+    assert reason is None
+    assert status == "ok", f"k-hat {khat} on an exactly-representable posterior"
+    assert khat <= 0.5
+
+
+def test_psis_khat_catches_an_approximation_that_is_wrong():
+    """Neal's funnel: the textbook posterior a factorized Gaussian cannot fit.
+
+    `x ~ Normal(0, exp(v/2))` with `v ~ Normal(0, 3)` has a neck whose width
+    depends on `v`, so no product of independent Gaussians is close to it at
+    both ends. The optimizer converges perfectly well onto the wrong thing —
+    which is the entire failure mode S2 exists to detect — and k-hat must
+    refuse it.
+    """
+    import pymc as pm
+    import pytensor.tensor as pt
+
+    from breakdown.engine.model import _psis_khat
+
+    with pm.Model():
+        v = pm.Normal("v", 0.0, 3.0)
+        pm.Normal("x", 0.0, pt.exp(v / 2), shape=20)
+        approx = pm.fit(n=20_000, method="advi", progressbar=False, random_seed=0)
+
+    khat, status, reason = _psis_khat(approx, n_draws=1000, random_seed=0)
+    assert reason is None
+    assert status == "unusable", f"k-hat {khat} on Neal's funnel"
+    assert khat > 0.7
+
+
+def test_khat_flags_a_fit_whose_elbo_check_passed():
+    """The whole point of S2, tested as a composition.
+
+    On real trees the two checks disagree in both directions (a White Cube node
+    fits with a clean ELBO and k-hat ~1.0), but the ELBO verdict depends on the
+    noise in one stochastic loss trace, which is not a thing to assert on. So
+    the converged-optimizer half is supplied directly: the real fitted
+    approximation, wearing the ELBO history of an optimizer that plainly
+    settled. If `fit_quality` still came back "ok" there, it would be exactly
+    as uninformative as it was before this landed.
+    """
+    import pymc as pm
+    import pytensor.tensor as pt
+
+    from breakdown.engine.model import _advi_diagnostics
+
+    with pm.Model():
+        v = pm.Normal("v", 0.0, 3.0)
+        pm.Normal("x", 0.0, pt.exp(v / 2), shape=20)
+        approx = pm.fit(n=20_000, method="advi", progressbar=False, random_seed=0)
+
+    class _Settled:
+        """The fit, with a loss trace that stopped moving 2,000 steps ago."""
+
+        def __init__(self, inner):
+            self._inner = inner
+            rng = np.random.default_rng(0)
+            self.hist = 100.0 + rng.normal(0, 1.0, 2000)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    settled = _Settled(approx)
+    d = _advi_diagnostics(settled, method="advi", target="funnel", random_seed=0)
+
+    # The ELBO check on its own is satisfied: the loss is stationary.
+    assert abs(d["elbo_drop"]) < 0.5 * float(np.std(settled.hist[-200:]))
+    # And the fit is still refused, on the evidence that actually matters.
+    assert d["khat_status"] == "unusable" and d["khat"] > 0.7
+    assert d["fit_quality"] == "suspect"
+    (msg,) = d["khat_warnings"]
+    assert "funnel" in msg and "k-hat" in msg and "NUTS" in msg
+
+
+def test_a_khat_that_cannot_be_computed_is_withheld_not_zeroed(monkeypatch):
+    """Rule 3, on the number this change adds.
+
+    A k-hat is a float on its way to `allow_nan=False` JSON and to
+    `round_floats`, which turns a NaN into `null` — an approximation verdict of
+    nothing, sitting beside the intervals it is supposed to qualify. So a
+    k-hat that cannot be computed is withheld under a named status, and the
+    fit says it was *unchecked* rather than saying nothing at all.
+    """
+    import pymc as pm
+
+    import breakdown.engine.model as model
+
+    with pm.Model():
+        pm.Normal("z", 0.0, 1.0, shape=5)
+        approx = pm.fit(n=2_000, method="advi", progressbar=False, random_seed=0)
+
+    real = model._advi_diagnostics(approx, method="advi", target="m", random_seed=0)
+    # The reported number, when there is one, is a real float — never a NaN or
+    # an infinity dressed up as a measurement.
+    assert real["khat"] is None or np.isfinite(real["khat"])
+
+    def _boom(*a, **k):
+        raise RuntimeError("pytensor said no")
+
+    monkeypatch.setattr(model, "_psis_khat", _boom)
+    d = model._advi_diagnostics(approx, method="advi", target="m", random_seed=0)
+
+    assert d["khat"] is None
+    assert d["khat_status"] == "unavailable"
+    # Unchecked is not failed: a missing k-hat does not override the ELBO
+    # verdict. But it is not silence either.
+    (msg,) = d["khat_warnings"]
+    assert "could not be checked" in msg and "pytensor said no" in msg
+
+
+def test_fit_metric_never_substitutes_the_sampler_asked_for():
+    """The policy k-hat's measurement forced: a rejected approximation is
+    *reported*, never silently replaced.
+
+    `inference_method` is a promise about which sampler runs. An earlier draft
+    of S2 re-fitted a k-hat-rejected node with NUTS behind the caller's back;
+    the measurement then showed mean-field failing on essentially every real
+    node, which made "escalation" the common path rather than a rescue. The
+    honest response was to make NUTS the default everywhere and leave the fast
+    path fast — so this asserts the substitution does not happen in either
+    direction.
+    """
+    parser = Parser(RIDGE_YAML)
+    frame = _ridge_frame()
+
+    approx = fit_metric(parser.dag, frame, "y", draws=200, inference_method="advi", random_seed=0)
+    assert approx.inference_method == "advi"
+    assert approx.diagnostics["khat_status"] == "unusable"
+    assert np.isfinite(approx.diagnostics["khat"]) and approx.diagnostics["khat"] > 0.7
+    assert approx.diagnostics["fit_quality"] == "suspect"
+    # Rejected, and it says what to do about it rather than doing it.
+    (msg,) = approx.diagnostics["khat_warnings"]
+    assert "inference_method=advi" in msg or "inference_method=nuts" in msg
+
+    exact = fit_metric(
+        parser.dag, frame, "y", draws=200, tune=300, inference_method="nuts", random_seed=0
+    )
+    assert exact.inference_method == "nuts"
+    assert exact.diagnostics["method"] == "nuts"
+    # NUTS is not an approximation, so it carries no k-hat at all. The absence
+    # is the honest render: an `unavailable` here would say "we tried to check
+    # and could not", which is a different and worse fact.
+    assert "khat" not in exact.diagnostics
+    assert "khat_status" not in exact.diagnostics
+    assert "max_rhat" in exact.diagnostics
+
+    # And they are genuinely different posteriors, not two labels on one: the
+    # ridge is exactly where mean-field and MCMC disagree. This is the
+    # measurement that made NUTS the default.
+    def widths(arr):
+        return np.percentile(arr, 97.5, axis=0) - np.percentile(arr, 2.5, axis=0)
+
+    a = widths(approx.trace.posterior["beta_raw"].values.reshape(-1, 2))
+    b = widths(exact.trace.posterior["beta_raw"].values.reshape(-1, 2))
+    assert not np.allclose(a, b, rtol=0.05)
+
+
+def test_run_rca_defaults_to_nuts_and_the_opt_in_is_reachable():
+    """The orchestrators fit exactly, unless asked not to.
+
+    Both call sites moved together — `run_rca` here, `run_scenario` in
+    test_simulate.py — because a default chosen in one file and not its
+    neighbour is the meta-defect the four rules exist for.
+    """
+    from breakdown.engine.rca import run_rca
+
+    parser = Parser(RIDGE_YAML)
+    frame = _ridge_frame(n=90)
+    windows = win(("2024-01-08", "2024-02-04"), ("2024-02-05", "2024-03-03"))
+
+    exact = run_rca(parser.dag, frame, {}, "y", **windows, draws=200)["nodes"]["y"]
+    assert exact["inference_method"] == "nuts"
+    assert exact["khat_status"] is None and exact["khat"] is None
+
+    fast = run_rca(parser.dag, frame, {}, "y", **windows, draws=200, inference_method="advi")[
+        "nodes"
+    ]["y"]
+    assert fast["inference_method"] == "advi"
+    # The opt-in is honest rather than silent: the approximation is published
+    # with the verdict that says not to trust its intervals.
+    assert fast["khat_status"] == "unusable"
+    assert np.isfinite(fast["khat"])
+    assert fast["khat_warnings"]
+
+
+def test_a_cached_approximation_does_not_answer_a_request_for_nuts():
+    """`traces` is shared by every viewer of a process.
+
+    One colleague's deliberate `?inference_method=advi` triage run must not
+    decide the sampler behind everybody else's default analysis of the same
+    window — the payload would then report a method nobody asked for. Reuse is
+    allowed only upward, and `cached_fit_is_usable` is imported by both
+    orchestrators so the rule cannot differ between them.
+    """
+    from breakdown.engine.model import cached_fit_is_usable
+    from breakdown.engine.rca import run_rca
+
+    parser = Parser(RIDGE_YAML)
+    frame = _ridge_frame(n=90)
+    windows = win(("2024-01-08", "2024-02-04"), ("2024-02-05", "2024-03-03"))
+    traces: dict = {}
+
+    fast = run_rca(parser.dag, frame, traces, "y", **windows, draws=200, inference_method="advi")[
+        "nodes"
+    ]["y"]
+    assert fast["inference_method"] == "advi"
+    assert traces[("y", windows["analysis_start"])].inference_method == "advi"
+
+    # The default request re-fits rather than inheriting the approximation...
+    exact = run_rca(parser.dag, frame, traces, "y", **windows, draws=200)["nodes"]["y"]
+    assert exact["inference_method"] == "nuts"
+    assert traces[("y", windows["analysis_start"])].inference_method == "nuts"
+
+    # ...and the reverse is free: an exact fit answers a request for the
+    # approximation, because it is the thing being approximated.
+    reused = run_rca(parser.dag, frame, traces, "y", **windows, draws=200, inference_method="advi")[
+        "nodes"
+    ]["y"]
+    assert reused["inference_method"] == "nuts"
+
+    nuts_fit = traces[("y", windows["analysis_start"])]
+    assert cached_fit_is_usable(nuts_fit, "nuts") and cached_fit_is_usable(nuts_fit, "advi")

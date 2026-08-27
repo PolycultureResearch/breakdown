@@ -314,11 +314,11 @@ DOCS = [
         yaml_blocks=0,
         parsable_yaml_blocks=0,
         skipped_yaml=[],
-        curl_examples=10,
+        curl_examples=11,
         not_replayed={
-            "POST /analyze/order_count?inference_method=nuts&draws=1000": (
-                "NUTS with 1000 draws x 4 chains — same cost, same route as the "
-                "replayed ADVI example"
+            "POST /analyze/order_count?draws=1000": (
+                "the default sampler with 1000 draws x 4 chains — minutes, and the "
+                "same route as the replayed ADVI example"
             ),
         },
         # Replayed on a synthesized single-metric tree rather than the bundled
@@ -906,10 +906,15 @@ def test_mcp_session_names_activation_with_an_honest_split(mcp_session):
 
     by = {c["parent"]: c for c in nodes["trial_conversion_rate"]["contributions"]}
     a, d = by["trial_activation_rate"], by["trial_days_active"]
-    assert a["share_of_gap"] == pytest.approx(0.707, abs=5e-3)
-    assert d["share_of_gap"] == pytest.approx(0.360, abs=8e-3)
-    mcp_doc_prints(a["share_of_gap"])
-    mcp_doc_prints(d["share_of_gap"])
+    # Banded, and deliberately *not* `mcp_doc_prints`-ed. This is the split of a
+    # collinear pair — the quantity a posterior ridge leaves undetermined — and
+    # seeded it measures 0.6804 / 0.6822 / 0.6967 across three numeric stacks.
+    # The doc therefore says "about 70%": a figure three numeric stacks disagree
+    # on by 1.6 points does not get a decimal place. Same
+    # reason the tour writes P(direction) as "≈0.84"; see
+    # tests/test_white_cube_demo.py's module docstring for the measurement.
+    assert a["share_of_gap"] == pytest.approx(0.689, abs=0.015)
+    assert d["share_of_gap"] == pytest.approx(0.377, abs=0.018)
     # The narration's whole argument: one interval clear of zero, one not.
     assert a["ci_95"][0] > 0
     assert a["prob_same_direction"] == pytest.approx(0.998, abs=0.04)
@@ -917,7 +922,7 @@ def test_mcp_session_names_activation_with_an_honest_split(mcp_session):
         "the doc says the days-active interval straddles zero — if it no "
         "longer does, the honest-split paragraph must be rewritten"
     )
-    assert d["prob_same_direction"] == pytest.approx(0.92, abs=0.05)
+    assert d["prob_same_direction"] == pytest.approx(0.89, abs=0.05)
     assert a["share_of_gap"] > d["share_of_gap"]
 
     # "In the tree-wide ranking, activation outranks trial volume itself."

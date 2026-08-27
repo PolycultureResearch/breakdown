@@ -80,7 +80,22 @@ restore the file from git afterwards to keep the reasoning.
   in about a second with the pre-warmed trace cache intact. The prewarm run is
   what keeps the first prospect of the day from paying for the model fits — fits
   are serialized behind a single lock, so a cold multi-node RCA is the one real
-  latency risk in a live pitch.
+  latency risk in a live pitch. **Roadmap S2 (2026-08-22) roughly quadrupled
+  that risk**: every probabilistic node on this tree fails the PSIS k̂ check, so
+  the engine now samples them exactly and a cold RCA takes ~42-46s rather than
+  ~8-11s (measured: story A 10.9s → 42.3s, story B 8.2s → 46.2s, story C 2.2s →
+  9.8s, story D 5.9s → 24.1s). The prewarm is no longer a nicety — run it
+  before every scheduled call.
+- **The tour's engagement beat is read off an exactly-sampled node.** Story B's
+  subtree holds four probabilistic nodes — `sessions`, `trials_started`,
+  `trial_conversion_rate`, `customer_churn_rate` — and mean-field k̂ rejects
+  all four (1.26 / 0.88 / 1.11 / 10.43). Under the NUTS default they are all
+  sampled exactly, which is what makes the beat true: the same
+  `customer_churn_rate` fit under `?inference_method=advi` reports the
+  engagement contribution as −4.9% of the gap instead of −7.7%, with β's HDI
+  failing to exclude zero. Before adding a learned edge to this tree, check the
+  demo tests still see `khat_status: null` on `customer_churn_rate` — a
+  non-null value there means something served the tour an approximation.
 - `min_machines_running = 1` keeps one up rather than letting the app scale to
   zero. Suspend only covers *short* idles; a long-idle machine gets stopped
   outright, and that path measured **16.0s** to first byte on `GET /ui`

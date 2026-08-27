@@ -71,7 +71,12 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
-from breakdown.engine.model import compute_shapley, fit_metric, seasonal_window_delta
+from breakdown.engine.model import (
+    cached_fit_is_usable,
+    compute_shapley,
+    fit_metric,
+    seasonal_window_delta,
+)
 from breakdown.engine.progress import ProgressFn
 from breakdown.engine.progress import report as _report
 from breakdown.formula import eval_formula
@@ -754,6 +759,17 @@ def _node_out(**fields) -> Dict[str, Any]:
         "attribution_method": None,
         "inference_method": None,
         "fit_quality": None,
+        # Roadmap S2. `fit_quality` is the gate ("do not trust this fit as-is");
+        # these are the evidence behind it for a variational fit, the way R-hat
+        # and ESS are for NUTS. `khat` is the PSIS shape parameter and
+        # `khat_status` its band: `ok` (<= 0.5), `suspect` (<= 0.7), `unusable`
+        # (> 0.7) or `unavailable` (could not be computed — an unchecked fit,
+        # not a clean one). All three stay null on a NUTS fit, which is the
+        # default: NUTS is not an approximation, so it has no k-hat, and the
+        # absence of the field is not a missing check.
+        "khat": None,
+        "khat_status": None,
+        "khat_warnings": None,
         "sign_warnings": None,
         "fit_window": None,
         "seasonality_warnings": None,
@@ -1107,16 +1123,27 @@ def run_rca(
     analysis_end: str,
     reference_start: Optional[str] = None,
     reference_end: Optional[str] = None,
-    advi_draws: int = 500,
+    inference_method: str = "nuts",
+    draws: int = 500,
     progress: Optional[ProgressFn] = None,
 ) -> Dict[str, Any]:
     """Attribute `target`'s window-over-window change to its ancestors.
 
     `traces` is the caller's cache, keyed by `(metric name, fit_end)` -> FitResult.
-    Probabilistic nodes in scope without a cached trace are fit with ADVI on data
+    Probabilistic nodes in scope without a usable cached trace are fitted on data
     strictly before `analysis_start` (so the anomaly window is excluded) and added
     to it. A full-window fit (`fit_end=None`) is never reused here — it is
     contaminated by the anomaly for attribution purposes.
+
+    `inference_method` is `"nuts"` — exact MCMC — by default, because roadmap S2
+    measured mean-field ADVI failing the PSIS k-hat check on essentially every
+    real node in this engine, moving *point estimates* by 37-57% and in one
+    demo case turning an interval that excludes zero into one that does not.
+    `"advi"` remains available for triage on a tree where NUTS is genuinely too
+    slow (a wide day-grain tree); every node it fits then carries its k-hat and
+    the warning that goes with it, so the trade is visible in the payload
+    rather than assumed. `draws` is the posterior draw count either way
+    (per chain under NUTS).
 
     Omitting both reference dates uses the default reference window: the
     matched adjacent block before the analysis window. The reference is only
@@ -1202,10 +1229,14 @@ def run_rca(
     for node in sorted(nodes_in_scope):
         defn = dag.nodes[node]["definition"]
         parents = list(dag.predecessors(node))
-        if parents and not defn.formula and (node, analysis_start) not in traces:
-            if scoped[node][2] is None:
-                continue
-            to_fit.append(node)
+        if not parents or defn.formula:
+            continue
+        cached = traces.get((node, analysis_start))
+        if cached is not None and cached_fit_is_usable(cached, inference_method):
+            continue
+        if scoped[node][2] is None:
+            continue
+        to_fit.append(node)
 
     # A node whose own fit raises is recorded and skipped, not propagated: one
     # unfittable node (a parent held flat all fit window has zero variance and
@@ -1213,21 +1244,37 @@ def run_rca(
     # used to abort the whole tree analysis and return nothing. The `try` wraps
     # the single `fit_metric` call and nothing else, so unrelated failures
     # elsewhere in the loop still surface.
+    #
+    # `inference_method` reaches `fit_metric` unchanged — this path never
+    # substitutes a sampler for the one it was asked for, in either direction.
+    # It used to hardcode `"advi"` and then re-fit with NUTS whatever PSIS
+    # rejected; roadmap S2 measured that rejection firing on essentially every
+    # real node, which made the escalation the common case rather than the
+    # rescue, so the default moved to NUTS outright and the escalation went
+    # away with it. A caller who asks for `"advi"` gets ADVI, and gets its
+    # k-hat.
+    #
+    # The write is unconditional and that is safe under the reuse rule above:
+    # a node reaches this loop only when the cache held nothing usable for the
+    # method asked for, so the fit being stored is never worse than the one it
+    # replaces.
     fit_failures: Dict[str, str] = {}
     for i, node in enumerate(to_fit, 1):
         _report(progress, stage="fitting", metric=node, current=i, total=len(to_fit))
         try:
-            traces[(node, analysis_start)] = fit_metric(
+            fit = fit_metric(
                 dag,
                 data,
                 node,
-                draws=advi_draws,
-                inference_method="advi",
+                draws=draws,
+                inference_method=inference_method,
                 fit_end=analysis_start,
                 random_seed=0,
             )
         except ValueError as e:
             fit_failures[node] = str(e)
+            continue
+        traces[(node, analysis_start)] = fit
 
     _report(progress, stage="attributing", total=len(to_fit))
 
@@ -1345,6 +1392,9 @@ def run_rca(
         components = None
         inference_method = None
         fit_quality = None
+        khat = None
+        khat_status = None
+        khat_warnings = None
         sign_warnings = None
         fit_window = None
         seasonality_warnings = None
@@ -1648,6 +1698,9 @@ def run_rca(
             fit = traces[(node, analysis_start)]
             inference_method = fit.inference_method
             fit_quality = fit.diagnostics.get("fit_quality")
+            khat = fit.diagnostics.get("khat")
+            khat_status = fit.diagnostics.get("khat_status")
+            khat_warnings = fit.diagnostics.get("khat_warnings")
             sign_warnings = fit.diagnostics.get("sign_warnings")
             # What the model actually trained on: all loaded whole periods
             # before analysis_start — not the reference window.
@@ -1808,6 +1861,9 @@ def run_rca(
             attribution_method=attribution_method,
             inference_method=inference_method,
             fit_quality=fit_quality,
+            khat=khat,
+            khat_status=khat_status,
+            khat_warnings=khat_warnings,
             sign_warnings=sign_warnings,
             fit_window=fit_window,
             seasonality_warnings=seasonality_warnings,

@@ -166,9 +166,10 @@ Two consequences worth knowing:
   data-dependent. That pragmatic, empirical-Bayes-adjacent choice is what
   makes business-unit priors possible.
 - **`/analyze` defaults to the full window.** The exploratory `POST /analyze/{name}`
-  endpoint fits on all loaded data unless you pass `?fit_end=<date>`. To confirm
-  an RCA node with NUTS on exactly the data RCA used, pass
-  `?fit_end=<analysis_start>&inference_method=nuts`.
+  endpoint fits on all loaded data unless you pass `?fit_end=<date>`. To
+  reproduce an RCA node's fit on exactly the data RCA used, pass
+  `?fit_end=<analysis_start>` — the sampler defaults to NUTS here, as it does
+  on RCA itself.
 
 ### The reference window is not the training window
 
@@ -563,13 +564,74 @@ ship in every cold-start response.
 5. **Window means hide within-window shape.** A spike-and-recover pattern and
    a level shift can have the same window mean. Choose windows that isolate
    the regime you care about, and look at the time-series panel.
-6. **ADVI vs NUTS.** ADVI (the RCA default) is a fast approximation that can
-   understate uncertainty; NUTS is the gold standard and reports convergence
-   diagnostics (R̂ < 1.05 is healthy). Triage with ADVI, confirm with NUTS.
-   This is measured, not hypothetical: on synthetic worlds with a drifting
-   parent, the geometry where the trend and the parent compete to explain
-   the same movement, ADVI's 95% interval is roughly 20% narrower than the
-   NUTS interval on the same data (roadmap S1's benchmark, 2026-08-18).
+6. **NUTS is the default; ADVI is an opt-in, and PSIS k̂ is what keeps that
+   choice honest.** NUTS is exact MCMC and reports convergence diagnostics
+   (R̂ < 1.05 is healthy). ADVI is a mean-field variational approximation:
+   faster, and — on this engine's model — measurably wrong. Every path that
+   fits on your behalf (`POST /rca/{name}`, `POST /simulate`,
+   `POST /analyze/{name}`, and the MCP tools) samples with NUTS unless you
+   pass `?inference_method=advi`.
+
+   **Why the default is not the fast one.** This engine's model carries one
+   latent trend state per fitted period, strongly correlated with its
+   neighbours. A factorized Gaussian cannot represent that, and the
+   measurement is not marginal: against the conventional 0.7 bar, mean-field
+   scored 10.18 / 1.07 / 0.85 / 1.36 on the demo tree's four learned nodes,
+   1.04 on the bundled jaffle tree's one, and 1.26 / 0.88 / 1.11 / 10.43 on a
+   second demo window. The same diagnostic returns 0.31 on a posterior
+   mean-field *can* represent, 0.95 on Neal's funnel and 4.1 on a collinear
+   ridge, so this is the model's geometry rather than a defect in the check.
+   And the cost argument did not hold up either: the 106-metric B2B
+   reference tree — the widest here — contains exactly five probabilistic
+   fits, and fitting all five over the full window measured **31.3s under
+   ADVI against 28.0s under NUTS**. Exact sampling was the *faster* of the
+   two, on four of the five nodes, while ADVI flagged all five `suspect` and
+   NUTS returned four of five `ok`. The approximation does still save time on
+   the shorter windows an RCA fits — but tens of seconds, against every
+   published coefficient. Roadmap S1 (2026-08-18) and S2 (2026-08-22) carry the
+   full measurements.
+
+   **What that buys.** The failure is not only that a rejected approximation's
+   intervals are too narrow; its *coefficients* land in the wrong place, and
+   not by a predictable amount or in a predictable direction. Measured on the
+   demo tree: one contribution moves from −108.2 to −68.8 between the two
+   samplers, another from −0.049 to −0.077 of its target's gap — 37% and 57%,
+   in opposite directions. What is consistent is that the approximation
+   collapses the latent trend's window delta toward zero; the coefficient then
+   absorbs the discrepancy along whichever way that node's trend-vs-β ridge
+   runs. Nothing in the payload lets you correct for it by hand. On one of
+   those edges the coefficient's interval also changes verdict: the
+   approximation's 95% HDI on β straddled zero and the exact fit's excludes
+   it. So a rejected approximation is not reliably *over*-confident — on a
+   ridge it can be under-confident about an effect that is really there.
+
+   **When you do ask for ADVI**, every variational fit is scored with **PSIS
+   k̂** (Yao et al., 2018), which measures how far the approximation sits from
+   the posterior it approximates — not whether the optimizer stopped, which is
+   a different and much weaker question. It appears as `khat` with a band in
+   `khat_status`, on the fit's diagnostics, on every RCA and what-if node,
+   over MCP, and in the UI beside R̂:
+
+   | `khat_status` | k̂ | What it means |
+   |---|---|---|
+   | `ok` | ≤ 0.5 | The approximation is close. Read the intervals normally. |
+   | `suspect` | ≤ 0.7 | Measurably off — the importance ratios have no finite variance. Read the intervals as approximate. |
+   | `unusable` | > 0.7 | Not close, and not fixable by reweighting. **The intervals are not evidence about how wide the real ones are.** |
+   | `unavailable` | — | The check could not run. An unchecked fit, not a clean one. |
+
+   A NUTS fit has **no** `khat_status`, and that absence is not a missing
+   check — it is the absence of anything to check. k̂ never triggers a re-fit:
+   `inference_method` is a promise about which sampler runs, and a request
+   that silently spent 2-20× more than you asked for would be a worse bargain
+   than the one you made. Treat `khat_status: "unusable"` as "this fit says
+   nothing dependable about this node", in either direction, rather than as
+   "these intervals are a bit too tight" — and re-run without
+   `inference_method=advi`, or upgrade one node with
+   `POST /analyze/{name}?fit_end=<analysis_start>&inference_method=nuts`.
+
+   **Reach for ADVI when exact sampling is genuinely impractical** — a wide
+   day-grain tree with many learned edges — and read the k̂ before quoting
+   anything it produced.
 7. **The observation model is Gaussian, and a mostly-zero series breaks it.**
    A series that is exactly zero for a long stretch of its fit window, a
    seasonal business's off-season or a spiky count, converges happily and

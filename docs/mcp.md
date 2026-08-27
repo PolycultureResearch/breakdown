@@ -155,13 +155,13 @@ RCA names.
 > team argues about in every retro. Did trialists activate (upload their
 > first work), and how many days did they use the trial. Both moved.
 > Activation went from 53.5% to 72.7% of each cohort, up 35.9%; days active
-> from 1.31 to 2.32, up 76.1%. The fitted attribution hands 70.7% of the
-> conversion gap to activation, with an interval clear of zero (roughly 0.03
+> from 1.31 to 2.32, up 76.1%. The fitted attribution hands about 70% of the
+> conversion gap to activation, with an interval clear of zero (roughly 0.02
 > to 0.10 points of conversion) and P(direction) 0.998. In the tree-wide
 > ranking, activation outranks trial volume itself.
 >
 > Now the part worth reading out loud. The second driver, days active,
-> carries 36.0% with an interval that straddles zero and P(direction) 0.92.
+> carries about 37% with an interval that straddles zero and P(direction) 0.89.
 > The two measures move together, since an activated trialist is an active
 > one, so the data pins their combined effect much harder than the split
 > between them. The tool says exactly that instead of manufacturing
@@ -203,17 +203,23 @@ reproducing by hand:
 
 - *"Churn jumped this spring. Is it members disengaging, and which customers
   is it?"* The RCA on `customer_churn_rate` clears the engagement theory
-  (a −4.2% contribution: member activity moved *up* that spring, so under the
+  (a −6.7% contribution: member activity moved *up* that spring, so under the
   edge's declared negative sign it pulls against the gap rather than
-  explaining it, and the interval crosses zero) and leaves 102% of the gap in
-  `unexplained` — over 100% precisely because the one parent pulls the other
-  way. On a one-parent node that is the finding, not a failure. The plan
-  slice names the professional tier. The country slice on
-  the rate returns `localization: "long_tail"` — the concentration sits in
-  the `__other__` roll-up rather than in any named country, so the answer is
-  "the tail moved; raise this dimension's `top_k` to see inside it", never
-  a country. Cross-check the dollars-side country slice, which declines to
-  localize at all, before concluding anything about geography.
+  explaining it, and the interval crosses zero at P(direction) 0.81) and
+  leaves 72% of the gap in `unexplained`. On a one-parent node that is the
+  finding, not a failure — the tree has one declared explanation here, it
+  checked it, and most of the move is not it. Those numbers come from NUTS,
+  the default. Re-run the same question with the fast approximation and it
+  reports −4.2% and puts **102%** of the gap in `unexplained`, because
+  mean-field collapses the latent trend's contribution to almost nothing —
+  its PSIS k̂ on that node is 1.26, which is what says so. The plan slice
+  names the professional tier.
+  The country slice on the rate returns `localization: "long_tail"` — the
+  concentration sits in the `__other__` roll-up rather than in any named
+  country, so the answer is "the tail moved; raise this dimension's `top_k`
+  to see inside it", never a country. Cross-check the dollars-side country
+  slice, which declines to localize at all, before concluding anything about
+  geography.
 - *"We can fund one thing next quarter: a retention push we believe cuts
   churn 20%, or 30% more marketing spend. Which is worth more?"*
   `run_whatif` prices the spend lever higher (+$345 against +$161 per week)
@@ -234,8 +240,16 @@ too.
 
 ## Notes
 
-The first `run_rca`/`run_whatif` on a tree fits models on demand (ADVI) and
-can take a minute; fits are cached and shared with the UI. The cache resets
+The first `run_rca`/`run_whatif` on a tree fits models on demand with **NUTS**
+(exact MCMC — see [`docs/model.md`](model.md) for why the fast approximation
+is not the default) and can take a few minutes on a wide or day-grain tree;
+fits are cached and shared with the UI. There is deliberately no
+fast-approximation switch on the MCP tools: an agent asked to narrate numbers
+would reach for it whenever a call felt slow, and it cannot see the k̂
+consequence until it has already narrated. The HTTP routes
+(`POST /rca/{name}?inference_method=advi`, and the same on `/simulate` and
+`/analyze/{name}`) carry that switch, driven by a human who can see what it
+costs. The cache resets
 when `--reload` restarts the process. Set `BREAKDOWN_PUBLIC_URL` if the
 server is reached at anything other than `http://127.0.0.1:<port>` so
 `report_url` links resolve.

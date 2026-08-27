@@ -2,8 +2,8 @@
 
 Fast tests stub FitResults with `az.from_dict` posteriors so coefficients are
 exact and no PyMC sampling runs; constant input data makes window means (and
-therefore deltas) exactly predictable. One slow test at the end exercises the
-real ADVI fit-on-demand path.
+therefore deltas) exactly predictable. One slow test exercises the real
+fit-on-demand path, which samples with NUTS (the default since roadmap S2).
 """
 
 import arviz as az
@@ -61,7 +61,14 @@ def make_data(n: int = 60) -> pd.DataFrame:
 
 def stub_fit(target: str, parents: list, beta_post) -> FitResult:
     """FitResult whose beta_raw posterior is exactly `beta_post` (n_post,) or
-    (n_post, n_parents)."""
+    (n_post, n_parents).
+
+    `inference_method` is load-bearing rather than decorative: `run_scenario`
+    defaults to NUTS and reuses a cached fit only when it is at least as good
+    as the one the request would produce, so a stub labelled `"advi"` is
+    correctly *rejected* and the engine tries to fit the constant series these
+    fixtures use. These stubs stand in for "the fit the engine would have
+    made", and that fit is a NUTS fit."""
     beta = np.asarray(beta_post, dtype=float)
     if beta.ndim == 1:
         beta = beta[:, None]
@@ -74,7 +81,7 @@ def stub_fit(target: str, parents: list, beta_post) -> FitResult:
         y_std=1.0,
         x_stds=None,
         dates=pd.DatetimeIndex([]),
-        inference_method="advi",
+        inference_method="nuts",
         fit_end=None,
         diagnostics={"fit_quality": "good"},
     )
@@ -374,10 +381,10 @@ def test_validation_errors():
         EffectRange(kind="absolute", low=2.0, high=1.0)
 
 
-def test_fit_on_demand_with_real_advi():
-    """Uncached probabilistic nodes on affected paths are fit with ADVI and
+def test_fit_on_demand_with_a_real_fit():
+    """Uncached probabilistic nodes on affected paths are fitted on demand and
     cached under (name, fit_end); baseline short of the data end uses a dated
-    key."""
+    key. The fit runs NUTS, `run_scenario`'s default."""
     parser = Parser(JAFFLE_YAML)
     data = generate_mock_data(n_days=100)  # ends 2024-04-09
     traces = {}
@@ -390,7 +397,7 @@ def test_fit_on_demand_with_real_advi():
             baseline_end="2024-03-31",
             interventions=[Intervention(metric="daily_sessions", mode="pct", value=0.1)],
         ),
-        advi_draws=200,
+        draws=200,
     )
     assert ("order_count", "2024-04-01") in traces
     assert result["nodes"]["order_count"]["status"] == "affected"

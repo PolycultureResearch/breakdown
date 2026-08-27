@@ -9,8 +9,10 @@ provider at all.
 
 **At boot** (`--rcas`, against the deployed image): run the guided tour's four
 analyses so their fits land in the trace cache. Fits are serialized behind a
-single lock and a cold multi-node RCA takes ~15s, which is a long silence in a
-live pitch. Everything after this is a cache hit.
+single lock and a cold multi-node RCA takes ~42s at the tour's widest story
+(exact MCMC, the default since roadmap S2 — measured 42.3s / 46.2s / 9.8s /
+24.1s across the four), which is a long silence in a live pitch. Everything
+after this is a cache hit.
 
     python demo/prewarm.py --slices --rcas --url http://127.0.0.1:9090
 

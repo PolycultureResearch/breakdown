@@ -12,8 +12,10 @@ truth is known by construction:
   contribution across repeated worlds (many data seeds, one per world).
 
 Everything is seeded — mock data by seed, fits via fit_metric's sampler
-seeding (run_rca seeds its on-demand ADVI fits internally) — so these pass
-or fail reproducibly, not probabilistically.
+seeding (run_rca seeds its on-demand fits internally) — so these pass or fail
+reproducibly, not probabilistically. These run the *default* sampler (NUTS,
+roadmap S2), deliberately: a calibration suite that measures a path the
+product does not ship measures the wrong thing.
 """
 
 import numpy as np
@@ -107,7 +109,7 @@ def test_recovers_planted_contemporaneous_cause():
     frame, truth = _planted_step_world(seed=101)
     dag = Parser(PROB_YAML).dag
 
-    result = run_rca(dag, frame, {}, "y", **win(REF, AN), advi_draws=300)
+    result = run_rca(dag, frame, {}, "y", **win(REF, AN), draws=300)
 
     node = result["nodes"]["y"]
     c = node["contributions"][0]
@@ -123,7 +125,7 @@ def test_recovers_planted_lagged_cause():
     frame, truth = _planted_step_world(seed=202, lag=5)
     dag = Parser(LAGGED_YAML).dag
 
-    result = run_rca(dag, frame, {}, "y", **win(REF, AN), advi_draws=300)
+    result = run_rca(dag, frame, {}, "y", **win(REF, AN), draws=300)
 
     c = result["nodes"]["y"]["contributions"][0]
     assert abs(c["estimate"] - truth) < 0.25 * abs(truth)
@@ -162,7 +164,7 @@ def test_null_case_attributes_nothing_confidently():
     frame = _frame({"x": x, "y": y})
     dag = Parser(PROB_YAML).dag
 
-    result = run_rca(dag, frame, {}, "y", **win(REF, AN), advi_draws=300)
+    result = run_rca(dag, frame, {}, "y", **win(REF, AN), draws=300)
 
     node = result["nodes"]["y"]
     c = node["contributions"][0]
@@ -182,7 +184,7 @@ def test_unrelated_parent_gets_no_credit():
     frame = _frame({"x1": x1, "x2": x2, "y": y})
     dag = Parser(TWO_PARENT_YAML).dag
 
-    result = run_rca(dag, frame, {}, "y", **win(REF, AN), advi_draws=300)
+    result = run_rca(dag, frame, {}, "y", **win(REF, AN), draws=300)
 
     by_parent = {c["parent"]: c for c in result["nodes"]["y"]["contributions"]}
     truth = 0.5 * 30.0
@@ -197,12 +199,13 @@ def test_unrelated_parent_gets_no_credit():
 def test_contribution_ci_coverage(worlds):
     """Across `worlds` independent datasets with the same planted cause, the
     95% contribution interval must cover the true contribution in at least
-    80% of them (slack for the ADVI approximation and finite bootstrap)."""
+    80% of them (slack for the finite bootstrap and for 20 worlds being a
+    small sample of a coverage rate)."""
     covered = 0
     for k in range(worlds):
         frame, truth = _planted_step_world(seed=1000 + k)
         dag = Parser(PROB_YAML).dag
-        result = run_rca(dag, frame, {}, "y", **win(REF, AN), advi_draws=300)
+        result = run_rca(dag, frame, {}, "y", **win(REF, AN), draws=300)
         ci = result["nodes"]["y"]["contributions"][0]["ci_95"]
         if ci[0] <= truth <= ci[1]:
             covered += 1

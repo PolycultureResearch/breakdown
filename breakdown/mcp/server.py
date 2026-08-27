@@ -297,6 +297,17 @@ async def explain_metric(name: str, tree: Optional[str] = None) -> Dict[str, Any
     if fit is not None:
         fit_info["inference_method"] = fit.inference_method
         fit_info["fit_quality"] = fit.diagnostics.get("fit_quality")
+        # Roadmap S2: the PSIS verdict on a variational fit, and null on the
+        # NUTS default. Carried here as well as on RCA nodes because
+        # `explain_metric` is where an agent goes to decide whether one
+        # metric's numbers are worth narrating, and `fit_quality: "suspect"`
+        # alone does not say whether the model failed to converge or converged
+        # somewhere far from the posterior. A cached fit may have come from any
+        # route, including `POST /analyze?inference_method=advi`, so this
+        # reports what is actually in the cache rather than assuming.
+        fit_info["khat"] = fit.diagnostics.get("khat")
+        fit_info["khat_status"] = fit.diagnostics.get("khat_status")
+        fit_info["khat_warnings"] = fit.diagnostics.get("khat_warnings")
         fit_info["sign_warnings"] = fit.diagnostics.get("sign_warnings")
 
     return round_floats(
@@ -348,8 +359,11 @@ async def run_rca(
     a weekend vs. the prior weekend — or the gap will be dominated by
     weekday-mix seasonality rather than anything actionable. Trees with
     monthly metrics need windows covering whole months. The first call fits
-    models on demand and can take a minute or two; repeat calls on the same
-    tree are fast (fits are cached).
+    models on demand with exact MCMC and can take several minutes on a wide
+    or day-grain tree; repeat calls on the same tree and window are fast
+    (fits are cached). There is deliberately no fast-approximation switch
+    here — the HTTP route has one, driven by a human who can see what it
+    costs (see docs/mcp.md).
 
     Follow-up: when a top cause declares dimensions (see get_tree), call
     slice_metric on it to localize the gap within the metric — reuse the

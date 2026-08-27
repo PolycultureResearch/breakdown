@@ -361,28 +361,215 @@ def _zero_inflation_warnings(values: np.ndarray, target: str, grain: str) -> lis
     return [msg]
 
 
-def _advi_diagnostics(approx: Any, method: str = "advi") -> Dict[str, Any]:
-    """Convergence diagnostics for a variational (ADVI-family) fit.
+# PSIS k-hat bands for a variational approximation (Yao et al., 2018, "Yes,
+# but Did It Work?: Evaluating Variational Inference"; smoothing per Vehtari
+# et al., 2024). k-hat is the shape parameter of a generalized Pareto fitted
+# to the tail of the importance ratios p(theta, y) / q(theta): it says how
+# heavy that tail is, i.e. how far the proposal q sits from the target p.
+#
+#   k <= 0.5   the ratios have finite variance; importance sampling — and so
+#              the approximation it is diagnosing — is reliable.
+#   0.5 < k    finite mean, infinite variance. Usable with care; convergence
+#     <= 0.7   of any reweighting is slow and the approximation is visibly off.
+#   k >  0.7   neither the variance nor (past k=1) the mean is finite. The
+#              approximation cannot be trusted and cannot be *rescued* by
+#              reweighting either; the only fix is a better posterior.
+#
+# The 0.7 bar is the conventional PSIS threshold. Three bands rather than one
+# because 0.5-0.7 and >0.7 call for different things — "read the interval as
+# approximate" versus "this interval is not evidence" — and collapsing them
+# would either over- or under-warn.
+#
+# Nothing in the engine *acts* on these bands: k-hat is a disclosure on a
+# sampler the caller chose on purpose, not a trigger. See `fit_metric`'s
+# `inference_method` docstring for why.
+_KHAT_GOOD = 0.5
+_KHAT_UNUSABLE = 0.7
 
-    Compares the mean loss (−ELBO) of the last 10% of iterations against the
-    preceding 10%: if the loss is still moving by more than half its recent
-    noise level, the optimization had not converged and the approximation is
-    suspect. `elbo_drop` (mean(prev) − mean(last)) is positive while the loss
-    is still falling. Applies to mean-field and full-rank alike — either way
-    it measures optimizer convergence, not approximation quality (S2).
+# Draws used for the k-hat estimate. The Pareto fit uses the largest 20% of
+# the ratios, so 1000 draws fit the tail on ~200 points — the same order as
+# the ArviZ/loo default — and costs ~0.2s after the (one-off, ~1.5s) graph
+# compile, against a 1.4-6s ADVI fit on the demo trees. Nothing about the
+# diagnostic scales with the tree, only with the model's latent count.
+_KHAT_DRAWS = 1000
+
+
+def _psis_khat(
+    approx: Any, n_draws: int = _KHAT_DRAWS, random_seed: Optional[int] = None
+) -> Tuple[Optional[float], str, Optional[str]]:
+    """PSIS k-hat for a variational approximation (Yao et al., 2018).
+
+    Treats the fitted `approx` as an importance-sampling proposal for the true
+    posterior: draw theta from q, form the log ratios
+    `log p(theta, y) - log q(theta)`, smooth their tail with a generalized
+    Pareto, and return its shape parameter k-hat. Both terms are taken in the
+    model's **unconstrained** space, where q actually lives — `sized_symbolic_logp`
+    carries the change-of-variables Jacobian and `symbolic_logq` is the density
+    of the same draws, so the ratio is a ratio of comparable densities. Working
+    through PyMC's own symbolic machinery (rather than reconstructing the
+    variational density by hand) is what makes this work unchanged for
+    mean-field and full-rank: each family supplies its own `symbolic_logq`.
+
+    Returns `(khat, status, reason)`. `status` is one of `"ok"`, `"suspect"`,
+    `"unusable"` (the three bands above) or `"unavailable"` — the last means
+    the number could not be computed, and then `khat` is None and `reason`
+    says why. Never returns a non-finite k-hat: a NaN k-hat rendered as a
+    number is worse than no k-hat, and it would reach an encoder (rule 3).
+    """
+    import arviz as az
+    import pytensor.tensor as pt
+    from pymc.pytensorf import compile, find_rng_nodes, reseed_rngs
+
+    size = pt.iscalar("khat_draws")
+    logp, logq = approx.set_size_and_deterministic(
+        [approx.sized_symbolic_logp, approx.symbolic_logq], size, 0
+    )
+    ratio_fn = compile([size], [logp, logq])
+    if random_seed is not None:
+        reseed_rngs(find_rng_nodes([logp, logq]), random_seed)
+    log_p, log_q = ratio_fn(int(n_draws))
+
+    log_ratios = np.asarray(log_p, dtype=float) - np.asarray(log_q, dtype=float)
+    finite = np.isfinite(log_ratios)
+    n_finite = int(finite.sum())
+    # A ratio is non-finite when a draw lands where the model's logp is -inf
+    # (outside a constrained support the transform did not cover) or where q
+    # underflows. A handful is noise; a large share means the Pareto tail
+    # would be fitted to whatever survived, which is a different quantity.
+    if n_finite < 100 or n_finite < 0.9 * log_ratios.size:
+        return (
+            None,
+            "unavailable",
+            f"only {n_finite} of {log_ratios.size} log importance ratios were finite",
+        )
+    centered = log_ratios[finite]
+    centered = centered - centered.max()
+    _, khat = az.psislw(centered.reshape(1, -1))
+    k = float(np.asarray(khat).ravel()[0])
+    if not np.isfinite(k):
+        return None, "unavailable", "the generalized Pareto fit returned a non-finite shape"
+    if k <= _KHAT_GOOD:
+        return k, "ok", None
+    if k <= _KHAT_UNUSABLE:
+        return k, "suspect", None
+    return k, "unusable", None
+
+
+def cached_fit_is_usable(fit: Any, inference_method: str) -> bool:
+    """May a cached fit stand in for one the caller asked to run with `inference_method`?
+
+    Only upward. A cached NUTS fit answers a request for `"advi"` — it is the
+    exact posterior the approximation is approximating, and reusing it costs
+    nothing. A cached approximation does **not** answer a request for NUTS:
+    `traces` is shared by every viewer of a process, so one colleague's
+    deliberate `?inference_method=advi` triage run would otherwise silently
+    decide the sampler behind everybody else's default analysis of the same
+    window, with the payload reporting a method nobody chose.
+
+    Imported by both `run_rca` and `run_scenario` so the policy cannot drift
+    between them. It is the read-side twin of `_fit_rank` in
+    `breakdown/api/main.py`, which orders the same two methods for the same
+    reason on the write side.
+    """
+    if inference_method == "nuts":
+        return getattr(fit, "inference_method", None) == "nuts"
+    return True
+
+
+def _khat_warning(target: str, method: str, khat: Optional[float], status: str, reason) -> str:
+    """The one self-contained sentence a k-hat verdict travels with."""
+    if status == "unavailable":
+        return (
+            f"The approximation quality of the {method} fit for '{target}' could not be "
+            f"checked: {reason}. That is an unchecked fit, not a clean one — its intervals "
+            "carry no evidence either way (see docs/model.md)."
+        )
+    if status == "suspect":
+        return (
+            f"The {method} approximation for '{target}' has PSIS k-hat = {khat:.2f} "
+            f"(> {_KHAT_GOOD}): the importance ratios against the true posterior have no "
+            "finite variance, so this fit sits measurably away from the posterior it "
+            "approximates. Read its intervals as approximate, and confirm anything "
+            "load-bearing with a NUTS fit (see docs/model.md)."
+        )
+    return (
+        f"The {method} approximation for '{target}' has PSIS k-hat = {khat:.2f} "
+        f"(> {_KHAT_UNUSABLE}): the importance ratios against the true posterior have "
+        "neither finite variance nor a usable mean, so the approximation is not close to "
+        "the posterior and cannot be corrected by reweighting. Its credible intervals are "
+        "not evidence about the width of the real ones. This fit ran a variational "
+        "approximation because one was asked for; drop `inference_method=advi` to get "
+        "the NUTS default, or re-fit this node alone with "
+        f"POST /analyze/{target}?inference_method=nuts."
+    )
+
+
+def _advi_diagnostics(
+    approx: Any,
+    method: str = "advi",
+    target: str = "",
+    random_seed: Optional[int] = None,
+    khat_draws: int = _KHAT_DRAWS,
+) -> Dict[str, Any]:
+    """Diagnostics for a variational (ADVI-family) fit: the optimizer, and the
+    approximation.
+
+    Two independent checks, because they answer different questions and this
+    used to report only the first:
+
+    - **`elbo_drop` / the ELBO check** — did the *optimizer* stop? Compares the
+      mean loss (−ELBO) of the last 10% of iterations against the preceding
+      10%: if the loss is still moving by more than half its recent noise
+      level, the optimization had not converged. `elbo_drop` (mean(prev) −
+      mean(last)) is positive while the loss is still falling. This says
+      nothing about how close the converged approximation is to the posterior
+      — a well-converged bad approximation passes it, which is exactly what
+      S1's benchmark measured on real nodes.
+    - **`khat` / the PSIS check** — how far is the *approximation* from the
+      posterior? See `_psis_khat`. This is roadmap S2, and it is the check
+      that decides whether the intervals mean anything.
+
+    `fit_quality` is "suspect" when either check fails: the field is a gate
+    ("do not trust this fit as-is"), and every consumer already branches on
+    its two values, so the k-hat verdict rides that channel rather than
+    opening a parallel one. `khat` and `khat_status` are the evidence beside
+    it, the way `max_rhat` / `divergences` / `min_ess_bulk` are for NUTS. A
+    k-hat that could not be computed (`khat_status: "unavailable"`) does not
+    flip `fit_quality`: an unchecked fit is not a failed one, and saying so is
+    the honest reading — but it does carry the warning that says it is
+    unchecked, because silence there reads as "no problems found".
     """
     hist = np.asarray(approx.hist, dtype=float)
     w = len(hist) // 10
     if w < 1:
-        return {"fit_quality": "suspect", "method": method, "elbo_drop": None}
-    last, prev = hist[-w:], hist[-2 * w : -w]
-    elbo_drop = float(prev.mean() - last.mean())
-    suspect = abs(last.mean() - prev.mean()) > 0.5 * last.std()
-    return {
-        "fit_quality": "suspect" if suspect else "ok",
+        elbo_drop, elbo_suspect = None, True
+    else:
+        last, prev = hist[-w:], hist[-2 * w : -w]
+        elbo_drop = float(prev.mean() - last.mean())
+        elbo_suspect = bool(abs(last.mean() - prev.mean()) > 0.5 * last.std())
+
+    try:
+        khat, khat_status, khat_reason = _psis_khat(
+            approx, n_draws=khat_draws, random_seed=random_seed
+        )
+    except Exception as e:  # pragma: no cover - defensive: a PyMC API change
+        khat, khat_status, khat_reason = None, "unavailable", f"{type(e).__name__}: {e}"
+        logger.warning("PSIS k-hat could not be computed for '%s': %s", target, e)
+
+    diagnostics: Dict[str, Any] = {
+        "fit_quality": "suspect"
+        if (elbo_suspect or khat_status in ("suspect", "unusable"))
+        else "ok",
         "method": method,
         "elbo_drop": elbo_drop,
+        "khat": khat,
+        "khat_status": khat_status,
     }
+    if khat_status != "ok":
+        msg = _khat_warning(target, method, khat, khat_status, khat_reason)
+        logger.warning(msg)
+        diagnostics["khat_warnings"] = [msg]
+    return diagnostics
 
 
 def _validate_columns(data: pd.DataFrame, cols: List[str]) -> None:
@@ -654,7 +841,7 @@ def fit_metric(
 
     The trend is a non-centered random walk: sampling unit normals and scaling
     by `sigma_trend` avoids the Neal's-funnel geometry of a centered walk, which
-    NUTS handles poorly and mean-field ADVI (the RCA default) fails on outright.
+    NUTS handles poorly and mean-field ADVI (the opt-in fast path) fails on outright.
     `pm.Deterministic("trend", ...)` preserves the `trend` posterior variable so
     downstream decomposition reads it unchanged.
 
@@ -681,9 +868,10 @@ def fit_metric(
     `fit_failed` status, so a thin node costs its own attribution and nothing
     else.
 
-    Inference: "nuts" (exact MCMC, use when accuracy matters), "advi"
-    (mean-field variational approximation, ~5-10x faster, use for triage) or
-    "fullrank_advi" (variational with a full covariance matrix — can represent
+    Inference: "nuts" (exact MCMC — the default here and on every orchestrator
+    that fits on the caller's behalf), "advi" (mean-field variational
+    approximation, an explicit opt-in for triage speed on a wide or day-grain
+    tree) or "fullrank_advi" (variational with a full covariance matrix — can represent
     the beta/trend posterior ridge mean-field collapses, and reproduces the
     NUTS interval on small synthetic fits; benchmarked under roadmap S1 and
     NOT adopted as a default, because on real-sized windows the O(d^2)
@@ -696,6 +884,18 @@ def fit_metric(
     a given platform/dependency set (RCA and simulate pass a fixed seed so
     their on-demand fits — and hence API responses — are deterministic even
     across empty trace caches; tests seed to kill stochastic flakes).
+
+    Every variational fit is scored with **PSIS k-hat** (Yao et al., 2018;
+    roadmap S2) and reports it as `diagnostics["khat"]` / `["khat_status"]`.
+    It is a *disclosure*, never a trigger: `inference_method` is a promise
+    about which sampler runs, and a function that silently runs a different one
+    at 2-20x the cost breaks every caller who asked for the fast path on
+    purpose. Measurement (roadmap S2) says mean-field fails the check on
+    essentially every real node in this engine — one correlated local-level
+    latent per period is not representable by a factorized Gaussian — so the
+    honest response was to make NUTS the default everywhere rather than to
+    re-fit behind the caller's back. What k-hat buys now is that choosing
+    `"advi"` anyway is an informed choice rather than a trap.
 
     Returns a `FitResult`. Its trace's posterior includes `beta_raw`
     (= beta / scale): the coefficient on each parent in business units,
@@ -809,7 +1009,9 @@ def fit_metric(
                 random_seed=random_seed,
             )
             trace = approx.sample(draws=draws, random_seed=random_seed)
-            diagnostics = _advi_diagnostics(approx, method=inference_method)
+            diagnostics = _advi_diagnostics(
+                approx, method=inference_method, target=target, random_seed=random_seed
+            )
         else:
             trace = pm.sample(
                 draws=draws,
