@@ -85,6 +85,43 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
 
 ### Fixed
 
+- **One node, two warm-ups, depending on the route you asked through** (roadmap
+  C27). `POST /analyze/{name}` declared `tune=500` while `POST /rca/{name}` and
+  `POST /simulate` inherited `fit_metric`'s `tune=1000`, so the same metric
+  fitted over the same window came back from a different NUTS warm-up depending
+  on which URL you called — and nothing in either payload said which. Warm-up is
+  where NUTS adapts its step size and mass matrix, so that is two
+  defensible-but-unequal posteriors for one question, and a fit is meant to be a
+  pure function of (DAG, data, target). It was harmless while `/analyze` was the
+  only NUTS path and the analyses ran ADVI, which never reads `tune`; the S2
+  change above put every route on NUTS and put both budgets on the same sampler.
+
+  `draws` had split the same way in the other direction — `fit_metric` defaulted
+  to `1000`, every route passed `500` — and the UI had been telling readers
+  "after 1,000 discarded tuning steps" in three places above a fit that ran 500
+  of them.
+
+  The budget is now **one set of named constants** in `breakdown/engine/model.py`
+  (`NUTS_DRAWS = 500`, `NUTS_TUNE = 1000`, `NUTS_CHAINS = 4`,
+  `ADVI_ITERATIONS = 20_000`) that the orchestrators, the route defaults, the UI
+  and `docs/api-reference.md` all read, with structural tests that fail on a
+  literal written anywhere else. **What changes for callers:** `POST
+  /analyze/{name}`'s `tune` default goes `500 → 1000` — a better-adapted fit,
+  ~15–30% slower on that route, still overridable per request. Nothing else
+  moves: RCA and what-if already warmed up 1000 and already drew 500, so no
+  attribution, interval or demo figure changes. Direct callers of `fit_metric`
+  who relied on its `draws=1000` default now get 500; every caller in this
+  repository passes the parameter explicitly.
+
+  On the choice itself: 500 and 1000 warm-up steps were **not distinguishable**
+  on adaptation quality when measured (5 seeds × 4 probabilistic nodes of the
+  B2B reference tree — two nodes better at 1000, two worse, and the seed-to-seed
+  spread at fixed settings, 3 to 196 divergences on one node, far larger than
+  the gap between the budgets). So the tie was broken on cost and on honesty:
+  1000 is PyMC's own default and the more conservative, it is the only direction
+  that moves no published figure, and it makes the sentence the UI had been
+  showing true.
+
 - **Every MCP tool error became `Error executing tool <name>` for anyone on
   `mcp` 2.1.0** — no offending value, no list of valid metrics, no pointer at
   the tool that would have worked. The SDK released 2026-08-24 stopped

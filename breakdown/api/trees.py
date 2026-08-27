@@ -46,12 +46,20 @@ logger = logging.getLogger(__name__)
 # dropped is simply recomputed.
 #
 # The count alone cannot bound memory, because an entry's size scales with the
-# loaded window: one ADVI fit (1000 draws) of the demo tree's `order_count`
-# over an 830-day window measures **13.4 MB** of posterior, so 256 of them is
-# ~3.4 GB against `demo/fly.toml`'s `memory = "2gb"`. Tuning the count down
+# loaded window *and* with the sampler: one NUTS fit at the engine's
+# `NUTS_DRAWS` x `NUTS_CHAINS` (500 x 4) of the demo tree's `order_count` over
+# an 830-day window measures **27.0 MB** of posterior, so 256 of them is
+# ~6.9 GB against `demo/fly.toml`'s `memory = "2gb"`. Tuning the count down
 # just moves the cliff to a wider window. So the real bound is a **byte
 # budget**, with the count kept as a secondary backstop against a pathological
 # number of tiny fits.
+#
+# Re-measured 2026-08-24 when NUTS became the default (roadmap S2); the figure
+# here had been 13.4 MB, which was one 1000-draw *ADVI* fit — one chain, and
+# the sampler no route runs by default any more. Roadmap C27 then fixed
+# `NUTS_DRAWS` at 500 rather than `fit_metric`'s old 1000, which is what keeps
+# 27.0 MB the right number: 1000 draws would roughly double it and halve the
+# budget below.
 MAX_CACHED_TRACES = 256
 
 # 512 MiB, overridable with BREAKDOWN_MAX_TRACE_BYTES (bytes; 0 disables the
@@ -60,8 +68,8 @@ MAX_CACHED_TRACES = 256
 # interpreter plus PyMC/ArviZ/PyTensor/pandas and one tree's frames sit around
 # 0.5–0.7 GB resident, and a fit in flight transiently holds a sampler's
 # working set plus the new trace on top of whatever is cached. Half a gigabyte
-# of cache leaves roughly that much headroom again — about 38 of the 13.4 MB
-# traces above, far more than one session explores — while a wider window
+# of cache leaves roughly that much headroom again — about 19 of the 27.0 MB
+# NUTS traces above, more than one session explores — while a wider window
 # simply caches fewer fits instead of OOM-killing the process.
 MAX_CACHED_TRACE_BYTES = 512 * 1024 * 1024
 

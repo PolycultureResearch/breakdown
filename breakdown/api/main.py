@@ -33,7 +33,14 @@ from breakdown.data_fetch import (
     WarehouseDataFetcher,
     provider_query_name,
 )
-from breakdown.engine.model import fit_metric, summarize_trace, warm_inference_imports
+from breakdown.engine.model import (
+    NUTS_CHAINS,
+    NUTS_DRAWS,
+    NUTS_TUNE,
+    fit_metric,
+    summarize_trace,
+    warm_inference_imports,
+)
 from breakdown.engine.rca import resolve_reference_window, run_rca, shapley_attribution
 from breakdown.engine.simulate import ScenarioRequest, run_scenario, validate_cold_start
 from breakdown.engine.slices import entity_flows, slice_attribution
@@ -1467,9 +1474,16 @@ async def analyze_metric(
     name: str,
     request: Request,
     inference_method: str = Query(default="nuts", pattern="^(nuts|advi)$"),
-    draws: int = Query(default=500, ge=50, le=5000),
-    tune: int = Query(default=500, ge=50, le=5000),
-    chains: int = Query(default=4, ge=1, le=8),
+    # The budget is the engine's, not this route's (roadmap C27). This route
+    # used to declare `tune=500` while `run_rca`/`run_scenario` inherited
+    # `fit_metric`'s 1000, so the same node over the same window came back
+    # from a different warm-up depending on which URL the reader called —
+    # invisible in the payload, and a broken promise that a fit is a pure
+    # function of (DAG, data, target). The knobs stay overridable per request;
+    # only the *defaults* are now read from one place.
+    draws: int = Query(default=NUTS_DRAWS, ge=50, le=5000),
+    tune: int = Query(default=NUTS_TUNE, ge=50, le=5000),
+    chains: int = Query(default=NUTS_CHAINS, ge=1, le=8),
     fit_end: Annotated[OptionalIsoDate, Query()] = None,
 ):
     tree = await _loaded_tree(request)

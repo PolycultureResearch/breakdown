@@ -467,7 +467,16 @@ function stopRunProgress() {
    doc is the thing kept true.
 
    `body` may be a function so a hint can read the current control state; that
-   is why `draws` can describe two genuinely different meanings. */
+   is why `draws` can describe two genuinely different meanings.
+
+   **The sampler numbers written into this file are mirrors, not decisions.**
+   `NUTS_DRAWS` / `NUTS_TUNE` / `NUTS_CHAINS` / `ADVI_ITERATIONS` in
+   `breakdown/engine/model.py` are the source of truth; there is no build step
+   here to import them, so `test_every_rendered_sampler_budget_matches_the_engine`
+   in tests/test_project_invariants.py reads both sides and fails when they
+   disagree. It exists because they *did* disagree: this file told every reader
+   "after 1,000 discarded tuning steps" while `POST /analyze` ran 500 of them
+   (roadmap C27). A correct payload described wrongly is a wrong answer. */
 const DOC = "https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md";
 
 const HINTS = {

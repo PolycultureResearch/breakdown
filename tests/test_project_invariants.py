@@ -1370,3 +1370,178 @@ def test_every_orchestrator_that_reuses_a_cached_fit_checks_it_is_good_enough():
         "`cached_fit_is_usable`. Reuse is upward-only: a NUTS fit answers an ADVI "
         "request, an approximation does not answer a NUTS one (roadmap S2)."
     )
+
+
+# --- One sampler budget, read from one place (roadmap C27) --------------------
+#
+# The same shape as the block above, one parameter over. `POST /analyze/{name}`
+# declared `tune=500` while `run_rca` and `run_scenario` inherited
+# `fit_metric`'s `tune=1000`, so one node fitted over one window returned a
+# posterior drawn after a different warm-up depending on which URL the reader
+# called — and nothing in either payload said which. `draws` had diverged the
+# same way in the other direction (`fit_metric` 1000, everything reachable
+# through the API 500). Harmless while `/analyze` was the only NUTS path and
+# the analyses ran ADVI, which never reads `tune`; roadmap S2's Option C put
+# every route on NUTS and made it two unequal posteriors for one question.
+#
+# Enumerated rather than pinned to today's call sites, because the next
+# orchestrator or route is the one that matters — and because "edit the three
+# numbers to match" recreates the defect the moment someone edits one.
+
+#: Parameters whose value is a sampler budget, wherever they appear.
+_SAMPLER_BUDGETS = frozenset({"draws", "tune", "chains", "vi_iterations"})
+
+#: Where the budget is allowed to be written as a literal: the definitions.
+_BUDGET_CONSTANTS = ("NUTS_DRAWS", "NUTS_TUNE", "NUTS_CHAINS", "ADVI_ITERATIONS")
+
+
+def _sampler_budget_literals(path: Path):
+    """Every place `path` writes a sampler budget as a bare number.
+
+    Three syntactic forms, because the split appeared as all three: a keyword
+    argument at a call site (`fit_metric(..., tune=500)`), a function parameter
+    default (`def run_rca(..., draws: int = 500)`), and a FastAPI route default
+    (`tune: int = Query(default=500, ...)`).
+    """
+    found = []
+    tree = ast.parse(path.read_text())
+
+    def note(lineno, what, value):
+        found.append(f"{path.name}:{lineno} {what} = {value!r}")
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for kw in node.keywords:
+                if kw.arg in _SAMPLER_BUDGETS and isinstance(kw.value, ast.Constant):
+                    note(kw.value.lineno, f"{ast.unparse(node.func)}({kw.arg}=)", kw.value.value)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = node.args
+            positional = args.posonlyargs + args.args
+            pairs = list(zip(positional[len(positional) - len(args.defaults) :], args.defaults))
+            pairs += [(a, d) for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None]
+            for arg, default in pairs:
+                if arg.arg not in _SAMPLER_BUDGETS:
+                    continue
+                if isinstance(default, ast.Constant):
+                    note(default.lineno, f"def {node.name}({arg.arg}=)", default.value)
+                # `x: int = Query(default=500)` hides the literal one level in.
+                elif isinstance(default, ast.Call):
+                    for kw in default.keywords:
+                        if kw.arg == "default" and isinstance(kw.value, ast.Constant):
+                            note(
+                                kw.value.lineno,
+                                f"def {node.name}({arg.arg}=Query(default=))",
+                                kw.value.value,
+                            )
+    return found
+
+
+def test_the_sampler_budget_is_defined_exactly_once():
+    """`engine/model.py` is where the four numbers live, and it says why."""
+    source = (PACKAGE / "engine" / "model.py").read_text()
+    tree = ast.parse(source)
+    defined = {
+        t.id
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        for t in node.targets
+        if isinstance(t, ast.Name) and t.id in _BUDGET_CONSTANTS
+    }
+    missing = [c for c in _BUDGET_CONSTANTS if c not in defined]
+    assert not missing, (
+        f"{missing} must be module-level constants in breakdown/engine/model.py — "
+        "the one place the sampler budget is written (roadmap C27)."
+    )
+    assert "C27" in source, (
+        "the constants block should say why it exists; a number with no stated "
+        "reason is the thing that drifted."
+    )
+
+
+def test_no_sampler_budget_is_written_as_a_literal():
+    """A budget written at a call site is a policy that only applies there.
+
+    Every orchestrator default, every fit call and every route default reads
+    `NUTS_DRAWS` / `NUTS_TUNE` / `NUTS_CHAINS` / `ADVI_ITERATIONS`. Writing the
+    number instead means a future reader can change one and miss the others,
+    which is exactly how `/analyze` came to warm up for half as long as the
+    analyses did — the right policy in one file, not propagated to its
+    neighbour.
+
+    `fit_metric`'s own signature is where the constants are *applied*, so its
+    defaults are Names and pass; the constants' own assignments are not
+    parameters and never reach this scan.
+    """
+    scanned = sorted((PACKAGE / "engine").glob("*.py")) + sorted((PACKAGE / "api").glob("*.py"))
+    scanned += [PACKAGE / "mcp" / "server.py", PACKAGE / "cli.py", PACKAGE / "doctor.py"]
+    offenders = [hit for path in scanned if path.exists() for hit in _sampler_budget_literals(path)]
+    assert not offenders, (
+        "a sampler budget is written as a literal instead of reading the engine's "
+        f"constants: {offenders}. Import NUTS_DRAWS / NUTS_TUNE / NUTS_CHAINS / "
+        "ADVI_ITERATIONS from breakdown.engine.model — one budget per parameter, "
+        "so the route a caller arrives through cannot change the posterior they "
+        "get (roadmap C27)."
+    )
+
+
+#: Every place a sampler budget is printed at a human, and the constant it must
+#: equal. `app.js` cannot import from Python (no build step, deliberately) and
+#: `docs/api-reference.md` documents the defaults as a table, so both are
+#: hand-copied — a fourth and a fifth spelling unless something checks them.
+_RENDERED_BUDGETS = [
+    # The Draws input's initial value.
+    (r'id="an-draws"[^>]*value="(\d+)"', "NUTS_DRAWS"),
+    # The control note and the NUTS hint, both of which name the warm-up the
+    # reader is about to pay for. This is the pair that was false.
+    (r"([\d,]+)\s+(?:discarded\s+)?tuning steps", "NUTS_TUNE"),
+    (r"(\d+)\s+chains", "NUTS_CHAINS"),
+    (r"([\d,]+)\s+optimization steps", "ADVI_ITERATIONS"),
+    (r"fixed\s+([\d,]+)\s+steps", "ADVI_ITERATIONS"),
+]
+
+#: The `POST /analyze/{name}` parameter table in docs/api-reference.md.
+_DOC_BUDGETS = [
+    (r"^\|\s*`draws`\s*\|\s*`(\d+)`", "NUTS_DRAWS"),
+    (r"^\|\s*`tune`\s*\|\s*`(\d+)`", "NUTS_TUNE"),
+    (r"^\|\s*`chains`\s*\|\s*`(\d+)`", "NUTS_CHAINS"),
+]
+
+
+def test_every_rendered_sampler_budget_matches_the_engine():
+    """The fifth rule, with the cheap half of it enumerated.
+
+    `app.js` told every reader of the Metric tab that their NUTS fit ran
+    "after 1,000 discarded tuning steps". The route ran 500. Nothing was wrong
+    with the payload; the sentence describing it was wrong, which to the reader
+    is the same thing. There is no JS test runner here, so the numbers are read
+    out of the file and compared against the engine's own.
+    """
+    source = (PACKAGE / "static" / "app.js").read_text()
+    for pattern, const in _RENDERED_BUDGETS:
+        expected = getattr(model_mod, const)
+        found = re.findall(pattern, source)
+        assert found, (
+            f"app.js no longer renders a {const} anywhere (pattern {pattern!r}). "
+            "If the wording changed, update the pattern; if the number stopped "
+            "being shown, delete the row — do not let it silently stop checking."
+        )
+        wrong = [v for v in found if int(v.replace(",", "")) != expected]
+        assert not wrong, (
+            f"app.js shows {wrong} where the engine's {const} is {expected}. "
+            "The UI is describing a fit the engine did not run (roadmap C27)."
+        )
+
+
+def test_the_documented_route_defaults_are_the_route_defaults():
+    """`docs/api-reference.md` is what a caller reads instead of the source."""
+    doc = (PACKAGE.parent / "docs" / "api-reference.md").read_text()
+    for pattern, const in _DOC_BUDGETS:
+        expected = getattr(model_mod, const)
+        found = re.findall(pattern, doc, flags=re.MULTILINE)
+        assert found, f"docs/api-reference.md no longer documents a `{const}` default row"
+        wrong = [v for v in found if int(v) != expected]
+        assert not wrong, (
+            f"docs/api-reference.md documents {wrong} for {const}, which is {expected}. "
+            "A caller who reads the docs instead of the source gets a different "
+            "posterior than the one they planned for (roadmap C27)."
+        )

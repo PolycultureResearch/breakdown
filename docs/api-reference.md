@@ -99,7 +99,7 @@ Query parameters:
 |-------|---------|-------------|
 | `inference_method` | `nuts` | `nuts` (full MCMC) or `advi` (variational inference, faster but measurably less accurate — see [`docs/model.md`](model.md#assumptions-and-limitations-to-keep-in-mind)). Every route takes you at your word: an `advi` fit is never re-run as NUTS behind your back, and it reports its PSIS k̂ in `diagnostics` so you can see how far off it landed. Same values and same default on `POST /rca/{name}` and `POST /simulate`. |
 | `draws` | `500` | Posterior draws, which buy different things per method. Under `nuts` this is draws per chain after `tune` discarded steps, so 500 × 4 chains = 2,000 draws, and more of them tighten the Monte-Carlo error. Under `advi` the optimization is a fixed 20,000 steps regardless. There it only sets how many samples are drawn from the already-fitted approximation, so more is nearly free and does not make the answer more accurate. |
-| `tune` | `500` | Tuning steps (NUTS only) |
+| `tune` | `1000` | Warm-up steps, discarded (NUTS only). This is where NUTS adapts its step size and mass matrix, so it is not a cosmetic tail: a fit warmed up differently is a different posterior. The default is the engine's single budget, shared with `POST /rca/{name}` and `POST /simulate` — through to v0.1.1 this route declared `500` while the analysis routes warmed up for `1000`, so the same node over the same window answered differently depending on which route you asked through. |
 | `chains` | `4` | Number of NUTS chains (NUTS only) |
 | `fit_end` | none | Exclusive date cutoff (`YYYY-MM-DD`). The fit uses only rows before it. Defaults to the full window; pass the analysis-window start to reproduce what RCA fits. |
 
