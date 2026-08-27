@@ -69,6 +69,13 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
   Full account in [`docs/model.md`](docs/model.md) and §3.2 of the
   [statistics white paper](knowledge/statistics_whitepaper.md).
 
+- **`share: true` on a `kind: rate` metric** — the tree's way of saying "this
+  is a proportion, bounded `[0, 1]`". Optional and additive; what it buys is
+  under *Fixed*, roadmap C26. Rates that legitimately exceed their denominator
+  (ARPU, AOV, sends per subscriber, a retention rate above 100%) must leave it
+  off, and the startup log names any `share: true` node whose own history
+  disagrees.
+
 ### Removed
 
 - **Automatic escalation from ADVI to NUTS**, and with it `MAX_ESCALATIONS`,
@@ -84,6 +91,55 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
   / `unavailable`, and is absent entirely on a NUTS fit.
 
 ### Fixed
+
+- **A what-if could put 102.5% of your members in the active bucket and call it
+  "above the historical max"** (roadmap C26). `POST /simulate` raised its
+  `non_physical` flag on exactly one condition — a value below zero on a metric
+  that had never been negative — so a rate simulated *above* its ceiling came
+  back with only an `extrapolation` warning, the weaker claim. Measured on the
+  White Cube demo: `member_activity_rate` at +300% simulated to **1.025** and
+  said only that it was above the historical maximum of 0.3162, in the same
+  response that correctly called three negative nodes impossible. Two
+  impossibilities, one flagged as impossible and one as merely unusual, on the
+  tab whose whole pitch is that it tells you a scenario is nonsense rather than
+  returning a confident number.
+
+  A rate can now declare that it is a **proportion**, and the flag is raised at
+  both ends:
+
+  ```yaml
+  - name: customer_churn_rate
+    kind: rate
+    denominator: active_subscriptions   # how a window's value is formed
+    share: true                         # ...and it is a proportion: 0 ≤ x ≤ 1
+  ```
+
+  A simulated value outside `[0, 1]` on such a node is `non_physical` — with or
+  without history, in fitted and cold-start mode alike, because the bound is
+  something the tree asserts about the metric rather than something read off a
+  sample. The old floor is unchanged for nodes that declare nothing.
+
+  **`share` has to be declared, and the reason is worth stating**, because the
+  defect was originally filed believing a rate's `denominator` already implied
+  it. It does not: `denominator` says how a rate aggregates over time, and the
+  bundled example tree's `average_order_value` declares one (`order_count`)
+  while being ~$182 an order. Inferring a ceiling from it would have reported
+  the price of an order as physically impossible. `format: {style: percent}` fails the same
+  test — net dollar retention is a percentage that is supposed to exceed 100% —
+  and `plausible` means plausible, not possible. So the ceiling is a separate,
+  explicit claim, and it is checked back against your own data at load: a
+  `share: true` node whose loaded history already leaves `[0, 1]` is named in
+  the startup log with its range.
+
+  **Also fixed, on the rendering side:** `non_physical` reached only the
+  panel-wide Warnings list at the bottom of the what-if sidebar, so the outcome
+  card and the per-node row for the impossible node itself rendered clean — and
+  the intervened node carrying the impossible value is usually not a sink, so it
+  appeared nowhere but that list. Both surfaces now show it by name, and the
+  flag rides per node in the API payload and over MCP (`non_physical`, beside
+  the existing `extrapolation`) so an agent can tell "far outside what we have
+  seen" from "cannot exist". Structural tests enumerate the bounds and fail on a
+  one-sided one.
 
 - **One node, two warm-ups, depending on the route you asked through** (roadmap
   C27). `POST /analyze/{name}` declared `tune=500` while `POST /rca/{name}` and

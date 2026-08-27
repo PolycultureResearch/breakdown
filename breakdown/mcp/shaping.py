@@ -143,6 +143,10 @@ WHATIF_HOW_TO_READ = (
     "`unavailable` = unchecked.\n"
     "- Fitted slopes are local to the observed operating range; `extrapolation: true` "
     "(detail in `warnings`) means the scenario leaves that range — call the result speculative.\n"
+    "- `non_physical: true` is the stronger claim and a different one: the value cannot exist, "
+    "because the tree declares a bound it breaks (a `share` outside [0, 1]) or the metric has "
+    "never been negative and this scenario made it so. Do not narrate such a node's number — "
+    "say the scenario is impossible as posed and what a possible version would look like.\n"
     "- Assumption edges are user-asserted beliefs sampled from the stated 90% range, not "
     "fitted from data; say so when they drive the answer.\n"
     "- Per-source `contributions` are exact Shapley shares of the node's *point* delta: they "
@@ -458,6 +462,12 @@ def compact_scenario(result: Dict[str, Any]) -> Dict[str, Any]:
                 "khat_status": node.get("khat_status"),
                 "khat_warnings": node.get("khat_warnings"),
                 "extrapolation": node["extrapolation"]["flag"],
+                # The stronger claim beside the weaker one (roadmap C26). An
+                # agent reading `extrapolation: true` alone cannot tell "far
+                # outside what we have seen" from "cannot exist"; the two want
+                # different next moves, so both flags travel and the sentence
+                # that separates them is in `warnings`.
+                "non_physical": node["non_physical"],
                 "contributions": node["contributions"],
             }
         # Cold-start results carry the belief interval around each operating

@@ -272,6 +272,7 @@ Each metric entry supports the following fields:
 | `trend` | string or dict | Local-level (random-walk) trend. `trend: linear` uses the default step-size prior HalfNormal(0.05); `trend: {type: linear, sigma: 0.1}` widens it so the trend may absorb faster drift. Only `type: linear` is supported. |
 | `baseline` | number or dict | **Cold-start mode only.** Asserted operating point for a tree with no data: `baseline: 1200` (point) or `baseline: {low: 800, high: 1600}` (central 90% interval), in mean-per-period units at the node's grain. `distribution: Normal` (default) or `LogNormal`; the latter reads `[low, high]` on the log scale, needs `low > 0`, and is the natural shape for an order-of-magnitude belief about a positive quantity. Rejected on formula nodes, since theirs derive from parents so the identity holds. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
 | `plausible` | dict | **Cold-start mode only.** Declared honesty band `{min, max}` (either bound may be omitted, at least one required). Belief draws are **truncated** to it at sampling time (rejection resampling, so no mass piles up on the bound, and `min: 0` means customer counts cannot be drawn negative), and it stands in for historical min/max in the what-if extrapolation flags. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
+| `share` | bool | `kind: rate` only. **This rate is a proportion: it lies in `[0, 1]` by construction.** A what-if that simulates it outside those bounds is flagged `non_physical` (impossible) rather than `extrapolation` (unusual), on both sides and with or without history. Never inferred — a `denominator` says only how the rate aggregates over time, and `average_order_value` has one. See [Grains](#grains). |
 | `format` | string or dict | UI display hint for the node card's big number. Presentation only, no effect on modeling. See [Display format](#display-format). |
 | `direction` | string | Which way is good news, for UI coloring only: `up_is_good`, `down_is_good` (costs, tickets, time-to-X), or `neutral` (gray, no judgment). Arrows stay directional; only the green/red coloring follows the declaration. Note: a stored-negative flow like churn MRR is `up_is_good`, since moving toward zero means less churn. **There is no default.** An undeclared metric serializes `direction: null` and renders like `neutral`, gray with no good/bad claim, because green means "improved", and on a metric nobody classified that is a claim the tree never made. Declare it on anything you want coloured. |
 
@@ -644,6 +645,53 @@ answer is its own field, and its value is the reason:
 
 Declaring it is not mandatory. It is worth doing on any rate you have already
 thought about, because the alternative is thinking about it again next quarter.
+
+**When a rate is a proportion, say `share: true`.** A different question from
+`denominator`, and the tree is the only place it can be answered:
+
+```yaml
+- name: customer_churn_rate
+  source: my.metrics.customer_churn_rate
+  kind: rate
+  denominator: active_subscriptions   # how a window's value is formed
+  share: true                         # ...and it is a proportion: 0 ≤ x ≤ 1
+```
+
+What it buys you is one sentence in a what-if. A simulated value outside
+`[0, 1]` on a `share: true` node is reported as **`non_physical`** — *this
+cannot happen* — rather than `extrapolation` — *this is far outside what we
+have seen*. Both flags can fire on one node, and the difference is the
+difference between a scenario worth discounting and a scenario worth
+discarding. Without the declaration a what-if that puts 102.5% of your members
+in the active bucket reports only that it is above the historical maximum.
+
+The rules:
+
+- It is refused on a `flow` or a `stock`, for the same reason `denominator`
+  is: neither is bounded by a whole.
+- It is **never inferred**, and the two fields it looks like it could be
+  inferred from cannot carry it. A `denominator` says only how the rate
+  aggregates over time: `average_order_value` has one (`order_count`) and is
+  ~$182 an order. `format: {style: percent}` is presentation, and net dollar
+  retention is
+  a percentage that is *supposed* to exceed 100%. Declaring `share` on either
+  would report an ordinary number as impossible.
+- It is independent of `denominator` in both directions. A share whose
+  denominator is not a tree metric declares `no_denominator` **and**
+  `share: true` — being a proportion of member-days is true whether or not
+  member-days is a series you have.
+- The check is bidirectional: a `share: true` node is bounded below at 0 as
+  well, by the declaration rather than by "it has never been negative".
+- **It is checked against your own data at load.** If the loaded history for a
+  `share: true` node already leaves `[0, 1]`, the startup log says so and names
+  the range — one of the declaration and the source is wrong, and until that is
+  settled the engine would be calling values impossible that the warehouse has
+  already recorded.
+
+Leave it off any rate that can legitimately exceed its denominator: a per-unit
+intensity (sends per subscriber, days active per trial), a currency average
+(ARPU, AOV), a retention or growth rate above 100%, or an open/click rate
+computed from total events rather than distinct people.
 
 **Data freshness.** breakdown tracks each metric's true data edge as it fetches and exposes it as `data_through` in `GET /meta`, the inclusive last date its last observed period covers. When sources disagree (one mart lags the others), the UI anchors every card's headline number, delta, and sparkline at the tree-wide edge via the **As of** selector (toolbar), which defaults to the oldest `data_through` across metrics and counts only periods *fully completed* by that date, so a calendar week the data edge cuts in half never becomes a headline number. The one case this cannot catch is a partially loaded most-recent period, where the mart wrote *some* rows for it. Detecting that needs load-completeness metadata on the mart side.
 

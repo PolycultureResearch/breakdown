@@ -439,8 +439,19 @@ exactly to the point delta by Shapley efficiency), per-node results
 (`status`, one of `baseline` | `affected` | `intervened`, plus `baseline`,
 `simulated`, `delta` with `ci_95`, `relative_delta`, `prob_direction`,
 `fit_quality`, `khat_status`, `khat_warnings` — the last two null on the
-NUTS default — `extrapolation`, `contributions`), plus `warnings` and
-always-on `caveats`. The run is seeded, so identical calls are byte-identical.
+NUTS default — `extrapolation`, `non_physical`, `contributions`), plus
+`warnings` and always-on `caveats`. The run is seeded, so identical calls are
+byte-identical.
+
+The two honesty flags are different claims and both travel per node, with the
+sentence for each in `warnings`. **`extrapolation`** is empirical: the value is
+outside the loaded history (or, in cold start, outside the declared `plausible`
+band). **`non_physical`** says the value cannot exist — either the tree
+declares a bound it breaks ([`share: true`](yaml-reference.md#grains)
+on a `kind: rate` node bounds it to `[0, 1]`, in both directions and with or
+without history), or the metric has never been negative and this scenario made
+it so. A node can carry both; a node carrying only `non_physical` is one whose
+number should not be quoted at all.
 
 On a fitted tree, every `kind: rate` node also carries `window_aggregate` and
 `window_aggregate_reason`, the same labels an RCA response puts beside a

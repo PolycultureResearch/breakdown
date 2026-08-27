@@ -38,6 +38,11 @@ metrics:
     # Σrevenue / Σorder_count. `revenue = order_count * average_order_value`
     # below says the same thing from the other side.
     denominator: order_count
+    # No `share` here, and it is worth saying why: a denominator says how the
+    # rate aggregates over time, not that it is a proportion of one. AOV is
+    # ~$182 an order. `share: true` is the separate declaration that a rate
+    # cannot leave [0, 1], and declaring it here would make every what-if
+    # report the dollar value of an order as physically impossible.
     format: currency
 
   - name: revenue

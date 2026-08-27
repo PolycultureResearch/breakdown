@@ -1773,3 +1773,55 @@ metrics:
     denominator: subs
 """
     assert Parser(yaml_content).get_metric("churn_rate").denominator == "subs"
+
+
+def test_share_is_refused_on_a_non_rate():
+    """Refused exactly as `denominator` is, and for a plainer reason: a flow
+    sums over time and a stock takes its last value, and neither is bounded by
+    the whole it would be a share of."""
+    with pytest.raises(ValueError, match="declares `share` but `kind: flow`"):
+        Parser("""
+metrics:
+  - name: orders
+    source: dbt.metric.orders
+    share: true
+""")
+
+
+def test_share_is_a_separate_declaration_from_the_denominator():
+    """The two answer different questions, and C26 was filed believing they
+    answered the same one.
+
+    `denominator` says how a window's value is formed (Σnum / Σden); `share`
+    says the value is a proportion and cannot leave [0, 1]. Every combination
+    is legal because every combination occurs: a share with a denominator
+    (`visit_signup_rate`), a share without one (`member_activity_rate`, whose
+    denominator is member-days and is deliberately not a tree metric), and a
+    denominator without a share (`average_order_value`, ~$182 an order).
+    """
+    dag = Parser("""
+metrics:
+  - name: sessions
+    source: dbt.metric.sessions
+  - name: signup_rate
+    source: dbt.metric.signup_rate
+    kind: rate
+    denominator: sessions
+    share: true
+  - name: activity_rate
+    source: dbt.metric.activity_rate
+    kind: rate
+    no_denominator: "the denominator is member-days, which is not a tree metric"
+    share: true
+  - name: average_order_value
+    source: dbt.metric.aov
+    kind: rate
+    denominator: sessions
+""").dag
+    assert dag.nodes["signup_rate"]["definition"].share is True
+    assert dag.nodes["activity_rate"]["definition"].share is True
+    # Undeclared stays undeclared through serialization — C21's lesson, and the
+    # reason the field is Optional rather than defaulting to False.
+    aov = dag.nodes["average_order_value"]["definition"]
+    assert aov.share is None
+    assert aov.model_dump()["share"] is None

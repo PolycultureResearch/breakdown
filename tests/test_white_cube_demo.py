@@ -299,14 +299,14 @@ def ui_verdict(s):
 
 
 def test_the_tree_is_the_size_the_script_says():
-    """Section 0 of the tour is read aloud: "23 metrics in 376 lines, of which
-    279 are actual configuration". Pinned exactly rather than as a band — if you
+    """Section 0 of the tour is read aloud: "23 metrics in 400 lines, of which
+    284 are actual configuration". Pinned exactly rather than as a band — if you
     edit the tree, the sentence a presenter says about it needs editing too, and
     that is precisely the drift this module exists to catch."""
     with open(TREE) as f:
         lines = f.read().splitlines()
-    assert len(lines) == 376
-    assert len([ln for ln in lines if ln.strip() and not ln.strip().startswith("#")]) == 279
+    assert len(lines) == 400
+    assert len([ln for ln in lines if ln.strip() and not ln.strip().startswith("#")]) == 284
     assert len([ln for ln in lines if ln.startswith("  - name:")]) == 23
 
 
@@ -990,3 +990,63 @@ def test_what_if_flags_a_physically_impossible_scenario(client):
         "churned_subscriptions",
         "churned_mrr",
     }
+
+
+def test_what_if_flags_the_impossible_ceiling_as_well_as_the_floor(client):
+    """The other side of the same claim (roadmap C26).
+
+    The tour's scripted absurd lever pushes churn *down* past zero, which is
+    why a one-sided check went unnoticed: this run returned 1.025 — 102.5% of
+    members active — with an `extrapolation` warning saying it was above the
+    historical max, and no `non_physical` at all. The ceiling is the tree's
+    (`share: true` on the node), not the history's, so it is pinned here
+    together with the sentence the tour reads out.
+    """
+    out = whatif(client, [{"metric": "member_activity_rate", "mode": "pct", "value": 3.0}])
+    node = out["nodes"]["member_activity_rate"]
+    assert node["simulated"] == pytest.approx(1.0255, abs=5e-4)
+    prints(node["simulated"], spec="{:.3f}", scale=1.0)
+    assert node["non_physical"] is True
+    detail = next(
+        w["detail"]
+        for w in out["warnings"]
+        if w["kind"] == "non_physical" and w["metric"] == "member_activity_rate"
+    )
+    # The reason is the declaration, not the sample — the whole point of C26.
+    assert "share" in detail and "historical" not in detail
+
+
+def test_every_declared_share_stays_inside_its_own_bounds(client):
+    """The declaration that makes a what-if refuse, checked against the data.
+
+    `share: true` is what lets the engine call a simulated value *impossible*
+    (roadmap C26), so a wrong one here would refuse scenarios that are fine —
+    on the tree a prospect is walked through. The server logs this at load; the
+    demo suite asserts it, because this tree's snapshots are committed and its
+    generator is known.
+
+    The negative half matters as much: `trial_days_active` declares the same
+    `denominator` as the two share-rates either side of it and is a mean count
+    of days (0-7). If it ever acquires a `share`, this goes red.
+    """
+    nodes = dict(client.get("/dag").json()["nodes"])
+    declared = {name for name, d in nodes.items() if d.get("share")}
+    assert declared == {
+        "visit_signup_rate",
+        "trial_activation_rate",
+        "trial_conversion_rate",
+        "member_activity_rate",
+        "customer_churn_rate",
+    }
+    assert not nodes["trial_days_active"]["share"]
+    assert not nodes["new_arpu"]["share"]
+
+    series = client.get("/series").json()["metrics"]
+    for name in sorted(declared):
+        values = [v for v in series[name]["values"] if v is not None]
+        assert values, f"{name} has no values to check"
+        assert 0.0 <= min(values) and max(values) <= 1.0, (
+            f"{name} declares `share: true` but its own history runs "
+            f"[{min(values):.4g}, {max(values):.4g}] — the declaration and the "
+            "data disagree, and the what-if engine believes the declaration"
+        )

@@ -39,6 +39,15 @@ tree's declared `expected_signs` arrives with its `sign_warnings`, a
 mostly-zero series with its `likelihood_warnings`, a withheld interval with
 its `ci_status`.
 
+A `run_whatif` node keeps **both** honesty flags, because they ask for
+different narration. `extrapolation: true` means the scenario leaves the range
+the fit was learned over — speculative, still worth pricing. `non_physical:
+true` means the value cannot exist: the tree declares a bound it breaks (a
+[`share`](yaml-reference.md#grains) outside `[0, 1]`) or the metric
+has never been negative and this scenario made it so. The sentence for each is
+in `warnings`. A node carrying the second one has no number worth quoting, and
+`how_to_read` says so.
+
 ### When a tool refuses
 
 A refusal is part of the contract, not a dead end. Ask for a metric that

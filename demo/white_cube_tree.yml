@@ -64,6 +64,11 @@ metrics:
     # `ratio` metric — see the dbt project's semantic manifest), so a window's
     # rate is Σsignups / Σsessions, not the mean of the daily rates.
     denominator: sessions
+    # Every signup came from a session, so this is a proportion: a what-if that
+    # pushes it past 1 is impossible, not merely unprecedented. Declared, not
+    # inferred — `denominator` alone means "Σsignups / Σsessions", which is
+    # equally true of trial_days_active below (days per trial, up to 7).
+    share: true
     format:
       style: percent
       decimals: 2
@@ -115,6 +120,8 @@ metrics:
     # trial_start_date, so this week's activation rate describes the same
     # cohort as this week's conversion rate — the edge is contemporaneous.
     denominator: trials_started
+    # A share of the cohort: at most all of it activates.
+    share: true
     format:
       style: percent
       decimals: 1
@@ -125,6 +132,10 @@ metrics:
     grain: week
     kind: rate
     denominator: trials_started
+    # Deliberately no `share`: this is a mean *count* per trial (0–7 days), not
+    # a proportion of trials_started. It declares the same `denominator` as the
+    # two rates either side of it, which is why the C26 ceiling is a separate
+    # declaration rather than something read off `denominator`.
     format:
       style: number
       unit: days
@@ -142,6 +153,8 @@ metrics:
     # which would need the daily series cut by a dimension it does not carry
     # at week grain. Hence a denominator here and still no dimensions below.
     denominator: trials_started
+    # A share of the cohort: at most all of it converts.
+    share: true
     # Conversion follows engagement: a cohort that activates (uploads work)
     # and uses more trial days converts better. Both parents describe the same
     # cohort week, so neither is lagged — and both ride the same underlying
@@ -278,6 +291,12 @@ metrics:
       active_subscriptions instead would claim an identity that does not
       close, since a week's distinct subscriptions is not seven days of
       member-days.
+    # A share all the same, and this is the node that proves the two questions
+    # are separate: it has no denominator the tree can name, and it is still a
+    # proportion of member-days that cannot pass 1. Undeclared, a +300% what-if
+    # simulated it to 1.025 — 102.5% of members active — and the response
+    # called that "above the historical max" (roadmap C26).
+    share: true
     format:
       style: percent
       decimals: 1
@@ -299,6 +318,11 @@ metrics:
         distribution: "Normal"
         params: { mu: -0.02, sigma: 0.02 }
     expected_signs: { member_activity_rate: negative }
+    # A share of the active base: at most all of it cancels, and none of it is
+    # a negative cancellation. The floor was already flagged from history
+    # ("never been negative"); declaring the share makes it the tree's claim
+    # rather than an inference from the sample, and adds the ceiling.
+    share: true
     format:
       style: percent
       decimals: 2

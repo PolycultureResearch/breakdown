@@ -42,8 +42,8 @@ reason, and it is not a bug.
 
 `https://<demo-host>/ui`
 
-Say: *this picture is a YAML file* — **23 metrics** in **376 lines**, of which
-279 are actual configuration and the rest comments and blanks.
+Say: *this picture is a YAML file* — **23 metrics** in **400 lines**, of which
+284 are actual configuration and the rest comments and blanks.
 `net_new_mrr` at the top decomposes into new, expansion, contraction and churned
 MRR: an exact arithmetic identity, so attribution across it is exact Shapley
 rather than a regression. Solid edges are identities; dashed ones are learned,
@@ -340,6 +340,16 @@ Then push it: set the cut to **−300%**. The engine flags `non_physical` on
 `customer_churn_rate`, `churned_subscriptions` and `churned_mrr` — a negative
 churn rate is arithmetic, not a business. Say that out loud: *it is telling you
 the scenario is nonsense rather than returning a confident number.*
+
+**If someone asks whether it only catches the negative side, show them the
+other one.** Clear the scenario and put `member_activity_rate` at **+300%**:
+it simulates to **1.025**, and the engine flags `non_physical` there too —
+102.5% of members active is not an ambitious quarter, it is more members than
+exist. The floor comes from history ("never been negative"); the ceiling comes
+from the tree, where the node declares `share: true` — a proportion cannot pass
+1 whatever the history contains. Until roadmap C26 (2026-08-27) only the floor
+existed, and this run reported the same 1.025 as merely *above the historical
+max* — which is the sentence a prospect discounts.
 
 Second scenario worth running: `marketing_spend` +30%. The effect on
 `net_new_mrr` arrives through the funnel *and through the lag*, and comes back

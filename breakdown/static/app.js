@@ -4380,6 +4380,14 @@ function applyWhatifOverlay() {
       n.addClass("warn-border");
       mark = (mark || "") + "⚠";
     }
+    // ...and the stronger verdict gets its own glyph, because the canvas card
+    // is the surface a prospect screenshots: "102.5%" with a ▲ and the same ⚠
+    // an ambitious-but-possible scenario earns is the picture roadmap C26 is
+    // about. `⊘` has a legend row of its own; the sentence is in the sidebar.
+    if (node.non_physical) {
+      n.addClass("warn-border");
+      mark = (mark || "") + "⊘";
+    }
     // the card shows the simulated value + its delta from baseline
     state.cardOverlay[name] = {
       value: node.simulated,
@@ -4468,6 +4476,24 @@ function renderWhatifResults() {
     const s = res.sources.find((x) => x.id === id);
     return s ? s.label : id;
   };
+  // `non_physical` is the engine saying a value cannot exist — a stronger
+  // claim than `extrapolation`, and the reason the what-if tab can say "this
+  // scenario is nonsense" instead of returning a confident number. It used to
+  // render only in the Warnings list at the bottom of the panel, so the card
+  // and the row for the impossible node itself said nothing (roadmap C26).
+  // The sentence lives once, in `warnings`; this indexes it by metric.
+  const impossibleWhy = {};
+  (res.warnings || []).forEach((wn) => {
+    if (wn.kind !== "non_physical") return;
+    (impossibleWhy[wn.metric] = impossibleWhy[wn.metric] || []).push(wn.detail);
+  });
+  const impossibleHtml = (name, node) =>
+    node.non_physical
+      ? `<div class="wf-warning">⊘ Physically impossible: ${
+          (impossibleWhy[name] || []).map((d) => esc(d)).join(" ") ||
+          esc(`The engine flagged '${name}' as outside what this metric can be.`)
+        }</div>`
+      : "";
 
 
   // outcome KPIs: affected nodes with no children
@@ -4503,7 +4529,7 @@ function renderWhatifResults() {
           node.fit_quality === "suspect"
             ? `<div class="wf-warning">⚠ The engine flagged the model behind <code>${esc(name)}</code> as suspect (ADVI: the ELBO had not settled, or PSIS k̂ says the approximation is far from the posterior; NUTS: R̂ / divergences / ESS over threshold). This outcome is propagated through that fit.</div>`
             : ""
-        }${khatBlockHtml(name, node)}
+        }${khatBlockHtml(name, node)}${impossibleHtml(name, node)}
         ${waterfallHtml(name, node, labelFor)}
       </div>`;
     })
@@ -4518,6 +4544,13 @@ function renderWhatifResults() {
       const ci = node.delta.ci_95;
       return `<tr>
         <td><code>${esc(n)}</code>${node.status === "intervened" ? ' <span class="chip lag">⊙ set</span>' : ""}${node.extrapolation && node.extrapolation.flag ? " ⚠" : ""}${
+          // Named rather than another bare ⚠: "outside what we have seen" and
+          // "cannot exist" are different verdicts, and the row is where the
+          // reader meets the number they would otherwise quote (C26).
+          node.non_physical
+            ? ` <span class="cause-flag" title="${esc((impossibleWhy[n] || []).join(" "))}">⊘ physically impossible</span>`
+            : ""
+        }${
           node.fit_quality === "suspect"
             ? ' <span class="cause-flag" title="The engine flagged the model behind this node as suspect — for ADVI, an ELBO that had not settled or a PSIS k̂ far from the posterior; for NUTS, R̂ / divergences / ESS over threshold. This row is propagated through that fit.">⚠ suspect fit</span>'
             : ""

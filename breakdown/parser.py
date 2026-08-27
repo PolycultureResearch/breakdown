@@ -713,6 +713,35 @@ class MetricDefinition(BaseModel):
     # payload's `window_aggregate_reason`, into `breakdown doctor` — so the
     # argument is made once, in the tree, and read everywhere.
     no_denominator: Optional[str] = None
+    # **This rate is a proportion: it lies in [0, 1] by construction** (roadmap
+    # C26). Not a prior, not a plausibility band, and never inferred — it is a
+    # fact about the metric's *definition*, and the what-if engine reads it as
+    # a hard bound: a simulated value outside it is `non_physical` (impossible)
+    # rather than `extrapolation` (unusual), on both sides, without consulting
+    # history.
+    #
+    # It has to be declared because **nothing already in the tree implies it.**
+    # C26 was filed believing `denominator` did — "a rate with a denominator is
+    # a share of that denominator" — and it does not. `denominator` says only
+    # how the rate aggregates over time (Σnum / Σden); the repo's own trees are
+    # full of rates that declare one and legitimately exceed 1:
+    # `average_order_value` (`denominator: order_count`, ~$182 an order) in
+    # the bundled example, `avg_price`, `average_upsell_mrr`,
+    # `sent_emails_per_contact`
+    # ("a per-unit intensity, not a count"), `trial_days_active`. Reading a
+    # ceiling off `denominator` would have printed "$182 per order is
+    # impossible" on the default tree. Two other candidates fail on the same
+    # counterexample: `format.style: percent` is presentation only and net
+    # dollar retention is a percentage that is *supposed* to exceed 100%, and
+    # `plausible` means plausible — a value outside a declared plausible band
+    # is unusual, not impossible, which is exactly the distinction this field
+    # exists to make.
+    #
+    # `None` and `False` both leave the node unbounded; only `True` asserts.
+    # It is `Optional` rather than defaulting to `False` for C21's reason —
+    # `model_dump()` cannot tell a default from a declaration, so an undeclared
+    # node must serialize as undeclared.
+    share: Optional[bool] = None
     sql: Optional[str] = None
     # How this node gets its series, when it does not inherit the tree-level
     # `provider`. A node is *bound* (this is set, or the tree provider serves
@@ -901,6 +930,14 @@ class MetricDefinition(BaseModel):
                         f"value, so neither has one — nor a stated absence of "
                         f"one. Declare `kind: rate`, or drop the `{field}`."
                     )
+            if self.share is not None:
+                raise ValueError(
+                    f"Metric '{self.name}' declares `share` but "
+                    f"`kind: {self.kind}`. A share is a proportion of a whole, "
+                    "which is a rate; a flow sums over time and a stock takes "
+                    "its last value, and neither is bounded by 1. Declare "
+                    "`kind: rate`, or drop the `share`."
+                )
             return self
 
         if self.denominator is not None and self.no_denominator is not None:

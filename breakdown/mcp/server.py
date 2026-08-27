@@ -265,6 +265,12 @@ async def explain_metric(name: str, tree: Optional[str] = None) -> Dict[str, Any
         definition["baseline"] = {"low": metric.baseline.low, "high": metric.baseline.high}
     if metric.plausible is not None:
         definition["plausible"] = {"min": metric.plausible.min, "max": metric.plausible.max}
+    # Present only when declared, like everything else here — and worth the
+    # tokens because it is decision-relevant *before* a scenario runs: an agent
+    # that knows this node is a proportion can pick a lever that stays inside
+    # [0, 1] rather than proposing one `run_whatif` will call impossible.
+    if metric.share is not None:
+        definition["share"] = metric.share
 
     if data is None:
         # Cold-start tree: no series exists; the asserted baseline above is

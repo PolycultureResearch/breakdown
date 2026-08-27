@@ -264,6 +264,7 @@ def test_compact_scenario():
                     "hist_mean": 1.5,
                     "hist_std": 0.2,
                 },
+                "non_physical": True,
                 "contributions": [{"source": "i:daily_sessions", "estimate": 216.9}],
             },
             "average_order_value": {
@@ -281,10 +282,14 @@ def test_compact_scenario():
                     "hist_mean": 1.5,
                     "hist_std": 0.2,
                 },
+                "non_physical": False,
                 "contributions": [],
             },
         },
-        "warnings": [{"kind": "extrapolation", "metric": "daily_sessions", "detail": "…"}],
+        "warnings": [
+            {"kind": "extrapolation", "metric": "daily_sessions", "detail": "…"},
+            {"kind": "non_physical", "metric": "daily_sessions", "detail": "…"},
+        ],
         "caveats": ["local slopes", "confounders", "asserted assumptions"],
     }
     out = compact_scenario(fixture)
@@ -293,6 +298,9 @@ def test_compact_scenario():
     assert out["mode"] == "fitted"
     # extrapolation stats collapse to the flag; detail lives in warnings
     assert out["nodes"]["daily_sessions"]["extrapolation"] is True
+    # ...and the stronger verdict travels beside it, or an agent holding only
+    # `extrapolation: true` cannot tell "unprecedented" from "impossible" (C26)
+    assert out["nodes"]["daily_sessions"]["non_physical"] is True
     # unaffected nodes shrink to their baseline
     assert out["nodes"]["average_order_value"] == {"status": "baseline", "baseline": 508.0}
     # caveats and warnings pass through verbatim
@@ -358,6 +366,7 @@ def test_compact_scenario_cold_start_keeps_belief_intervals():
                 "prob_direction": 1.0,
                 "fit_quality": None,
                 "extrapolation": {"flag": False, "plausible_min": 0.0, "plausible_max": None},
+                "non_physical": False,
                 "contributions": [{"source": "i:sessions", "estimate": 120.0}],
             },
             "aov": {
@@ -371,6 +380,7 @@ def test_compact_scenario_cold_start_keeps_belief_intervals():
                 "prob_direction": None,
                 "fit_quality": None,
                 "extrapolation": {"flag": False, "plausible_min": None, "plausible_max": None},
+                "non_physical": False,
                 "contributions": [],
             },
         },

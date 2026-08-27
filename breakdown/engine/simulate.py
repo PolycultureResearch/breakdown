@@ -40,6 +40,9 @@ from each edge's YAML prior — priors are already stated in business units;
 the `x_std/y_std` rescaling exists only to reach normalized space for
 fitting, so with nothing to fit the prior IS the coefficient distribution.
 Extrapolation flags come from declared `plausible` bounds instead of history.
+The `non_physical` flag is unchanged by the mode where the tree declares a
+bound (`share: true`): a declared bound is a fact about the metric, not an
+observation, so it holds with or without data.
 Propagation, do-operator semantics, draw alignment, and the Shapley source
 decomposition are identical; the response is labeled `mode: "cold_start"` and
 carries cold-start caveats. See `knowledge/cold_start_design.md`.
@@ -164,6 +167,104 @@ class ScenarioRequest(BaseModel):
         except ValueError:
             raise ValueError(f"must be a valid YYYY-MM-DD date, got '{v}'")
         return v
+
+
+#: What a *declaration* in the tree says a node's value cannot leave, as
+#: `(min, max)`. Structural, never empirical: no entry here may be derived from
+#: an observation, because history is evidence about what has happened and a
+#: bound of this kind is a fact about what the metric *is*.
+#:
+#: **Both ends or neither** (roadmap C26). The defect this table replaces was a
+#: physical-bound check with one side: `simulated < 0 and hist_min >= 0` fired
+#: on a negative churn rate and nothing at all fired on an activity rate
+#: simulated to 1.025 — 102.5% of members active, reported as merely "above the
+#: historical max". A bound that is a fact about the metric bounds it in both
+#: directions, so an entry naming one end is a half-written entry, and
+#: `tests/test_project_invariants.py` fails on one.
+_STRUCTURAL_BOUNDS: Dict[str, Tuple[float, float]] = {
+    # `share: true` — the node is a proportion of some whole. Nothing weaker
+    # implies this; see `MetricDefinition.share` for why `denominator`,
+    # `format.style: percent` and `plausible` were each rejected as a source.
+    "share": (0.0, 1.0),
+}
+
+
+def _structural_bounds(defn: Any) -> Tuple[Optional[float], Optional[float], Optional[str]]:
+    """The bounds the tree declares for this node, and the sentence for them.
+
+    Returns `(min, max, why)`, all `None` when the tree declares nothing. The
+    definition is the only input on purpose — a caller cannot pass history in.
+    """
+    if defn.share is True:
+        lo, hi = _STRUCTURAL_BOUNDS["share"]
+        return (
+            lo,
+            hi,
+            "the metric is declared a share (`share: true`), so it is a "
+            "proportion of a whole and cannot leave [0, 1] — whatever the "
+            "history happens to contain",
+        )
+    return None, None, None
+
+
+def _non_physical_warning(
+    node: str,
+    defn: Any,
+    simulated: float,
+    hist: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, str]]:
+    """The one place a simulated value is called impossible rather than unusual.
+
+    Two sources, and the difference between them is the whole point of the
+    split:
+
+    - **A declared bound** (`_STRUCTURAL_BOUNDS`) is a fact about the metric's
+      definition, so it applies in both directions, in both modes, and never
+      reads `hist` — `_structural_bounds` takes only the definition, so it
+      cannot.
+    - **The historical floor** is a *conservative inference*: a metric that has
+      never been negative is one that probably cannot be, which is why it is
+      gated on `hist_min >= 0` — plenty of metrics (net new MRR, a difference
+      of any two flows) go negative honestly. It has no ceiling counterpart and
+      must not grow one: "never observed above X" is an argument about the
+      sample, not about the quantity, and that is `extrapolation`'s job.
+
+    A node with a declared bound reports the declaration rather than the
+    inference when both apply. The declaration is the stronger claim and the
+    reader can check it against the tree; "never seen negative" they cannot.
+
+    `hist` is `None` in cold-start mode, where there is no history to infer
+    from — a declared bound still holds there, which is half of why this is one
+    function instead of a branch inside each mode.
+    """
+    lo, hi, why = _structural_bounds(defn)
+    if hi is not None and simulated > hi:
+        return {
+            "kind": "non_physical",
+            "metric": node,
+            "detail": (f"Simulated value {simulated:.4g} for '{node}' is above {hi:g}: {why}."),
+        }
+    if lo is not None and simulated < lo:
+        return {
+            "kind": "non_physical",
+            "metric": node,
+            "detail": (f"Simulated value {simulated:.4g} for '{node}' is below {lo:g}: {why}."),
+        }
+    if (
+        hist is not None
+        and hist.get("hist_min") is not None
+        and simulated < 0
+        and hist["hist_min"] >= 0
+    ):
+        return {
+            "kind": "non_physical",
+            "metric": node,
+            "detail": (
+                f"Simulated value {simulated:.4g} for '{node}' is negative but "
+                "the metric has never been negative historically."
+            ),
+        }
+    return None
 
 
 def _intervention_label(iv: Intervention) -> str:
@@ -750,6 +851,11 @@ def run_scenario(
                 "khat_status": None,
                 "khat_warnings": None,
                 "extrapolation": {"flag": False, **hist},
+                # An unaffected node's simulated value *is* its baseline, so
+                # this flag would be a statement about the loaded data rather
+                # than about the scenario. The data side is checked once at
+                # load (`api/main._check_declared_shares`), where it belongs.
+                "non_physical": False,
                 "contributions": [],
             }
             if cold_start:
@@ -807,17 +913,15 @@ def run_scenario(
                         f"standard deviations from the historical mean {hist['hist_mean']:.4g}."
                     )
                 warnings.append({"kind": "extrapolation", "metric": node, "detail": detail})
-            if simulated < 0 and hist["hist_min"] >= 0:
-                warnings.append(
-                    {
-                        "kind": "non_physical",
-                        "metric": node,
-                        "detail": (
-                            f"Simulated value {simulated:.4g} for '{node}' is negative but "
-                            "the metric has never been negative historically."
-                        ),
-                    }
-                )
+
+        impossible = _non_physical_warning(
+            node,
+            dag.nodes[node]["definition"],
+            simulated,
+            None if cold_start else hist,
+        )
+        if impossible is not None:
+            warnings.append(impossible)
 
         fit_quality = None
         khat_status = None
@@ -865,6 +969,11 @@ def run_scenario(
             "khat_status": khat_status,
             "khat_warnings": khat_warnings,
             "extrapolation": {"flag": bool(flag), **hist},
+            # Per node, beside the per-node `extrapolation` flag, because the
+            # two are different claims and the surfaces that render one must be
+            # able to render the other. The sentence lives once, in `warnings`
+            # (keyed by `metric`), rather than being copied here to drift.
+            "non_physical": impossible is not None,
             "contributions": contribs,
         }
         if cold_start:
