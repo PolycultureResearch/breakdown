@@ -494,3 +494,105 @@ def test_non_finite_scenario_is_refused_not_encoded():
     }
     with pytest.raises(ValueError, match="non-finite results for: b, c"):
         _refuse_non_finite(bad)
+
+
+SHARE_YAML = """
+metrics:
+  - name: sessions
+    source: dbt.metric.sessions
+  - name: signup_rate
+    source: dbt.metric.signup_rate
+    kind: rate
+    denominator: sessions
+    share: true
+  - name: sessions_per_visitor
+    source: dbt.metric.sessions_per_visitor
+    kind: rate
+    denominator: sessions
+"""
+
+
+def share_data(n: int = 60) -> pd.DataFrame:
+    dates = pd.date_range("2024-01-01", periods=n)
+    return pd.DataFrame(
+        {
+            "date": dates,
+            "sessions": np.full(n, 1000.0),
+            "signup_rate": np.full(n, 0.1),
+            "sessions_per_visitor": np.full(n, 2.0),
+        }
+    )
+
+
+def _simulate_share(metric: str, value: float):
+    return run_scenario(
+        Parser(SHARE_YAML).dag,
+        share_data(),
+        {},
+        ScenarioRequest(
+            **BASELINE,
+            interventions=[Intervention(metric=metric, mode="set", value=value)],
+        ),
+    )
+
+
+def test_a_declared_share_cannot_be_simulated_above_one():
+    """The ceiling half of the physical-bound check (roadmap C26).
+
+    A share pushed past 1 is impossible, not unprecedented: 102.5% of members
+    active is not a bold forecast. Before this, the response said only "above
+    the historical max", which is the sentence a reader discounts.
+    """
+    result = _simulate_share("signup_rate", 1.5)
+    node = result["nodes"]["signup_rate"]
+    assert node["simulated"] == pytest.approx(1.5)
+    assert node["non_physical"] is True
+    detail = next(w["detail"] for w in result["warnings"] if w["kind"] == "non_physical")
+    # The reason is the declaration, so a reader can check it against the tree.
+    assert "share" in detail and "1.5" in detail
+
+
+def test_a_declared_share_cannot_be_simulated_below_zero():
+    result = _simulate_share("signup_rate", -0.2)
+    assert result["nodes"]["signup_rate"]["non_physical"] is True
+
+
+def test_a_share_inside_its_bounds_gains_no_impossibility():
+    """A big move is still only a big move; `extrapolation` keeps that job."""
+    result = _simulate_share("signup_rate", 0.9)
+    node = result["nodes"]["signup_rate"]
+    assert node["extrapolation"]["flag"] is True  # constant history, so any move
+    assert node["non_physical"] is False
+    assert not [w for w in result["warnings"] if w["kind"] == "non_physical"]
+
+
+def test_a_rate_that_is_not_a_share_keeps_its_denominator_and_no_ceiling():
+    """`denominator` is not the declaration; this is the node that proves it.
+
+    `sessions_per_visitor` declares exactly what `signup_rate` does about how
+    it aggregates over time, and 2.5 sessions per visitor is ordinary. Reading
+    a ceiling off `denominator` — C26's original scope — would have called it
+    impossible, and would have said the same of the bundled example tree's
+    ~$182 `average_order_value`.
+    """
+    result = _simulate_share("sessions_per_visitor", 2.5)
+    assert result["nodes"]["sessions_per_visitor"]["non_physical"] is False
+    assert not [w for w in result["warnings"] if w["kind"] == "non_physical"]
+
+
+def test_a_non_rate_node_is_untouched_by_the_ceiling():
+    """A value above 1 on a non-rate node is just a value: $55 is not an
+    impossibility, and neither is the $5,500 of revenue it implies."""
+    result = run_scenario(
+        make_dag(),
+        make_data(),
+        {},
+        ScenarioRequest(
+            **BASELINE,
+            interventions=[Intervention(metric="average_order_value", mode="set", value=55.0)],
+        ),
+    )
+    assert result["nodes"]["average_order_value"]["simulated"] == pytest.approx(55.0)
+    assert result["nodes"]["average_order_value"]["non_physical"] is False
+    assert result["nodes"]["revenue"]["non_physical"] is False
+    assert not [w for w in result["warnings"] if w["kind"] == "non_physical"]

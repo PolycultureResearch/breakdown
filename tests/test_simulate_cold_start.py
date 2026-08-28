@@ -219,6 +219,43 @@ def test_plausible_bounds_flag_extrapolation():
     )
     # revenue moved further but declares no bounds: no flag, no invented band
     assert result["nodes"]["revenue"]["extrapolation"]["flag"] is False
+    # ...and `plausible` stays what it says it is: a band of what the author
+    # expects, so leaving it is `extrapolation`, never `non_physical`. The two
+    # answer different questions and C26's ceiling is the second one.
+    assert oc["non_physical"] is False
+    assert not [w for w in result["warnings"] if w["kind"] == "non_physical"]
+
+
+SHARE_COLD_START_YAML = """
+metrics:
+  - name: visitors
+    source: assumed
+    baseline: 1000
+  - name: signup_rate
+    source: assumed
+    kind: rate
+    denominator: visitors
+    share: true
+    baseline: 0.2
+"""
+
+
+def test_a_declared_share_is_bounded_with_no_history_at_all():
+    """A declared bound is a fact about the metric, so cold start has it too.
+
+    This is the half of C26 that says the ceiling is structural rather than
+    empirical: there is no `hist_max` here to be above, no `plausible` band
+    declared, and the scenario is still impossible.
+    """
+    result = run(
+        make_dag(SHARE_COLD_START_YAML),
+        interventions=[Intervention(metric="signup_rate", mode="set", value=1.4)],
+    )
+    node = result["nodes"]["signup_rate"]
+    assert node["simulated"] == pytest.approx(1.4)
+    assert node["extrapolation"]["flag"] is False  # nothing declared a band
+    assert node["non_physical"] is True
+    assert [w["kind"] for w in result["warnings"]] == ["non_physical"]
 
 
 def test_shapley_decomposition_uses_prior_means():

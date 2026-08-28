@@ -201,6 +201,7 @@ def _fetch_all_metrics(parser, fetcher, provider_type, start_date, end_date) -> 
     data = build_grained(per_metric, grain_of, kind_of, denominator_of, no_denominator_of)
     _report_undefined_periods(parser, data)
     _check_identities(parser, data)
+    _check_declared_shares(parser, data)
     return data
 
 
@@ -372,6 +373,57 @@ def _check_identities(parser, data: GrainedData) -> None:
             defn.formula,
             100 * drift,
             ", ".join(f"{dates[i].date()} (Δ{residual[i]:.4g})" for i in worst),
+        )
+
+
+# A share stored as `1.0000000002` is a rounding artefact, not a claim that
+# 100.00000002% of anything happened. Tiny and absolute rather than relative:
+# the quantity is a proportion, so its scale is known.
+_SHARE_EPS = 1e-9
+
+
+def _check_declared_shares(parser, data: GrainedData) -> None:
+    """Check every `share: true` node against its own data, at **load**.
+
+    `share: true` is what makes a simulated value *impossible* rather than
+    unusual (roadmap C26), and it is the author's assertion — so the one thing
+    that must not happen is a mis-declaration turning into a confident refusal
+    of a scenario that was fine. Nothing else in the tree can catch it: the
+    parser sees no data, and the what-if engine sees one window.
+
+    This is the check running the other way. If the loaded history itself
+    leaves [0, 1], then either the declaration is wrong or the source is, and
+    the run is going to print "impossible" over values the warehouse has
+    already recorded. Say so once, with the range it actually runs, and keep
+    going — a
+    log line, not a refusal, because the honest reading of the disagreement
+    depends on which side is wrong and the parser cannot know.
+    """
+    for name in parser.get_topological_order():
+        if parser.dag.nodes[name]["definition"].share is not True:
+            continue
+        try:
+            series = data.series(name)[name].to_numpy(dtype=float)
+        except (ValueError, RuntimeError, KeyError) as e:  # pragma: no cover - defensive
+            logger.info("share check skipped for '%s': %s", name, e)
+            continue
+        observed = series[np.isfinite(series)]
+        if not observed.size:
+            continue
+        lo, hi = float(np.min(observed)), float(np.max(observed))
+        if lo >= -_SHARE_EPS and hi <= 1 + _SHARE_EPS:
+            continue
+        logger.warning(
+            "Metric '%s' declares `share: true` — a proportion, bounded by "
+            "[0, 1] — but its loaded series runs [%.4g, %.4g]. One of the two "
+            "is wrong, and until it is settled the what-if engine will call a "
+            "simulated value outside [0, 1] impossible for a metric whose own "
+            "history is already outside it. Drop the `share` if this rate can "
+            "genuinely exceed its whole (a per-unit intensity, a retention "
+            "rate above 100%%), or fix the source.",
+            name,
+            lo,
+            hi,
         )
 
 

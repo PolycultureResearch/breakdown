@@ -1545,3 +1545,199 @@ def test_the_documented_route_defaults_are_the_route_defaults():
             "A caller who reads the docs instead of the source gets a different "
             "posterior than the one they planned for (roadmap C27)."
         )
+
+
+# --- Every physical bound is two-sided, and none is read off history (C26) ----
+#
+# `simulate.py` decided, carefully and in a comment, that a metric which has
+# never been negative should not be simulated negative — and that check had one
+# side. A `member_activity_rate` simulated to 1.025 (102.5% of members active)
+# came back with `extrapolation: "above the historical max 0.3162"` and no
+# `non_physical` at all, in the same response that correctly called three
+# negative nodes impossible. Two impossibilities, one named as such.
+#
+# The fix is a declared bound (`share: true`) rather than an inferred one, and
+# the enumeration below is what stops the next bound from arriving with one
+# end. Note what it does *not* allow: a ceiling inferred from `hist_max`. "Never
+# observed above X" is a fact about the sample and belongs to `extrapolation`;
+# only a claim the tree makes about the quantity can call a value impossible.
+
+
+def test_every_structural_bound_is_two_sided():
+    """A bound that is a fact about the metric bounds it at both ends."""
+    assert simulate_mod._STRUCTURAL_BOUNDS, "the bounds table cannot be empty"
+    for declaration, bounds in simulate_mod._STRUCTURAL_BOUNDS.items():
+        lo, hi = bounds
+        assert lo is not None and hi is not None, (
+            f"`{declaration}` declares only one end of its range ({bounds}). A "
+            "structural bound is a fact about what the metric is, and a fact "
+            "with one side is how C26 happened: the floor fired and the "
+            "ceiling did not exist. If the declaration genuinely bounds one "
+            "end only, it is not structural — say why in this table and here."
+        )
+        assert lo < hi
+
+
+def test_the_impossible_verdict_is_reached_from_exactly_one_place():
+    """Every `non_physical` warning in `simulate.py` comes out of one function.
+
+    Enumerated rather than pinned, because the defect was not a wrong check —
+    it was a *second* place that would have needed the same policy and never
+    got it. A new bound added anywhere else in the module fails here.
+    """
+    tree = ast.parse((PACKAGE / "engine" / "simulate.py").read_text())
+    emitters = set()
+    for func in ast.walk(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(func):
+            if not isinstance(node, ast.Dict):
+                continue
+            for key, value in zip(node.keys, node.values):
+                if (
+                    isinstance(key, ast.Constant)
+                    and key.value == "kind"
+                    and isinstance(value, ast.Constant)
+                    and value.value == "non_physical"
+                ):
+                    emitters.add(func.name)
+    assert emitters == {"_non_physical_warning"}, (
+        f"`non_physical` is decided in {sorted(emitters)}. It must be decided in "
+        "`_non_physical_warning` alone — the one place that knows a declared "
+        "bound applies on both sides and in both modes, and that the historical "
+        "floor is an inference with no ceiling counterpart (roadmap C26)."
+    )
+
+
+def test_a_declared_bound_is_flagged_on_both_sides_and_never_from_history():
+    """The bound holds against a history that would happily permit the value."""
+
+    class _Defn:
+        share = True
+
+    # A history that contains 5 and -3 does not license a share of 1.5: the
+    # declaration is about the quantity, the history is about the sample.
+    permissive = {"hist_min": -3.0, "hist_max": 5.0, "hist_mean": 1.0, "hist_std": 2.0}
+    above = simulate_mod._non_physical_warning("r", _Defn(), 1.5, permissive)
+    below = simulate_mod._non_physical_warning("r", _Defn(), -0.5, permissive)
+    inside = simulate_mod._non_physical_warning("r", _Defn(), 0.5, permissive)
+
+    assert above is not None and above["kind"] == "non_physical"
+    assert below is not None and below["kind"] == "non_physical"
+    assert inside is None
+    # Both sentences cite the declaration, not the sample.
+    for w in (above, below):
+        assert "share" in w["detail"] and "historical" not in w["detail"]
+
+    # ...and with no history at all (cold start), which is the other half of
+    # "structural": a declared bound does not need data to hold.
+    assert simulate_mod._non_physical_warning("r", _Defn(), 1.5, None) is not None
+
+
+def test_an_undeclared_node_gets_no_structural_bound():
+    """The ceiling is opt-in, because nothing weaker implies it.
+
+    C26 was filed believing a `denominator` made a rate a share. The repo's own
+    trees say otherwise — `average_order_value` declares `denominator:
+    order_count` and is ~$182 an order — so a ceiling read off `denominator`
+    would print "$182 per order is impossible" on the bundled example tree,
+    where a +10% lever on it simulates to 203.5. This pins the
+    absence.
+    """
+    tree = Parser("""
+metrics:
+  - name: order_count
+    source: s.m.order_count
+  - name: average_order_value
+    source: s.m.aov
+    kind: rate
+    denominator: order_count
+""").dag
+    aov = tree.nodes["average_order_value"]["definition"]
+    assert aov.denominator == "order_count"
+    assert aov.share is None
+    assert simulate_mod._structural_bounds(aov) == (None, None, None)
+    assert simulate_mod._non_physical_warning("average_order_value", aov, 18.0, None) is None
+
+
+def test_every_surface_that_publishes_a_bound_verdict_publishes_both():
+    """The fifth rule's half of C26: the reader must be able to tell them apart.
+
+    `non_physical` reached only the panel-wide Warnings list, so the card and
+    the table row for the impossible node itself rendered clean — and the MCP
+    payload published `extrapolation` per node with no companion, leaving an
+    agent unable to tell "far outside what we have seen" from "cannot exist".
+    Both surfaces are read here, since neither has a test runner of its own.
+    """
+    for path, minimum in (
+        (PACKAGE / "mcp" / "shaping.py", 1),
+        (PACKAGE / "static" / "app.js", 2),  # the outcome card and the table row
+    ):
+        source = path.read_text()
+        assert source.count("non_physical") >= minimum, (
+            f"{path.name} renders or publishes fewer than {minimum} references to "
+            "`non_physical`. Every surface that carries the per-node "
+            "`extrapolation` verdict carries the stronger one beside it "
+            "(roadmap C26); if the wording changed, update this test, and if "
+            "the flag stopped being shown, put it back."
+        )
+
+
+def test_a_declared_share_is_checked_against_its_own_data_at_load(caplog, tmp_path, monkeypatch):
+    """The declaration that makes a value impossible is itself checkable.
+
+    `share: true` is an author's claim, and it is the claim that turns a
+    what-if into a refusal — so a wrong one is a confident refusal of a
+    perfectly possible scenario, which is the failure this project exists to
+    avoid. Nothing else can catch it: the parser sees no data and the what-if
+    engine sees one window. This runs the check the other way, once, at load.
+    """
+    tree = tmp_path / "share.yml"
+    tree.write_text("""
+provider: {type: mock}
+metrics:
+  - name: sessions
+    source: t.metrics.sessions
+  - name: honest_rate
+    source: t.metrics.honest_rate
+    kind: rate
+    denominator: sessions
+    share: true
+  - name: retention
+    source: t.metrics.retention
+    kind: rate
+    denominator: sessions
+    share: true
+""")
+    monkeypatch.setenv("BREAKDOWN_TREE", str(tree))
+    monkeypatch.setenv("BREAKDOWN_START_DATE", "2024-01-01")
+    monkeypatch.setenv("BREAKDOWN_END_DATE", "2024-03-31")
+    from fastapi.testclient import TestClient
+
+    from breakdown.grains import GrainedData
+
+    real_series = GrainedData.series
+
+    def series(self, name):
+        out = real_series(self, name)
+        if name == "retention":
+            # Net dollar retention's shape: a "rate" that is supposed to pass
+            # 1. The mis-declaration is the interesting case, not the fix.
+            out = out.copy()
+            out[name] = out[name].to_numpy(dtype=float) + 1.0
+        return out
+
+    monkeypatch.setattr(GrainedData, "series", series)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="breakdown.api.main"):
+        with TestClient(app) as client:
+            assert client.get("/health").json()["status"] == "ok"
+    said = [r.getMessage() for r in caplog.records if "`share: true`" in r.getMessage()]
+    assert any("retention" in m for m in said), (
+        "a `share: true` node whose own history leaves [0, 1] was accepted in "
+        f"silence; warnings were {said}. The engine is about to call a "
+        "simulated 1.2 impossible for a metric it has already recorded at 1.2."
+    )
+    assert not any("honest_rate" in m for m in said), (
+        "a share whose data agrees with its declaration was warned about"
+    )

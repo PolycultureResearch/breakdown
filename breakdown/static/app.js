@@ -18,7 +18,7 @@ const state = {
     sparkLen: 30,      // sparkline trailing window, in data points
     overrides: {},     // metric name -> variant (per-node override of `variant`)
   },
-  cardOverlay: {},     // metric name -> {value,dpct,dir,mark} while RCA / what-if is active (transient)
+  cardOverlay: {},     // metric name -> {value,dpct,dir,mark,basis} while RCA / what-if is active (transient)
   asOf: null,          // ISO date anchoring card headlines; defaults to the tree-wide data edge
   rca: null,           // last POST /rca response
   refMode: "auto",     // "auto": server picks the reference (matched adjacent block); "custom": user-typed
@@ -1820,6 +1820,15 @@ function periodEndISO(iso, grain) {
   return dt.toISOString().slice(0, 10);
 }
 
+/* A count of grain periods, abbreviated for the pill: 7 weeks -> `7w`. An
+   unknown grain falls back to `pts` — the unit the Display control itself
+   uses — rather than guessing a letter the metric may not be denominated in. */
+const GRAIN_ABBR = { day: "d", week: "w", month: "mo" };
+function periodSpan(n, grain) {
+  const u = GRAIN_ABBR[grain];
+  return u ? `${n}${u}` : `${n} pts`;
+}
+
 /* Derive the card's numbers from a metric's native-grain series + the current
    config. Big number = latest value at the as-of anchor; delta = that vs
    `deltaLen` points earlier; sparkline = trailing `sparkLen` points. Points
@@ -1843,9 +1852,9 @@ function deriveCardData(name) {
   }
   const value = lastIdx >= 0 ? s[lastIdx] : null;
 
-  let prior = null;
+  let prior = null, priorIdx = -1;
   for (let i = lastIdx - cfg.deltaLen; i >= 0; i--) {
-    if (s[i] != null) { prior = s[i]; break; }
+    if (s[i] != null) { prior = s[i]; priorIdx = i; break; }
   }
   let dpct = null, dir = "flat";
   if (value != null && prior != null && prior !== 0) {
@@ -1854,13 +1863,26 @@ function deriveCardData(name) {
     dir = dabs > 1e-12 ? "up" : dabs < -1e-12 ? "down" : "flat";
   }
 
-  const spark = s.slice(Math.max(0, s.length - cfg.sparkLen)).filter((v) => v != null);
-  return { value, dpct, dir, spark };
+  // The sparkline drops nulls, so its indices are not the series'. Keep the
+  // map, because the delta's start point has to be marked on the line it was
+  // measured from and an off-by-one there is a lie about which period moved.
+  const spark = [], sparkAt = [];
+  for (let i = Math.max(0, s.length - cfg.sparkLen); i < s.length; i++) {
+    if (s[i] != null) { spark.push(s[i]); sparkAt.push(i); }
+  }
+
+  // What the delta *actually* compared, in the metric's own periods — counted
+  // from the point the scan landed on, not from `deltaLen`, because that scan
+  // walks back past nulls and a gap in the series makes the real lookback
+  // longer than the setting. The card says `7w`, and it is seven weeks.
+  const basis = dpct == null ? null : periodSpan(lastIdx - priorIdx, m && m.grain);
+  const markAt = dpct == null ? -1 : sparkAt.indexOf(priorIdx);
+  return { value, dpct, dir, spark, basis, markAt };
 }
 
 /* Sparkline: filled area (gradient id="g") + line + endpoint dot, mapped into
    the rectangle [x0,y0]-[x1,y1] (y0 top). */
-function sparkPaths(data, x0, x1, y0, y1, col) {
+function sparkPaths(data, x0, x1, y0, y1, col, markAt = -1) {
   const n = data.length;
   if (n < 2) return "";
   const min = Math.min(...data), max = Math.max(...data), rng = (max - min) || 1;
@@ -1870,30 +1892,58 @@ function sparkPaths(data, x0, x1, y0, y1, col) {
   const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
   const area = `${line} L ${X(n - 1).toFixed(1)} ${y1} L ${X(0).toFixed(1)} ${y1} Z`;
   const e = pts[n - 1];
+  // Hollow ring at the delta's other end. The pill compares the solid endpoint
+  // dot to this one, and the two spans differ by design (`deltaLen` vs
+  // `sparkLen`), so a card whose line rises under a pill that falls shows the
+  // reader *why* instead of reading as a contradiction. Left unfilled because
+  // white, accent-soft and an RCA tint all sit under this SVG — a filled dot
+  // would be the wrong color on three of the four.
+  const mk = markAt >= 0 && markAt < n - 1 ? pts[markAt] : null;
   return (
     `<path d="${area}" fill="url(#g)"/>` +
     `<path d="${line}" fill="none" stroke="${col}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>` +
+    (mk ? `<circle cx="${mk[0].toFixed(1)}" cy="${mk[1].toFixed(1)}" r="2.6" fill="none" stroke="${col}" stroke-width="1.3" stroke-opacity="0.75"/>` : "") +
     `<circle cx="${e[0].toFixed(1)}" cy="${e[1].toFixed(1)}" r="2.4" fill="${col}"/>`
   );
 }
 
-/* Delta as a colored pill centered on (cx, baseline). `mark` is an optional
-   trailing glyph (◌ unexplained, ⊙ set by scenario, ⚠ extrapolated). Width is
-   estimated from the text length — good enough at this size. */
-function deltaSvg(dpct, dir, mark, cx, baseline, colorDir = dir) {
+/* Delta as a colored pill centered on (cx, baseline). `basis` names what the
+   percentage was measured against (`7w`, `vs ref`, `vs base`) and rides inside
+   the pill, dimmed. A change and the window it was taken over are one claim,
+   and this card draws two different windows on purpose — the delta's
+   `deltaLen` and the sparkline's `sparkLen`. Unlabelled, the pair is unreadable
+   rather than merely dense: `new_mrr` on the bundled weekly tree drew a
+   sparkline up 16% across its 23 weeks under a pill down 8.3% across the last
+   7, and both numbers were right. It goes *inside* the pill rather than in a
+   caption beneath it because at canvas zoom a 10px caption is sub-pixel; here
+   it is the same 12.5px as the number it qualifies.
+
+   `mark` is an optional trailing glyph (◌ unexplained, ⊙ set by scenario,
+   ⚠ extrapolated). Width is estimated from the text length — good enough at
+   this size. */
+function deltaSvg(dpct, dir, mark, cx, baseline, colorDir = dir, basis = null) {
   const hasVal = dpct != null;
   if (!hasVal && !mark) {
     return `<text x="${cx}" y="${baseline}" text-anchor="middle" font-size="12.5" fill="${COL.faint}" font-family="${CARD_FONT}">—</text>`;
   }
   const col = CARD_COL[colorDir] || CARD_COL.flat, bg = CARD_COL_SOFT[colorDir] || CARD_COL_SOFT.flat;
   const tri = dir === "up" ? "▲" : dir === "down" ? "▼" : "▬";
-  let txt = hasVal ? `${tri} ${signedPct(dpct)}` : "—";
-  if (mark) txt += ` ${mark}`;
-  const w = txt.length * 7 + 14;
+  const head = hasVal ? `${tri} ${signedPct(dpct)}` : "—";
+  const tail = mark ? ` ${mark}` : "";
+  // If the three parts cannot fit the card, the basis is what goes — never the
+  // glyph, which is the one saying the number should not be trusted as it
+  // stands. Only a pathological percentage gets near this at CARD_W = 200.
+  let mid = hasVal && basis ? ` · ${basis}` : "";
+  let w = (head.length + mid.length + tail.length) * 7 + 14;
+  if (w > CARD_W - 8) {
+    mid = "";
+    w = (head.length + tail.length) * 7 + 14;
+  }
   const x = cx - w / 2;
   return (
     `<rect x="${x.toFixed(1)}" y="${baseline - 14}" width="${w.toFixed(1)}" height="19" rx="6" fill="${bg}"/>` +
-    `<text x="${cx}" y="${baseline}" text-anchor="middle" font-size="12.5" font-weight="600" fill="${col}" font-family="${CARD_FONT}">${esc(txt)}</text>`
+    `<text x="${cx}" y="${baseline}" text-anchor="middle" font-size="12.5" font-weight="600" fill="${col}" font-family="${CARD_FONT}">` +
+    `${esc(head)}${mid ? `<tspan font-weight="500" fill-opacity="0.62">${esc(mid)}</tspan>` : ""}${esc(tail)}</text>`
   );
 }
 
@@ -1909,6 +1959,7 @@ function buildCardSVG(name, d, variant, isOverride, overlay) {
   const dpct = overlay ? overlay.dpct : d.dpct;
   const dir = overlay ? overlay.dir : d.dir;
   const mark = overlay ? overlay.mark : null;
+  const basis = overlay ? overlay.basis : d.basis;
 
   // Optional unit caption under the value; everything below it shifts down.
   const unit = metricFormat(name).unit;
@@ -1933,15 +1984,18 @@ function buildCardSVG(name, d, variant, isOverride, overlay) {
       `<stop offset="0" stop-color="${col}" stop-opacity="0.15"/>` +
       `<stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>`;
     const y0 = (showDelta ? 64 : 70) + uOff, y1 = (showDelta ? 96 : 104) + uOff;
-    inner += sparkPaths(d.spark, 16, CARD_W - 16, y0, y1, col);
+    // Only the card's own history delta has a start point on this line: an
+    // overlay's percentage is measured against an RCA reference window or a
+    // what-if baseline, and neither is a point in the drawn series.
+    inner += sparkPaths(d.spark, 16, CARD_W - 16, y0, y1, col, showDelta && !overlay ? d.markAt : -1);
   }
 
   if (showDelta) {
     if (showSpark) {
       inner += `<line x1="16" y1="${110 + uOff}" x2="${CARD_W - 16}" y2="${110 + uOff}" stroke="${COL.rule}" stroke-width="1"/>`;
-      inner += deltaSvg(dpct, dir, mark, cx, 130 + uOff, colorDir);
+      inner += deltaSvg(dpct, dir, mark, cx, 130 + uOff, colorDir, basis);
     } else {
-      inner += deltaSvg(dpct, dir, mark, cx, 82 + uOff, colorDir);
+      inner += deltaSvg(dpct, dir, mark, cx, 82 + uOff, colorDir, basis);
     }
   }
 
@@ -1969,7 +2023,7 @@ function buildColdCardSVG(name, cb, overlay) {
     `<text x="${cx}" y="52" text-anchor="middle" font-size="34" font-weight="700" fill="${COL.text}" font-family="${CARD_FONT}">${esc(fmtCardValue(name, val))}</text>`;
 
   if (overlay) {
-    inner += deltaSvg(overlay.dpct, overlay.dir, overlay.mark, cx, 82, goodDir(name, overlay.dir));
+    inner += deltaSvg(overlay.dpct, overlay.dir, overlay.mark, cx, 82, goodDir(name, overlay.dir), overlay.basis);
   } else {
     const sub = cb && cb.lo != null
       ? `${fmtCardValue(name, cb.lo)} – ${fmtCardValue(name, cb.hi)} · 90% belief`
@@ -3121,6 +3175,10 @@ function applyRcaOverlay() {
       // arrow *upward* — check for it rather than letting it read as growth.
       // A gap of exactly zero is the same non-claim and gets the same ▬.
       dir: gapDir(node.gap) || "flat",
+      // Not a period count: this is the analysis window against the reference
+      // window, which the node may have had snapped to its own grain. The pill
+      // says which comparison it is and the sidebar says over which dates.
+      basis: "vs ref",
       mark,
     };
     node.contributions.forEach((c) => {
@@ -4380,11 +4438,20 @@ function applyWhatifOverlay() {
       n.addClass("warn-border");
       mark = (mark || "") + "⚠";
     }
+    // ...and the stronger verdict gets its own glyph, because the canvas card
+    // is the surface a prospect screenshots: "102.5%" with a ▲ and the same ⚠
+    // an ambitious-but-possible scenario earns is the picture roadmap C26 is
+    // about. `⊘` has a legend row of its own; the sentence is in the sidebar.
+    if (node.non_physical) {
+      n.addClass("warn-border");
+      mark = (mark || "") + "⊘";
+    }
     // the card shows the simulated value + its delta from baseline
     state.cardOverlay[name] = {
       value: node.simulated,
       dpct: node.relative_delta,
       dir: est > 0 ? "up" : est < 0 ? "down" : "flat",
+      basis: "vs base",
       mark,
     };
   });
@@ -4468,6 +4535,24 @@ function renderWhatifResults() {
     const s = res.sources.find((x) => x.id === id);
     return s ? s.label : id;
   };
+  // `non_physical` is the engine saying a value cannot exist — a stronger
+  // claim than `extrapolation`, and the reason the what-if tab can say "this
+  // scenario is nonsense" instead of returning a confident number. It used to
+  // render only in the Warnings list at the bottom of the panel, so the card
+  // and the row for the impossible node itself said nothing (roadmap C26).
+  // The sentence lives once, in `warnings`; this indexes it by metric.
+  const impossibleWhy = {};
+  (res.warnings || []).forEach((wn) => {
+    if (wn.kind !== "non_physical") return;
+    (impossibleWhy[wn.metric] = impossibleWhy[wn.metric] || []).push(wn.detail);
+  });
+  const impossibleHtml = (name, node) =>
+    node.non_physical
+      ? `<div class="wf-warning">⊘ Physically impossible: ${
+          (impossibleWhy[name] || []).map((d) => esc(d)).join(" ") ||
+          esc(`The engine flagged '${name}' as outside what this metric can be.`)
+        }</div>`
+      : "";
 
 
   // outcome KPIs: affected nodes with no children
@@ -4503,7 +4588,7 @@ function renderWhatifResults() {
           node.fit_quality === "suspect"
             ? `<div class="wf-warning">⚠ The engine flagged the model behind <code>${esc(name)}</code> as suspect (ADVI: the ELBO had not settled, or PSIS k̂ says the approximation is far from the posterior; NUTS: R̂ / divergences / ESS over threshold). This outcome is propagated through that fit.</div>`
             : ""
-        }${khatBlockHtml(name, node)}
+        }${khatBlockHtml(name, node)}${impossibleHtml(name, node)}
         ${waterfallHtml(name, node, labelFor)}
       </div>`;
     })
@@ -4518,6 +4603,13 @@ function renderWhatifResults() {
       const ci = node.delta.ci_95;
       return `<tr>
         <td><code>${esc(n)}</code>${node.status === "intervened" ? ' <span class="chip lag">⊙ set</span>' : ""}${node.extrapolation && node.extrapolation.flag ? " ⚠" : ""}${
+          // Named rather than another bare ⚠: "outside what we have seen" and
+          // "cannot exist" are different verdicts, and the row is where the
+          // reader meets the number they would otherwise quote (C26).
+          node.non_physical
+            ? ` <span class="cause-flag" title="${esc((impossibleWhy[n] || []).join(" "))}">⊘ physically impossible</span>`
+            : ""
+        }${
           node.fit_quality === "suspect"
             ? ' <span class="cause-flag" title="The engine flagged the model behind this node as suspect — for ADVI, an ELBO that had not settled or a PSIS k̂ far from the posterior; for NUTS, R̂ / divergences / ESS over threshold. This row is propagated through that fit.">⚠ suspect fit</span>'
             : ""

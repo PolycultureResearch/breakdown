@@ -530,7 +530,10 @@ config changes.
 
 **Honesty flags.** Extrapolation warnings come from the tree's declared
 `plausible` bounds (there is no history to compare against); a node with no
-bounds is never flagged, which means *unchecked*, not *safe*. Belief draws
+bounds is never flagged, which means *unchecked*, not *safe*. The
+`non_physical` flag is unaffected by the mode: a `share: true` rate is bounded
+to `[0, 1]` because that is what the metric *is*, so it holds with no data as
+readily as with two years of it. Belief draws
 are sampled independently per edge and per baseline. Correlated beliefs
 ("if price lands high, conversion lands low") are not represented, so
 intervals may be too narrow or too wide where beliefs co-vary. Both caveats
@@ -644,6 +647,20 @@ ship in every cold-start response.
    over MCP, and you should read its intervals and components as approximate. The
    real fix is a zero-inflated or count likelihood, tracked as roadmap S20;
    until it lands, the warning is the disclosure.
+8. **A what-if knows a value is impossible only where the tree says so.** Two
+   flags ride on every simulated node. `extrapolation` is empirical — outside
+   the loaded history, or outside the declared `plausible` band in cold start.
+   `non_physical` says the value cannot exist, and it has exactly two sources:
+   a bound the tree declares
+   ([`share: true`](yaml-reference.md#grains), which bounds a rate to
+   `[0, 1]` at both ends, with or without data), and the conservative
+   inference that a metric which has never been negative should not be
+   simulated negative. That is the whole list. Nothing is read off the
+   *upper* end of history, deliberately: "never observed above X" is a fact
+   about the sample, and calling it impossible would flag every genuinely
+   ambitious scenario. The cost is that an undeclared share has no ceiling —
+   simulate it to 130% and the response will say only that it is above the
+   historical maximum. The remedy is one line in the tree.
 
 ---
 
