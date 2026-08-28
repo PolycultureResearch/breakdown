@@ -579,7 +579,8 @@ ship in every cold-start response.
    latent trend state per fitted period, strongly correlated with its
    neighbours. A factorized Gaussian cannot represent that, and the
    measurement is not marginal: against the conventional 0.7 bar, mean-field
-   scored 10.18 / 1.07 / 0.85 / 1.36 on the demo tree's four learned nodes,
+   scored 10.18 ± 1.04 / 1.07 ± 0.19 / 0.85 ± 0.17 / 1.36 ± 0.22 on the demo
+   tree's four learned nodes (each ± is k̂'s own standard error, below),
    1.04 on the bundled jaffle tree's one, and 1.26 / 0.88 / 1.11 / 10.43 on a
    second demo window. The same diagnostic returns 0.31 on a posterior
    mean-field *can* represent, 0.95 on Neal's funnel and 4.1 on a collinear
@@ -621,6 +622,30 @@ ship in every cold-start response.
    | `suspect` | ≤ 0.7 | Measurably off — the importance ratios have no finite variance. Read the intervals as approximate. |
    | `unusable` | > 0.7 | Not close, and not fixable by reweighting. **The intervals are not evidence about how wide the real ones are.** |
    | `unavailable` | — | The check could not run. An unchecked fit, not a clean one. |
+
+   **k̂ is itself an estimate, and it reports its own error.** It is fitted to
+   the tail of 1,000 sampled importance ratios — 95 tail points, in ArviZ's
+   parameterization — so it has sampling error like any other estimate, and
+   that error is not small: `khat_se` is roughly 0.15 near the 0.5 bar and
+   0.2 near k̂ = 1, which is most of the width of the `suspect` band itself.
+   Where k̂ lands closer to a band edge than to its own standard error, the
+   fit carries **`khat_borderline: true`** and the warning names the bands the
+   estimate cannot separate — all three of them where k̂ is within one error of
+   *both* edges, which a 0.2-wide `suspect` band makes easy. `fit_quality`
+   goes `suspect` there too, including from an `ok` k̂, because "not shown to
+   be far from the posterior" is not the same as "shown to be close to it".
+   Read a borderline node as the worst band it reaches. One of the demo tree's own nodes is in exactly
+   this position: `trial_conversion_rate` scores k̂ 0.85 ± 0.17, which is
+   `unusable` on the point estimate but does not separate `unusable` from
+   `suspect`.
+
+   Buying that error down is expensive and the engine does not: the Pareto
+   tail grows as √n, so the error falls as n^(−1/4) and halving it costs
+   16× the draws. Reporting it costs nothing and is what lets you see when a
+   band is a coin flip. (Roadmap S22; the same route also seeds its fit, so
+   the same request twice now returns the same k̂ — before 2026-08-27 it did
+   not, and two consecutive calls on `customer_churn_rate` returned 1.23 and
+   1.91.)
 
    A NUTS fit has **no** `khat_status`, and that absence is not a missing
    check — it is the absence of anything to check. k̂ never triggers a re-fit:

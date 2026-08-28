@@ -59,6 +59,7 @@ import pandas as pd
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from breakdown.engine.model import (
+    FIT_RANDOM_SEED,
     NUTS_DRAWS,
     cached_fit_is_usable,
     fit_metric,
@@ -631,7 +632,7 @@ def run_scenario(
                 draws=draws,
                 inference_method=inference_method,
                 fit_end=fit_end_key,
-                random_seed=0,
+                random_seed=FIT_RANDOM_SEED,
             )
         except ValueError as e:
             # `run_rca` degrades this to a per-node `fit_failed` and answers for
@@ -849,6 +850,7 @@ def run_scenario(
                 "prob_direction": None,
                 "fit_quality": None,
                 "khat_status": None,
+                "khat_borderline": None,
                 "khat_warnings": None,
                 "extrapolation": {"flag": False, **hist},
                 # An unaffected node's simulated value *is* its baseline, so
@@ -925,6 +927,7 @@ def run_scenario(
 
         fit_quality = None
         khat_status = None
+        khat_borderline = None
         khat_warnings = None
         if not cold_start and node in needs_beta:
             dx = traces[(node, fit_end_key)].diagnostics
@@ -936,6 +939,11 @@ def run_scenario(
             # (GET /metrics/{name}) rather than on every scenario node, because
             # what a scenario reader needs is the verdict.
             khat_status = dx.get("khat_status")
+            # And whether that verdict is one the estimate can support
+            # (roadmap S22). This is part of the verdict rather than a number
+            # beside it, which is why `khat_borderline` crosses here and
+            # `khat_se` — the number itself — does not.
+            khat_borderline = dx.get("khat_borderline")
             khat_warnings = dx.get("khat_warnings")
 
         contribs = [
@@ -967,6 +975,7 @@ def run_scenario(
             **direction_fields(d, key="prob_direction", n_effective=n_effective),
             "fit_quality": fit_quality,
             "khat_status": khat_status,
+            "khat_borderline": khat_borderline,
             "khat_warnings": khat_warnings,
             "extrapolation": {"flag": bool(flag), **hist},
             # Per node, beside the per-node `extrapolation` flag, because the

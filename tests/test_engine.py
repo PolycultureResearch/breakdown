@@ -744,10 +744,17 @@ def test_advi_diagnostics_present():
     assert d["khat_status"] in ("ok", "suspect", "unusable", "unavailable")
     if d["khat_status"] == "unavailable":
         assert d["khat"] is None
+        assert d["khat_se"] is None
     else:
         assert isinstance(d["khat"], float) and np.isfinite(d["khat"])
-    # `ok` is the only band that travels without an explanation attached.
-    assert ("khat_warnings" in d) == (d["khat_status"] != "ok")
+    # Roadmap S22: the estimate's own Monte-Carlo error, withheld as None
+    # rather than zeroed when it cannot be computed — never a NaN on its way
+    # to an encoder (rule 3).
+    assert d["khat_se"] is None or (isinstance(d["khat_se"], float) and np.isfinite(d["khat_se"]))
+    assert isinstance(d["khat_borderline"], bool)
+    # `ok` travels without an explanation attached — unless the estimate
+    # cannot tell `ok` from `suspect`, which is a thing to say out loud.
+    assert ("khat_warnings" in d) == (d["khat_status"] != "ok" or d["khat_borderline"])
 
 
 # --- Grain-aware fitting (1.7 phase 3) ---
@@ -1221,10 +1228,13 @@ def test_psis_khat_passes_an_approximation_that_is_exact():
         pm.Normal("z", 0.0, 1.0, shape=30)
         approx = pm.fit(n=20_000, method="advi", progressbar=False, random_seed=0)
 
-    khat, status, reason = _psis_khat(approx, n_draws=1000, random_seed=0)
+    khat, khat_se, status, reason = _psis_khat(approx, n_draws=1000, random_seed=0)
     assert reason is None
     assert status == "ok", f"k-hat {khat} on an exactly-representable posterior"
     assert khat <= 0.5
+    # And it knows how well it knows that (roadmap S22): a real, positive,
+    # finite standard error, never a NaN or a zero standing in for one.
+    assert isinstance(khat_se, float) and np.isfinite(khat_se) and khat_se > 0
 
 
 def test_psis_khat_catches_an_approximation_that_is_wrong():
@@ -1246,10 +1256,125 @@ def test_psis_khat_catches_an_approximation_that_is_wrong():
         pm.Normal("x", 0.0, pt.exp(v / 2), shape=20)
         approx = pm.fit(n=20_000, method="advi", progressbar=False, random_seed=0)
 
-    khat, status, reason = _psis_khat(approx, n_draws=1000, random_seed=0)
+    khat, khat_se, status, reason = _psis_khat(approx, n_draws=1000, random_seed=0)
     assert reason is None
     assert status == "unusable", f"k-hat {khat} on Neal's funnel"
     assert khat > 0.7
+    # Far enough past 0.7 that its own error does not reach the edge — the
+    # verdict is one this estimate can support (roadmap S22).
+    assert khat - khat_se > 0.7
+
+
+def test_the_published_khat_error_is_the_error_the_estimate_actually_has():
+    """Roadmap S22(b). A standard error that is not one is worse than none.
+
+    `_khat_se` is analytic — the generalized Pareto shape parameter's
+    asymptotic variance `(1 + k)^2 / M` over the M tail points ArviZ fits,
+    scaled by that estimator's shrinkage toward 0.5 — so nothing about the
+    published number is checked by the code that produces it. This checks it
+    against the thing it claims to describe: hold the approximation fixed,
+    re-estimate k-hat over independent draws of the importance ratios, and
+    compare the spread of those estimates against the error the engine
+    publishes for each of them.
+
+    The band is loose (half to double) because 20 replicates estimate a
+    standard deviation to about +/-16% themselves, and because the point is
+    not a calibration proof — it is that this number moves with the real
+    sampling error rather than being a decoration beside it. Measured over 60
+    replicates while S22 was written, the ratio was 1.06 / 1.11 / 0.90 / 1.04
+    on four posteriors with k-hat from 0.03 to 1.15.
+    """
+    import pymc as pm
+    import pytensor.tensor as pt
+
+    from breakdown.engine.model import _psis_khat
+
+    with pm.Model():
+        v = pm.Normal("v", 0.0, 0.8)
+        pm.Normal("x", 0.0, pt.exp(v / 2), shape=8)
+        approx = pm.fit(n=20_000, method="advi", progressbar=False, random_seed=0)
+
+    estimates, errors = [], []
+    for seed in range(20):
+        k, se, status, _ = _psis_khat(approx, n_draws=1000, random_seed=1000 + seed)
+        assert status != "unavailable" and k is not None and se is not None
+        estimates.append(k)
+        errors.append(se)
+
+    empirical = float(np.std(estimates, ddof=1))
+    published = float(np.mean(errors))
+    assert 0.5 * empirical < published < 2.0 * empirical, (
+        f"k-hat's published standard error ({published:.3f}) does not describe the "
+        f"spread it actually has ({empirical:.3f})"
+    )
+
+
+def test_a_khat_on_a_band_edge_refuses_to_pick_a_side():
+    """Roadmap S22(b), the case it exists for.
+
+    This posterior sits almost exactly on the 0.7 bar: the estimate lands
+    either side of it depending on which 1,000 importance ratios were drawn,
+    and the spread that decides it is an order of magnitude larger than the
+    distance to the edge. Reporting `suspect` or `unusable` there — whichever
+    the draw happened to give — hands the reader a verdict about whether their
+    intervals are evidence that the estimate cannot support.
+
+    So the band is still the measured one (nothing downstream has to
+    reinterpret `khat_status`), and `khat_borderline` is what says it is not
+    resolved. `fit_quality` follows the flag, because the gate's question is
+    whether this fit can be trusted as-is and the honest answer here is "not
+    shown to be".
+    """
+    import pymc as pm
+    import pytensor.tensor as pt
+
+    from breakdown.engine.model import _advi_diagnostics
+
+    with pm.Model():
+        v = pm.Normal("v", 0.0, 0.8)
+        pm.Normal("x", 0.0, pt.exp(v / 2), shape=8)
+        approx = pm.fit(n=20_000, method="advi", progressbar=False, random_seed=0)
+
+    d = _advi_diagnostics(approx, method="advi", target="edge", random_seed=0)
+
+    assert d["khat_status"] in ("suspect", "unusable")
+    assert abs(d["khat"] - 0.7) < d["khat_se"]
+    assert d["khat_borderline"] is True
+    assert d["fit_quality"] == "suspect"
+    # One sentence, carrying the estimate, its error and what the pair means —
+    # every surface renders `khat_warnings` verbatim, so a second entry could
+    # be shown without the first.
+    (msg,) = d["khat_warnings"]
+    assert "+/-" in msg and "0.7" in msg and "does not separate" in msg
+
+
+def test_a_khat_that_cannot_state_its_own_error_says_so(monkeypatch):
+    """Rule 3, one field over from where S2 applied it.
+
+    A standard error the asymptotics do not cover is withheld as None — never
+    a NaN on its way to `allow_nan=False` JSON, and never a zero, which would
+    claim the estimate is exact and would make every band edge look resolved.
+    The k-hat itself still publishes: "checked, with an error we cannot state"
+    and "not checked" are different facts about a fit, and collapsing them
+    would lose the more common one.
+    """
+    import pymc as pm
+
+    import breakdown.engine.model as model
+
+    with pm.Model():
+        pm.Normal("z", 0.0, 1.0, shape=5)
+        approx = pm.fit(n=2_000, method="advi", progressbar=False, random_seed=0)
+
+    monkeypatch.setattr(model, "_khat_se", lambda khat, log_ratios: None)
+    d = model._advi_diagnostics(approx, method="advi", target="m", random_seed=0)
+
+    assert d["khat"] is not None and np.isfinite(d["khat"])
+    assert d["khat_se"] is None
+    # No error means no band edge can be tested against one, so the estimate
+    # is not called borderline on the strength of nothing.
+    assert d["khat_borderline"] is False
+    assert d["khat_status"] in ("ok", "suspect", "unusable")
 
 
 def test_khat_flags_a_fit_whose_elbo_check_passed():

@@ -1484,6 +1484,93 @@ def test_no_sampler_budget_is_written_as_a_literal():
     )
 
 
+# --- Every fit the engine runs for a caller is seeded (roadmap S22) -----------
+#
+# The budget block above, one property over, and the same meta-defect: two
+# orchestrators wrote `random_seed=0` at their own fit call sites and
+# `POST /analyze/{name}` passed nothing, so the manual-fit route returned a
+# different posterior — and a different PSIS k-hat — from two identical
+# requests. `fit_metric`'s own default stays None, because a library caller
+# may legitimately want an unseeded fit; what may not vary is the answer the
+# *server* gives to the same question.
+#
+# Enumerated, not pinned: the fourth call site is the one that matters.
+
+
+def _unseeded_fit_calls(path: Path):
+    """Every `fit_metric(...)` in `path` that does not pass `FIT_RANDOM_SEED`.
+
+    Two spellings, because the package uses both: a direct call, and
+    `asyncio.to_thread(fit_metric, ...)`, which hides the callee in the first
+    positional argument and would sail past a check that only reads `func`.
+    """
+    found = []
+    for node in ast.walk(ast.parse(path.read_text())):
+        if not isinstance(node, ast.Call):
+            continue
+        func = ast.unparse(node.func)
+        if func == "fit_metric":
+            call = node
+        elif func.endswith("to_thread") and node.args and ast.unparse(node.args[0]) == "fit_metric":
+            call = node
+        else:
+            continue
+        seeds = [kw for kw in call.keywords if kw.arg == "random_seed"]
+        if len(seeds) != 1 or ast.unparse(seeds[0].value) != "FIT_RANDOM_SEED":
+            found.append(f"{path.name}:{call.lineno}")
+    return found
+
+
+def test_every_fit_the_engine_runs_for_a_caller_is_seeded():
+    """A fit is a pure function of (DAG, data, target) — including its seed.
+
+    `POST /analyze/{name}` passed no `random_seed` while `run_rca` and
+    `run_scenario` both did, so the same request twice fitted the same node
+    over the same window twice and returned two different posteriors. With
+    `?inference_method=advi` it also returned two different PSIS k-hats about
+    them (1.23 then 1.91 on the demo tree's `customer_churn_rate`) — a
+    diagnostic that answers differently about the same fit, which is the one
+    property a diagnostic may not have (roadmap S22).
+    """
+    scanned = sorted((PACKAGE / "engine").glob("*.py")) + sorted((PACKAGE / "api").glob("*.py"))
+    scanned += [PACKAGE / "mcp" / "server.py", PACKAGE / "cli.py", PACKAGE / "doctor.py"]
+    offenders = [hit for path in scanned if path.exists() for hit in _unseeded_fit_calls(path)]
+    assert not offenders, (
+        f"these fits do not pass FIT_RANDOM_SEED: {offenders}. Import it from "
+        "breakdown.engine.model and pass `random_seed=FIT_RANDOM_SEED` — a route "
+        "or orchestrator that fits on a caller's behalf must return the same "
+        "posterior, and the same k-hat, for the same request (roadmap S22)."
+    )
+
+
+def test_no_surface_prints_a_bare_khat():
+    """The fifth rule, on the number roadmap S22 gave an error to.
+
+    k̂ has a Monte-Carlo standard error of about 0.15 near the 0.5 bar, which
+    is most of the width of the band it is being read against — so a surface
+    that prints `1.36` where another prints `1.36 ± 0.22` is telling two
+    readers different things about the same fit, and the shorter one reads as
+    exact. `khatFigure(node)` is the single place that decides; `fmtKhat` stays
+    for the cases that genuinely have no node in hand (a raw number).
+
+    Structural rather than pinned to today's five call sites, because the sixth
+    surface is the one that will get this wrong.
+    """
+    source = (PACKAGE / "static" / "app.js").read_text()
+    offenders = re.findall(r"fmtKhat\(\s*\w+\.khat\b\s*\)", source)
+    assert not offenders, (
+        f"app.js prints a bare k̂ at {len(offenders)} site(s): {sorted(set(offenders))}. "
+        "Use khatFigure(node), which carries `± khat_se` when the engine could "
+        "estimate it — a k̂ shown without its own error is read as exact "
+        "(roadmap S22)."
+    )
+    assert "function khatFigure(" in source, (
+        "khatFigure is gone from app.js. If the k̂ rendering was restructured, "
+        "point this test at whatever replaced it — do not let it silently stop "
+        "checking that the error travels with the estimate."
+    )
+
+
 #: Every place a sampler budget is printed at a human, and the constant it must
 #: equal. `app.js` cannot import from Python (no build step, deliberately) and
 #: `docs/api-reference.md` documents the defaults as a table, so both are

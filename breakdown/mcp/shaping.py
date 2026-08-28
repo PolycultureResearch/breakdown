@@ -71,7 +71,10 @@ RCA_HOW_TO_READ = (
     "provisional and the uncertainty as unmeasured — never as precise, and say the analysis "
     "should be re-run without the approximation. `suspect` = measurably off; approximate. "
     "`unavailable` = unchecked, which is not clean. `khat_warnings` gives the reason and the "
-    "remedy worth naming."
+    "remedy worth naming. k̂ is itself an estimate: `khat_se` is its Monte-Carlo standard "
+    "error, and `khat_borderline: true` means k̂ is within one of those of a band edge, so "
+    "the band beside it is the side it happened to land on rather than a settled verdict — "
+    "narrate the worse of the two adjacent bands, and say an exact re-fit is what resolves it."
 )
 
 SLICE_HOW_TO_READ = (
@@ -140,7 +143,8 @@ WHATIF_HOW_TO_READ = (
     "was run with the fast approximation: `unusable` = the slope driving this outcome is "
     "not close to its posterior — narrate the direction, not the interval, and say a re-run "
     "without the approximation is what would settle it. `suspect` = approximate. "
-    "`unavailable` = unchecked.\n"
+    "`unavailable` = unchecked. `khat_borderline: true` means the check could not separate "
+    "that band from the next one down — read the worse of the two.\n"
     "- Fitted slopes are local to the observed operating range; `extrapolation: true` "
     "(detail in `warnings`) means the scenario leaves that range — call the result speculative.\n"
     "- `non_physical: true` is the stronger claim and a different one: the value cannot exist, "
@@ -232,6 +236,24 @@ def metric_link(name: str, tree=None) -> str:
     return f"{_base_url()}/ui/{_hash_prefix(tree)}metric={quote(name)}"
 
 
+def _khat_figure_fields(node: Dict[str, Any]) -> Dict[str, Any]:
+    """`khat` / `khat_se` / `khat_borderline`, present only where they decide something.
+
+    The number is spent only where an agent has a decision to make with it: a
+    flagged band, or (roadmap S22) an `ok` band the estimate cannot separate
+    from `suspect`. On a clean `ok` fit the bare status is the whole message
+    and the digits are tokens. `khat_borderline` is emitted only when true —
+    an absent flag on a node that has no k-hat at all would otherwise assert
+    something about a check that never ran.
+    """
+    if node.get("khat_status") == "ok" and not node.get("khat_borderline"):
+        return {}
+    fields: Dict[str, Any] = {"khat": node.get("khat"), "khat_se": node.get("khat_se")}
+    if node.get("khat_borderline"):
+        fields["khat_borderline"] = True
+    return fields
+
+
 def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
     """Compact a run_rca result: drop per-contribution decompositions (and the
     node-level `interaction` that summarizes them) and effective-window detail,
@@ -300,8 +322,14 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
             # flagged one it is the difference between "slightly off" and "not
             # evidence". Never dropped when non-null-and-not-ok, for the same
             # reason `unexplained_status` is never dropped.
+            #
+            # Roadmap S22 widens "bad news" by one case: an `ok` k-hat that is
+            # within its own standard error of the 0.5 edge is *not* a clean
+            # verdict, and an agent given the bare `ok` would narrate the
+            # interval as sound. So the number and its error travel there too,
+            # and `khat_borderline` is what says why they are present.
             "khat_status": node.get("khat_status"),
-            "khat": node.get("khat") if node.get("khat_status") != "ok" else None,
+            **_khat_figure_fields(node),
             "khat_warnings": node.get("khat_warnings"),
             "sign_warnings": node["sign_warnings"],
             # fit_window start/end are dropped for token economy; n_periods is
@@ -460,6 +488,10 @@ def compact_scenario(result: Dict[str, Any]) -> Dict[str, Any]:
                 # propagates a fitted slope downstream, so which fit produced
                 # it is decision-relevant here too.
                 "khat_status": node.get("khat_status"),
+                # Roadmap S22, and only the flag: the scenario payload carries
+                # the verdict rather than the number (see `run_scenario`), and
+                # "this verdict is not resolved" is part of the verdict.
+                **({"khat_borderline": True} if node.get("khat_borderline") else {}),
                 "khat_warnings": node.get("khat_warnings"),
                 "extrapolation": node["extrapolation"]["flag"],
                 # The stronger claim beside the weaker one (roadmap C26). An

@@ -72,6 +72,7 @@ import numpy as np
 import pandas as pd
 
 from breakdown.engine.model import (
+    FIT_RANDOM_SEED,
     NUTS_DRAWS,
     cached_fit_is_usable,
     compute_shapley,
@@ -765,11 +766,19 @@ def _node_out(**fields) -> Dict[str, Any]:
         # and ESS are for NUTS. `khat` is the PSIS shape parameter and
         # `khat_status` its band: `ok` (<= 0.5), `suspect` (<= 0.7), `unusable`
         # (> 0.7) or `unavailable` (could not be computed — an unchecked fit,
-        # not a clean one). All three stay null on a NUTS fit, which is the
+        # not a clean one). All of them stay null on a NUTS fit, which is the
         # default: NUTS is not an approximation, so it has no k-hat, and the
         # absence of the field is not a missing check.
+        #
+        # `khat_se` and `khat_borderline` are roadmap S22: k-hat's own
+        # Monte-Carlo standard error, and whether the estimate sits within one
+        # of them of a band edge. They travel with the band for the same reason
+        # the band travels with the coefficient — a verdict quoted without its
+        # error is read as exact.
         "khat": None,
+        "khat_se": None,
         "khat_status": None,
+        "khat_borderline": None,
         "khat_warnings": None,
         "sign_warnings": None,
         "fit_window": None,
@@ -1276,7 +1285,7 @@ def run_rca(
                 draws=draws,
                 inference_method=inference_method,
                 fit_end=analysis_start,
-                random_seed=0,
+                random_seed=FIT_RANDOM_SEED,
             )
         except ValueError as e:
             fit_failures[node] = str(e)
@@ -1400,7 +1409,9 @@ def run_rca(
         inference_method = None
         fit_quality = None
         khat = None
+        khat_se = None
         khat_status = None
+        khat_borderline = None
         khat_warnings = None
         sign_warnings = None
         fit_window = None
@@ -1706,7 +1717,9 @@ def run_rca(
             inference_method = fit.inference_method
             fit_quality = fit.diagnostics.get("fit_quality")
             khat = fit.diagnostics.get("khat")
+            khat_se = fit.diagnostics.get("khat_se")
             khat_status = fit.diagnostics.get("khat_status")
+            khat_borderline = fit.diagnostics.get("khat_borderline")
             khat_warnings = fit.diagnostics.get("khat_warnings")
             sign_warnings = fit.diagnostics.get("sign_warnings")
             # What the model actually trained on: all loaded whole periods
@@ -1869,7 +1882,9 @@ def run_rca(
             inference_method=inference_method,
             fit_quality=fit_quality,
             khat=khat,
+            khat_se=khat_se,
             khat_status=khat_status,
+            khat_borderline=khat_borderline,
             khat_warnings=khat_warnings,
             sign_warnings=sign_warnings,
             fit_window=fit_window,

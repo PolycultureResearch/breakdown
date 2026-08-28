@@ -3,7 +3,7 @@
 **A white paper on the models behind Bayesian metric trees, why each was chosen,
 and where each one stops being trustworthy.**
 
-> **Written:** 2026-08-04 · **Last updated:** 2026-08-24 ·
+> **Written:** 2026-08-04 · **Last updated:** 2026-08-27 ·
 > **Engine version:** 0.1.0
 >
 > **This is a living document.** The assessment in §3 and the improvements in §4
@@ -780,21 +780,29 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
    ways: on the same story's `trial_conversion_rate ← trial_days_active`, ADVI's
    interval *excludes* zero and NUTS's straddles it. §4.1 carries all of it.
 
-   **What is left, and why it is not this weakness.** Three things survive, and
-   each is now a property of a path the caller explicitly chose rather than of
-   the default. A `suspect` node (0.5 < k̂ ≤ 0.7) on the opt-in path is
+   **What is left, and why it is not this weakness.** Two things survive — a
+   third closed as S22 on 2026-08-27 — and each is a property of a path the
+   caller explicitly chose rather than of the default. A `suspect` node (0.5 < k̂ ≤ 0.7) on the opt-in path is
    published from its approximation with a warning. k̂ is a verdict on the
    **joint** posterior, so it can say the approximation is not close and cannot
-   say how wrong any particular marginal is. And k̂ is itself a Monte-Carlo
-   estimate — 1000 draws — published as a bare number with no error attached:
-   on the unseeded `POST /analyze` path two consecutive calls measured 1.23 and
-   0.79 for the same node
-   ([S22](roadmap.md#statistical-rigor-s--a-standing-workstream), whose stakes
-   this change lowers — k̂ no longer decides anything, it discloses). A fourth
-   caveat is honest to state: a **passing** k̂ bounds the approximation error
-   but does not zero it. Story D's `trial_conversion_rate` is the one demo node
-   mean-field genuinely represents (k̂ 0.497, `ok`), and its published share
-   still moved 70.7% → 68.0% between the two samplers.
+   say how wrong any particular marginal is. k̂ was also a Monte-Carlo estimate
+   published as a bare number, on a route that did not seed it — two
+   consecutive `POST /analyze` calls measured 1.23 and 0.79 for the same node —
+   and **that one closed on 2026-08-27**
+   ([S22](roadmap.md#statistical-rigor-s--a-standing-workstream)): all three
+   fitting paths now pass one seed, and k̂ travels with its own Monte-Carlo
+   standard error (`khat_se`, ~0.15 near the 0.5 bar and ~0.2 near k̂ = 1) plus
+   a `khat_borderline` flag where the estimate cannot separate the band it
+   landed in from the next one along. The residual there is what the error's
+   *size* says rather than that it is unstated: at 1000 draws it is comparable
+   to the whole width of the `suspect` band, so that band is rarely resolvable,
+   and one of the demo tree's four nodes (`trial_conversion_rate`, 0.854 ±
+   0.172) is borderline in practice.
+
+   One further caveat is honest to state: a **passing** k̂ bounds the
+   approximation error but does not zero it. Story D's `trial_conversion_rate`
+   is the one demo node mean-field genuinely represents (k̂ 0.497, `ok`), and
+   its published share still moved 70.7% → 68.0% between the two samplers.
 
    None of that is "the default inference method misstates uncertainty". The
    default states it exactly, subject to the ordinary MCMC diagnostics it
@@ -1158,6 +1166,7 @@ scheduled start.
 | S19 | Partial pooling across a repeated-cycle grouping | ○ open |
 | S20 | Zero-inflated and count likelihoods | ○ open — disclosure half scheduled first |
 | S21 | Fit through undefined periods by masking the likelihood | ○ optional — build on demand |
+| S22 | k̂'s own Monte-Carlo error, and a seeded manual-fit path | ✅ closed 2026-08-27 |
 | 3.4 | Counterfactual RCA (Horizon 3, not the S track) | ○ open |
 
 Below, the reasoning behind each — ordered by value per unit of effort.
@@ -1256,11 +1265,52 @@ k̂ 0.497, inside the good band — and its published activation share still mov
 is the strongest thing the opt-in path can say about itself.
 
 What it did not buy: k̂ is a verdict on the joint posterior, so it cannot say
-which marginal is wrong; a `suspect` (0.5–0.7) node on the opt-in path is still
-published from its approximation with a warning; and k̂ carries no error term of
-its own ([S22](roadmap.md#statistical-rigor-s--a-standing-workstream), whose
-stakes this lowers — it no longer decides anything). All are recorded on
-§3.2 #1.
+which marginal is wrong; and a `suspect` (0.5–0.7) node on the opt-in path is
+still published from its approximation with a warning. The third residual — k̂
+carrying no error term of its own — closed as **S22** on 2026-08-27; see below.
+All are recorded on §3.2 #1.
+
+**k̂'s own Monte-Carlo error, and the seed that stopped it wandering** — `S22`,
+✅ closed 2026-08-27. Two independent defects behind one number. `POST
+/analyze/{name}` passed no `random_seed` while both analysis routes passed
+`0`, so the manual-fit route answered the same request differently each time:
+re-measured on the White Cube tree at full window, `customer_churn_rate` came
+back **1.23 then 1.91** and `trials_started` **0.94 then 1.19** from two
+consecutive calls (1.23/0.79 and 0.89/0.77 on the same nodes five days
+earlier — the spread is itself unstable, which is the point). All three
+fitting paths now read one `FIT_RANDOM_SEED`, enforced by an AST-walking
+invariant test rather than by three call sites agreeing; the four figures this
+paper quotes for the demo tree reproduce **exactly** from the route now
+(10.18 / 1.07 / 0.85 / 1.36).
+
+The second half is the one that matters here. k̂ is fitted to the tail of 1000
+sampled importance ratios — 95 tail points — so it is an estimate, and this
+project's whole argument for reporting it is that a number without a stated
+uncertainty is not evidence. The engine now publishes `khat_se`, the
+generalized Pareto shape parameter's asymptotic standard error over that tail
+(Smith, 1985; Hosking & Wallis, 1987), corrected for the shrinkage in ArviZ's
+empirical-Bayes estimator. It was checked against what it claims to describe:
+holding one approximation fixed and re-estimating k̂ over 60 independent draws,
+published-SE ÷ empirical-SD came out **1.06 / 1.11 / 0.90 / 1.04** on four
+posteriors spanning k̂ 0.03 to 1.15.
+
+**The measured size of that error is the finding.** It is ~0.15 near the 0.5
+bar and ~0.2 near k̂ = 1 — comparable to the entire width of the `suspect`
+band, which is 0.2 wide. So at 1000 draws the `ok`/`suspect` and
+`suspect`/`unusable` distinctions are frequently not resolvable, and one of the
+demo tree's four learned nodes is a live case: `trial_conversion_rate` scores
+**0.854 ± 0.172**, `unusable` on the point estimate and unable to separate
+`unusable` from `suspect`. Where that happens the fit carries
+`khat_borderline: true` and the warning names the bands the estimate cannot
+tell apart — all three of them where k̂ is within one error of *both* edges.
+`fit_quality` goes `suspect` there too, including from an `ok` k̂, because
+"not shown to be far from the posterior" is not the same claim as "shown to be
+close to it". `khat_status` deliberately keeps meaning *which band
+the point estimate is in*, so no consumer had to reinterpret it. Shrinking the
+error was considered and rejected on cost: the Pareto tail grows as √n, so the
+error falls as n^(−1/4) and halving it costs 16× the draws — against a
+diagnostic that today costs ~0.2s beside a 1.4–6s fit. Reporting the error
+costs nothing and is what lets a reader see when a band is a coin flip.
 
 **Posterior predictive checks on every fit** — `S3`, ○ open. For each fitted
 node, simulate replicated series from the posterior and compare summary
@@ -1467,6 +1517,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-08-27 | **S22 closed: k̂ now reports its own error, and the route that publishes it is seeded.** Two independent defects behind one diagnostic. (a) `POST /analyze/{name}` passed no `random_seed` while `run_rca` and `run_scenario` both passed `0`, so the manual-fit route — the one the UI's Analyze button and the "confirm this with NUTS" workflow use — returned a different posterior, and a different k̂, from two identical requests. Re-measured on the White Cube tree at full window before the fix: `customer_churn_rate` **1.23 then 1.91**, `trials_started` **0.94 then 1.19** (the same nodes had given 1.23/0.79 and 0.89/0.77 five days earlier — the spread is itself unstable, which is the argument). All three fitting paths now read one `FIT_RANDOM_SEED`, enforced by an AST-walking invariant test rather than by three call sites happening to agree, and the four demo figures this paper quotes reproduce exactly from the route: 10.18 / 1.07 / 0.85 / 1.36. (b) k̂ is fitted to the tail of 1000 sampled importance ratios (95 tail points), so it is an estimate; `khat_se` now publishes the generalized Pareto shape parameter's asymptotic standard error over that tail, corrected for the shrinkage in ArviZ's empirical-Bayes estimator, and it was validated against the thing it describes — holding one approximation fixed and re-estimating k̂ over 60 draws, published-SE ÷ empirical-SD came out **1.06 / 1.11 / 0.90 / 1.04** across k̂ 0.03 to 1.15. **The size of that error is the finding:** ~0.15 near the 0.5 bar and ~0.2 near k̂ = 1, against a `suspect` band that is 0.2 wide — so that band is frequently not resolvable, and `trial_conversion_rate` on the demo tree is a live case at **0.854 ± 0.172**. Such a fit now carries `khat_borderline: true`, a warning naming the two bands the estimate cannot separate, and `fit_quality: "suspect"` — including from an `ok` k̂, because "not shown to be far from the posterior" is a weaker claim than "close to it". `khat_status` keeps meaning which band the point estimate is in, so nothing downstream had to reinterpret it. Shrinking the error was rejected on cost: the tail grows as √n, so halving the error costs 16× the draws. §3.2 #1's third residual and §4.1's S2 entry are updated; §4 gains an S22 row. |
 | 2026-08-24 | **S2 closed by reversing its own second half: NUTS is now the default sampler, ADVI an opt-in that reports its k̂.** The escalation shipped on 2026-08-22 — re-fit a k̂-rejected node with NUTS, capped at four per analysis — was the wrong shape once its own measurement was in. k̂ rejects essentially every real node (10.18 / 1.07 / 0.85 / 1.36 on White Cube at full window, 1.26 / 0.88 / 1.11 / 10.43 on a second, 1.04 on the bundled demo), so a rescue that fires on almost everything is a default in disguise — and a **slower** one, since an escalated node pays for the approximation and then the exact fit (the demo suite ran 225s escalating and runs 175s now). Then the latency case fell over: the 106-metric reference tree, the widest here, contains exactly **five** probabilistic fits, and fitting all five measured **31.3s under ADVI against 28.0s under NUTS** — the exact sampler was the *faster* of the two, on four of the five nodes, and ADVI flagged all five `suspect` where NUTS returned four of five `ok`. So `run_rca`, `run_scenario` and `POST /analyze/{name}` all default to exact MCMC; `?inference_method=advi` is available on all three and reports k̂ on every node it fits; and escalation, its cap, the `escalated` status and the "re-fitted with NUTS" UI badge were deleted. k̂ is a disclosure on a chosen path, not a trigger. **§3.2 #1 moves from ◐ to ✅** — "the default inference method misstates uncertainty" cannot be true of a default with no approximation in it — and its residuals are restated as properties of the opt-in path. §2.2 is rewritten (the *triage with ADVI, confirm with NUTS* posture is retired), §4's current state and §4.1's S2 entry carry the new measurements, and §3.2 #6 no longer compounds with #1 on the default path. Three figures worth keeping. Across the four demo stories `sessions ← marketing_spend` moves −108.2 → −68.8, 178.1 → 114.0, 88.4 → 62.7 and 202.0 → 129.0 between the samplers; the story B engagement edge moves the *other* way, −0.049 → −0.077; and the verdict flips in both directions — that edge's β HDI goes from straddling zero to excluding it, while `trial_conversion_rate ← trial_days_active` goes from excluding it to straddling it. A fourth is the honest limit of the opt-in: story D's `trial_conversion_rate` has k̂ **0.497**, inside the good band, and its published share still moved 70.7% → ~68%. A passing k̂ bounds the error; it does not zero it. **One thing measured on the way and recorded on §3.2 #6:** that same node's two parents are deliberately collinear, and their split of the gap comes out 0.680 / 0.682 / 0.697 on three numeric stacks *from the same seed*, with no variance inside a stack — a 1.6-point spread that is the BLAS rather than the sampler. The pair's sum is determined; the split is not. Evidence for **S4**, and the reason that figure is banded in the demo suite and written "about 70%" in the tour rather than pinned to a decimal. |
 | 2026-08-22 | **S2 shipped — the engine can now tell a good approximation from a bad one, and the answer on real trees is "bad".** Every variational fit is scored with PSIS k̂ (Yao et al., 2018), computed from PyMC's own `sized_symbolic_logp` / `symbolic_logq` cloned against one shared sample and smoothed with `arviz.psislw`; three bands (`ok` ≤ 0.5, `suspect` ≤ 0.7, `unusable` above) plus `escalated` and `unavailable`, on the fit's diagnostics, on every RCA and what-if node, over MCP with its own `how_to_read` entry, and in the UI beside R̂. `run_rca` and `run_scenario` re-fit an `unusable` node with NUTS, capped at four per analysis. **§3.2 #4 is closed outright** — the ELBO-only check is no longer the only thing standing between an approximation and its published intervals — and **§3.2 #1 moves from ○ to ◐**, because the default path is no longer the optimistic one. It is not ✅, and the paper says why: the escalation cap, the un-escalated `suspect` band, the fact that k̂ judges the *joint* posterior and cannot say which marginal is wrong, and k̂'s own unreported Monte-Carlo error (new **S22**). The measurement is the part worth recording. k̂ flags **nearly every probabilistic node on every tree this repo ships** — 10.18 / 1.07 / 0.85 / 1.36 on White Cube at full window (`random_seed=0`), 1.04 on the bundled demo — including the two whose ELBO check said `ok`, which is exactly the failure S2 was specified to catch. The cause is the engine's own geometry (one correlated trend latent per period), not the diagnostic: the same code returns 0.31 on a 30-dimensional posterior mean-field can represent and 0.95 on Neal's funnel. So S2 did not become an occasional rescue; it made RCA on a small tree mostly-NUTS, at 3–6× the wall clock. What that buys is bigger than interval width: on the demo's story A, `sessions ← marketing_spend` moves from −108.2 to −68.8 (0.68 → 0.43 of the gap), and on story B the learned `member_activity_rate → customer_churn_rate` contribution moves −0.049 → −0.077 — two independent published **point estimates**, each off by 57%, and in *opposite* directions. The trend delta is what moves consistently (mean-field collapses it toward zero every time); β absorbs the rest in whichever direction that node's ridge runs, so the sign of the error is not recoverable from the payload. That is the β-vs-trend ridge S1 predicted, and it rules out disclosing the bias in place of fixing it. §4.1's S2 entry carries the full account and §4's current-state paragraph moves to S3. |
 | 2026-08-18 | **S1 ran — the S track's first item closed with a rejection, and the paper is more precise for it.** Full-rank ADVI was benchmarked against mean-field and NUTS on the calibration DGP, a drifting-parent (β-vs-trend ridge) suite, and the White Cube tree's three probabilistic nodes ([`s1_fullrank_advi_benchmark.md`](s1_fullrank_advi_benchmark.md)). §3.2 #1 now carries measured numbers instead of theory — mean-field ≈0.8× the NUTS width on the ridge — and stays open; §3.2 #4 gained its strongest evidence yet, in both directions: a full-rank fit passed the ELBO check while 7.8× over-dispersed on a real node, and mean-field at its shipped step count is `suspect` on all three real nodes. §4.1's S1 entry records why the candidate fix failed on the real tree (the O(d²) covariance over per-period trend latents is slow *and* mis-fit at real window sizes — the same paragraph's "far faster than NUTS" prior was false there), and S2 — detection plus escalation — is next, repriced by S1's timing data: NUTS at 11s on an 830-day daily fit and 11–66s per real weekly node makes escalation affordable. The measurement's sharpest single fact: across the suites, VI error on this model is unpredictable even in *direction* — mean-field 0.8× the NUTS width on the short ridge, 2.1× over at 830 periods (unconverged at its shipped step count, and flagged), full-rank 7.8–12× over at realistic sizes (converged, and not flagged) — which is the case for measuring distance-to-posterior rather than optimizer convergence, i.e. for S2 as specified. |

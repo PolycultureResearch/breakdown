@@ -312,7 +312,15 @@ async def explain_metric(name: str, tree: Optional[str] = None) -> Dict[str, Any
         # route, including `POST /analyze?inference_method=advi`, so this
         # reports what is actually in the cache rather than assuming.
         fit_info["khat"] = fit.diagnostics.get("khat")
+        # Roadmap S22: k-hat is estimated from a finite sample, so it travels
+        # with its own Monte-Carlo standard error and with the flag that says
+        # the estimate does not resolve the band it was placed in. Unlike the
+        # RCA payload this spends the tokens unconditionally — a single metric
+        # is what `explain_metric` is *for*, and the decision it exists to
+        # inform is exactly "are this node's intervals worth quoting".
+        fit_info["khat_se"] = fit.diagnostics.get("khat_se")
         fit_info["khat_status"] = fit.diagnostics.get("khat_status")
+        fit_info["khat_borderline"] = fit.diagnostics.get("khat_borderline")
         fit_info["khat_warnings"] = fit.diagnostics.get("khat_warnings")
         fit_info["sign_warnings"] = fit.diagnostics.get("sign_warnings")
 
