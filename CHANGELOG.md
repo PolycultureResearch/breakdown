@@ -56,6 +56,28 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
 
 ### Added
 
+- **A node whose parents move together now says so, and names them** (roadmap
+  S4). Correlated parent regressors produce a well-determined *sum* and an
+  unstable *split*, and the split is exactly what RCA reports. Since NUTS
+  became the default each such parent already carried a wide, honest interval —
+  what was missing was the diagnosis. Fits now carry **`collinearity_status`**
+  (`ok` | `moderate` | `high` | `unavailable`), **`collinearity`** (the offending
+  pairs with their correlations, and VIFs where a node has three or more
+  parents) and **`collinearity_warnings`**, on RCA and what-if nodes, over MCP
+  with a `how_to_read` entry, and in the UI on the RCA header, the node card
+  and the exported report.
+
+  Two bands rather than one, because the demo tree decided it: the deliberately
+  collinear pair this item was written about measures **|r| = 0.86** over the
+  window an RCA fits it on, which a single 0.9 bar would have passed in silence
+  while that node's split moved 1.6 points across numeric stacks from the same
+  seed. `moderate` is |r| ≥ 0.7 (Dormann et al., 2013) or VIF ≥ 5; `high` is
+  |r| ≥ 0.9 or VIF ≥ 10. A node's band is a property of its *fit window*, so it
+  can differ between two analyses of the same tree.
+
+  `fit_quality` is deliberately unchanged by it — a collinear fit is a correct
+  fit that is properly unsure, and the hazard is reading one parent alone.
+
 - **PSIS k̂ now reports its own Monte-Carlo error, and the route that publishes
   it is seeded** (roadmap S22). k̂ is fitted to the tail of 1,000 sampled
   importance ratios, so it is an estimate; a variational fit's diagnostics now

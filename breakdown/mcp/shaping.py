@@ -53,6 +53,13 @@ RCA_HOW_TO_READ = (
     "uneven weekday mix is nobody's fault.\n"
     "- `sign_warnings` mean a fitted slope contradicts its declared sign, the classic mark of "
     "scale confounding — do not narrate that edge causally.\n"
+    "- `collinearity_status` says whether that node's parents move together over the window it "
+    "was fitted on: `high` = the split of the gap between them is not a determined quantity, "
+    "`moderate` = their total is sound and the split is soft, `ok` = checked and separable, "
+    "`unavailable` = could not be checked (unchecked, not clean), absent = nothing to check. "
+    "On `moderate` or `high`, `collinearity_warnings` names the parents: narrate them as one "
+    "cause and do not rank them against each other — that ordering is the part the data does "
+    "not support, however different their `share_of_gap` look.\n"
     "- `seasonality_warnings` mean a declared seasonal component could not be identified "
     "from the fitted history (`fit_periods` says how much there was); its share of the gap "
     "may be misallocated between `components.seasonal`, trend, and `unexplained` — load "
@@ -145,6 +152,11 @@ WHATIF_HOW_TO_READ = (
     "without the approximation is what would settle it. `suspect` = approximate. "
     "`unavailable` = unchecked. `khat_borderline: true` means the check could not separate "
     "that band from the next one down — read the worse of the two.\n"
+    "- `collinearity_status: moderate` or `high` on a node means the fit behind its slope "
+    "could not cleanly separate that parent from a sibling that moves with it "
+    "(`collinearity_warnings` names them). The scenario's *direction* stands; its magnitude "
+    "rests on a coefficient the data splits poorly, so intervening on one member of the pair "
+    "is not a clean lever — say so rather than quoting the size as measured.\n"
     "- Fitted slopes are local to the observed operating range; `extrapolation: true` "
     "(detail in `warnings`) means the scenario leaves that range — call the result speculative.\n"
     "- `non_physical: true` is the stronger claim and a different one: the value cannot exist, "
@@ -332,6 +344,19 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
             **_khat_figure_fields(node),
             "khat_warnings": node.get("khat_warnings"),
             "sign_warnings": node["sign_warnings"],
+            # Roadmap S4. Same economy as k-hat above, for the same reason: the
+            # verdict rides on every node that had two or more parents to
+            # check — an absent `collinearity_status` on a multi-parent node
+            # would read as "separable" when it means "not checked" — and the
+            # evidence only where it is bad news. `collinearity_warnings` says
+            # which parents, in words, which is the whole point of S4.
+            "collinearity_status": node.get("collinearity_status"),
+            "collinearity": (
+                node.get("collinearity")
+                if node.get("collinearity_status") not in (None, "ok")
+                else None
+            ),
+            "collinearity_warnings": node.get("collinearity_warnings"),
             # fit_window start/end are dropped for token economy; n_periods is
             # the decision-relevant number.
             "fit_periods": (node.get("fit_window") or {}).get("n_periods"),
@@ -493,6 +518,11 @@ def compact_scenario(result: Dict[str, Any]) -> Dict[str, Any]:
                 # "this verdict is not resolved" is part of the verdict.
                 **({"khat_borderline": True} if node.get("khat_borderline") else {}),
                 "khat_warnings": node.get("khat_warnings"),
+                # Roadmap S4, and it lands harder here than on an RCA node: a
+                # scenario is a *lever*, and a lever the fit cannot separate
+                # from its neighbour is not one you can pull on its own.
+                "collinearity_status": node.get("collinearity_status"),
+                "collinearity_warnings": node.get("collinearity_warnings"),
                 "extrapolation": node["extrapolation"]["flag"],
                 # The stronger claim beside the weaker one (roadmap C26). An
                 # agent reading `extrapolation: true` alone cannot tell "far

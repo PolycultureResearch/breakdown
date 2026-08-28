@@ -781,6 +781,24 @@ def _node_out(**fields) -> Dict[str, Any]:
         "khat_borderline": None,
         "khat_warnings": None,
         "sign_warnings": None,
+        # Roadmap S4. A property of the *design matrix* this node was fitted
+        # on, not of the trace: `collinearity_status` is `ok` (checked, the
+        # parents are separable), `moderate` (their total is better determined
+        # than the split), `high` (the split is not determined at all),
+        # `unavailable` (the check could not run — unchecked, not clean) or
+        # null, which means there was nothing to check: a formula node, a
+        # single parent, or a node that was never fitted. `collinearity`
+        # carries the evidence — the flagged pairs with their correlations,
+        # the flagged parents with their VIFs, and `max_abs_correlation` so an
+        # `ok` is a measurement rather than an assertion.
+        #
+        # It never moves `fit_quality`. A collinear fit is not a bad fit; it
+        # is a correct fit that is honestly unsure about the split, and the
+        # thing to distrust is the per-parent `contributions` and
+        # `share_of_gap`, not the node.
+        "collinearity_status": None,
+        "collinearity": None,
+        "collinearity_warnings": None,
         "fit_window": None,
         "seasonality_warnings": None,
         "likelihood_warnings": None,
@@ -1414,6 +1432,9 @@ def run_rca(
         khat_borderline = None
         khat_warnings = None
         sign_warnings = None
+        collinearity_status = None
+        collinearity = None
+        collinearity_warnings = None
         fit_window = None
         seasonality_warnings = None
         likelihood_warnings = None
@@ -1722,6 +1743,10 @@ def run_rca(
             khat_borderline = fit.diagnostics.get("khat_borderline")
             khat_warnings = fit.diagnostics.get("khat_warnings")
             sign_warnings = fit.diagnostics.get("sign_warnings")
+            # Roadmap S4: which parents this node's model cannot tell apart.
+            collinearity_status = fit.diagnostics.get("collinearity_status")
+            collinearity = fit.diagnostics.get("collinearity")
+            collinearity_warnings = fit.diagnostics.get("collinearity_warnings")
             # What the model actually trained on: all loaded whole periods
             # before analysis_start — not the reference window.
             fit_window = {
@@ -1887,6 +1912,9 @@ def run_rca(
             khat_borderline=khat_borderline,
             khat_warnings=khat_warnings,
             sign_warnings=sign_warnings,
+            collinearity_status=collinearity_status,
+            collinearity=collinearity,
+            collinearity_warnings=collinearity_warnings,
             fit_window=fit_window,
             seasonality_warnings=seasonality_warnings,
             likelihood_warnings=likelihood_warnings,
