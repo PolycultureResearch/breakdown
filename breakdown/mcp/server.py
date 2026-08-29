@@ -323,6 +323,14 @@ async def explain_metric(name: str, tree: Optional[str] = None) -> Dict[str, Any
         fit_info["khat_borderline"] = fit.diagnostics.get("khat_borderline")
         fit_info["khat_warnings"] = fit.diagnostics.get("khat_warnings")
         fit_info["sign_warnings"] = fit.diagnostics.get("sign_warnings")
+        # Roadmap S4: which of this metric's parents the fit cannot tell apart.
+        # Carried here for the same reason k-hat is — `explain_metric` is where
+        # an agent decides whether a metric's numbers are worth narrating, and
+        # "the coefficients below are individually unstable, jointly fine" is
+        # not visible in the coefficients themselves.
+        fit_info["collinearity_status"] = fit.diagnostics.get("collinearity_status")
+        fit_info["collinearity"] = fit.diagnostics.get("collinearity")
+        fit_info["collinearity_warnings"] = fit.diagnostics.get("collinearity_warnings")
 
     return round_floats(
         {

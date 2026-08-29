@@ -814,6 +814,253 @@ def _normalize(series: pd.Series) -> Tuple[np.ndarray, float, float]:
     return (series.values - mean) / std, float(mean), float(std)
 
 
+# Roadmap S4. Triggers for a *disclosure*, not statistics — the same status as
+# `_ZERO_INFLATION_SHARE` and the k-hat bands, and read the same way.
+#
+# Two bands rather than one trip-wire, for the reason k-hat has three: "the
+# split is softer than the sum" and "the split is not a measured quantity at
+# all" ask different things of a reader, and a single threshold either cries
+# wolf at the first or stays silent through the second. The demo tree is the
+# case that decided it — its deliberately collinear pair measures |r| = 0.86
+# over the window an RCA fits it on, which a 0.9 bar would have passed in
+# silence while the split of that node's gap moved 1.6 points across numeric
+# stacks from the same seed.
+#
+#   |r| >= 0.7   moderate. The applied convention for where collinearity
+#                begins to distort coefficient estimation (Dormann et al.,
+#                2013). Their combined effect is still the sound number; the
+#                division of it between them is the soft one.
+#   |r| >= 0.9   high. >= 81% shared variance — the split is not measured,
+#                and reading either parent on its own is the mistake.
+#
+#   VIF >= 5     moderate, VIF >= 10 high: the conventional pair of bars
+#                (Kutner et al., 2004; Sheather, 2009), i.e. a parent 80% /
+#                90% explained by its siblings *jointly*. Deliberately looser
+#                than the pairwise bands convert to (0.7 and 0.9 are VIF 1.96
+#                and 5.26) because VIF is a joint quantity over k-1
+#                regressors: more parents raise it for honest reasons, and
+#                the pairwise bar applied to it would flag every wide node.
+#                Computed only for three or more parents — with exactly two,
+#                VIF is identically 1 / (1 - r^2), so it would restate the
+#                pairwise finding as a second, more obscure number.
+#
+# The two channels catch different shapes. A pairwise r cannot see `x3 ~ x1 +
+# x2` (every pair modest, the triple degenerate); a VIF cannot say *which*
+# parents to look at. Report both, and name names either way.
+_COLLINEAR_R_MODERATE = 0.7
+_COLLINEAR_R_HIGH = 0.9
+_COLLINEAR_VIF_MODERATE = 5.0
+_COLLINEAR_VIF_HIGH = 10.0
+
+
+def _collinearity_diagnostic(
+    X: Optional[np.ndarray],
+    parents: List[str],
+    target: str,
+    grain: str,
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    """Roadmap S4: name the parents whose *split* of credit is unstable.
+
+    Correlated regressors leave the likelihood almost flat along a ridge: the
+    data pins their **sum** and says little about the **split** — and the split
+    is exactly what RCA reports per parent. Since S2 made NUTS the default the
+    posterior is honest about that (a wide interval on each parent, a narrow
+    one on their total), but nothing said *which two parents* the width came
+    from, or that reading them separately is the mistake. This does.
+
+    A note on principle, because it looks like an exception and is not. This
+    project reports relationships as posteriors, never as Pearson r — but this
+    is not a relationship. It is a property of the **design matrix** the fit
+    was handed: a description of the regressors' co-movement over the fitted
+    periods, with no inferential claim, no null hypothesis and no p-value
+    attached. Nothing here is an estimate of anything in the world; it is a
+    statement about what the data can and cannot separate.
+
+    Runs on `X` as the model sees it — the z-scored, lag-shifted, trimmed
+    columns in `list(dag.predecessors(target))` order, so a lagged parent is
+    correlated at its lag rather than contemporaneously.
+
+    Returns `(block, warnings)`:
+
+    - `block["status"]` is `"ok"` (checked, nothing crossed a band),
+      `"moderate"`, `"high"` (the worst band any pair or parent reached), or
+      `"unavailable"` (the check could not run, which is not the same as
+      clean — rule 3). `None` for a node with nothing to check: a formula
+      node, or fewer than two regressors, where there is no split to be
+      unstable.
+    - `block["pairs"]` / `block["vif"]` carry only what was flagged, worst
+      first, each with its own band; `block["max_abs_correlation"]` is always
+      present on a computed check so `"ok"` is evidence rather than an
+      assertion.
+    - `warnings` is the self-contained prose that rides the payload, one
+      string per finding, the way `sign_warnings` does.
+    """
+    if X is None or len(parents) < 2 or X.ndim != 2 or X.shape[1] != len(parents):
+        return None, []
+
+    n, k = X.shape
+    # Rule 3, at the top: a design matrix with a non-finite or constant column
+    # gives a 0/0 correlation. Withhold the whole check under a named status
+    # with the reason rather than emitting NaN or, worse, a zero that reads as
+    # "these parents are unrelated".
+    if not np.isfinite(X).all():
+        bad = [p for i, p in enumerate(parents) if not np.isfinite(X[:, i]).all()]
+        reason = f"non-finite values in the fitted regressor(s) {bad}"
+    elif not np.isfinite(stds := X.std(axis=0)).all() or float(stds.min()) <= 0.0:
+        bad = [p for i, p in enumerate(parents) if not np.isfinite(stds[i]) or stds[i] <= 0]
+        reason = f"zero or non-finite variance in the fitted regressor(s) {bad}"
+    else:
+        reason = ""
+    if reason:
+        msg = (
+            f"The parents of '{target}' could not be checked for collinearity: {reason}. "
+            "That is an unchecked design, not a clean one — if two of these parents "
+            "restate each other, the per-parent split of this node's gap is arbitrary "
+            "and nothing here will say so (see docs/model.md)."
+        )
+        logger.warning(msg)
+        return (
+            {
+                "status": "unavailable",
+                "max_abs_correlation": None,
+                "pairs": [],
+                "vif": [],
+                "reason": reason,
+            },
+            [msg],
+        )
+
+    corr = np.corrcoef(X, rowvar=False)
+    if not np.isfinite(corr).all():
+        reason = "the correlation matrix of the fitted regressors is not finite"
+        msg = (
+            f"The parents of '{target}' could not be checked for collinearity: {reason}. "
+            "That is an unchecked design, not a clean one (see docs/model.md)."
+        )
+        logger.warning(msg)
+        return (
+            {
+                "status": "unavailable",
+                "max_abs_correlation": None,
+                "pairs": [],
+                "vif": [],
+                "reason": reason,
+            },
+            [msg],
+        )
+
+    warnings: List[str] = []
+    pairs: List[Dict[str, Any]] = []
+    max_abs = 0.0
+    for i, j in combinations(range(k), 2):
+        r = float(corr[i, j])
+        max_abs = max(max_abs, abs(r))
+        if abs(r) < _COLLINEAR_R_MODERATE:
+            continue
+        band = "high" if abs(r) >= _COLLINEAR_R_HIGH else "moderate"
+        pairs.append({"parents": [parents[i], parents[j]], "correlation": r, "status": band})
+        head = (
+            f"Parents '{parents[i]}' and '{parents[j]}' on '{target}' "
+            f"{'are near-collinear' if band == 'high' else 'move largely together'} over the "
+            f"{n} fitted {grain} periods (correlation {r:+.3f}). "
+        )
+        if band == "high":
+            msg = head + (
+                "The data determines their combined effect much better than the division "
+                "of it between them, so each one's coefficient, contribution and share of "
+                "the gap is the least stable number in this node's result — the pair's "
+                "total is the quantity to read, and the split can move by points on a "
+                "different numerical stack without the total moving at all. The fix is in "
+                "the tree, not the fit: merge the two, drop one, or redefine one so it is "
+                "not a restatement of the other (see docs/model.md)."
+            )
+        else:
+            msg = head + (
+                "The data determines their combined effect better than the division of it "
+                "between them, so the pair's total is the sound number here and the split "
+                "between them is the soft one. Read the two as one cause and do not rank "
+                "them against each other on a small difference in share — that ordering "
+                "is the part this fit does not pin down (see docs/model.md)."
+            )
+        warnings.append(msg)
+        logger.warning(msg)
+    pairs.sort(key=lambda p: -abs(p["correlation"]))
+
+    # VIF needs one regression per parent on the other k-1, so it needs more
+    # rows than columns to mean anything; below that every R^2 is 1 by
+    # construction. `MIN_FIT_PERIODS` makes this unreachable on any real fit,
+    # but the check is cheap and the alternative is publishing VIF = inf as a
+    # finding about the parents rather than about the row count.
+    vif: List[Dict[str, Any]] = []
+    if k >= 3 and n >= k + 2:
+        for i, p in enumerate(parents):
+            others = np.column_stack([np.ones(n), np.delete(X, i, axis=1)])
+            coef, *_ = np.linalg.lstsq(others, X[:, i], rcond=None)
+            resid = X[:, i] - others @ coef
+            ss_res = float(np.sum(resid**2))
+            ss_tot = float(np.sum((X[:, i] - X[:, i].mean()) ** 2))
+            r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+            if not math.isfinite(r2) or r2 >= 1.0 - 1e-12:
+                # Exactly (or numerically exactly) a linear combination of the
+                # others: VIF is unbounded. Rule 3 — withhold the number under
+                # its own status rather than emit `inf`, and keep the finding,
+                # which is the strongest one this function can make.
+                vif.append({"parent": p, "vif": None, "status": "unbounded"})
+                msg = (
+                    f"Parent '{p}' on '{target}' is an exact linear combination of the "
+                    f"other parents over the {n} fitted {grain} periods, so its own "
+                    "coefficient is not identified at all and the split of this node's "
+                    "gap among those parents is arbitrary — only their combined effect "
+                    "is a real quantity. Remove the redundant parent or redefine it "
+                    "(see docs/model.md)."
+                )
+                warnings.append(msg)
+                logger.warning(msg)
+                continue
+            v = 1.0 / (1.0 - r2)
+            if v < _COLLINEAR_VIF_MODERATE:
+                continue
+            band = "high" if v >= _COLLINEAR_VIF_HIGH else "moderate"
+            vif.append({"parent": p, "vif": float(v), "status": band})
+            msg = (
+                f"Parent '{p}' on '{target}' is {r2:.0%} explained by its sibling parents "
+                f"over the {n} fitted {grain} periods (VIF {v:.1f}). "
+                + (
+                    "Little of its movement is its own, so the share of the gap this node "
+                    "hands it is largely a choice among the correlated group rather than a "
+                    "measured split. Read the group's combined contribution and treat the "
+                    "per-parent numbers inside it as interchangeable"
+                    if band == "high"
+                    else "Much of its movement is shared with them, so its own share of the "
+                    "gap is softer than the group's combined contribution — read the group "
+                    "together before acting on any one member's number"
+                )
+                + " (see docs/model.md)."
+            )
+            warnings.append(msg)
+            logger.warning(msg)
+        vif.sort(key=lambda e: (e["vif"] is not None, -(e["vif"] or 0.0)))
+
+    worst = "ok"
+    for band in [e["status"] for e in pairs] + [e["status"] for e in vif]:
+        # `unbounded` is the strongest VIF finding there is, so it ranks as
+        # `high` at the node level rather than as a fourth node status nothing
+        # downstream would know how to render.
+        if band in ("high", "unbounded"):
+            worst = "high"
+            break
+        worst = "moderate"
+
+    block = {
+        "status": worst,
+        "max_abs_correlation": float(max_abs),
+        "pairs": pairs,
+        "vif": vif,
+        "reason": None,
+    }
+    return block, warnings
+
+
 def _prepare_series(
     defn: MetricDefinition,
     parents: List[str],
@@ -1159,6 +1406,13 @@ def fit_metric(
     re-fit behind the caller's back. What k-hat buys now is that choosing
     `"advi"` anyway is an informed choice rather than a trap.
 
+    Every fit with two or more regressors is also checked for **parent
+    collinearity** (roadmap S4) and reports
+    `diagnostics["collinearity_status"]` / `["collinearity"]` /
+    `["collinearity_warnings"]`. See `_collinearity_diagnostic`: it says which
+    parents the model cannot tell apart, which is the one thing a wide
+    posterior on a ridge does not say for itself.
+
     Returns a `FitResult`. Its trace's posterior includes `beta_raw`
     (= beta / scale): the coefficient on each parent in business units,
     i.e. d(target) per unit change of that parent.
@@ -1243,6 +1497,12 @@ def fit_metric(
             seasonality_warnings.append(msg)
             logger.warning(msg)
 
+    # Roadmap S4, computed before the sampler runs rather than after: it is a
+    # property of the design matrix, not of the trace, and a reader watching
+    # the log deserves to know the split is unstable *before* waiting out the
+    # fit that will report it.
+    collinearity, collinearity_warnings = _collinearity_diagnostic(X, parents, target, grain)
+
     with pm.Model():
         trend_sigma_prior = defn.trend.sigma if defn.trend else 0.05
         sigma_trend = pm.HalfNormal("sigma_trend", trend_sigma_prior)
@@ -1290,6 +1550,20 @@ def fit_metric(
         diagnostics["seasonality_warnings"] = seasonality_warnings
     if likelihood_warnings:
         diagnostics["likelihood_warnings"] = likelihood_warnings
+
+    # Roadmap S4. `collinearity_status` rides along whenever there was
+    # something to check — including `"ok"`, which is the point: on a node with
+    # two or more parents the absence of a warning has to be distinguishable
+    # from the absence of a check. `fit_quality` deliberately does *not* move
+    # on this. A collinear design does not make the fit wrong; the fit is
+    # correct and correspondingly unsure, and telling the reader not to trust
+    # it would be the opposite of the truth. What is unsafe is reading one
+    # parent's number on its own, which is what the warnings say.
+    if collinearity is not None:
+        diagnostics["collinearity_status"] = collinearity["status"]
+        diagnostics["collinearity"] = collinearity
+        if collinearity_warnings:
+            diagnostics["collinearity_warnings"] = collinearity_warnings
 
     # Declared-direction check: expected_signs is not a prior, so the fit is
     # free to contradict it — but when it does, say so loudly. The classic

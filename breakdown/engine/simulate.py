@@ -852,6 +852,8 @@ def run_scenario(
                 "khat_status": None,
                 "khat_borderline": None,
                 "khat_warnings": None,
+                "collinearity_status": None,
+                "collinearity_warnings": None,
                 "extrapolation": {"flag": False, **hist},
                 # An unaffected node's simulated value *is* its baseline, so
                 # this flag would be a statement about the loaded data rather
@@ -929,6 +931,8 @@ def run_scenario(
         khat_status = None
         khat_borderline = None
         khat_warnings = None
+        collinearity_status = None
+        collinearity_warnings = None
         if not cold_start and node in needs_beta:
             dx = traces[(node, fit_end_key)].diagnostics
             fit_quality = dx.get("fit_quality")
@@ -945,6 +949,18 @@ def run_scenario(
             # `khat_se` — the number itself — does not.
             khat_borderline = dx.get("khat_borderline")
             khat_warnings = dx.get("khat_warnings")
+            # Roadmap S4, beside k-hat and for the reason the four rules
+            # exist: a disclosure that rides the RCA node and not its what-if
+            # neighbour is one policy applied twice with opposite answers. It
+            # matters at least as much here — an intervention on one member of
+            # a collinear pair moves the child through a coefficient the data
+            # barely separates from its twin's, so the scenario's magnitude is
+            # soft in a way its interval alone does not say. Same shape as
+            # k-hat: the verdict and its sentences, with the numbers left on
+            # the fit (`GET /metrics/{name}`), because what a scenario reader
+            # needs is the verdict.
+            collinearity_status = dx.get("collinearity_status")
+            collinearity_warnings = dx.get("collinearity_warnings")
 
         contribs = [
             {"source": sid, "estimate": est}
@@ -977,6 +993,8 @@ def run_scenario(
             "khat_status": khat_status,
             "khat_borderline": khat_borderline,
             "khat_warnings": khat_warnings,
+            "collinearity_status": collinearity_status,
+            "collinearity_warnings": collinearity_warnings,
             "extrapolation": {"flag": bool(flag), **hist},
             # Per node, beside the per-node `extrapolation` flag, because the
             # two are different claims and the surfaces that render one must be

@@ -406,6 +406,51 @@ def test_fit_on_demand_with_a_real_fit():
     assert ci[0] < result["nodes"]["revenue"]["delta"]["estimate"] < ci[1]
 
 
+def test_a_what_if_lever_says_when_the_fit_cannot_separate_it():
+    """Roadmap S4 on the what-if surface, which is where it bites hardest.
+
+    A scenario pins one metric and propagates the child's *fitted slope* on it.
+    When that parent is collinear with a sibling, the slope is one arbitrary
+    point on a ridge — so the lever is not one you can pull on its own, and
+    the node's own `delta.ci_95` does not say that. It travels here for the
+    same reason `khat_status` does, and the four rules exist because the same
+    disclosure reaching one orchestrator and not its neighbour is this repo's
+    recurring defect.
+    """
+    from tests.test_engine import RIDGE_YAML, _ridge_frame
+
+    parser = Parser(RIDGE_YAML)
+    frame = _ridge_frame(n=90)
+    traces: dict = {}
+    result = run_scenario(
+        parser.dag,
+        frame,
+        traces,
+        ScenarioRequest(
+            baseline_start="2024-02-05",
+            baseline_end="2024-03-03",
+            interventions=[Intervention(metric="x1", mode="pct", value=0.1)],
+        ),
+        draws=200,
+    )
+    y = result["nodes"]["y"]
+    assert y["status"] == "affected"
+    assert y["collinearity_status"] == "high"
+    (msg,) = y["collinearity_warnings"]
+    assert "'x1'" in msg and "'x2'" in msg
+
+    # An intervened *source* node was never fitted, so it has nothing to
+    # check — and null must not be mistaken for a check that passed.
+    assert result["nodes"]["x1"]["collinearity_status"] is None
+
+    # And it survives MCP compaction, where an agent decides what to advise.
+    from breakdown.mcp.shaping import compact_scenario
+
+    compact = compact_scenario(result)["nodes"]["y"]
+    assert compact["collinearity_status"] == "high"
+    assert compact["collinearity_warnings"]
+
+
 # ---------------------------------------------------------------------------
 # C25: /simulate labels a rate's baseline and refuses non-finite results.
 

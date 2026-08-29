@@ -141,6 +141,18 @@ borderline `ok` k̂, which has not shown the approximation to be close. Full
 interpretation in
 [`docs/model.md`](model.md#assumptions-and-limitations-to-keep-in-mind).
 
+Whichever sampler ran, a fit with two or more parents also reports
+**`collinearity_status`** — `ok`, `moderate`, `high` or `unavailable` — plus
+`collinearity` (the evidence: `max_abs_correlation`, the flagged `pairs` with
+their correlations, and the flagged `vif` entries) and, when anything was
+flagged, `collinearity_warnings`. It measures whether the parents move
+together over the window the model trained on, i.e. whether the per-parent
+*split* of this node's gap is a quantity the data determines at all. It does
+**not** move `fit_quality`: a collinear fit is a correct fit that is properly
+unsure about the split. A node with fewer than two parents carries none of
+these fields, because there is no split to be unstable. See
+[`docs/model.md`](model.md#parents-that-move-together).
+
 ## `GET /shapley/{name}`
 
 Returns how much of the target metric's gap between two time windows is attributable to each parent. Requires a `formula` on the metric definition.
@@ -271,6 +283,8 @@ Trimmed response:
 ```
 
 Every fitted (`attribution_method: "posterior"`) node also reports which model produced its numbers and how much that model can be trusted: `inference_method`, `fit_quality` (`ok` | `suspect`), and the PSIS fields `khat` / `khat_se` / `khat_status` / `khat_borderline` / `khat_warnings` described under [`POST /analyze/{name}`](#post-analyzename). On the NUTS default they are `null` throughout. Where they are not — because the request asked for `advi` — read `khat_status` before quoting a `ci_95` from that node: `unusable` means the interval is not a measurement of the real one, and `khat_borderline: true` means the check could not separate that verdict from the next band along.
+
+A fitted node with two or more parents also carries `collinearity_status` / `collinearity` / `collinearity_warnings`, described under [`POST /analyze/{name}`](#post-analyzename). On `moderate` or `high`, the node's per-parent `contributions` are a split the data does not fully determine: read the flagged parents as one cause and do not rank them against each other. The fields are absent (null) on nodes with fewer than two parents.
 
 Grain support adds two per-node fields: `grain` (the grain the node was analyzed at) and `effective_windows` (the whole periods the requested windows snapped to at that grain). Gaps are mean-per-period at each node's own grain, so in mixed-grain trees compare nodes via `share_of_gap` and `ranked_causes` scores, not raw gaps.
 
@@ -455,8 +469,10 @@ exactly to the point delta by Shapley efficiency), per-node results
 (`status`, one of `baseline` | `affected` | `intervened`, plus `baseline`,
 `simulated`, `delta` with `ci_95`, `relative_delta`, `prob_direction`,
 `fit_quality`, `khat_status`, `khat_borderline`, `khat_warnings` — the last
-three null on the NUTS default — `extrapolation`, `non_physical`,
-`contributions`), plus
+three null on the NUTS default — `collinearity_status`,
+`collinearity_warnings` (the S4 verdict on the fit behind this node's slope;
+null where the node has fewer than two parents), `extrapolation`,
+`non_physical`, `contributions`), plus
 `warnings` and always-on `caveats`. The run is seeded, so identical calls are
 byte-identical.
 
