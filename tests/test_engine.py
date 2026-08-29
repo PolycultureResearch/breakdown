@@ -1569,3 +1569,230 @@ def test_a_cached_approximation_does_not_answer_a_request_for_nuts():
 
     nuts_fit = traces[("y", windows["analysis_start"])]
     assert cached_fit_is_usable(nuts_fit, "nuts") and cached_fit_is_usable(nuts_fit, "advi")
+
+
+# --- Parent collinearity (roadmap S4) ----------------------------------------
+#
+# The ridge fixture above is the failure shape: `x2` restates `x1`, so the
+# likelihood is nearly flat along `beta_x1 + beta_x2` and the posterior is
+# honestly wide on each — which S2 already delivers. What S4 adds is the
+# *name*: a wide interval does not say the width comes from a split between
+# those two parents specifically, and RCA publishes exactly that split.
+#
+# These tests deliberately include a passing case and a not-applicable case. A
+# diagnostic that has never said "ok" is not evidence when it says "high".
+
+WIDE_YAML = """
+metrics:
+  - name: x1
+    source: dbt.metric.x1
+  - name: x2
+    source: dbt.metric.x2
+  - name: x3
+    source: dbt.metric.x3
+  - name: x4
+    source: dbt.metric.x4
+  - name: y
+    source: dbt.metric.y
+    parents: [x1, x2, x3, x4]
+"""
+
+
+def _separable_frame(n: int = 90, seed: int = 11) -> pd.DataFrame:
+    """Four parents that move independently — the case that must NOT warn."""
+    rng = np.random.default_rng(seed)
+    x1 = 100 + np.cumsum(rng.normal(0, 3, n))
+    x2 = 50 + rng.normal(0, 5, n)
+    x3 = 20 + rng.normal(0, 2, n)
+    x4 = 70 + rng.normal(0, 4, n)
+    y = 1.0 * x1 + 0.5 * x2 - 0.3 * x3 + 0.2 * x4 + rng.normal(0, 1.0, n)
+    return pd.DataFrame(
+        {
+            "date": pd.date_range("2024-01-01", periods=n),
+            "x1": x1,
+            "x2": x2,
+            "x3": x3,
+            "x4": x4,
+            "y": y,
+        }
+    )
+
+
+def _multiway_frame(n: int = 90, seed: int = 13) -> pd.DataFrame:
+    """`x4 = x1 + x2 + x3`, and no *pair* of the four is even moderately
+    correlated.
+
+    This is the shape a pairwise correlation cannot see: each of the three
+    explains only a third of x4's variance, so every pairwise r sits near
+    1/sqrt(3) ~ 0.58, comfortably inside the `ok` band, while the four
+    together are degenerate and no individual coefficient is identified. It is
+    why the diagnostic reports VIF as well as pairwise r rather than only the
+    cheaper one.
+    """
+    rng = np.random.default_rng(seed)
+    x1 = 100 + rng.normal(0, 10, n)
+    x2 = 100 + rng.normal(0, 10, n)
+    x3 = 100 + rng.normal(0, 10, n)
+    x4 = x1 + x2 + x3 + rng.normal(0, 1.0, n)
+    y = 1.0 * x1 + 0.5 * x2 + 0.2 * x3 + 0.1 * x4 + rng.normal(0, 1.0, n)
+    return pd.DataFrame(
+        {
+            "date": pd.date_range("2024-01-01", periods=n),
+            "x1": x1,
+            "x2": x2,
+            "x3": x3,
+            "x4": x4,
+            "y": y,
+        }
+    )
+
+
+def test_collinearity_names_the_two_parents_the_fit_cannot_separate():
+    """S4's whole content: which parents, and how strongly.
+
+    The interval on each parent was already honest before this shipped (S2's
+    NUTS default). What was missing is that a reader holding two wide intervals
+    has no way to know they are one ridge measured twice — so the warning has
+    to name both parents, and the payload has to carry the number behind it.
+    """
+    parser = Parser(RIDGE_YAML)
+    fit = fit_metric(parser.dag, _ridge_frame(n=90), "y", draws=200, tune=300, random_seed=0)
+
+    assert fit.diagnostics["collinearity_status"] == "high"
+    block = fit.diagnostics["collinearity"]
+    assert block["reason"] is None
+    (pair,) = block["pairs"]
+    # Parent order is `list(dag.predecessors(...))`, the axis order of beta_raw.
+    assert pair["parents"] == ["x1", "x2"]
+    assert pair["status"] == "high"
+    assert 0.99 < pair["correlation"] < 1.0
+    assert block["max_abs_correlation"] == pytest.approx(pair["correlation"])
+    # Two parents: VIF is identically 1/(1 - r^2), so restating it would add a
+    # second, more obscure form of the same number.
+    assert block["vif"] == []
+
+    (msg,) = fit.diagnostics["collinearity_warnings"]
+    assert "'x1'" in msg and "'x2'" in msg and "correlation +0.99" in msg
+
+    # And it does not move `fit_quality`. A collinear fit is not a broken fit:
+    # it is a correct one that is properly unsure about the split, and telling
+    # the reader to distrust the node would be the opposite of the finding.
+    assert fit.diagnostics["method"] == "nuts"
+    assert fit.diagnostics["fit_quality"] in ("ok", "suspect")
+
+
+def test_collinearity_says_ok_when_the_parents_are_separable():
+    """The passing case, without which the failing one proves nothing."""
+    parser = Parser(WIDE_YAML)
+    fit = fit_metric(parser.dag, _separable_frame(), "y", draws=200, tune=300, random_seed=0)
+
+    assert fit.diagnostics["collinearity_status"] == "ok"
+    assert "collinearity_warnings" not in fit.diagnostics
+    block = fit.diagnostics["collinearity"]
+    # `ok` is a measurement, not an assertion: the number that produced it
+    # rides along so a reader can see how much headroom there was.
+    assert block["max_abs_correlation"] < 0.7
+    assert block["pairs"] == [] and block["vif"] == []
+
+
+def test_collinearity_catches_a_degeneracy_no_pair_of_parents_shows():
+    """`x4 = x1 + x2 + x3`: every pair looks fine, the design does not.
+
+    VIF earns its place here. A diagnostic that only ever looked at pairs would
+    return `ok` on a design where one parent's coefficient is not separately
+    identified at all.
+    """
+    parser = Parser(WIDE_YAML)
+    fit = fit_metric(parser.dag, _multiway_frame(), "y", draws=200, tune=300, random_seed=0)
+
+    block = fit.diagnostics["collinearity"]
+    assert fit.diagnostics["collinearity_status"] == "high"
+    assert block["max_abs_correlation"] < 0.7, "the point of this fixture is that no pair crosses"
+    assert block["pairs"] == []
+    flagged = {e["parent"] for e in block["vif"]}
+    assert flagged == {"x1", "x2", "x3", "x4"}
+    for entry in block["vif"]:
+        assert entry["vif"] is None or entry["vif"] >= 10.0
+    warnings = fit.diagnostics["collinearity_warnings"]
+    assert any("VIF" in w or "linear combination" in w for w in warnings)
+
+
+def test_a_single_parent_has_no_split_to_be_unstable():
+    """Null is not `ok`, and `ok` is not null.
+
+    One parent has nothing to check — and the payload has to be able to say
+    *that* rather than reporting a clean check that never ran. The MCP
+    compaction and the UI both branch on the difference.
+    """
+    parser = Parser(SIMPLE_YAML)
+    fit = fit_metric(
+        parser.dag,
+        generate_mock_data(n_days=120),
+        "order_count",
+        draws=200,
+        tune=300,
+        random_seed=0,
+    )
+    assert "collinearity_status" not in fit.diagnostics
+    assert "collinearity" not in fit.diagnostics
+
+
+@pytest.mark.parametrize(
+    "col, expected",
+    [
+        (np.full(40, np.nan), "non-finite"),
+        (np.zeros(40), "zero or non-finite variance"),
+    ],
+)
+def test_an_uncheckable_design_is_withheld_and_not_zeroed(col, expected):
+    """Rule 3, on this channel.
+
+    A constant or non-finite regressor gives a 0/0 correlation. Emitting the
+    NaN would 500 the encoder and `round_floats` would turn it into `null`; a
+    zero would read as "these parents are unrelated", which is the most
+    dangerous of the three. It is withheld under `unavailable` with the reason,
+    and `unavailable` is not `ok` anywhere downstream.
+    """
+    from breakdown.engine.model import _collinearity_diagnostic
+
+    rng = np.random.default_rng(3)
+    X = np.column_stack([rng.normal(size=40), col])
+    block, warnings = _collinearity_diagnostic(X, ["a", "b"], "y", "day")
+
+    assert block["status"] == "unavailable"
+    assert block["max_abs_correlation"] is None
+    assert block["pairs"] == [] and block["vif"] == []
+    assert expected in block["reason"] and "'b'" in block["reason"]
+    (msg,) = warnings
+    assert "unchecked design, not a clean one" in msg
+
+
+def test_the_collinearity_verdict_reaches_the_rca_payload_and_mcp():
+    """End to end on the channel S4 was told to compose with.
+
+    `sign_warnings` is produced in `model.py`, carried on the RCA node record,
+    compacted for MCP and rendered in the UI; this follows the same path rather
+    than opening a parallel one, so the two cannot drift apart.
+    """
+    from breakdown.engine.rca import run_rca
+    from breakdown.mcp.shaping import compact_rca
+
+    parser = Parser(RIDGE_YAML)
+    result = run_rca(
+        parser.dag,
+        _ridge_frame(n=90),
+        {},
+        "y",
+        **win(("2024-01-08", "2024-02-04"), ("2024-02-05", "2024-03-03")),
+        draws=200,
+    )
+    node = result["nodes"]["y"]
+    assert node["collinearity_status"] == "high"
+    assert node["collinearity"]["pairs"][0]["parents"] == ["x1", "x2"]
+    assert "'x1'" in node["collinearity_warnings"][0]
+
+    compact = compact_rca(result)["nodes"]["y"]
+    assert compact["collinearity_status"] == "high"
+    assert compact["collinearity_warnings"]
+    # The evidence rides only where it is bad news, exactly as `khat` does.
+    assert compact["collinearity"]["pairs"][0]["correlation"] > 0.99

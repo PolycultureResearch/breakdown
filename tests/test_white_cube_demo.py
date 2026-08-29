@@ -859,6 +859,48 @@ def test_story_d_names_activation_as_the_mechanism(client):
     assert ranked.index("trial_activation_rate") < ranked.index("trials_started")
 
 
+def test_story_d_says_which_two_parents_the_split_is_soft_between(client):
+    """Roadmap S4, measured on the tree it was written about.
+
+    The demo plants `trial_activation_rate` and `trial_days_active` on the same
+    underlying engagement on purpose, and the consequence was already recorded
+    here: the split of story D's conversion gap comes out 0.6804 / 0.6822 /
+    0.6967 on three numeric stacks *from the same seed*, which is why the
+    figure above is banded and the tour says "about 70%". What was missing
+    until S4 was anything telling a user that the number they got is the least
+    stable one on the page, or which two parents it is a split between.
+
+    The `moderate` band rather than `high` is the finding, not a compromise:
+    over the 62 weeks an RCA of this window fits on, the pair measures
+    |r| = 0.863 — the pair's *total* is sound (both contributions positive,
+    activation's interval clear of zero) and only their division is soft, which
+    is exactly what `moderate` says. A single 0.9 trip-wire would have passed
+    this node in silence.
+    """
+    ref, ana = ("2025-07-07", "2025-08-03"), ("2025-08-11", "2025-09-07")
+    d = rca(client, "new_mrr", ref, ana)
+    ccr = d["nodes"]["trial_conversion_rate"]
+
+    assert ccr["collinearity_status"] == "moderate"
+    (pair,) = ccr["collinearity"]["pairs"]
+    assert sorted(pair["parents"]) == ["trial_activation_rate", "trial_days_active"]
+    # Banded like the share it explains, and for the same reason: this is a
+    # property of snapshot data run through numpy, not a pinned tour figure.
+    assert pair["correlation"] == pytest.approx(0.863, abs=0.02)
+    assert ccr["collinearity"]["vif"] == [], "two parents: VIF would restate 1/(1 - r^2)"
+    (msg,) = ccr["collinearity_warnings"]
+    assert "trial_activation_rate" in msg and "trial_days_active" in msg
+
+    # ...and it does not fire on the nodes with nothing to check. A diagnostic
+    # that flagged the whole tree would be ignored by the second demo.
+    for name in ("sessions", "trials_started"):
+        assert d["nodes"][name]["attribution_method"] == "posterior"
+        assert d["nodes"][name]["collinearity_status"] is None, (
+            f"{name} has one parent — there is no split to be unstable, and 'nothing to "
+            "check' must not render as a check that passed"
+        )
+
+
 def test_story_d_a_non_adjacent_reference_would_credit_the_trend(client):
     """The tour's "worth saying" aside is a quantitative claim, so it is run.
 

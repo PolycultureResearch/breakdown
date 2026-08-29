@@ -879,14 +879,16 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
    like what I saw?" — the single most informative Bayesian model check there is
    (Gelman et al., 2020; Gabry et al., 2019). A badly misspecified node currently
    passes silently as long as it converges.
-6. **No collinearity diagnostic on parents.** — ○ open
+6. **Correlated parents give an undetermined split, and the engine now says
+   which parents.** — ✅ closed 2026-08-27
    ([S4](roadmap.md#statistical-rigor-s--a-standing-workstream))
    Correlated parents produce a well-determined *sum* and an unstable *split*,
-   and the split is exactly what RCA reports. Nothing warns. Since the default
-   became exact MCMC (#1) the *interval* on each parent is at least honest —
-   wide, as it should be on a ridge — so this no longer compounds with #1 on
-   the default path; on the `advi` opt-in it still does, and k̂ catches the
-   ridge (4.1 on the collinear fixture) without saying which pair causes it.
+   and the split is exactly what RCA reports. Since the default became exact
+   MCMC (#1) the *interval* on each parent has been honest — wide, as it
+   should be on a ridge — so this stopped compounding with #1 on the default
+   path; on the `advi` opt-in it still does, and k̂ catches the ridge (4.1 on
+   the collinear fixture) without saying which pair causes it. What was left
+   was the diagnosis, and that is what shipped.
 
    **How unstable, measured 2026-08-24.** The demo tree carries a deliberately
    collinear pair (`trial_activation_rate` and `trial_days_active`, which ride
@@ -895,8 +897,31 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
    a 1.6-point spread, with no run-to-run variance inside a stack, so it is the
    linear-algebra library rather than the sampler's randomness. The pair's
    *sum* is the determined quantity; which of the two gets the credit is not.
-   A reader is handed the split with nothing saying it is the least stable
-   number on the page, which is the whole of this weakness.
+
+   **The fix, 2026-08-27.** Every fit with two or more regressors now scores
+   its own design matrix and publishes `collinearity_status` — `ok`,
+   `moderate`, `high` or `unavailable` — with the flagged pairs and their
+   correlations, the flagged parents and their VIFs, and a sentence naming
+   them, on the fit, on every RCA node, over MCP and in the UI. Two bands
+   rather than one bar, and the pair above is why: over the 62 weeks an RCA of
+   that story fits it on it measures **|r| = 0.863**, so a single 0.9
+   trip-wire would have passed in silence the exact node this weakness was
+   written about. `moderate` says the pair's total is the sound number and the
+   division of it is the soft one; `high` (|r| ≥ 0.9, VIF ≥ 10) says the split
+   is not a measured quantity at all. It deliberately does not move
+   `fit_quality`: a collinear fit is a *correct* fit that is properly unsure,
+   and what is unsafe is reading one parent's share alone. An uncheckable
+   design is withheld as `unavailable` rather than reported as zero
+   correlation.
+
+   Two things this does not fix, and they are the residual. No diagnostic can
+   recover a division of credit the data does not contain — the warning tells
+   you to read the pair together, it does not produce the per-parent number —
+   and the durable remedy is authorial (merge the metrics, drop one, redefine
+   one), which is why the warning names the tree rather than the fit. And the
+   check is on the fitted design matrix, so it sees co-movement over the fit
+   window only; two parents that are structurally redundant but happened to
+   move apart over that window pass it.
 
    Until
    2026-08-08 the reference tree in `knowledge/` contained the structure itself
@@ -905,7 +930,8 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
    without noticing. It was removed there
    ([C10](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend))
    rather than kept as a specimen, since that file is what new authors copy;
-   the diagnostic is still missing.
+   the purpose-built fixture S4 and S17 needed lives in `tests/test_engine.py`
+   instead.
 7. **Interval calibration is tested by a test that is structurally unable to
    fail.** — ○ open
    ([S17](roadmap.md#statistical-rigor-s--a-standing-workstream),
@@ -1120,14 +1146,18 @@ which is the source of truth for status and sequencing. This section holds the
 *rationale* — why each gap matters and what "fixed" would mean. The IDs are
 stable; the statuses here are a snapshot as of the last-updated date.
 
-**Current state (2026-08-24):** the workstream has started, and its first two
+**Current state (2026-08-27):** the workstream has started, and three of its
 items have closed. **S1 — benchmarking full-rank ADVI — ran 2026-08-18 and the
 decision is not to adopt** (measurement in
 [`s1_fullrank_advi_benchmark.md`](s1_fullrank_advi_benchmark.md); rationale in
 §4.1). **S2 shipped 2026-08-22 and closed 2026-08-24**: PSIS k̂ on every
 variational fit — and, because it rejects essentially every real node, **NUTS
 as the default sampler on every path**, with ADVI a stated opt-in that reports
-its k̂. It closes §3.2 #4 and §3.2 #1 outright. **S3 is next.** One other item has shipped its first half: S20's
+its k̂. It closes §3.2 #4 and §3.2 #1 outright. **S4 shipped 2026-08-27**, closing
+§3.2 #6: a fit with two or more parents now names the ones whose split of
+credit the data does not determine, in two bands the demo's own collinear pair
+(|r| = 0.863 over the window an RCA fits it on) is what calibrated. **S3 is
+next.** One other item has shipped its first half: S20's
 *disclosure* (2026-08-17) — a fit whose window is ≥25% exact zeros now carries
 `likelihood_warnings` on every surface that shows its numbers, because the
 misspecification was silent and that failed this track's own
@@ -1148,7 +1178,7 @@ scheduled start.
 | S1 | Benchmark full-rank ADVI as the RCA default | ✅ benchmarked 2026-08-18 — **not adopted** |
 | S2 | PSIS k̂ approximation diagnostic; NUTS by default, ADVI by request | ✅ closed 2026-08-24 |
 | S3 | Posterior predictive checks on every fit | ○ open — **next up** |
-| S4 | Parent collinearity diagnostic | ○ open — **promoted** |
+| S4 | Parent collinearity diagnostic | ✅ shipped 2026-08-27 |
 | S5 | Simulation-based calibration | ○ open |
 | S6 | Data-driven bootstrap block length | ○ open |
 | S7 | Correlated cold-start beliefs | ○ open |
@@ -1328,15 +1358,32 @@ what the normal regime predicts (95% CI …)." This is the full Brodersen et al.
 (2015) pattern, it replaces the flat-trend approximation (§2.4), and it produces
 a considerably stronger headline number than a window-mean difference.
 
-**A parent collinearity diagnostic** — `S4`, ○ open, **promoted 2026-08-05**.
-Compute pairwise correlation (or VIF) among a node's parent regressors over the
-fit window and warn when the split of credit is unstable. Cheap, and it addresses
-a silent failure that directly corrupts what RCA reports. It moved up because it
-compounds with weakness #1 rather than merely adding to it: correlated parents
-make the split unstable, and mean-field ADVI then reports a *narrow* interval
-around whichever split it happened to land on. That combination — a confident
-number attached to an arbitrary division of credit — is the most likely route
-from breakdown's output to a decision someone regrets, and it is untested (S17).
+**A parent collinearity diagnostic** — `S4`, ✅ **shipped 2026-08-27**
+(promoted 2026-08-05). Every fit with two or more regressors now scores its own
+design matrix — pairwise |r| among the parents, and VIF as well wherever there
+are three or more of them — and publishes `collinearity_status` with the
+parents it flagged, on the fit, on every RCA node, over MCP and in the UI.
+
+The item was promoted because it compounded with weakness #1: correlated
+parents make the split unstable, and mean-field ADVI then reported a *narrow*
+interval around whichever split it landed on. S2 removed that half by making
+the default sampler exact, which left the split honestly wide and still
+anonymous — a reader holding two wide intervals had no way to know they were
+one ridge measured twice.
+
+Two design choices are worth recording. The bands (`moderate` at |r| ≥ 0.7 or
+VIF ≥ 5, `high` at |r| ≥ 0.9 or VIF ≥ 10) exist because the demo's own
+collinear pair measures |r| = 0.863 over the window an RCA fits it on: a
+single 0.9 bar would have been silent on the one node this item was written
+about. And the verdict deliberately leaves `fit_quality` alone — the fit is
+correct and correspondingly unsure, so flagging the *node* would misdirect the
+reader away from the actual hazard, which is reading one parent's
+`share_of_gap` on its own. Both channels report: pairwise |r| names the pair,
+VIF catches the multi-way degeneracy (`x4 = x1 + x2 + x3`) that no pair shows.
+The residual is that no diagnostic recovers a split the data does not contain —
+the remedy is authorial, and the warning says so — and that co-movement is
+measured over the fit window, so a structurally redundant pair that happened to
+move apart there passes. S17 still owes the collinear *coverage* case.
 
 **Multiplicity and selection-aware reporting** — `S15`, ○ open. Disclose before
 modeling. A `run_rca` result is a *ranking over many intervals*, and the top of
@@ -1517,6 +1564,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-08-27 | **S4 closed: the engine now names the parents whose split of credit the data does not determine.** Correlated parents were already reported honestly — since S2 made NUTS the default, each gets a wide interval and their total a narrow one — but nothing said the two widths were *one ridge measured twice*, and RCA publishes the split per parent. Every fit with two or more regressors now scores its own design matrix (`X` as the model sees it: z-scored, lag-shifted, in `list(dag.predecessors(...))` order) and publishes `collinearity_status` / `collinearity` / `collinearity_warnings` on the fit, on every RCA node, over MCP with a `how_to_read` entry, and in the UI. **The demo set the thresholds, and that is the finding worth recording.** The pair this paper cites in §3.2 #6 — `trial_activation_rate` and `trial_days_active`, whose split lands at 0.680 / 0.682 / 0.697 across BLAS implementations from one seed — measures **\|r\| = 0.863** over the 62 weeks an RCA of that story fits it on (0.941 over the full 112-week window). A single conventional 0.9 bar would therefore have passed *in silence* the exact node the weakness was written about, so the diagnostic carries two bands: `moderate` (\|r\| ≥ 0.7, Dormann et al. 2013; VIF ≥ 5) — their total is sound, the split is soft — and `high` (\|r\| ≥ 0.9; VIF ≥ 10) — the split is not a measured quantity. On the 106-metric reference tree the five multi-parent nodes separate cleanly across those bands: 0.146 and 0.504 `ok`, 0.761 and 0.841 `moderate`, 0.909 with VIF 10.6 `high`. VIF is reported only for three or more parents (with two it is identically 1/(1−r²)) and earns its place on the multi-way degeneracy no pair shows — `x4 = x1+x2+x3` has every pairwise r near 0.58 and every VIF above 100. Two deliberate non-choices: it does **not** move `fit_quality` (a collinear fit is a correct fit that is properly unsure; the hazard is reading one parent's share alone, not the node), and it does **not** attempt to repair the split, because no diagnostic can recover a division of credit the data does not contain — the remedy named in the warning is authorial. §3.2 #6 moves from ○ to ✅ with its residual stated, §4.1's S4 entry carries the shipped design, and `docs/model.md` gains a *Parents that move together* section. S17 still owes the collinear coverage case; the fixture it needs now exists (`tests/test_engine.py`'s `_ridge_frame` / `_separable_frame` / `_multiway_frame`). |
 | 2026-08-27 | **S22 closed: k̂ now reports its own error, and the route that publishes it is seeded.** Two independent defects behind one diagnostic. (a) `POST /analyze/{name}` passed no `random_seed` while `run_rca` and `run_scenario` both passed `0`, so the manual-fit route — the one the UI's Analyze button and the "confirm this with NUTS" workflow use — returned a different posterior, and a different k̂, from two identical requests. Re-measured on the White Cube tree at full window before the fix: `customer_churn_rate` **1.23 then 1.91**, `trials_started` **0.94 then 1.19** (the same nodes had given 1.23/0.79 and 0.89/0.77 five days earlier — the spread is itself unstable, which is the argument). All three fitting paths now read one `FIT_RANDOM_SEED`, enforced by an AST-walking invariant test rather than by three call sites happening to agree, and the four demo figures this paper quotes reproduce exactly from the route: 10.18 / 1.07 / 0.85 / 1.36. (b) k̂ is fitted to the tail of 1000 sampled importance ratios (95 tail points), so it is an estimate; `khat_se` now publishes the generalized Pareto shape parameter's asymptotic standard error over that tail, corrected for the shrinkage in ArviZ's empirical-Bayes estimator, and it was validated against the thing it describes — holding one approximation fixed and re-estimating k̂ over 60 draws, published-SE ÷ empirical-SD came out **1.06 / 1.11 / 0.90 / 1.04** across k̂ 0.03 to 1.15. **The size of that error is the finding:** ~0.15 near the 0.5 bar and ~0.2 near k̂ = 1, against a `suspect` band that is 0.2 wide — so that band is frequently not resolvable, and `trial_conversion_rate` on the demo tree is a live case at **0.854 ± 0.172**. Such a fit now carries `khat_borderline: true`, a warning naming the two bands the estimate cannot separate, and `fit_quality: "suspect"` — including from an `ok` k̂, because "not shown to be far from the posterior" is a weaker claim than "close to it". `khat_status` keeps meaning which band the point estimate is in, so nothing downstream had to reinterpret it. Shrinking the error was rejected on cost: the tail grows as √n, so halving the error costs 16× the draws. §3.2 #1's third residual and §4.1's S2 entry are updated; §4 gains an S22 row. |
 | 2026-08-24 | **S2 closed by reversing its own second half: NUTS is now the default sampler, ADVI an opt-in that reports its k̂.** The escalation shipped on 2026-08-22 — re-fit a k̂-rejected node with NUTS, capped at four per analysis — was the wrong shape once its own measurement was in. k̂ rejects essentially every real node (10.18 / 1.07 / 0.85 / 1.36 on White Cube at full window, 1.26 / 0.88 / 1.11 / 10.43 on a second, 1.04 on the bundled demo), so a rescue that fires on almost everything is a default in disguise — and a **slower** one, since an escalated node pays for the approximation and then the exact fit (the demo suite ran 225s escalating and runs 175s now). Then the latency case fell over: the 106-metric reference tree, the widest here, contains exactly **five** probabilistic fits, and fitting all five measured **31.3s under ADVI against 28.0s under NUTS** — the exact sampler was the *faster* of the two, on four of the five nodes, and ADVI flagged all five `suspect` where NUTS returned four of five `ok`. So `run_rca`, `run_scenario` and `POST /analyze/{name}` all default to exact MCMC; `?inference_method=advi` is available on all three and reports k̂ on every node it fits; and escalation, its cap, the `escalated` status and the "re-fitted with NUTS" UI badge were deleted. k̂ is a disclosure on a chosen path, not a trigger. **§3.2 #1 moves from ◐ to ✅** — "the default inference method misstates uncertainty" cannot be true of a default with no approximation in it — and its residuals are restated as properties of the opt-in path. §2.2 is rewritten (the *triage with ADVI, confirm with NUTS* posture is retired), §4's current state and §4.1's S2 entry carry the new measurements, and §3.2 #6 no longer compounds with #1 on the default path. Three figures worth keeping. Across the four demo stories `sessions ← marketing_spend` moves −108.2 → −68.8, 178.1 → 114.0, 88.4 → 62.7 and 202.0 → 129.0 between the samplers; the story B engagement edge moves the *other* way, −0.049 → −0.077; and the verdict flips in both directions — that edge's β HDI goes from straddling zero to excluding it, while `trial_conversion_rate ← trial_days_active` goes from excluding it to straddling it. A fourth is the honest limit of the opt-in: story D's `trial_conversion_rate` has k̂ **0.497**, inside the good band, and its published share still moved 70.7% → ~68%. A passing k̂ bounds the error; it does not zero it. **One thing measured on the way and recorded on §3.2 #6:** that same node's two parents are deliberately collinear, and their split of the gap comes out 0.680 / 0.682 / 0.697 on three numeric stacks *from the same seed*, with no variance inside a stack — a 1.6-point spread that is the BLAS rather than the sampler. The pair's sum is determined; the split is not. Evidence for **S4**, and the reason that figure is banded in the demo suite and written "about 70%" in the tour rather than pinned to a decimal. |
 | 2026-08-22 | **S2 shipped — the engine can now tell a good approximation from a bad one, and the answer on real trees is "bad".** Every variational fit is scored with PSIS k̂ (Yao et al., 2018), computed from PyMC's own `sized_symbolic_logp` / `symbolic_logq` cloned against one shared sample and smoothed with `arviz.psislw`; three bands (`ok` ≤ 0.5, `suspect` ≤ 0.7, `unusable` above) plus `escalated` and `unavailable`, on the fit's diagnostics, on every RCA and what-if node, over MCP with its own `how_to_read` entry, and in the UI beside R̂. `run_rca` and `run_scenario` re-fit an `unusable` node with NUTS, capped at four per analysis. **§3.2 #4 is closed outright** — the ELBO-only check is no longer the only thing standing between an approximation and its published intervals — and **§3.2 #1 moves from ○ to ◐**, because the default path is no longer the optimistic one. It is not ✅, and the paper says why: the escalation cap, the un-escalated `suspect` band, the fact that k̂ judges the *joint* posterior and cannot say which marginal is wrong, and k̂'s own unreported Monte-Carlo error (new **S22**). The measurement is the part worth recording. k̂ flags **nearly every probabilistic node on every tree this repo ships** — 10.18 / 1.07 / 0.85 / 1.36 on White Cube at full window (`random_seed=0`), 1.04 on the bundled demo — including the two whose ELBO check said `ok`, which is exactly the failure S2 was specified to catch. The cause is the engine's own geometry (one correlated trend latent per period), not the diagnostic: the same code returns 0.31 on a 30-dimensional posterior mean-field can represent and 0.95 on Neal's funnel. So S2 did not become an occasional rescue; it made RCA on a small tree mostly-NUTS, at 3–6× the wall clock. What that buys is bigger than interval width: on the demo's story A, `sessions ← marketing_spend` moves from −108.2 to −68.8 (0.68 → 0.43 of the gap), and on story B the learned `member_activity_rate → customer_churn_rate` contribution moves −0.049 → −0.077 — two independent published **point estimates**, each off by 57%, and in *opposite* directions. The trend delta is what moves consistently (mean-field collapses it toward zero every time); β absorbs the rest in whichever direction that node's ridge runs, so the sign of the error is not recoverable from the payload. That is the β-vs-trend ridge S1 predicted, and it rules out disclosing the bias in place of fixing it. §4.1's S2 entry carries the full account and §4's current-state paragraph moves to S3. |

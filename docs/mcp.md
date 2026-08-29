@@ -37,11 +37,17 @@ reproduces the numbers.
 Warnings survive compaction. A fit whose learned direction contradicts the
 tree's declared `expected_signs` arrives with its `sign_warnings`, a
 mostly-zero series with its `likelihood_warnings`, a withheld interval with
-its `ci_status`. A node fitted with the opt-in approximation arrives with its
-PSIS k̂ *and* k̂'s own Monte-Carlo standard error (`khat_se`), plus
-`khat_borderline` where the two together cannot say which band the fit is in —
-a compaction that dropped the error would leave an agent narrating an estimate
-as a fact.
+its `ci_status`, and a node whose parents move together with its
+`collinearity_status` and `collinearity_warnings`. That last one is the
+warning most specific to how an assistant reads a tree: it says the node's
+per-parent `contributions` are a split the data does not determine, so the
+flagged parents are one cause and ranking them against each other invents a
+finding. `how_to_read` spells that out, and `explain_metric` carries the same
+three fields on the fit it reports. A node fitted with the opt-in
+approximation arrives with its PSIS k̂ *and* k̂'s own Monte-Carlo standard
+error (`khat_se`), plus `khat_borderline` where the two together cannot say
+which band the fit is in — a compaction that dropped the error would leave an
+agent narrating an estimate as a fact.
 
 A `run_whatif` node keeps **both** honesty flags, because they ask for
 different narration. `extrapolation: true` means the scenario leaves the range
