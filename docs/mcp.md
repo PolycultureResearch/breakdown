@@ -37,7 +37,11 @@ reproduces the numbers.
 Warnings survive compaction. A fit whose learned direction contradicts the
 tree's declared `expected_signs` arrives with its `sign_warnings`, a
 mostly-zero series with its `likelihood_warnings`, a withheld interval with
-its `ci_status`.
+its `ci_status`. A node fitted with the opt-in approximation arrives with its
+PSIS k̂ *and* k̂'s own Monte-Carlo standard error (`khat_se`), plus
+`khat_borderline` where the two together cannot say which band the fit is in —
+a compaction that dropped the error would leave an agent narrating an estimate
+as a fact.
 
 A `run_whatif` node keeps **both** honesty flags, because they ask for
 different narration. `extrapolation: true` means the scenario leaves the range

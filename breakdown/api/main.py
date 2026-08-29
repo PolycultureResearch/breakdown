@@ -34,6 +34,7 @@ from breakdown.data_fetch import (
     provider_query_name,
 )
 from breakdown.engine.model import (
+    FIT_RANDOM_SEED,
     NUTS_CHAINS,
     NUTS_DRAWS,
     NUTS_TUNE,
@@ -1548,6 +1549,14 @@ async def analyze_metric(
 
     # `fit_end` lets the "confirm with NUTS" workflow reproduce exactly what
     # RCA fitted; `OptionalIsoDate` is what checks it is a date.
+    #
+    # And `random_seed` is the other half of that promise (roadmap S22). This
+    # route passed no seed while `run_rca` and `run_scenario` both passed
+    # `FIT_RANDOM_SEED`, so "reproduce exactly what RCA fitted" was reachable
+    # in the window but not in the sampler — and with `?inference_method=advi`
+    # the PSIS k-hat it reported changed between two identical requests
+    # (1.23 then 1.91 on the demo's `customer_churn_rate`). A diagnostic that
+    # answers differently about the same fit is not one.
     async with tree.lock:
         fit = await asyncio.to_thread(
             fit_metric,
@@ -1559,6 +1568,7 @@ async def analyze_metric(
             inference_method=inference_method,
             chains=chains,
             fit_end=fit_end,
+            random_seed=FIT_RANDOM_SEED,
         )
         _remember_fit(tree.traces, (name, fit_end), fit)
 

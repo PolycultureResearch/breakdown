@@ -386,17 +386,98 @@ def _zero_inflation_warnings(values: np.ndarray, target: str, grain: str) -> lis
 _KHAT_GOOD = 0.5
 _KHAT_UNUSABLE = 0.7
 
-# Draws used for the k-hat estimate. The Pareto fit uses the largest 20% of
-# the ratios, so 1000 draws fit the tail on ~200 points — the same order as
-# the ArviZ/loo default — and costs ~0.2s after the (one-off, ~1.5s) graph
-# compile, against a 1.4-6s ADVI fit on the demo trees. Nothing about the
-# diagnostic scales with the tree, only with the model's latent count.
+# Draws used for the k-hat estimate. ArviZ fits the Pareto to the largest
+# `min(n/5, 3*sqrt(n))` ratios, so 1000 draws fit the tail on 95 points — the
+# same order as the ArviZ/loo default — and cost ~0.2s after the (one-off,
+# ~1.5s) graph compile, against a 1.4-6s ADVI fit on the demo trees. Nothing
+# about the diagnostic scales with the tree, only with the model's latent count.
+#
+# 95 tail points is also what sets k-hat's own standard error (`_khat_se`), and
+# that error is large: ~0.15 at k-hat = 0.5, which is most of the width of the
+# 0.5-0.7 band. Buying it down is expensive — the tail grows as sqrt(n), so the
+# error falls as n^(-1/4) and halving it costs 16x the draws — so S22 reports
+# the error rather than spending against it. If that trade is ever revisited,
+# it is this constant that moves.
 _KHAT_DRAWS = 1000
+
+# The weight of the prior ArviZ's `_gpdfit` puts on k = 0.5 (its `prior_k`,
+# from Vehtari et al., 2024): the estimator returns `(M*k + 5) / (M + 10)` for a
+# tail of M points. It shrinks the estimate toward 0.5 and, with it, the
+# estimator's sampling variance — by the factor `(M / (M + 10))^2`. Read from
+# the same place the estimate comes from, because a standard error computed for
+# a different estimator is not this number's standard error.
+_GPD_PRIOR_K = 10.0
+
+
+def _khat_tail_len(log_ratios: np.ndarray) -> int:
+    """How many of `log_ratios` ArviZ's `psislw` actually fits the Pareto to.
+
+    Mirrors `arviz.stats.stats.psislw` / `_psislw`: the cut is the largest
+    `ceil(min(n/5, 3*sqrt(n)))` ratios, floored at `log(tiny)` so a run of
+    underflowed ratios cannot be counted as tail. It is recomputed here rather
+    than assumed from `n` because that floor can bite, and a standard error
+    quoted against the wrong sample size is a made-up number of exactly the
+    kind rule 3 exists to keep out of a payload.
+    """
+    n = int(log_ratios.size)
+    if n < 5:
+        return 0
+    cut = int(np.ceil(min(n / 5.0, 3.0 * n**0.5)))
+    if cut >= n:
+        return 0
+    ordered = np.sort(log_ratios)
+    cutoff = max(float(ordered[-cut - 1]), float(np.log(np.finfo(float).tiny)))
+    return int((log_ratios > cutoff).sum())
+
+
+def _khat_se(khat: float, log_ratios: np.ndarray) -> Optional[float]:
+    """The Monte-Carlo standard error of one k-hat estimate (roadmap S22).
+
+    k-hat is fitted to a finite tail of a finite sample, so it is an estimate
+    with sampling error, and the whole argument for reporting it is that a
+    number without a stated uncertainty is not evidence. The generalized
+    Pareto shape parameter's MLE is asymptotically normal with variance
+    `(1 + k)^2 / M` over a tail of M points (Smith, 1985; Hosking & Wallis,
+    1987), and ArviZ's empirical-Bayes estimator shrinks toward 0.5 with prior
+    weight `_GPD_PRIOR_K`, which scales that variance by `(M / (M + 10))^2`.
+    So:
+
+        se(k-hat) = (M / (M + 10)) * (1 + k-hat) / sqrt(M)
+
+    Returns None — never a NaN, never a zero — when the asymptotics do not
+    apply: the normal limit needs `k > -0.5`, and a tail of four points or
+    fewer is what makes ArviZ give up on the shape parameter itself. A missing
+    standard error is reported as missing; see `_khat_warning`, which says so
+    rather than quoting the estimate as if it were exact.
+    """
+    if not np.isfinite(khat) or khat <= -0.5:
+        return None
+    m = _khat_tail_len(log_ratios)
+    if m <= 4:
+        return None
+    se = (m / (m + _GPD_PRIOR_K)) * (1.0 + khat) / math.sqrt(m)
+    return float(se) if np.isfinite(se) and se > 0 else None
+
+
+def _khat_borderline(khat: Optional[float], se: Optional[float]) -> bool:
+    """Is this k-hat closer to a band edge than to its own error?
+
+    The bands are a verdict about whether the intervals are evidence, and an
+    estimate that sits within one standard error of `_KHAT_GOOD` or
+    `_KHAT_UNUSABLE` cannot support the one it landed in — the next draw of the
+    same 1000 would plausibly land on the other side. The band still reported
+    is the measured one (`khat_status` keeps meaning "which band the estimate
+    is in", so no consumer's reading of it changes); this says separately that
+    the estimate does not resolve it.
+    """
+    if khat is None or se is None:
+        return False
+    return min(abs(khat - _KHAT_GOOD), abs(khat - _KHAT_UNUSABLE)) < se
 
 
 def _psis_khat(
     approx: Any, n_draws: int = _KHAT_DRAWS, random_seed: Optional[int] = None
-) -> Tuple[Optional[float], str, Optional[str]]:
+) -> Tuple[Optional[float], Optional[float], str, Optional[str]]:
     """PSIS k-hat for a variational approximation (Yao et al., 2018).
 
     Treats the fitted `approx` as an importance-sampling proposal for the true
@@ -410,11 +491,16 @@ def _psis_khat(
     variational density by hand) is what makes this work unchanged for
     mean-field and full-rank: each family supplies its own `symbolic_logq`.
 
-    Returns `(khat, status, reason)`. `status` is one of `"ok"`, `"suspect"`,
-    `"unusable"` (the three bands above) or `"unavailable"` — the last means
-    the number could not be computed, and then `khat` is None and `reason`
-    says why. Never returns a non-finite k-hat: a NaN k-hat rendered as a
-    number is worse than no k-hat, and it would reach an encoder (rule 3).
+    Returns `(khat, khat_se, status, reason)`. `status` is one of `"ok"`,
+    `"suspect"`, `"unusable"` (the three bands above) or `"unavailable"` — the
+    last means the number could not be computed, and then `khat` is None and
+    `reason` says why. `khat_se` is k-hat's own Monte-Carlo standard error
+    (roadmap S22; see `_khat_se`), and is None when that error is not
+    computable even though k-hat is — the two are withheld independently,
+    because "checked, with an error we cannot state" and "not checked" are
+    different facts. Never returns a non-finite k-hat or standard error: a NaN
+    rendered as a number is worse than no number, and it would reach an
+    encoder (rule 3).
     """
     import arviz as az
     import pytensor.tensor as pt
@@ -439,6 +525,7 @@ def _psis_khat(
     if n_finite < 100 or n_finite < 0.9 * log_ratios.size:
         return (
             None,
+            None,
             "unavailable",
             f"only {n_finite} of {log_ratios.size} log importance ratios were finite",
         )
@@ -447,12 +534,13 @@ def _psis_khat(
     _, khat = az.psislw(centered.reshape(1, -1))
     k = float(np.asarray(khat).ravel()[0])
     if not np.isfinite(k):
-        return None, "unavailable", "the generalized Pareto fit returned a non-finite shape"
+        return None, None, "unavailable", "the generalized Pareto fit returned a non-finite shape"
+    se = _khat_se(k, centered)
     if k <= _KHAT_GOOD:
-        return k, "ok", None
+        return k, se, "ok", None
     if k <= _KHAT_UNUSABLE:
-        return k, "suspect", None
-    return k, "unusable", None
+        return k, se, "suspect", None
+    return k, se, "unusable", None
 
 
 def cached_fit_is_usable(fit: Any, inference_method: str) -> bool:
@@ -476,31 +564,108 @@ def cached_fit_is_usable(fit: Any, inference_method: str) -> bool:
     return True
 
 
-def _khat_warning(target: str, method: str, khat: Optional[float], status: str, reason) -> str:
-    """The one self-contained sentence a k-hat verdict travels with."""
-    if status == "unavailable":
+def _khat_figure(khat: float, se: Optional[float]) -> str:
+    """`k-hat = 0.68 +/- 0.15`, or the same number with its error named absent.
+
+    Every sentence that quotes a k-hat quotes it through here, so the estimate
+    and its uncertainty cannot come apart in one message and not another
+    (roadmap S22). A missing standard error is stated, never elided: "0.68"
+    with nothing after it reads as an exact number, which is the reading S22
+    exists to stop.
+    """
+    if se is None:
+        return f"PSIS k-hat = {khat:.2f} (its own Monte-Carlo error could not be estimated)"
+    return f"PSIS k-hat = {khat:.2f} +/- {se:.2f} (one Monte-Carlo standard error)"
+
+
+def _khat_borderline_clause(khat: float, se: float) -> str:
+    """The sentence a k-hat that cannot resolve its own band travels with.
+
+    Names every band the estimate reaches, not just the nearer one. The
+    `suspect` band is 0.2 wide and the standard error is often ~0.15, so a
+    k-hat inside it can be within one error of *both* edges — and reporting
+    only the closer one would understate exactly the uncertainty this sentence
+    exists to state.
+    """
+    near_good = abs(khat - _KHAT_GOOD) < se
+    near_unusable = abs(khat - _KHAT_UNUSABLE) < se
+    if near_good and near_unusable:
+        reach = (
+            f"That is within one such error of both band edges ({_KHAT_GOOD} and "
+            f"{_KHAT_UNUSABLE}), so this estimate does not separate 'ok', 'suspect' and "
+            "'unusable' from each other at all"
+        )
+    elif near_good:
+        reach = (
+            f"That is closer to the {_KHAT_GOOD} band edge than to its own error, so this "
+            "estimate does not separate 'ok' from 'suspect'"
+        )
+    else:
+        reach = (
+            f"That is closer to the {_KHAT_UNUSABLE} band edge than to its own error, so this "
+            "estimate does not separate 'suspect' from 'unusable'"
+        )
+    return (
+        f"{reach}: k-hat is fitted to the tail of {_KHAT_DRAWS} sampled importance ratios, and "
+        f"another {_KHAT_DRAWS} would plausibly land on the other side of the edge. Read the "
+        "band as unresolved rather than as the side it happened to fall on, and use a NUTS fit "
+        "for anything that turns on which side it is."
+    )
+
+
+def _khat_warning(
+    target: str,
+    method: str,
+    khat: Optional[float],
+    se: Optional[float],
+    status: str,
+    borderline: bool,
+    reason: Optional[str],
+) -> str:
+    """The one self-contained sentence a k-hat verdict travels with.
+
+    One sentence rather than a list, still: every consumer (the UI's warning
+    block, the MCP payload, the exported report) renders `khat_warnings`
+    verbatim, so a k-hat's uncertainty belongs *inside* the sentence that
+    quotes the k-hat rather than in a second entry that some surface might
+    show without the first.
+    """
+    # A None k-hat cannot reach the other branches by construction — every
+    # other status carries a number — but the check is a branch rather than an
+    # assert, because `python -O` drops asserts and this function's output is a
+    # sentence a reader acts on.
+    if status == "unavailable" or khat is None:
         return (
             f"The approximation quality of the {method} fit for '{target}' could not be "
             f"checked: {reason}. That is an unchecked fit, not a clean one — its intervals "
             "carry no evidence either way (see docs/model.md)."
         )
+    figure = _khat_figure(khat, se)
+    tail = f" {_khat_borderline_clause(khat, se)}" if borderline and se is not None else ""
+    if status == "ok":
+        # Reached only when the estimate is borderline: an `ok` k-hat clear of
+        # the 0.5 edge says nothing, and silence is the right render there.
+        return (
+            f"The {method} approximation for '{target}' has {figure}, inside the good band "
+            f"(<= {_KHAT_GOOD}).{tail}"
+        )
     if status == "suspect":
         return (
-            f"The {method} approximation for '{target}' has PSIS k-hat = {khat:.2f} "
-            f"(> {_KHAT_GOOD}): the importance ratios against the true posterior have no "
+            f"The {method} approximation for '{target}' has {figure}, above {_KHAT_GOOD}: "
+            "the importance ratios against the true posterior have no "
             "finite variance, so this fit sits measurably away from the posterior it "
             "approximates. Read its intervals as approximate, and confirm anything "
-            "load-bearing with a NUTS fit (see docs/model.md)."
+            f"load-bearing with a NUTS fit (see docs/model.md).{tail}"
         )
     return (
-        f"The {method} approximation for '{target}' has PSIS k-hat = {khat:.2f} "
-        f"(> {_KHAT_UNUSABLE}): the importance ratios against the true posterior have "
+        f"The {method} approximation for '{target}' has {figure}, above {_KHAT_UNUSABLE}: "
+        "the importance ratios against the true posterior have "
         "neither finite variance nor a usable mean, so the approximation is not close to "
         "the posterior and cannot be corrected by reweighting. Its credible intervals are "
         "not evidence about the width of the real ones. This fit ran a variational "
         "approximation because one was asked for; drop `inference_method=advi` to get "
         "the NUTS default, or re-fit this node alone with "
-        f"POST /analyze/{target}?inference_method=nuts."
+        f"POST /analyze/{target}?inference_method=nuts.{tail}"
     )
 
 
@@ -538,6 +703,18 @@ def _advi_diagnostics(
     flip `fit_quality`: an unchecked fit is not a failed one, and saying so is
     the honest reading — but it does carry the warning that says it is
     unchecked, because silence there reads as "no problems found".
+
+    Roadmap **S22** adds k-hat's own error beside it: `khat_se` is the
+    Monte-Carlo standard error of the estimate, and `khat_borderline` says the
+    estimate sits within one of those standard errors of a band edge.
+    `khat_status` keeps meaning exactly what it meant — which band the point
+    estimate is in — so nothing downstream has to reinterpret it; the new flag
+    is what says the band is not resolved. It **does** flip `fit_quality`,
+    including from an `ok` k-hat: the gate's question is whether this fit can
+    be trusted as-is, and an approximation the check cannot distinguish from
+    the `suspect` band has not answered it. That is the conservative direction
+    and the only one available — the alternative is publishing a clean bill
+    the measurement does not support.
     """
     hist = np.asarray(approx.hist, dtype=float)
     w = len(hist) // 10
@@ -549,24 +726,32 @@ def _advi_diagnostics(
         elbo_suspect = bool(abs(last.mean() - prev.mean()) > 0.5 * last.std())
 
     try:
-        khat, khat_status, khat_reason = _psis_khat(
+        khat, khat_se, khat_status, khat_reason = _psis_khat(
             approx, n_draws=khat_draws, random_seed=random_seed
         )
     except Exception as e:  # pragma: no cover - defensive: a PyMC API change
-        khat, khat_status, khat_reason = None, "unavailable", f"{type(e).__name__}: {e}"
+        khat, khat_se, khat_status, khat_reason = (
+            None,
+            None,
+            "unavailable",
+            f"{type(e).__name__}: {e}",
+        )
         logger.warning("PSIS k-hat could not be computed for '%s': %s", target, e)
 
+    borderline = _khat_borderline(khat, khat_se)
     diagnostics: Dict[str, Any] = {
         "fit_quality": "suspect"
-        if (elbo_suspect or khat_status in ("suspect", "unusable"))
+        if (elbo_suspect or borderline or khat_status in ("suspect", "unusable"))
         else "ok",
         "method": method,
         "elbo_drop": elbo_drop,
         "khat": khat,
+        "khat_se": khat_se,
         "khat_status": khat_status,
+        "khat_borderline": borderline,
     }
-    if khat_status != "ok":
-        msg = _khat_warning(target, method, khat, khat_status, khat_reason)
+    if khat_status != "ok" or borderline:
+        msg = _khat_warning(target, method, khat, khat_se, khat_status, borderline, khat_reason)
         logger.warning(msg)
         diagnostics["khat_warnings"] = [msg]
     return diagnostics
@@ -860,6 +1045,27 @@ NUTS_DRAWS = 500
 NUTS_TUNE = 1000
 NUTS_CHAINS = 4
 ADVI_ITERATIONS = 20_000
+
+#: The seed every path that fits on the caller's behalf passes, for the same
+#: reason as the four budgets above and enforced by the same invariant test
+#: (roadmap **S22**, half (a)).
+#:
+#: `run_rca` and `run_scenario` each wrote `random_seed=0` at their own fit call
+#: site; `POST /analyze/{name}` passed nothing at all. So the manual-fit route —
+#: the one the UI's Analyze button and the "confirm this with NUTS" workflow
+#: both use — returned a *different* fit from the same request each time, and
+#: with `?inference_method=advi` a different PSIS k-hat with it: measured
+#: 2026-08-27 on the White Cube tree at full window, two consecutive calls gave
+#: `customer_churn_rate` 1.23 then 1.91 and `trials_started` 0.94 then 1.19.
+#: The published verdict held (`unusable` both times), but a diagnostic that
+#: answers differently about the same fit is not a diagnostic, and a k-hat near
+#: a band edge would have straddled it.
+#:
+#: Zero, because that is what the two orchestrators already used, so no cached
+#: or published RCA figure moves. A fixed seed does not make the fit *correct*
+#: — it makes it reproducible, which is the property `fit_metric`'s docstring
+#: has always claimed and one route quietly did not have.
+FIT_RANDOM_SEED = 0
 
 
 def fit_metric(

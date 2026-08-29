@@ -1113,16 +1113,28 @@ function ciStatusNote(status) {
    unconverged optimizer with the same word, and the two have different
    remedies — one is "run the optimizer longer", the other is "this sampler
    cannot represent this posterior, use the exact one". So k̂ gets its own chip,
-   in three states plus the unknown-status fallback ciStatusNote pioneered: a
-   status this build cannot name is shown verbatim rather than silently treated
-   as fine.
+   in three states — four, counting S22's `borderline` below — plus the
+   unknown-status fallback ciStatusNote pioneered: a status this build cannot
+   name is shown verbatim rather than silently treated as fine.
 
    Every state here is a warning, because a k̂ only exists at all when the fast
    approximation was deliberately asked for — NUTS is the default and has no
    k̂. Returns null for `ok` and for a node with no k̂ (a NUTS fit, a formula
    node): nothing to say is the honest render there, and it is the common
-   case. */
+   case.
+
+   One exception, and it is roadmap S22's: an `ok` k̂ within one Monte-Carlo
+   standard error of the 0.5 edge (`khat_borderline`) is not a clean verdict,
+   and rendering nothing there would hand the reader the one thing the estimate
+   cannot support. So `khatNote` takes the *node* rather than the bare status —
+   the flag is what decides, and a function given only the status could not see
+   it. */
 const KHAT_NOTE = {
+  borderline: {
+    text: "⚠ approximation check inconclusive",
+    cls: "sign-flag",
+    why: "PSIS k̂ landed inside the good band (≤ 0.5), but within one Monte-Carlo standard error of the edge — k̂ is itself estimated from a finite sample of importance ratios, and another sample would plausibly land on the other side. This fit is not shown to be close to its posterior; it is only not shown to be far from it. Re-fit with NUTS for anything that turns on the difference.",
+  },
   suspect: {
     text: "⚠ approximation off",
     cls: "sign-flag",
@@ -1140,15 +1152,36 @@ const KHAT_NOTE = {
   },
 };
 
-function khatNote(status) {
-  if (!status || status === "ok") return null;
-  return (
+function khatNote(node) {
+  const status = node && node.khat_status;
+  if (!status) return null;
+  if (status === "ok") return node.khat_borderline ? KHAT_NOTE.borderline : null;
+  const base =
     KHAT_NOTE[status] || {
       text: `approximation check: ${status}`,
       cls: "sign-flag",
       why: "This build does not recognise that approximation status, so it is shown verbatim. It is not 'ok' — a newer engine flagged something about the fit behind this node that this UI cannot explain yet.",
-    }
-  );
+    };
+  // A flagged band that the estimate cannot separate from its neighbour is
+  // still that band — the status keeps its meaning — but the reader is told
+  // the edge is inside the error, not outside it.
+  if (!node.khat_borderline) return base;
+  return {
+    ...base,
+    why: `${base.why} And k̂ sits within one Monte-Carlo standard error of a band edge, so which of the two adjacent bands this fit is in has not been resolved — read the worse of them.`,
+  };
+}
+
+/* k̂ with its own error: "1.23 ± 0.24", or just "1.23" where the engine could
+   not estimate the error. Never "1.23" where it could — an estimate printed
+   bare is read as exact, which is the whole of roadmap S22. */
+function khatFigure(node) {
+  const k = fmtKhat(node && node.khat);
+  if (!k) return null;
+  const se = node && typeof node.khat_se === "number" && Number.isFinite(node.khat_se)
+    ? node.khat_se
+    : null;
+  return se === null ? k : `${k} ± ${se.toFixed(2)}`;
 }
 
 /* The k̂ verdict as an inline chip (what-if table) and as a block (what-if
@@ -1156,7 +1189,7 @@ function khatNote(status) {
    the same node — the drift that let the export carry component rows the live
    table lacked.
 
-   Two of the three labels carry their own ⚠ and `unavailable` does not, so
+   Three of the four labels carry their own ⚠ and `unavailable` does not, so
    anything that prefixes a glyph strips first: `khatLabel` is the one place
    that decides, and "⚠ ⚠ approximation not usable" is what happens without
    it. */
@@ -1165,14 +1198,14 @@ function khatLabel(kn) {
 }
 
 function khatChipHtml(node) {
-  const kn = khatNote(node.khat_status);
+  const kn = khatNote(node);
   if (!kn) return "";
   const title = kn.why + (node.khat_warnings || []).map((w) => `\n\n${w}`).join("");
   return ` <span class="cause-flag" title="${esc(title)}">${esc(kn.text)}</span>`;
 }
 
 function khatBlockHtml(name, node) {
-  const kn = khatNote(node.khat_status);
+  const kn = khatNote(node);
   if (!kn) return "";
   const body = (node.khat_warnings || []).length
     ? node.khat_warnings.map((w) => esc(w)).join(" ")
@@ -1382,8 +1415,8 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     // fast approximation on this node" is the reason its numbers differ from a
     // colleague's default run, and a report that omits it makes that look like
     // drift.
-    const kn = khatNote(node.khat_status);
-    if (kn) bits.push(`${kn.text}${fmtKhat(node.khat) ? ` (PSIS k̂ ${fmtKhat(node.khat)})` : ""}`);
+    const kn = khatNote(node);
+    if (kn) bits.push(`${kn.text}${khatFigure(node) ? ` (PSIS k̂ ${khatFigure(node)})` : ""}`);
     if (node.sign_warnings && node.sign_warnings.length) bits.push("⚠ learned sign contradicts declared expectation");
     if (node.seasonality_warnings && node.seasonality_warnings.length) bits.push("⚠ seasonality unidentifiable from fitted history");
     if (node.likelihood_warnings && node.likelihood_warnings.length) bits.push("⚠ zero-inflated fit window — intervals approximate");
@@ -1426,15 +1459,15 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     // asked for the approximation — so these join `out` rather than needing a
     // second, un-glyphed channel beside it. Through `khatLabel`, because `out`
     // stamps its own ⚠ and two of the three labels already carry one.
-    const knFull = khatNote(node.khat_status);
+    const knFull = khatNote(node);
     if (knFull) {
-      // `out`'s renderer stamps its own ⚠, and two of the three k̂ labels
+      // `out`'s renderer stamps its own ⚠, and three of the four k̂ labels
       // already carry one, so the label is stripped rather than doubled — a
       // "⚠ ⚠" in the one place the report is read without its author is the
       // fifth rule's failure mode in miniature.
       out.push(
         `<strong>${esc(khatLabel(knFull))}` +
-          `${fmtKhat(node.khat) ? ` (PSIS k̂ = ${fmtKhat(node.khat)})` : ""}.</strong> ` +
+          `${khatFigure(node) ? ` (PSIS k̂ = ${khatFigure(node)})` : ""}.</strong> ` +
           esc(knFull.why),
       );
       (node.khat_warnings || []).forEach((w) => out.push(esc(w)));
@@ -2951,15 +2984,23 @@ function renderPosterior(name, data) {
   // answers the question those cannot: R̂ says the chains agree, k̂ says how far
   // the thing they agree on is from the posterior. Rendered with its band, so
   // the number is never left for the reader to threshold from memory.
+  //
+  // With its own Monte-Carlo standard error beside it (roadmap S22), because
+  // k̂ is estimated from 1,000 sampled importance ratios and that error is not
+  // small — it is comparable to the width of the 0.5–0.7 band. A k̂ closer to
+  // a band edge than to its own error gets the band it landed in *and* the
+  // word that says the landing was not decisive; printing the band alone
+  // would be a verdict the number cannot support.
   if (typeof dx.khat === "number" && Number.isFinite(dx.khat)) {
     const st = dx.khat_status;
-    const cls = st === "ok" ? "ok" : "warn";
+    const cls = st === "ok" && !dx.khat_borderline ? "ok" : "warn";
     const band =
       st === "ok" ? "close to the posterior"
         : st === "suspect" ? "measurably off"
         : st === "unusable" ? "not usable"
         : esc(String(st));
-    bits.push(`PSIS k̂ = <span class="${cls}">${dx.khat.toFixed(2)}</span> (${band})`);
+    const edge = dx.khat_borderline ? ", band unresolved at this error" : "";
+    bits.push(`PSIS k̂ = <span class="${cls}">${khatFigure(dx)}</span> (${band}${edge})`);
   }
   // The engine's own verdict on the fit. It is computed for every fit — NUTS
   // thresholds R̂/divergences/ESS, ADVI checks the ELBO *and* PSIS k̂ — and
@@ -2972,7 +3013,12 @@ function renderPosterior(name, data) {
     verdict = `<div class="diag"><span class="warn">⚠ The engine flagged this fit as suspect.</span>
       ${dx.method === "advi" || dx.method === "fullrank_advi"
         ? (dx.khat_status === "unusable" || dx.khat_status === "suspect"
-          ? `Its PSIS k̂ is ${esc(fmtKhat(dx.khat) || "above the threshold")}: the approximation sits away from the posterior it approximates, so its credible intervals are not a measurement of the real ones. Re-run this metric with NUTS.`
+          ? `Its PSIS k̂ is ${esc(khatFigure(dx) || "above the threshold")}: the approximation sits away from the posterior it approximates, so its credible intervals are not a measurement of the real ones. Re-run this metric with NUTS.`
+          // Roadmap S22. Without this branch a borderline-`ok` fit would be
+          // explained by the ELBO sentence below — an explanation of a check
+          // that passed, offered for a failure it did not cause.
+          : dx.khat_borderline
+          ? `Its PSIS k̂ is ${esc(khatFigure(dx) || "close to a band edge")}, which is nearer the band edge than its own Monte-Carlo error: the check cannot say which side of the threshold this approximation is on. Re-run this metric with NUTS for anything that turns on it.`
           : "The ADVI objective (the ELBO) had not settled by the end of optimization, so the approximation may not have converged on anything.")
         : "One of R̂, the divergence count or the effective sample size crossed the engine's threshold."}
       Numbers derived from this fit — coefficients, intervals, and any RCA contribution through this node — inherit that.</div>`;
@@ -3706,9 +3752,9 @@ function renderRcaTab() {
       // into it: they fail for different reasons and have different remedies,
       // and only this one says "the sampler you chose cannot represent this
       // posterior". Absent entirely on the NUTS default, which is the point.
-      const kn = khatNote(node.khat_status);
+      const kn = khatNote(node);
       const khatFlag = kn
-        ? ` · <span class="${kn.cls}" title="${esc(kn.why + (fmtKhat(node.khat) ? `\n\nPSIS k̂ = ${fmtKhat(node.khat)}.` : "") + (node.khat_warnings && node.khat_warnings.length ? "\n\n" + node.khat_warnings.join("\n\n") : ""))}">${esc(kn.text)}${fmtKhat(node.khat) ? ` (k̂ ${fmtKhat(node.khat)})` : ""}</span>`
+        ? ` · <span class="${kn.cls}" title="${esc(kn.why + (khatFigure(node) ? `\n\nPSIS k̂ = ${khatFigure(node)}.` : "") + (node.khat_warnings && node.khat_warnings.length ? "\n\n" + node.khat_warnings.join("\n\n") : ""))}">${esc(kn.text)}${khatFigure(node) ? ` (k̂ ${khatFigure(node)})` : ""}</span>`
         : "";
       const signNote =
         node.sign_warnings && node.sign_warnings.length

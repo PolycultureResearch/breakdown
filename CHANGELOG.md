@@ -56,6 +56,28 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
 
 ### Added
 
+- **PSIS k̂ now reports its own Monte-Carlo error, and the route that publishes
+  it is seeded** (roadmap S22). k̂ is fitted to the tail of 1,000 sampled
+  importance ratios, so it is an estimate; a variational fit's diagnostics now
+  carry **`khat_se`** (its standard error) and **`khat_borderline`** (true when
+  k̂ is within one `khat_se` of the 0.5 or 0.7 band edge). `khat_status` still
+  names the band the point estimate falls in — nothing downstream reinterprets
+  it — and the flag is the separate statement that the band is not resolved.
+  `fit_quality` goes `suspect` on a borderline fit, including one whose k̂
+  landed in the `ok` band: "not shown to be far from the posterior" is a weaker
+  claim than "close to it".
+
+  The error is not small — about 0.15 near the 0.5 bar and 0.2 near k̂ = 1,
+  against a `suspect` band 0.2 wide — so the middle band is frequently not
+  resolvable at this draw count. One of the demo tree's four learned nodes is a
+  live case: `trial_conversion_rate` scores **0.854 ± 0.172**.
+
+  `POST /analyze/{name}` also **seeds its fit** now, as `POST /rca/{name}` and
+  `POST /simulate` already did. Before this, the same request twice returned
+  two different posteriors — and two different k̂s about them (1.23, then 1.91,
+  on one demo node). Fits from that route may therefore differ from what
+  v0.1.1 returned; they no longer differ from each other.
+
 - **`inference_method` on every fitting route.** `POST /rca/{name}` and
   `POST /simulate` join `POST /analyze/{name}` in taking
   `?inference_method=nuts|advi`, same values, same `nuts` default. Pass `advi`

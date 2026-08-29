@@ -114,6 +114,39 @@ def test_metrics_summary_json_safe_after_advi():
         assert all(v is None or isinstance(v, float) for v in summary["r_hat"].values())
 
 
+def test_the_same_analyze_request_twice_gives_the_same_fit():
+    """Roadmap S22(a). A fit is a pure function of (DAG, data, target).
+
+    `run_rca` and `run_scenario` both passed `FIT_RANDOM_SEED`; this route
+    passed no seed at all, so the same URL called twice returned two different
+    posteriors — and with `?inference_method=advi`, two different PSIS k-hats
+    about them. Measured on the White Cube demo tree before the fix,
+    `customer_churn_rate` came back 1.23 and then 1.91 from two consecutive
+    calls. The published band held both times, but a diagnostic whose value
+    depends on when you asked is not a diagnostic, and a node whose k-hat sits
+    near a band edge would have changed verdict between the two.
+
+    Asserted on the k-hat because it is the number S22 is about, and on a
+    coefficient because the seed fixes the whole fit, not just the check.
+    """
+    with TestClient(app) as client:
+        url = "/analyze/daily_sessions?inference_method=advi&draws=100"
+        first = client.post(url)
+        assert first.status_code == 200
+        # The route caches by (name, fit_end), so the second call must actually
+        # re-fit rather than return the first fit's diagnostics: clearing the
+        # cache is what makes this a test of the seed.
+        app.state.traces.clear()
+        second = client.post(url)
+        assert second.status_code == 200
+
+        a, b = first.json()["diagnostics"], second.json()["diagnostics"]
+        assert a["khat"] == b["khat"]
+        assert a["khat_se"] == b["khat_se"]
+        assert a["khat_status"] == b["khat_status"]
+        assert a["elbo_drop"] == b["elbo_drop"]
+
+
 def test_analyze_accepts_fit_end_and_chains():
     """/analyze takes optional fit_end (exclusive cutoff) and chains; the fit is
     cached under (name, fit_end) and surfaces in /meta and /metrics."""

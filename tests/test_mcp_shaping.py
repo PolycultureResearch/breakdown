@@ -334,7 +334,16 @@ def test_how_to_read_guides():
         # no `khat_status`, and "no verdict" and "clean" are the same silence
         # unless the guide separates them. The what-if guide carries the short
         # form of the same thing.
-        assert 400 < len(guide) < 4000
+        #
+        # Raised to 4400 for `khat_se` / `khat_borderline` (roadmap S22),
+        # which is that shape a fourth time and is the *only* entry that
+        # qualifies another entry: an agent holding `khat_status: "ok"` with
+        # no way to know the estimate could not separate `ok` from `suspect`
+        # narrates the intervals as sound, which is the exact failure
+        # `khat_status` was added to prevent. The band is a coin flip more
+        # often than the bare enum suggests — k̂'s standard error is around
+        # 0.15, against a `suspect` band 0.2 wide.
+        assert 400 < len(guide) < 4400
     assert "unexplained" in RCA_HOW_TO_READ
     assert "window_aggregate" in RCA_HOW_TO_READ
     assert "khat_status" in RCA_HOW_TO_READ and "khat_status" in WHATIF_HOW_TO_READ

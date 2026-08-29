@@ -103,6 +103,12 @@ Query parameters:
 | `chains` | `4` | Number of NUTS chains (NUTS only) |
 | `fit_end` | none | Exclusive date cutoff (`YYYY-MM-DD`). The fit uses only rows before it. Defaults to the full window; pass the analysis-window start to reproduce what RCA fits. |
 
+The fit is **seeded**, like the ones `POST /rca/{name}` and `POST /simulate`
+run: the same request twice returns the same posterior and the same
+diagnostics. Through v0.1.1 this route passed no seed while both analysis
+routes did, so an `advi` fit here reported a different PSIS k̂ each time it
+was asked (1.23, then 1.91, on one demo node).
+
 ```bash
 # Full MCMC — the default
 curl -X POST "http://localhost:9090/analyze/order_count?draws=1000"
@@ -122,8 +128,17 @@ ones are) or `unavailable` (the check could not run — an unchecked fit, not a
 clean one). Anything other than `ok` also carries `khat_warnings`, a list of
 self-contained sentences. A NUTS fit has no `khat` at all, and that absence is
 not a missing check: NUTS samples the posterior rather than approximating it.
-`fit_quality` stays the two-valued gate (`ok` | `suspect`) and goes `suspect`
-when either check fails. Full interpretation in
+
+k̂ is itself estimated from a finite sample, so it travels with its own error:
+**`khat_se`** is its Monte-Carlo standard error (null where the estimate has
+one but its error is not computable — never zero, which would claim exactness),
+and **`khat_borderline`** is `true` when k̂ is within one `khat_se` of a band
+edge. `khat_status` still names the band the point estimate falls in; the flag
+is what says that band is not resolved, and a `true` there means read the worse
+of the two adjacent bands. `fit_quality` stays the two-valued gate
+(`ok` | `suspect`) and goes `suspect` when either check fails — including on a
+borderline `ok` k̂, which has not shown the approximation to be close. Full
+interpretation in
 [`docs/model.md`](model.md#assumptions-and-limitations-to-keep-in-mind).
 
 ## `GET /shapley/{name}`
@@ -234,7 +249,8 @@ Trimmed response:
       "attribution_method": "posterior",
       "inference_method": "nuts",
       "fit_quality": "ok",
-      "khat": null, "khat_status": null, "khat_warnings": null,
+      "khat": null, "khat_se": null, "khat_status": null,
+      "khat_borderline": null, "khat_warnings": null,
       "ci_status": "ok",
       "unexplained": 1.4, "unexplained_status": "measured",
       "components": {
@@ -254,7 +270,7 @@ Trimmed response:
 }
 ```
 
-Every fitted (`attribution_method: "posterior"`) node also reports which model produced its numbers and how much that model can be trusted: `inference_method`, `fit_quality` (`ok` | `suspect`), and the PSIS triple `khat` / `khat_status` / `khat_warnings` described under [`POST /analyze/{name}`](#post-analyzename). On the NUTS default the PSIS triple is `null` throughout. Where it is not — because the request asked for `advi` — read `khat_status` before quoting a `ci_95` from that node: `unusable` means the interval is not a measurement of the real one.
+Every fitted (`attribution_method: "posterior"`) node also reports which model produced its numbers and how much that model can be trusted: `inference_method`, `fit_quality` (`ok` | `suspect`), and the PSIS fields `khat` / `khat_se` / `khat_status` / `khat_borderline` / `khat_warnings` described under [`POST /analyze/{name}`](#post-analyzename). On the NUTS default they are `null` throughout. Where they are not — because the request asked for `advi` — read `khat_status` before quoting a `ci_95` from that node: `unusable` means the interval is not a measurement of the real one, and `khat_borderline: true` means the check could not separate that verdict from the next band along.
 
 Grain support adds two per-node fields: `grain` (the grain the node was analyzed at) and `effective_windows` (the whole periods the requested windows snapped to at that grain). Gaps are mean-per-period at each node's own grain, so in mixed-grain trees compare nodes via `share_of_gap` and `ranked_causes` scores, not raw gaps.
 
@@ -438,8 +454,9 @@ decomposition (each intervention's and assumption's signed share, summing
 exactly to the point delta by Shapley efficiency), per-node results
 (`status`, one of `baseline` | `affected` | `intervened`, plus `baseline`,
 `simulated`, `delta` with `ci_95`, `relative_delta`, `prob_direction`,
-`fit_quality`, `khat_status`, `khat_warnings` — the last two null on the
-NUTS default — `extrapolation`, `non_physical`, `contributions`), plus
+`fit_quality`, `khat_status`, `khat_borderline`, `khat_warnings` — the last
+three null on the NUTS default — `extrapolation`, `non_physical`,
+`contributions`), plus
 `warnings` and always-on `caveats`. The run is seeded, so identical calls are
 byte-identical.
 
