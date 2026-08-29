@@ -331,6 +331,12 @@ async def explain_metric(name: str, tree: Optional[str] = None) -> Dict[str, Any
         fit_info["collinearity_status"] = fit.diagnostics.get("collinearity_status")
         fit_info["collinearity"] = fit.diagnostics.get("collinearity")
         fit_info["collinearity_warnings"] = fit.diagnostics.get("collinearity_warnings")
+        # Roadmap S3: explain_metric is where a reader comes to ask what this
+        # node's model is, so the per-statistic p-values ride in full here
+        # rather than only when the verdict is bad.
+        fit_info["ppc_status"] = fit.diagnostics.get("ppc_status")
+        fit_info["ppc"] = fit.diagnostics.get("ppc")
+        fit_info["ppc_warnings"] = fit.diagnostics.get("ppc_warnings")
 
     return round_floats(
         {

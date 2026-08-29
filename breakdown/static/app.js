@@ -1330,6 +1330,90 @@ function collinBlockHtml(name, node) {
   return `<div class="wf-warning">⚠ ${esc(cn.text.replace(/^⚠\s*/, ""))} for <code>${esc(name)}</code>: ${body}</div>`;
 }
 
+/* Roadmap S3. Same three-state reading as the collinearity note beside it:
+   `"ok"` means the check ran and the model reproduces the data it was fitted
+   on, null means there was nothing to check (a formula node, or no fit). The
+   metric card prints the `"ok"` case explicitly, for the same reason it prints
+   R-hat — silence there could not be told from a check that never ran.
+
+   The distinction this note has to carry, and the one collinearity does not:
+   `severe` is a statement that the *model is wrong for the data*, so it also
+   sets `fit_quality: "suspect"`. `moderate` is a caveat on a usable fit. */
+const PPC_NOTE = {
+  moderate: {
+    text: "⚠ the model reproduces its own data imperfectly",
+    cls: "sign-flag",
+    why:
+      "Simulating series from this node's fitted model and comparing them with what was "
+      + "actually observed, at least one summary of the real series sits outside the bulk "
+      + "of what the model generates. The fit is usable and this is a caveat on it, not a "
+      + "verdict against it — but the model is an imperfect description of this metric.",
+  },
+  severe: {
+    text: "⚠ the model cannot generate this node's own data",
+    cls: "sign-flag",
+    why:
+      "Series simulated from this node's fitted model do not look like the series it was "
+      + "fitted on. The usual causes are a Gaussian likelihood on a quantity that cannot go "
+      + "negative, a heavy-tailed series, or structure the mean function is leaving in the "
+      + "noise. Everything this node reports — its coefficients, its contributions, its "
+      + "share of the gap — is computed from that model, so read the direction rather than "
+      + "the magnitude and treat the model itself as the thing to fix.",
+  },
+  unavailable: {
+    text: "⚠ model check unavailable",
+    cls: "sign-flag",
+    why:
+      "The engine could not check this node's model against its own posterior predictive "
+      + "distribution. That is an unchecked model, not a validated one: if the likelihood "
+      + "is wrong for this data, nothing here will say so.",
+  },
+};
+
+function ppcNote(status) {
+  if (!status || status === "ok") return null;
+  return (
+    PPC_NOTE[status] || {
+      text: `⚠ model check: ${status}`,
+      cls: "sign-flag",
+      why:
+        "This build does not recognise that posterior predictive status, so it is shown "
+        + "verbatim. It is not 'ok' — a newer engine flagged something about whether this "
+        + "node's model fits its data that this UI cannot explain yet.",
+    }
+  );
+}
+
+/* "which statistic", in the flag itself, so a reader scanning a wide RCA can
+   tell a floor violation from leftover autocorrelation without hovering.
+   Names the worst statistic only; the tooltip carries the rest. */
+function ppcStatText(node) {
+  const s = ((node.ppc || {}).statistics || []).filter((e) => e.status !== "ok")[0];
+  if (!s) return "";
+  const p = typeof s.p_value === "number" && Number.isFinite(s.p_value) ? s.p_value.toFixed(3) : null;
+  return ` (${s.statistic}${p ? `, p ${p}` : ""})`;
+}
+
+function ppcStatSuffix(node) {
+  return esc(ppcStatText(node));
+}
+
+function ppcChipHtml(node) {
+  const pn = ppcNote(node.ppc_status);
+  if (!pn) return "";
+  const title = pn.why + (node.ppc_warnings || []).map((w) => `\n\n${w}`).join("");
+  return ` <span class="cause-flag" title="${esc(title)}">${esc(pn.text)}${ppcStatSuffix(node)}</span>`;
+}
+
+function ppcBlockHtml(name, node) {
+  const pn = ppcNote(node.ppc_status);
+  if (!pn) return "";
+  const body = (node.ppc_warnings || []).length
+    ? node.ppc_warnings.map((w) => esc(w)).join(" ")
+    : esc(pn.why);
+  return `<div class="wf-warning">⚠ ${esc(pn.text.replace(/^⚠\s*/, ""))} for <code>${esc(name)}</code>: ${body}</div>`;
+}
+
 /* Trend and seasonal rows for a posterior node's attribution table. They are
    part of the arithmetic — `unexplained = gap − Σcontributions − trend −
    seasonal` — so a table without them does not reconcile to the gap and hands
@@ -1529,6 +1613,10 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     // export's sections sees which node's per-parent rows are not a ranking.
     const cn2 = collinearityNote(node.collinearity_status);
     if (cn2) bits.push(`${cn2.text}${collinPairText(node)}`);
+    // Roadmap S3, beside it: which node's numbers rest on a model that does
+    // not reproduce its own history.
+    const pn2 = ppcNote(node.ppc_status);
+    if (pn2) bits.push(`${pn2.text}${ppcStatText(node)}`);
     if (node.seasonality_warnings && node.seasonality_warnings.length) bits.push("⚠ seasonality unidentifiable from fitted history");
     if (node.likelihood_warnings && node.likelihood_warnings.length) bits.push("⚠ zero-inflated fit window — intervals approximate");
     return bits.length ? ` · ${esc(bits.join(" · "))}` : "";
@@ -1554,11 +1642,24 @@ function buildRcaReportHtml(res, treePng, stripPng) {
       );
     }
     if (node.fit_quality === "suspect") {
+      // Roadmap S3 made this conditional, for the same reason the metric
+      // card's version became one: `severe` now also sets `suspect`, so the
+      // unconditional list below would name a cause that did not happen — and
+      // in a *circulated* report, where the reader has no payload to check it
+      // against. The two branches say different things because they call for
+      // different responses: re-run the sampler, versus fix the model.
       out.push(
-        "<strong>Suspect fit.</strong> The engine's own fit check failed for this node's model " +
-        "(NUTS: R̂, divergences or effective sample size; ADVI: an ELBO that had not settled, " +
-        "or a PSIS k̂ saying the approximation is far from the posterior). " +
-        "The contributions in this section rest on that fit.",
+        node.ppc_status === "severe"
+          ? "<strong>Suspect fit — the model, not the sampler.</strong> Series simulated from " +
+            "this node's fitted model do not look like the series it was fitted on (the " +
+            "sentences below say which summary failed). The sampler may well have converged; " +
+            "that is a different question from whether the model is right for this metric. " +
+            "The contributions in this section rest on that model, so read their direction " +
+            "rather than their magnitude."
+          : "<strong>Suspect fit.</strong> The engine's own fit check failed for this node's model " +
+            "(NUTS: R̂, divergences or effective sample size; ADVI: an ELBO that had not settled, " +
+            "or a PSIS k̂ saying the approximation is far from the posterior). " +
+            "The contributions in this section rest on that fit.",
       );
     }
     (node.seasonality_warnings || []).forEach((w) => out.push(esc(w)));
@@ -1573,6 +1674,14 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     const cnFull = collinearityNote(node.collinearity_status);
     if (cnFull && !(node.collinearity_warnings || []).length) {
       out.push(`<strong>${esc(cnFull.text.replace(/^⚠\s*/, ""))}.</strong> ${esc(cnFull.why)}`);
+    }
+    // Roadmap S3, in full and for the same reason: a circulated report is read
+    // without its author, and "these numbers come from a model the data argues
+    // against" is not a fact a tooltip can be trusted to carry.
+    (node.ppc_warnings || []).forEach((w) => out.push(esc(w)));
+    const pnFull = ppcNote(node.ppc_status);
+    if (pnFull && !(node.ppc_warnings || []).length) {
+      out.push(`<strong>${esc(pnFull.text.replace(/^⚠\s*/, ""))}.</strong> ${esc(pnFull.why)}`);
     }
     // Printed in full, not as a tooltip: whether these intervals came from a
     // rejected approximation or from one the engine could not check is the
@@ -3090,6 +3199,14 @@ function renderPosterior(name, data) {
     .map((w) => `<p class="sign-warning">⚠ ${esc(w)}</p>`)
     .join("");
 
+  // Roadmap S3, the same treatment: the sentences say which statistic the
+  // model failed to reproduce and what that threatens, and the `ok` case goes
+  // in `bits` below so "checked and it reproduces its data" and "never
+  // checked" cannot look the same.
+  const ppcWarningHtml = ((data.diagnostics && data.diagnostics.ppc_warnings) || [])
+    .map((w) => `<p class="sign-warning">⚠ ${esc(w)}</p>`)
+    .join("");
+
   // Diagnostics. These are MCMC-only, so an ADVI fit renders no numbers — but
   // it used to render *nothing at all*, which reads as "no problems found"
   // when it actually means "not checked". Say which one it is: the absence of
@@ -3150,6 +3267,25 @@ function renderPosterior(name, data) {
       bits.push(`collinearity <span class="warn">${esc(String(dx.collinearity_status))}</span>`);
     }
   }
+  // Roadmap S3, in the same row and for the same reason as S4 above: this
+  // checks the *model* rather than the sampler or the design, and its pass has
+  // to be visible or a validated node is indistinguishable from an unchecked
+  // one. The worst statistic's p-value rides along so the verdict is a
+  // measurement rather than an assertion.
+  if (dx.ppc_status) {
+    const worst = ((dx.ppc || {}).statistics || []).filter((e) => e.status !== "ok")[0];
+    const pTxt = worst && Number.isFinite(worst.p_value)
+      ? ` (${worst.statistic}, p = ${worst.p_value.toFixed(3)})`
+      : "";
+    if (dx.ppc_status === "ok") {
+      bits.push(`model <span class="ok">reproduces its data</span>`);
+    } else if (dx.ppc_status === "severe" || dx.ppc_status === "moderate") {
+      const word = dx.ppc_status === "severe" ? "cannot generate this data" : "fits imperfectly";
+      bits.push(`model <span class="warn">${word}</span>${pTxt}`);
+    } else {
+      bits.push(`model check <span class="warn">${esc(String(dx.ppc_status))}</span>`);
+    }
+  }
   // The engine's own verdict on the fit. It is computed for every fit — NUTS
   // thresholds R̂/divergences/ESS, ADVI checks the ELBO *and* PSIS k̂ — and
   // was rendered nowhere in this UI, so a model the engine itself called
@@ -3168,6 +3304,14 @@ function renderPosterior(name, data) {
           : dx.khat_borderline
           ? `Its PSIS k̂ is ${esc(khatFigure(dx) || "close to a band edge")}, which is nearer the band edge than its own Monte-Carlo error: the check cannot say which side of the threshold this approximation is on. Re-run this metric with NUTS for anything that turns on it.`
           : "The ADVI objective (the ELBO) had not settled by the end of optimization, so the approximation may not have converged on anything.")
+        // Roadmap S3 made this branch conditional. A `severe` posterior
+        // predictive check also sets `suspect`, and on a NUTS fit it is the
+        // *only* thing that can have — so the old unconditional sentence about
+        // R̂/divergences/ESS would have named a cause that did not happen. A
+        // correct payload explained by the wrong sentence is the fifth rule's
+        // failure, not a cosmetic one.
+        : dx.ppc_status === "severe"
+        ? "Series simulated from this model do not look like the series it was fitted on, so the likelihood is wrong for this metric — the sentences above say which summary failed. The sampler itself may well have converged; that is a different question from whether the model is right."
         : "One of R̂, the divergence count or the effective sample size crossed the engine's threshold."}
       Numbers derived from this fit — coefficients, intervals, and any RCA contribution through this node — inherit that.</div>`;
   } else if (dx.fit_quality === "ok") {
@@ -3214,6 +3358,7 @@ function renderPosterior(name, data) {
     ${coefTable}
     ${signWarningHtml}
     ${collinWarningHtml}
+    ${ppcWarningHtml}
     ${diag}
     <details>
       <summary>All parameters (${params.length})</summary>
@@ -3893,9 +4038,18 @@ function renderRcaTab() {
       // computed for every fit (NUTS: R-hat / divergences / ESS; ADVI: whether
       // the ELBO settled) and was rendered nowhere — so a node whose model the
       // engine itself flagged looked exactly like one it was happy with.
+      // Roadmap S3: which failure this verdict is. A `severe` posterior
+      // predictive check also sets `suspect`, and on a NUTS fit is the only
+      // thing that can — so the sampler-side enumeration cannot be the
+      // unconditional explanation any more without naming a cause that did
+      // not happen.
       const fitNote2 =
         node.fit_quality === "suspect"
-          ? ` · <span class="sign-flag" title="The engine's own fit check failed for this node's model — for NUTS that is R̂, divergences or effective sample size; for ADVI it is an ELBO that had not settled, or a PSIS k̂ saying the approximation is far from the posterior. The contributions below rest on this fit.">⚠ suspect fit</span>`
+          ? ` · <span class="sign-flag" title="${esc(
+              node.ppc_status === "severe"
+                ? "Series simulated from this node's fitted model do not look like the series it was fitted on, so the likelihood is wrong for this metric — the model check beside this one says which summary failed. The sampler may well have converged; that is a different question. The contributions below rest on this model."
+                : "The engine's own fit check failed for this node's model — for NUTS that is R̂, divergences or effective sample size; for ADVI it is an ELBO that had not settled, or a PSIS k̂ saying the approximation is far from the posterior. The contributions below rest on this fit."
+            )}">⚠ suspect fit</span>`
           : "";
       // The approximation check, beside the convergence check and never folded
       // into it: they fail for different reasons and have different remedies,
@@ -3920,6 +4074,17 @@ function renderRcaTab() {
               ? node.collinearity_warnings.join("\n\n")
               : cn.why)
           )}">${esc(cn.text)}${collinPairSuffix(node)}</span>`
+        : "";
+      // Roadmap S3, beside it and distinct from it again: collinearity says
+      // the rows below cannot be read one at a time, this says the model that
+      // produced all of them does not reproduce this node's own history.
+      const pn = ppcNote(node.ppc_status);
+      const ppcNoteHtml = pn
+        ? ` · <span class="${pn.cls}" title="${esc(
+            (node.ppc_warnings && node.ppc_warnings.length
+              ? node.ppc_warnings.join("\n\n")
+              : pn.why)
+          )}">${esc(pn.text)}${ppcStatSuffix(node)}</span>`
         : "";
       // The fit window is all loaded history before the analysis window —
       // surfacing it here is what keeps it from being confused with the
@@ -4023,7 +4188,7 @@ function renderRcaTab() {
       }
       return `
         <div class="attr-block">
-          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${fitNote2}${khatFlag}${signNote}${collinNote}${seasNote}${zeroNote}</span></h4>
+          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${fitNote2}${khatFlag}${signNote}${collinNote}${ppcNoteHtml}${seasNote}${zeroNote}</span></h4>
           <table class="data-table">
             ${header}
             ${rows}
@@ -4795,7 +4960,7 @@ function renderWhatifResults() {
           node.fit_quality === "suspect"
             ? `<div class="wf-warning">⚠ The engine flagged the model behind <code>${esc(name)}</code> as suspect (ADVI: the ELBO had not settled, or PSIS k̂ says the approximation is far from the posterior; NUTS: R̂ / divergences / ESS over threshold). This outcome is propagated through that fit.</div>`
             : ""
-        }${khatBlockHtml(name, node)}${collinBlockHtml(name, node)}${impossibleHtml(name, node)}
+        }${khatBlockHtml(name, node)}${collinBlockHtml(name, node)}${ppcBlockHtml(name, node)}${impossibleHtml(name, node)}
         ${waterfallHtml(name, node, labelFor)}
       </div>`;
     })
@@ -4820,7 +4985,7 @@ function renderWhatifResults() {
           node.fit_quality === "suspect"
             ? ' <span class="cause-flag" title="The engine flagged the model behind this node as suspect — for ADVI, an ELBO that had not settled or a PSIS k̂ far from the posterior; for NUTS, R̂ / divergences / ESS over threshold. This row is propagated through that fit.">⚠ suspect fit</span>'
             : ""
-        }${khatChipHtml(node)}${collinChipHtml(node)}</td>
+        }${khatChipHtml(node)}${collinChipHtml(node)}${ppcChipHtml(node)}</td>
         <td class="num">${fmt(node.baseline)} → ${fmt(node.simulated)}${
           node.window_aggregate ? `<br><span class="muted">${windowBasisHtml(node)}</span>` : ""
         }</td>

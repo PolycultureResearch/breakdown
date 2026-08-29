@@ -42,7 +42,11 @@ its `ci_status`, and a node whose parents move together with its
 warning most specific to how an assistant reads a tree: it says the node's
 per-parent `contributions` are a split the data does not determine, so the
 flagged parents are one cause and ranking them against each other invents a
-finding. `how_to_read` spells that out, and `explain_metric` carries the same
+finding. A node whose fitted model cannot reproduce its own history arrives
+with `ppc_status` and `ppc_warnings`, which answer a question the bare
+`fit_quality` bit cannot: whether `suspect` means the sampler struggled (re-run
+it) or the model is wrong for the metric (no re-run helps). `how_to_read`
+spells that out, and `explain_metric` carries the same
 three fields on the fit it reports. A node fitted with the opt-in
 approximation arrives with its PSIS k̂ *and* k̂'s own Monte-Carlo standard
 error (`khat_se`), plus `khat_borderline` where the two together cannot say

@@ -1828,3 +1828,50 @@ metrics:
     assert not any("honest_rate" in m for m in said), (
         "a share whose data agrees with its declaration was warned about"
     )
+
+
+def test_every_place_that_explains_a_suspect_fit_knows_the_model_can_be_the_cause():
+    """Roadmap S3 added a *third* way to reach `fit_quality: "suspect"`, and the
+    two surfaces that explain the verdict to a reader had to learn about it.
+
+    Before S3, `suspect` meant the sampler struggled (NUTS: R̂ / divergences /
+    ESS) or the approximation was far from the posterior (ADVI: the ELBO, or
+    k̂). Both explanations in `app.js` enumerated exactly those causes, in
+    prose, unconditionally. A `severe` posterior predictive check now also sets
+    `suspect` — and on a NUTS fit it is the *only* thing that can — so an
+    unconditional enumeration names a cause that did not happen, to a reader
+    with no payload to check it against. That is the fifth rule's failure
+    (a correct payload rendered dishonestly), not a cosmetic one.
+
+    It is also exactly the meta-defect the four rules were written about: the
+    fix landed in `renderPosterior`'s explanation first and the export's
+    `caveatBlock` — the neighbouring surface, same policy, same file — kept the
+    old sentence for one working session. This test enumerates rather than
+    pinning today's two call sites, so a *third* explanation added later is
+    caught the same way.
+    """
+    src = (PACKAGE / "static" / "app.js").read_text()
+
+    # Every passage that explains the verdict names the sampler-side causes in
+    # prose. Find them by that enumeration rather than by a marker comment,
+    # which a new author would not know to copy.
+    sites = [m.start() for m in re.finditer(r"divergence[s]? (?:or|count)", src)]
+    assert len(sites) >= 2, (
+        f"expected at least the metric card's and the export's suspect explanations; "
+        f"found {len(sites)}"
+    )
+
+    for start in sites:
+        # The branch this sentence sits in, generously bounded: the sentence
+        # plus the ~1.5k characters around it, which covers the conditional
+        # that selects it in both current sites.
+        window = src[max(0, start - 1500) : start + 500]
+        assert "ppc_status" in window, (
+            'an explanation of `fit_quality: "suspect"` at offset '
+            f"{start} enumerates the sampler-side causes without branching on "
+            "`ppc_status`. Since roadmap S3 a severe posterior predictive check "
+            "also sets `suspect` — and on a NUTS fit it is the only thing that "
+            "can — so this passage will tell a reader the sampler failed when "
+            "the model did. Add the `severe` branch (see `caveatBlock` and "
+            "`renderPosterior` in app.js)."
+        )

@@ -60,6 +60,13 @@ RCA_HOW_TO_READ = (
     "On `moderate` or `high`, `collinearity_warnings` names the parents: narrate them as one "
     "cause and do not rank them against each other — that ordering is the part the data does "
     "not support, however different their `share_of_gap` look.\n"
+    "- `ppc_status` says whether the node's fitted model can generate the data it was fitted "
+    "on: `severe` = it cannot, so that node's coefficients and share of the gap rest on a "
+    "likelihood the data argues against — narrate the direction, not the magnitude, and name "
+    "the model as what needs fixing. `moderate` = a caveat, not a verdict. `ok` = checked and "
+    "it reproduces its data, `unavailable` = unchecked (not clean), absent = nothing to "
+    "check. `ppc_warnings` names the failing statistic. `severe` also sets `fit_quality: "
+    "suspect`, and on a NUTS fit is the only thing that can have.\n"
     "- `seasonality_warnings` mean a declared seasonal component could not be identified "
     "from the fitted history (`fit_periods` says how much there was); its share of the gap "
     "may be misallocated between `components.seasonal`, trend, and `unexplained` — load "
@@ -157,6 +164,11 @@ WHATIF_HOW_TO_READ = (
     "(`collinearity_warnings` names them). The scenario's *direction* stands; its magnitude "
     "rests on a coefficient the data splits poorly, so intervening on one member of the pair "
     "is not a clean lever — say so rather than quoting the size as measured.\n"
+    "- `ppc_status: severe` on a node means the model behind its slope does not reproduce "
+    "the data it was fitted on (`ppc_warnings` says which statistic and why). The scenario "
+    "still propagates, but its magnitude is conditional on a likelihood the data argues "
+    "against — treat the size as illustrative and say the node needs a better model before "
+    "the number is worth acting on.\n"
     "- Fitted slopes are local to the observed operating range; `extrapolation: true` "
     "(detail in `warnings`) means the scenario leaves that range — call the result speculative.\n"
     "- `non_physical: true` is the stronger claim and a different one: the value cannot exist, "
@@ -357,6 +369,15 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
                 else None
             ),
             "collinearity_warnings": node.get("collinearity_warnings"),
+            # Roadmap S3, on the same economy as S4 and k-hat: the verdict on
+            # every node that was fitted (an absent `ppc_status` on a fitted
+            # node would read as "the model checks out" when it means "not
+            # checked"), and the per-statistic evidence only where it is bad
+            # news. The p-values are what a reader would need to argue with
+            # the verdict, and only a bad verdict invites that.
+            "ppc_status": node.get("ppc_status"),
+            "ppc": (node.get("ppc") if node.get("ppc_status") not in (None, "ok") else None),
+            "ppc_warnings": node.get("ppc_warnings"),
             # fit_window start/end are dropped for token economy; n_periods is
             # the decision-relevant number.
             "fit_periods": (node.get("fit_window") or {}).get("n_periods"),
@@ -523,6 +544,11 @@ def compact_scenario(result: Dict[str, Any]) -> Dict[str, Any]:
                 # from its neighbour is not one you can pull on its own.
                 "collinearity_status": node.get("collinearity_status"),
                 "collinearity_warnings": node.get("collinearity_warnings"),
+                # Roadmap S3, and it lands here for the reason S4 does: a
+                # lever whose model cannot reproduce its own history is not a
+                # lever whose magnitude means anything.
+                "ppc_status": node.get("ppc_status"),
+                "ppc_warnings": node.get("ppc_warnings"),
                 "extrapolation": node["extrapolation"]["flag"],
                 # The stronger claim beside the weaker one (roadmap C26). An
                 # agent reading `extrapolation: true` alone cannot tell "far

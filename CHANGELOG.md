@@ -56,6 +56,36 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
 
 ### Added
 
+- **Every fit is now checked against its own posterior predictive distribution**
+  (roadmap S3). Series are simulated from the fitted posterior and compared with
+  the series the model was actually fitted on, across four statistics — `min`,
+  `max`, `resid_max` and `resid_acf1` — each a two-sided mid-p posterior
+  predictive p-value. The verdict rides as `ppc_status` (`ok` / `moderate` /
+  `severe` / `unavailable`) with `ppc` carrying every statistic's p-value and
+  `ppc_warnings` saying which failed and what it threatens: on the fit, on every
+  RCA node, on every what-if node, over MCP with its own `how_to_read` entry and
+  on `explain_metric`, and in the UI.
+
+  This answers a question no existing diagnostic could. R̂, divergences and ESS
+  say the sampler explored the posterior; PSIS k̂ says a variational
+  approximation is close to it. Neither asks whether the *model is right for the
+  metric*, and a badly misspecified node passed both in silence as long as it
+  converged.
+
+  **`fit_quality` changed meaning on the NUTS default, and it is worth knowing
+  which way.** A `severe` verdict now sets `fit_quality: "suspect"` — and on an
+  exact sampler it is the only thing that can — so `suspect` there says the
+  model is wrong for the data rather than that the sampler struggled. Those want
+  opposite responses: no re-run fixes the first. A `moderate` verdict
+  deliberately leaves the gate alone.
+
+  One statistic is deliberately absent: the series' standard deviation. `y` is
+  z-scored and `sigma_obs` is free, so replicated spread matches observed spread
+  by construction (measured p = 0.479 / 0.499 / 0.521 across a well-specified, a
+  heavy-tailed and a count series). A statistic that cannot fail is worse than
+  no statistic, because it reads as a check that passed.
+
+
 - **A node whose parents move together now says so, and names them** (roadmap
   S4). Correlated parent regressors produce a well-determined *sum* and an
   unstable *split*, and the split is exactly what RCA reports. Since NUTS

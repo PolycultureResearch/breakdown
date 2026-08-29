@@ -3,7 +3,7 @@
 **A white paper on the models behind Bayesian metric trees, why each was chosen,
 and where each one stops being trustworthy.**
 
-> **Written:** 2026-08-04 · **Last updated:** 2026-08-27 ·
+> **Written:** 2026-08-04 · **Last updated:** 2026-08-29 ·
 > **Engine version:** 0.1.0
 >
 > **This is a living document.** The assessment in §3 and the improvements in §4
@@ -873,12 +873,34 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
    withheld under `unavailable` with its reason rather than emitted as a
    number, so the payload can say *unchecked* — which the ELBO-only era could
    not say about anything.
-5. **No posterior predictive checks.** — ○ open
+5. **Posterior predictive checks, and the engine now asks the question.**
+   — ✅ closed 2026-08-29
    ([S3](roadmap.md#statistical-rigor-s--a-standing-workstream))
-   The engine never asks "could this fitted model have generated data that looks
-   like what I saw?" — the single most informative Bayesian model check there is
-   (Gelman et al., 2020; Gabry et al., 2019). A badly misspecified node currently
-   passes silently as long as it converges.
+   The engine used never to ask "could this fitted model have generated data
+   that looks like what I saw?" — the single most informative Bayesian model
+   check there is (Gelman et al., 2020; Gabry et al., 2019) — so a badly
+   misspecified node passed silently as long as it converged. Every fit is now
+   scored on four test statistics (`min`, `max`, `resid_max`, `resid_acf1`) as
+   two-sided mid-p posterior predictive p-values in two bands, and a `severe`
+   verdict sets `fit_quality: "suspect"`. On a NUTS fit it is the only thing
+   that can, which changes what that bit *means*: `suspect` on an exact
+   sampler now says the model is wrong for the data rather than that the
+   sampler struggled, and the two want opposite responses.
+
+   Two residuals, stated rather than implied. It is an **in-sample** check
+   against the fitted window, so it grades the likelihood and the mean
+   function, not the DAG, not a confounder, and not out-of-sample behavior —
+   §3.3's assumption is untouched by it. And four statistics is not every way
+   a model can be wrong: an `ok` is the absence of four specific failures. The
+   check's power also depends on the trend prior that limits how much the
+   local level can absorb, so a node with a deliberately loosened
+   `trend: {sigma: …}` should have its verdict read as weaker evidence. Power
+   also grows with the fitted window, as it does for any goodness-of-fit check:
+   the demo's `trials_started` is a count series at every window and scores
+   `min` at p = 0.076 / 0.012 / 0.016 over 219 / 401 / 618 fitted days —
+   `moderate`, then `severe`, then `severe`, with nothing about the metric
+   having changed. An `ok` on a short window is *not yet detectable*, not
+   *clean*.
 6. **Correlated parents give an undetermined split, and the engine now says
    which parents.** — ✅ closed 2026-08-27
    ([S4](roadmap.md#statistical-rigor-s--a-standing-workstream))
@@ -1156,8 +1178,12 @@ as the default sampler on every path**, with ADVI a stated opt-in that reports
 its k̂. It closes §3.2 #4 and §3.2 #1 outright. **S4 shipped 2026-08-27**, closing
 §3.2 #6: a fit with two or more parents now names the ones whose split of
 credit the data does not determine, in two bands the demo's own collinear pair
-(|r| = 0.863 over the window an RCA fits it on) is what calibrated. **S3 is
-next.** One other item has shipped its first half: S20's
+(|r| = 0.863 over the window an RCA fits it on) is what calibrated. **S3
+shipped 2026-08-29**, closing §3.2 #5: every fit is now graded against its own
+posterior predictive distribution on four statistics, and a `severe` verdict
+moves `fit_quality` — so on the NUTS default that bit finally distinguishes a
+model that is wrong from a sampler that struggled. **S10 — the posterior
+predictive plot — is next, and S3 unblocked it.** One other item has shipped its first half: S20's
 *disclosure* (2026-08-17) — a fit whose window is ≥25% exact zeros now carries
 `likelihood_warnings` on every surface that shows its numbers, because the
 misspecification was silent and that failed this track's own
@@ -1177,14 +1203,14 @@ scheduled start.
 |---|---|---|
 | S1 | Benchmark full-rank ADVI as the RCA default | ✅ benchmarked 2026-08-18 — **not adopted** |
 | S2 | PSIS k̂ approximation diagnostic; NUTS by default, ADVI by request | ✅ closed 2026-08-24 |
-| S3 | Posterior predictive checks on every fit | ○ open — **next up** |
+| S3 | Posterior predictive checks on every fit | ✅ shipped 2026-08-29 |
 | S4 | Parent collinearity diagnostic | ✅ shipped 2026-08-27 |
 | S5 | Simulation-based calibration | ○ open |
 | S6 | Data-driven bootstrap block length | ○ open |
 | S7 | Correlated cold-start beliefs | ○ open |
 | S8 | Local linear trend (opt-in) | ○ open |
 | S9 | Narrow nonlinear edges | ○ open |
-| S10 | Posterior predictive plot in the UI | ○ open — blocked on S3 |
+| S10 | Posterior predictive plot in the UI | ○ open — **next up**, unblocked by S3 |
 | S11 | Prior-vs-posterior visualization | ○ open |
 | S12 | `ranked_causes` visibly a heuristic | ○ open |
 | S13 | Methods appendix in the exported report | ○ open |
@@ -1342,12 +1368,53 @@ error falls as n^(−1/4) and halving it costs 16× the draws — against a
 diagnostic that today costs ~0.2s beside a 1.4–6s fit. Reporting the error
 costs nothing and is what lets a reader see when a band is a coin flip.
 
-**Posterior predictive checks on every fit** — `S3`, ○ open. For each fitted
-node, simulate replicated series from the posterior and compare summary
-statistics against the observed series; flag nodes whose observed data sits in
-the tail. This is the standard Bayesian workflow check (Gelman et al., 2020), it
-needs no new modeling, and it would catch misspecification that convergence
-diagnostics cannot see. It composes with the existing `fit_quality` channel.
+**Posterior predictive checks on every fit** — `S3`, ✅ **shipped
+2026-08-29**. Every fit now simulates replicated series from its own posterior
+and compares four summaries against the observed series: `min`, `max`,
+`resid_max` and `resid_acf1`, each a two-sided mid-p posterior predictive
+p-value. Two bands — `moderate` at p < 0.10, `severe` at p < 0.02 — reported as
+`ppc_status` with every statistic's p-value beside it, on the fit, on every RCA
+and what-if node, over MCP and in the UI.
+
+Three things are worth recording, because each was decided by a measurement
+rather than by preference.
+
+*The obvious statistic is vacuous, and leaving it out is the finding.* The
+first summary anyone reaches for is the series' standard deviation. But
+`_prepare_series` z-scores `y` and `sigma_obs` is free, so the replicated
+spread matches the observed spread **by construction**: measured across a
+well-specified world, a t(3) world and a Poisson-count world it returned
+p = 0.479 / 0.499 / 0.521. A statistic that cannot fail is worse than no
+statistic, because a reader scores it as a check that passed. The same argument
+retires `resid_sd` (0.511 / 0.526 / 0.482). What survives measures what the
+local-level trend cannot absorb — and the worry that a per-period latent would
+make the whole check vacuous did not survive contact with the data either: the
+tight HalfNormal(0.05) step-size prior keeps the level from chasing noise, so
+residual structure is still there to be measured.
+
+*A discrete statistic needs mid-p, or it false-alarms on the good node.* Scored
+with a plain `≥`, a statistic with a point mass — a count series whose minimum
+is 0 in most replicates — returns p = 1.000 on a **correctly** specified node.
+In the calibration probe that put the only false alarm on the well-specified
+world. Splitting the tied mass removes it.
+
+*The bands are wider than convention, deliberately.* Four statistics per node
+means a node with four honest checks crosses a 0.05 bar 19% of the time by
+chance. These are disclosure triggers on a payload a reader scans, not
+hypothesis tests, and the cost of spraying is that the findings that matter
+stop being read. On the trees this repo ships the separation is clean: five of
+six probabilistic nodes come back `ok` with p-values between 0.30 and 0.96, and
+one `moderate`.
+
+The `fit_quality` question was the item's real design decision, and it is
+answered asymmetrically with S4 on purpose. A collinear design gives a
+*correct* fit that is properly unsure about the split, so S4 leaves the gate
+alone. A model that cannot generate its own data is not correct, so `severe`
+moves it — the roadmap row's "surface through the existing `fit_quality`
+channel", honored for the strong band only. `moderate` stays out (wiring it
+there would make `suspect` the common verdict) and `unavailable` stays out, for
+the reason S22 kept k̂'s borderline band out: an unchecked model is not a failed
+one.
 
 **Counterfactual RCA via posterior predictive forecast** — roadmap `3.4` / T11,
 ○ open. Lives in Horizon 3 rather than the S track, since it is a headline
@@ -1564,6 +1631,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-08-29 | **S3 shipped — every fit is now graded against its own posterior predictive distribution, and `fit_quality` finally distinguishes a wrong model from a struggling sampler.** Replicated series are simulated from each fitted posterior and compared with the fitted series on four statistics — `min`, `max`, `resid_max`, `resid_acf1` — as two-sided **mid-p** p-values in two bands (`moderate` p < 0.10, `severe` p < 0.02), published as `ppc_status` / `ppc` / `ppc_warnings` on the fit, on every RCA and what-if node, over MCP with its own `how_to_read` entry and on `explain_metric`, and in the UI. **§3.2 #5 is closed.** `severe` sets `fit_quality: "suspect"`, and because it is the only thing that can do so on a NUTS fit, the meaning of that bit changed: `suspect` on the exact sampler now says the *model* is wrong for the data, where before it could only say the sampler struggled — two failures that want opposite responses, and the UI's suspect-explanation branch had to become conditional so it would stop naming a cause that did not happen. Three measurements shaped the design. **The obvious statistic is vacuous and was cut:** the series' standard deviation matches its replicates by construction, because `y` is z-scored and `sigma_obs` is free — p = 0.479 / 0.499 / 0.521 across a well-specified, a t(3) and a Poisson world, and `resid_sd` the same. A statistic that cannot fail reads as a check that passed, so it is deliberately absent and a test pins the absence. **Mid-p is not a refinement but a correctness fix:** scored with a plain `≥`, a statistic with a point mass returns p = 1.000 on a *correctly* specified node, which put the probe's only false alarm on the good world. **And the bands are wider than convention on purpose** — four statistics per node cross a 0.05 bar 19% of the time by chance, and these are disclosure triggers rather than tests. The worry that motivated the whole calibration — that a local-level trend with one latent per period would absorb every misspecification and make the check vacuous — was measured and did not hold: the tight HalfNormal(0.05) step-size prior keeps the level from chasing noise. On the trees this repo ships the separation is clean (five of six probabilistic nodes `ok` at p = 0.30–0.96, one `moderate`), and the residuals are stated rather than implied: it is an in-sample check, so it grades the likelihood and the mean function and not the DAG, and four statistics is not every way a model can be wrong. **S10 is unblocked** and is the track's next item. |
 | 2026-08-27 | **S4 closed: the engine now names the parents whose split of credit the data does not determine.** Correlated parents were already reported honestly — since S2 made NUTS the default, each gets a wide interval and their total a narrow one — but nothing said the two widths were *one ridge measured twice*, and RCA publishes the split per parent. Every fit with two or more regressors now scores its own design matrix (`X` as the model sees it: z-scored, lag-shifted, in `list(dag.predecessors(...))` order) and publishes `collinearity_status` / `collinearity` / `collinearity_warnings` on the fit, on every RCA node, over MCP with a `how_to_read` entry, and in the UI. **The demo set the thresholds, and that is the finding worth recording.** The pair this paper cites in §3.2 #6 — `trial_activation_rate` and `trial_days_active`, whose split lands at 0.680 / 0.682 / 0.697 across BLAS implementations from one seed — measures **\|r\| = 0.863** over the 62 weeks an RCA of that story fits it on (0.941 over the full 112-week window). A single conventional 0.9 bar would therefore have passed *in silence* the exact node the weakness was written about, so the diagnostic carries two bands: `moderate` (\|r\| ≥ 0.7, Dormann et al. 2013; VIF ≥ 5) — their total is sound, the split is soft — and `high` (\|r\| ≥ 0.9; VIF ≥ 10) — the split is not a measured quantity. On the 106-metric reference tree the five multi-parent nodes separate cleanly across those bands: 0.146 and 0.504 `ok`, 0.761 and 0.841 `moderate`, 0.909 with VIF 10.6 `high`. VIF is reported only for three or more parents (with two it is identically 1/(1−r²)) and earns its place on the multi-way degeneracy no pair shows — `x4 = x1+x2+x3` has every pairwise r near 0.58 and every VIF above 100. Two deliberate non-choices: it does **not** move `fit_quality` (a collinear fit is a correct fit that is properly unsure; the hazard is reading one parent's share alone, not the node), and it does **not** attempt to repair the split, because no diagnostic can recover a division of credit the data does not contain — the remedy named in the warning is authorial. §3.2 #6 moves from ○ to ✅ with its residual stated, §4.1's S4 entry carries the shipped design, and `docs/model.md` gains a *Parents that move together* section. S17 still owes the collinear coverage case; the fixture it needs now exists (`tests/test_engine.py`'s `_ridge_frame` / `_separable_frame` / `_multiway_frame`). |
 | 2026-08-27 | **S22 closed: k̂ now reports its own error, and the route that publishes it is seeded.** Two independent defects behind one diagnostic. (a) `POST /analyze/{name}` passed no `random_seed` while `run_rca` and `run_scenario` both passed `0`, so the manual-fit route — the one the UI's Analyze button and the "confirm this with NUTS" workflow use — returned a different posterior, and a different k̂, from two identical requests. Re-measured on the White Cube tree at full window before the fix: `customer_churn_rate` **1.23 then 1.91**, `trials_started` **0.94 then 1.19** (the same nodes had given 1.23/0.79 and 0.89/0.77 five days earlier — the spread is itself unstable, which is the argument). All three fitting paths now read one `FIT_RANDOM_SEED`, enforced by an AST-walking invariant test rather than by three call sites happening to agree, and the four demo figures this paper quotes reproduce exactly from the route: 10.18 / 1.07 / 0.85 / 1.36. (b) k̂ is fitted to the tail of 1000 sampled importance ratios (95 tail points), so it is an estimate; `khat_se` now publishes the generalized Pareto shape parameter's asymptotic standard error over that tail, corrected for the shrinkage in ArviZ's empirical-Bayes estimator, and it was validated against the thing it describes — holding one approximation fixed and re-estimating k̂ over 60 draws, published-SE ÷ empirical-SD came out **1.06 / 1.11 / 0.90 / 1.04** across k̂ 0.03 to 1.15. **The size of that error is the finding:** ~0.15 near the 0.5 bar and ~0.2 near k̂ = 1, against a `suspect` band that is 0.2 wide — so that band is frequently not resolvable, and `trial_conversion_rate` on the demo tree is a live case at **0.854 ± 0.172**. Such a fit now carries `khat_borderline: true`, a warning naming the two bands the estimate cannot separate, and `fit_quality: "suspect"` — including from an `ok` k̂, because "not shown to be far from the posterior" is a weaker claim than "close to it". `khat_status` keeps meaning which band the point estimate is in, so nothing downstream had to reinterpret it. Shrinking the error was rejected on cost: the tail grows as √n, so halving the error costs 16× the draws. §3.2 #1's third residual and §4.1's S2 entry are updated; §4 gains an S22 row. |
 | 2026-08-24 | **S2 closed by reversing its own second half: NUTS is now the default sampler, ADVI an opt-in that reports its k̂.** The escalation shipped on 2026-08-22 — re-fit a k̂-rejected node with NUTS, capped at four per analysis — was the wrong shape once its own measurement was in. k̂ rejects essentially every real node (10.18 / 1.07 / 0.85 / 1.36 on White Cube at full window, 1.26 / 0.88 / 1.11 / 10.43 on a second, 1.04 on the bundled demo), so a rescue that fires on almost everything is a default in disguise — and a **slower** one, since an escalated node pays for the approximation and then the exact fit (the demo suite ran 225s escalating and runs 175s now). Then the latency case fell over: the 106-metric reference tree, the widest here, contains exactly **five** probabilistic fits, and fitting all five measured **31.3s under ADVI against 28.0s under NUTS** — the exact sampler was the *faster* of the two, on four of the five nodes, and ADVI flagged all five `suspect` where NUTS returned four of five `ok`. So `run_rca`, `run_scenario` and `POST /analyze/{name}` all default to exact MCMC; `?inference_method=advi` is available on all three and reports k̂ on every node it fits; and escalation, its cap, the `escalated` status and the "re-fitted with NUTS" UI badge were deleted. k̂ is a disclosure on a chosen path, not a trigger. **§3.2 #1 moves from ◐ to ✅** — "the default inference method misstates uncertainty" cannot be true of a default with no approximation in it — and its residuals are restated as properties of the opt-in path. §2.2 is rewritten (the *triage with ADVI, confirm with NUTS* posture is retired), §4's current state and §4.1's S2 entry carry the new measurements, and §3.2 #6 no longer compounds with #1 on the default path. Three figures worth keeping. Across the four demo stories `sessions ← marketing_spend` moves −108.2 → −68.8, 178.1 → 114.0, 88.4 → 62.7 and 202.0 → 129.0 between the samplers; the story B engagement edge moves the *other* way, −0.049 → −0.077; and the verdict flips in both directions — that edge's β HDI goes from straddling zero to excluding it, while `trial_conversion_rate ← trial_days_active` goes from excluding it to straddling it. A fourth is the honest limit of the opt-in: story D's `trial_conversion_rate` has k̂ **0.497**, inside the good band, and its published share still moved 70.7% → ~68%. A passing k̂ bounds the error; it does not zero it. **One thing measured on the way and recorded on §3.2 #6:** that same node's two parents are deliberately collinear, and their split of the gap comes out 0.680 / 0.682 / 0.697 on three numeric stacks *from the same seed*, with no variance inside a stack — a 1.6-point spread that is the BLAS rather than the sampler. The pair's sum is determined; the split is not. Evidence for **S4**, and the reason that figure is banded in the demo suite and written "about 70%" in the tour rather than pinned to a decimal. |
