@@ -311,6 +311,14 @@ manufacturing precision: the total is sure, the split between two collinear
 twins is not. An analyst who has been burned by regression coefficients will
 recognize what is being done for them here.
 
+**And it does not leave you to infer that from the interval.** Since 2026-08-27
+(roadmap S4) the node's header carries the diagnosis by name — *⚠ parents move
+together — the split is softer than the total (trial_activation_rate ↔
+trial_days_active, r 0.86)* — and hovering it gives the sentence in full. Point
+at it. Two wide intervals look like two weak findings; the chip is what says
+they are one strong finding measured twice, and that reading either number
+alone is the mistake. It fires on this node and nowhere else in the tree.
+
 **Worth saying:** the windows here are deliberately adjacent. White Cube is in
 the steep part of its growth curve. Push the reference back eight weeks —
 **2025-05-12 → 2025-06-08** instead of the adjacent block — and `trials_started`

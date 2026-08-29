@@ -1223,6 +1223,113 @@ function fmtKhat(k) {
   return typeof k === "number" && Number.isFinite(k) ? k.toFixed(2) : null;
 }
 
+/* Roadmap S4's verdict on a node's parents, shared by the RCA table, the
+   metric card and the static export so the three cannot disagree.
+
+   Deliberately absent on `"ok"` and on a null status, and those two are not
+   the same fact: `"ok"` means the check ran and the parents are separable,
+   null means there was nothing to check (a formula node, one parent, or no
+   fit). The metric card prints the `"ok"` case explicitly for the same reason
+   it prints the convergence numbers — see `renderPosterior`. What must never
+   happen is a `"high"` node rendering like a clean one, which is the shape of
+   the `null >= 0` overlay bug the fifth rule exists for. */
+const COLLIN_NOTE = {
+  moderate: {
+    text: "⚠ parents move together — the split is softer than the total",
+    cls: "sign-flag",
+    why:
+      "Two or more of this node's parents move largely together over the window it was "
+      + "fitted on. The data determines their combined effect better than the division of "
+      + "it between them, so the pair's total is the sound number here and the split "
+      + "between them is the soft one. Read the two as one cause, and do not rank them "
+      + "against each other on a small difference in share.",
+  },
+  high: {
+    text: "⚠ parents collinear — the split between them is not determined",
+    cls: "sign-flag",
+    why:
+      "Two or more of this node's parents move together over the window it was fitted on. "
+      + "The model determines their combined effect much better than the division of it "
+      + "between them, so each parent's own contribution and share of the gap is the least "
+      + "stable number here — read the pair as one cause, and do not rank them against "
+      + "each other.",
+  },
+  unavailable: {
+    text: "⚠ collinearity unchecked",
+    cls: "sign-flag",
+    why:
+      "The engine could not check whether this node's parents are separable. That is an "
+      + "unchecked design, not a clean one: if two of them restate each other, the "
+      + "per-parent split below is arbitrary and nothing here will say so.",
+  },
+};
+
+function collinearityNote(status) {
+  if (!status || status === "ok") return null;
+  return (
+    COLLIN_NOTE[status] || {
+      text: `⚠ collinearity check: ${status}`,
+      cls: "sign-flag",
+      why:
+        "This build does not recognise that collinearity status, so it is shown verbatim. "
+        + "It is not 'ok' — a newer engine flagged something about how separable this "
+        + "node's parents are that this UI cannot explain yet.",
+    }
+  );
+}
+
+/* Max |r| for display. Null is a real state — an `unavailable` check has no
+   number — and a literal "null" printed beside a diagnostic is worse than
+   printing nothing. */
+function fmtCorr(r) {
+  return typeof r === "number" && Number.isFinite(r) ? r.toFixed(2) : null;
+}
+
+/* "which parents", in the smallest space there is — the flag itself, so a
+   reader scanning a wide RCA does not have to hover every node to find the
+   pair. Names only the worst pair (or the worst VIF-flagged parent when the
+   finding is a multi-way one no single pair shows); the tooltip carries the
+   rest. Returns escaped HTML. */
+function collinPairText(node) {
+  const c = node.collinearity;
+  if (!c) return "";
+  const pair = (c.pairs || [])[0];
+  if (pair) {
+    const r = fmtCorr(pair.correlation);
+    return ` (${pair.parents.join(" ↔ ")}${r ? `, r ${r}` : ""})`;
+  }
+  const v = (c.vif || [])[0];
+  if (v) {
+    return ` (${v.parent}${v.vif == null ? ", not identified" : `, VIF ${v.vif.toFixed(1)}`})`;
+  }
+  return "";
+}
+
+function collinPairSuffix(node) {
+  return esc(collinPairText(node));
+}
+
+/* The S4 verdict as an inline chip (what-if table) and as a block (what-if
+   card), shared for the same reason the k̂ pair beside them is: the table and
+   the card must not say different things about the same node. A what-if node
+   carries the verdict and its sentences but not the numbers — `collinPairText`
+   is a no-op there, and the sentence names the parents anyway. */
+function collinChipHtml(node) {
+  const cn = collinearityNote(node.collinearity_status);
+  if (!cn) return "";
+  const title = cn.why + (node.collinearity_warnings || []).map((w) => `\n\n${w}`).join("");
+  return ` <span class="cause-flag" title="${esc(title)}">${esc(cn.text)}${collinPairSuffix(node)}</span>`;
+}
+
+function collinBlockHtml(name, node) {
+  const cn = collinearityNote(node.collinearity_status);
+  if (!cn) return "";
+  const body = (node.collinearity_warnings || []).length
+    ? node.collinearity_warnings.map((w) => esc(w)).join(" ")
+    : esc(cn.why);
+  return `<div class="wf-warning">⚠ ${esc(cn.text.replace(/^⚠\s*/, ""))} for <code>${esc(name)}</code>: ${body}</div>`;
+}
+
 /* Trend and seasonal rows for a posterior node's attribution table. They are
    part of the arithmetic — `unexplained = gap − Σcontributions − trend −
    seasonal` — so a table without them does not reconcile to the gap and hands
@@ -1418,6 +1525,10 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     const kn = khatNote(node);
     if (kn) bits.push(`${kn.text}${khatFigure(node) ? ` (PSIS k̂ ${khatFigure(node)})` : ""}`);
     if (node.sign_warnings && node.sign_warnings.length) bits.push("⚠ learned sign contradicts declared expectation");
+    // Roadmap S4. The pair travels in the header line so a reader scanning the
+    // export's sections sees which node's per-parent rows are not a ranking.
+    const cn2 = collinearityNote(node.collinearity_status);
+    if (cn2) bits.push(`${cn2.text}${collinPairText(node)}`);
     if (node.seasonality_warnings && node.seasonality_warnings.length) bits.push("⚠ seasonality unidentifiable from fitted history");
     if (node.likelihood_warnings && node.likelihood_warnings.length) bits.push("⚠ zero-inflated fit window — intervals approximate");
     return bits.length ? ` · ${esc(bits.join(" · "))}` : "";
@@ -1452,6 +1563,17 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     }
     (node.seasonality_warnings || []).forEach((w) => out.push(esc(w)));
     (node.likelihood_warnings || []).forEach((w) => out.push(esc(w)));
+    // Roadmap S4, in full for the same reason: the per-parent table below is
+    // the thing this caveat is about, and a reader of a circulated report has
+    // no tooltip to tell them the ordering in it is not a finding.
+    (node.collinearity_warnings || []).forEach((w) => out.push(esc(w)));
+    // A flagged node with no warning strings is a newer engine talking to an
+    // older UI. Fall back to this build's own words for the band rather than
+    // printing a flag in the header with nothing under it.
+    const cnFull = collinearityNote(node.collinearity_status);
+    if (cnFull && !(node.collinearity_warnings || []).length) {
+      out.push(`<strong>${esc(cnFull.text.replace(/^⚠\s*/, ""))}.</strong> ${esc(cnFull.why)}`);
+    }
     // Printed in full, not as a tooltip: whether these intervals came from a
     // rejected approximation or from one the engine could not check is the
     // single fact that decides how much of this section a reader should act
@@ -2958,6 +3080,16 @@ function renderPosterior(name, data) {
     .map((w) => `<p class="sign-warning">⚠ ${esc(w)}</p>`)
     .join("");
 
+  // Roadmap S4, printed directly under the β table because that table is what
+  // it is about: two collinear parents get two rows with two wide HDIs, and
+  // nothing in them says the widths are the *same* width — one ridge, read
+  // twice. The "ok" case is not silent either; it goes in `bits` below, next
+  // to R̂ and ESS, so "checked and separable" and "never checked" look
+  // different (UC4, the same rule the ADVI branch was written for).
+  const collinWarningHtml = ((data.diagnostics && data.diagnostics.collinearity_warnings) || [])
+    .map((w) => `<p class="sign-warning">⚠ ${esc(w)}</p>`)
+    .join("");
+
   // Diagnostics. These are MCMC-only, so an ADVI fit renders no numbers — but
   // it used to render *nothing at all*, which reads as "no problems found"
   // when it actually means "not checked". Say which one it is: the absence of
@@ -3001,6 +3133,22 @@ function renderPosterior(name, data) {
         : esc(String(st));
     const edge = dx.khat_borderline ? ", band unresolved at this error" : "";
     bits.push(`PSIS k̂ = <span class="${cls}">${khatFigure(dx)}</span> (${band}${edge})`);
+  }
+  // Roadmap S4, in the same row and for the same reason: this is a check of
+  // the design rather than of the sampler, and its *pass* has to be visible or
+  // the reader cannot tell a separable node from an unchecked one. `high` says
+  // so here too — the full sentence is in `collinWarningHtml` above, this is
+  // the one-line version that sits with the other verdicts.
+  if (dx.collinearity_status) {
+    const r = fmtCorr(dx.collinearity && dx.collinearity.max_abs_correlation);
+    if (dx.collinearity_status === "ok") {
+      bits.push(`parents <span class="ok">separable</span>${r ? ` (max |r| = ${r})` : ""}`);
+    } else if (dx.collinearity_status === "high" || dx.collinearity_status === "moderate") {
+      const word = dx.collinearity_status === "high" ? "collinear" : "partly collinear";
+      bits.push(`parents <span class="warn">${word}</span>${r ? ` (max |r| = ${r})` : ""}`);
+    } else {
+      bits.push(`collinearity <span class="warn">${esc(String(dx.collinearity_status))}</span>`);
+    }
   }
   // The engine's own verdict on the fit. It is computed for every fit — NUTS
   // thresholds R̂/divergences/ESS, ADVI checks the ELBO *and* PSIS k̂ — and
@@ -3065,6 +3213,7 @@ function renderPosterior(name, data) {
   box.innerHTML = `
     ${coefTable}
     ${signWarningHtml}
+    ${collinWarningHtml}
     ${diag}
     <details>
       <summary>All parameters (${params.length})</summary>
@@ -3760,6 +3909,18 @@ function renderRcaTab() {
         node.sign_warnings && node.sign_warnings.length
           ? ` · <span class="sign-flag" title="${esc(node.sign_warnings.join("\n\n"))}">⚠ learned sign contradicts expectation</span>`
           : "";
+      // Roadmap S4, beside the sign flag and not folded into it: a contradicted
+      // sign says the edge answers the wrong question, while this says the
+      // *rows below* cannot be read one at a time. The warnings name the pair;
+      // the flag carries them verbatim rather than paraphrasing.
+      const cn = collinearityNote(node.collinearity_status);
+      const collinNote = cn
+        ? ` · <span class="${cn.cls}" title="${esc(
+            (node.collinearity_warnings && node.collinearity_warnings.length
+              ? node.collinearity_warnings.join("\n\n")
+              : cn.why)
+          )}">${esc(cn.text)}${collinPairSuffix(node)}</span>`
+        : "";
       // The fit window is all loaded history before the analysis window —
       // surfacing it here is what keeps it from being confused with the
       // reference window.
@@ -3862,7 +4023,7 @@ function renderRcaTab() {
       }
       return `
         <div class="attr-block">
-          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${fitNote2}${khatFlag}${signNote}${seasNote}${zeroNote}</span></h4>
+          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${fitNote2}${khatFlag}${signNote}${collinNote}${seasNote}${zeroNote}</span></h4>
           <table class="data-table">
             ${header}
             ${rows}
@@ -4634,7 +4795,7 @@ function renderWhatifResults() {
           node.fit_quality === "suspect"
             ? `<div class="wf-warning">⚠ The engine flagged the model behind <code>${esc(name)}</code> as suspect (ADVI: the ELBO had not settled, or PSIS k̂ says the approximation is far from the posterior; NUTS: R̂ / divergences / ESS over threshold). This outcome is propagated through that fit.</div>`
             : ""
-        }${khatBlockHtml(name, node)}${impossibleHtml(name, node)}
+        }${khatBlockHtml(name, node)}${collinBlockHtml(name, node)}${impossibleHtml(name, node)}
         ${waterfallHtml(name, node, labelFor)}
       </div>`;
     })
@@ -4659,7 +4820,7 @@ function renderWhatifResults() {
           node.fit_quality === "suspect"
             ? ' <span class="cause-flag" title="The engine flagged the model behind this node as suspect — for ADVI, an ELBO that had not settled or a PSIS k̂ far from the posterior; for NUTS, R̂ / divergences / ESS over threshold. This row is propagated through that fit.">⚠ suspect fit</span>'
             : ""
-        }${khatChipHtml(node)}</td>
+        }${khatChipHtml(node)}${collinChipHtml(node)}</td>
         <td class="num">${fmt(node.baseline)} → ${fmt(node.simulated)}${
           node.window_aggregate ? `<br><span class="muted">${windowBasisHtml(node)}</span>` : ""
         }</td>

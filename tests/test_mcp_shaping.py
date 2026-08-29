@@ -343,9 +343,19 @@ def test_how_to_read_guides():
         # `khat_status` was added to prevent. The band is a coin flip more
         # often than the bare enum suggests — k̂'s standard error is around
         # 0.15, against a `suspect` band 0.2 wide.
-        assert 400 < len(guide) < 4400
+        #
+        # Raised again to 5000 for `collinearity_status` (roadmap S4) — a
+        # fifth entry, and the only one that changes what an agent may do with
+        # the *ranking* of a node's parents. A collinear pair arrives as two
+        # contributions with two different point estimates and nothing marking
+        # them as one quantity read twice, so a narrator with the bare enum
+        # ranks them, which is precisely the number the data does not
+        # determine and the way this engine's output most easily becomes a
+        # wrong decision.
+        assert 400 < len(guide) < 5000
     assert "unexplained" in RCA_HOW_TO_READ
     assert "window_aggregate" in RCA_HOW_TO_READ
+    assert "collinearity_status" in RCA_HOW_TO_READ
     assert "khat_status" in RCA_HOW_TO_READ and "khat_status" in WHATIF_HOW_TO_READ
     assert "prob_direction" in WHATIF_HOW_TO_READ
     # C9: contributions sum to the *point* delta (`delta.estimate`), and the

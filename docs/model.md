@@ -220,6 +220,45 @@ grain where those ratios are stable) or to control for the base explicitly.
 Clamping the sign with a constrained prior just forces the model to fight
 data that genuinely contradicts the edge as defined.
 
+## Parents that move together
+
+Two parents that ride the same underlying thing — an activation rate and an
+engagement intensity, say — leave the fit with a well-determined **sum** and a
+poorly-determined **split**. The likelihood is nearly flat along "more of A,
+less of B", so the data pins their combined effect and says much less about
+which of them gets the credit. RCA reports exactly that split, per parent.
+
+The posterior is honest about this on its own: each parent gets a wide
+interval, and their total a narrow one. What the posterior cannot say is that
+the two widths are *one* ridge measured twice. So every fit with two or more
+parents is checked against the design matrix it was handed and reports:
+
+| `collinearity_status` | What it means |
+|---|---|
+| `ok` | Checked, and the parents are separable. `collinearity.max_abs_correlation` is the number behind it. |
+| `moderate` | Some pair reaches \|r\| ≥ 0.7, or some parent VIF ≥ 5. Their total is the sound number; the split between them is the soft one. |
+| `high` | Some pair reaches \|r\| ≥ 0.9, or some parent VIF ≥ 10. The split is not a measured quantity — do not read either parent alone. |
+| `unavailable` | The check could not run. An unchecked design, not a clean one. |
+| *absent* | Nothing to check: a formula node, one parent, or no fit. |
+
+`collinearity.pairs` names the parents with their correlation;
+`collinearity.vif` names parents that are largely explained by their siblings
+*jointly*, which no single pair shows (three parents where the third is the sum
+of the first two have modest pairwise correlations and a degenerate design).
+VIF is only computed with three or more parents — with two it is identically
+1/(1 − r²) and would restate the pairwise number. `collinearity_warnings`
+carries the same finding as prose, on the node, in the RCA table and export,
+over MCP and in the UI, next to `sign_warnings`.
+
+This is a description of the regressors, not an inference: no hypothesis is
+tested and no p-value is produced. Nor does it move `fit_quality` — a collinear
+fit is not a broken fit, it is a correct one that is properly unsure about the
+split. What it changes is what you may do with the output: **read a flagged
+pair as one cause with one combined contribution, and do not rank its members
+against each other**, however different their `share_of_gap` look. The durable
+fix is in the tree rather than the fit — merge the two metrics, drop one, or
+redefine one so it is not a restatement of the other.
+
 ## Reading coefficients: `beta` vs `beta_raw`
 
 The posterior contains both. `beta` is in z-scored units ("a 1-sd move in the
@@ -686,6 +725,16 @@ ship in every cold-start response.
    ambitious scenario. The cost is that an undeclared share has no ceiling —
    simulate it to 130% and the response will say only that it is above the
    historical maximum. The remedy is one line in the tree.
+9. **Correlated parents give a determined sum and an undetermined split.** The
+   engine names them (`collinearity_status`, above) rather than hiding the
+   problem in two wide intervals, but naming it is all it can do: no
+   diagnostic can recover a division of credit the data does not contain. The
+   bundled demo carries a deliberate case — `trial_activation_rate` and
+   `trial_days_active` measure |r| = 0.86 over the window an RCA fits them on,
+   and the resulting split of one gap lands at 0.680, 0.682 or 0.697 depending
+   on which linear-algebra library your machine ships, from the *same* seed.
+   The pair's total is stable across all three. Read the pair, act on the
+   pair, and fix the tree if you need the individual number.
 
 ---
 
