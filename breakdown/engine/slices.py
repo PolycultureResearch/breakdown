@@ -173,6 +173,7 @@ def _localization(rows: List[Dict[str, Any]], gap: float, scale: float) -> Dict[
         state = "long_tail"
     else:
         state = "localized"
+    assert state in LOCALIZATION_STATES, state  # the payload contract, wired (L1)
     return {
         "localized": state == "localized",
         "localization": state,
@@ -583,6 +584,10 @@ def slice_attribution(
     rng = np.random.default_rng(0)
 
     wide = _pivot(sliced, f"'{defn.name}'")
+    # Wired, not just documented (grill L1): `additivity="banana"` used to
+    # behave silently as "unknown", which is a typo'd caller learning nothing.
+    if additivity not in ADDITIVITY:
+        raise ValueError(f"additivity must be one of {ADDITIVITY}, got '{additivity}'.")
     if wide.shape[1] > MAX_DISTINCT:
         raise ValueError(
             f"Dimension '{dimension}' on '{defn.name}' returned {wide.shape[1]} "

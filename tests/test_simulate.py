@@ -644,11 +644,14 @@ def test_a_non_rate_node_is_untouched_by_the_ceiling():
     assert not [w for w in result["warnings"] if w["kind"] == "non_physical"]
 
 
-DISCONNECTED_MONTH_YAML = JAFFLE_YAML + """
+DISCONNECTED_MONTH_YAML = (
+    JAFFLE_YAML
+    + """
   - name: board_mrr
     source: dbt.metric.board_mrr
     grain: month
 """
+)
 
 
 def _data_with_month_node(n: int = 60):

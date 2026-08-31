@@ -104,7 +104,8 @@ compose.yaml
 ```bash
 uv sync
 uv run breakdown serve --reload        # UI at http://localhost:9090/ui
-uv run pytest tests/ -v
+uv run pytest tests/ -v                # full suite (~8 min: NUTS is the default sampler)
+uv run pytest tests/ -m "not slow"     # the fast loop (~1 min): everything that never fits
 ```
 
 `uv sync` installs every provider extra (the dev group pulls
@@ -177,7 +178,9 @@ is covered in [docs/deploying.md](docs/deploying.md).
   [Statistical rigor (S)](knowledge/roadmap.md#statistical-rigor-s--a-standing-workstream)
   or [Horizon 0 correctness (C)](knowledge/roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend)
   item, update three things in the same change: the roadmap row (the source of
-  truth for status), the matching §3.2 weakness and §4 item in
+  truth for status — one line: ID, status, sentence, link; an account longer
+  than a sentence or two goes in [`knowledge/roadmap_log.md`](knowledge/roadmap_log.md)),
+  the matching §3.2 weakness and §4 item in
   [`knowledge/statistics_whitepaper.md`](knowledge/statistics_whitepaper.md),
   and that paper's **Last updated** date plus a revision-history row. It is a
   public document that tells readers whether they are looking at a known current

@@ -253,6 +253,14 @@ prerelease = "disallow"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+markers = [
+    # Grill 2026-08-29 L10: a ~1200-test suite where NUTS is the default
+    # sampler had no fast path — `-m "not slow"` runs the ~90% that never
+    # touch a sampler in well under a minute. Module-granular on purpose
+    # (a file is marked when any of its tests fits): per-test marking of 50+
+    # sampler call sites would drift the first week. CI runs everything.
+    "slow: touches a PyMC sampler (or boots servers) — skip with -m 'not slow' for the fast loop",
+]
 
 [tool.ruff]
 line-length = 100

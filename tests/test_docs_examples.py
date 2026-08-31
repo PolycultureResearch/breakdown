@@ -50,6 +50,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 from breakdown.api.main import app  # noqa: E402
 from breakdown.parser import Parser  # noqa: E402
 
+# Grill L10: this module fits real samplers; `-m "not slow"` is the fast loop.
+pytestmark = pytest.mark.slow
+
 REPO = Path(__file__).resolve().parents[1]
 MAIN_PY = (REPO / "breakdown" / "api" / "main.py").read_text()
 DEMO_TREE = REPO / "breakdown" / "examples" / "jaffle_shop_tree.yml"
@@ -1059,3 +1062,53 @@ def test_markdown_tables_render_as_tables(path):
         f"{path.name}: row(s) whose structural cell count differs from their "
         f"header — {ragged}. Escape any `|` that is content, as `\\|`."
     )
+
+
+# --------------------------------------------------------------------------
+# Prose docs (grill L8): model.md and ui-guide.md carry the heaviest
+# per-change obligation — AGENTS.md says to grep model.md on every C item —
+# and had no executable check at all, which is exactly why they are the ones
+# that rot unnoticed (ui-guide's ADVI promise was already stale when the
+# grill read it). They are prose, so the DocFile machinery above (YAML
+# blocks, curl replays) has nothing to hold: instead, every status literal
+# and payload key they quote must exist in the source that emits it. A doc
+# citing a retired name — the C-sweep failure class — fails here.
+# --------------------------------------------------------------------------
+
+# Values quoted in prose that are deliberately not identifiers in the source.
+_PROSE_DOC_ALLOWED_MISSING = {
+    # model.md quotes YAML authoring surface, mathematical notation, and CLI
+    # flags that live in docs/yaml-reference.md's vocabulary, not the engine's.
+}
+
+
+def test_prose_docs_cite_only_vocabulary_the_code_still_has():
+    import re as _re
+
+    source = ""
+    for base, pattern in ((REPO / "breakdown", "**/*.py"), (REPO / "breakdown", "**/*.js")):
+        for f in base.glob(pattern):
+            source += f.read_text()
+
+    for doc in ("docs/model.md", "docs/ui-guide.md"):
+        text = (REPO / doc).read_text()
+        # Status-shaped literals the docs quote: `ci_status: "x"` prose forms
+        # and bare snake_case status values in backticks that look like enum
+        # members the engine emits.
+        cited = set()
+        for m in _re.finditer(r'`"([a-z][a-z0-9_]{2,40})"`', text):
+            cited.add(m.group(1))
+        for m in _re.finditer(
+            r"`([a-z][a-z0-9_]*_status|status|ci_status|fit_quality|khat_[a-z_]+|prob_[a-z_]+|unexplained_status|window_aggregate[a-z_]*|inference_method|attribution_method|localization[a-z_]*|reference_defaulted)`",
+            text,
+        ):
+            cited.add(m.group(1))
+        missing = sorted(
+            t for t in cited if t not in _PROSE_DOC_ALLOWED_MISSING and t not in source
+        )
+        assert not missing, (
+            f"{doc} quotes {missing}, which no source file contains. Either the "
+            "doc is stale (the C-sweep failure class) or the name moved — "
+            "update the doc, or add a justified entry to "
+            "_PROSE_DOC_ALLOWED_MISSING."
+        )

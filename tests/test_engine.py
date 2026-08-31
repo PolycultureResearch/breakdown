@@ -15,6 +15,9 @@ from breakdown.engine.model import (
 from breakdown.parser import Parser, Seasonality
 from tests.synthetic import generate_mock_data, win
 
+# Grill L10: this module fits real samplers; `-m "not slow"` is the fast loop.
+pytestmark = pytest.mark.slow
+
 SIMPLE_YAML = """
 metrics:
   - name: daily_sessions
