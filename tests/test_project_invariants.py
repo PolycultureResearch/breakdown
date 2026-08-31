@@ -53,6 +53,7 @@ from breakdown.data_fetch import _align_to_spine
 from breakdown.engine import model as model_mod
 from breakdown.engine import rca as rca_mod
 from breakdown.engine import simulate as simulate_mod
+from breakdown.engine import stats as stats_mod
 from breakdown.parser import Parser
 
 PACKAGE = Path(__file__).resolve().parent.parent / "breakdown"
@@ -275,10 +276,93 @@ def test_every_cache_on_tree_state_is_bounded():
             continue
         if not isinstance(value, trees_mod.BoundedCache):
             unbounded.append(field.name)
+            continue
+        # The type is not the bound (roadmap C32, grill H3): this test used to
+        # accept any BoundedCache, and the cache was bounded by entry *count*
+        # while the thing that grows is a frame's cardinality × window. Every
+        # frame cache must carry a byte budget.
+        assert value.max_bytes > 0, (
+            f"TreeState.{field.name} is a BoundedCache with no byte budget. "
+            "An entry scales with dimension cardinality times the loaded "
+            "window (~154 MB measured at 5,000 slice values × 830 days), so "
+            "a count bound alone is rule 2's defect with extra steps."
+        )
     assert not unbounded, (
         f"{unbounded} default to an unbounded dict on TreeState. Every cache "
         "here grows with distinct user-chosen windows until the process is "
         "OOM-killed (roadmap C8, 2.18). Use BoundedCache."
+    )
+
+
+def test_bounded_cache_evicts_by_bytes_not_only_count():
+    """The byte budget must actually fire (roadmap C32): a cache whose entries
+    are large evicts long before its entry count, and an entry bigger than the
+    whole budget is never cached at all (it would evict everything to be
+    evicted next)."""
+    frame = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=1000), "v": 1.0})
+    per = trees_mod.BoundedCache._nbytes(frame)
+    assert per > 0, "a DataFrame must measure as more than zero bytes"
+
+    cache = trees_mod.BoundedCache(max_entries=64, max_bytes=int(per * 3.5))
+    for i in range(6):
+        cache[i] = frame.copy()
+    assert len(cache) == 3, "byte eviction should hold ~3 entries, count allows 64"
+    assert cache.total_bytes <= cache.max_bytes
+    assert set(cache) == {3, 4, 5}, "eviction must be oldest-first"
+
+    huge = pd.DataFrame({"v": np.zeros(10)})
+    big_budget = trees_mod.BoundedCache(max_entries=64, max_bytes=1)
+    big_budget[0] = huge
+    assert len(big_budget) == 0, "an entry over the whole budget is not cached"
+
+    # Bookkeeping survives overwrite and clear — a drifting total_bytes is the
+    # M4 failure class (a budget that silently stops firing).
+    cache[3] = frame.copy()
+    assert cache.total_bytes == sum(cache._sizes.values())
+    cache.clear()
+    assert cache.total_bytes == 0 and not cache._sizes
+
+
+def test_no_async_route_calls_the_engine_inline():
+    """Every engine call in an async handler goes through `asyncio.to_thread`
+    (roadmap C33, grill H4): `GET /shapley` ran the O(2ⁿ) enumeration on the
+    event loop — a measured 1.09s stall freezing /health, every /progress poll
+    and every /ui asset — while every neighbouring route did it right. The
+    guard is the property, not the four call sites of the day: a *direct*
+    call to a heavy engine function inside any `async def` here fails.
+
+    `resolve_reference_window` is allowed by name: it is date arithmetic on
+    already-loaded metadata, and wrapping every trivial helper would bury the
+    rule. A sync helper (like `_run_slice`) may call the engine freely — it
+    only ever runs inside `to_thread`.
+    """
+    heavy = {
+        "run_rca",
+        "run_scenario",
+        "shapley_attribution",
+        "fit_metric",
+        "slice_attribution",
+        "entity_flows",
+        "load_tree",
+        "_fit_summary",
+        "_run_slice",
+    }
+    source = (PACKAGE / "api" / "main.py").read_text()
+    tree = ast.parse(source)
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef):
+            continue
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            name = getattr(call.func, "id", None)
+            if name in heavy:
+                offenders.append(f"{node.name}:{call.lineno} calls {name}()")
+    assert not offenders, (
+        f"{offenders}: engine work invoked inline in an async handler. Route "
+        "it through `async with tree.lock: await asyncio.to_thread(...)` like "
+        "its neighbours, or the event loop freezes for the duration (C33)."
     )
 
 
@@ -367,12 +451,28 @@ def _strict(payload) -> None:
 
 
 def test_a_degenerate_tree_still_encodes_strictly(tmp_path, monkeypatch):
-    """Rule 3, end to end through the surface that actually broke.
+    """Rule 3, end to end through every attribution path that can carry a NaN.
 
     One zero-denominator period used to reach Starlette's `allow_nan=False`
     encoder as an unhandled 500, and `round_floats` turned the same NaN into
-    `null` for an agent (C17). Both routes are exercised on a tree carrying a
-    zero denominator *and* a zero-variance parent.
+    `null` for an agent (C17). The formula path was fixed then — and the
+    posterior path of the same function published NaN for another year,
+    because this test's one scenario contained no probabilistic node (roadmap
+    C29, grill H1). So the tree now carries all three degenerate shapes:
+
+    - a zero denominator on a derived rate (`aov`) — the C17 formula case;
+    - a zero-variance parent (`promo`, a real parent of `bookings`) — the C4a
+      case (an earlier edition declared `promo` standalone while its docstring
+      called it a parent; the flat-parent path was never actually wired);
+    - a probabilistic node (`demand`) whose rate parent is **undefined inside
+      the analysis window but outside the fit window** — the fit never sees
+      the NaN, and only the attribution-time refusal stands between it and
+      the encoder. The fit itself is a stub through the trace-cache seam, so
+      no sampler runs here.
+
+    The property asserted is the strict-encoding half of "every float a node
+    payload carries is finite or None": `json.dumps(..., allow_nan=False)`
+    raises on any non-finite float, and withheld values are `None`.
     """
     tree = tmp_path / "degenerate.yml"
     tree.write_text(
@@ -384,6 +484,11 @@ def test_a_degenerate_tree_still_encodes_strictly(tmp_path, monkeypatch):
         "  - name: aov\n    source: mock.aov\n    kind: rate\n"
         '    formula: "revenue / order_count"\n'
         "    parents: [revenue, order_count]\n"
+        "  - name: demand\n    source: mock.demand\n    kind: flow\n"
+        "    parents: [aov]\n"
+        "  - name: bookings\n    source: mock.bookings\n    kind: flow\n"
+        '    formula: "demand + promo"\n'
+        "    parents: [demand, promo]\n"
     )
     # monkeypatch, not os.environ: the app reads these at lifespan, so leaving
     # them set points every later test in the session at a tmp_path tree that
@@ -393,9 +498,13 @@ def test_a_degenerate_tree_still_encodes_strictly(tmp_path, monkeypatch):
     monkeypatch.setenv("BREAKDOWN_START_DATE", "2024-01-01")
     monkeypatch.setenv("BREAKDOWN_END_DATE", "2024-04-09")
 
+    import arviz as az
     from fastapi.testclient import TestClient
 
     from breakdown.api.main import app
+    from breakdown.engine.model import FitResult
+
+    analysis = {"analysis_start": "2024-03-27", "analysis_end": "2024-04-09"}
 
     with TestClient(app, raise_server_exceptions=False) as client:
         state = app.state.trees["degenerate"]
@@ -404,17 +513,57 @@ def test_a_degenerate_tree_still_encodes_strictly(tmp_path, monkeypatch):
         # denominator, and a parent held flat (the C4 production shape)
         frame.loc[frame.index[-3], "order_count"] = 0.0
         frame["promo"] = 0.0
+        # 1.11c's undefined rate period, placed inside the analysis window so
+        # the fit (which ends at analysis_start) can never have seen it — the
+        # exact H1 shape.
+        frame.loc[frame.index[-3], "aov"] = float("nan")
 
-        for path, params in (
-            ("/rca/aov", {"analysis_start": "2024-03-27", "analysis_end": "2024-04-09"}),
-            ("/rca/revenue", {"analysis_start": "2024-03-27", "analysis_end": "2024-04-09"}),
-        ):
-            r = client.post(path, params=params)
+        # A stub NUTS fit through the trace-cache seam: `run_rca` reuses it
+        # via `cached_fit_is_usable` and fits nothing. The refusal under test
+        # fires before any of the stub's numbers are read.
+        rng = np.random.default_rng(0)
+        fit_dates = pd.date_range("2024-01-01", "2024-03-26", freq="D")
+        stub = FitResult(
+            trace=az.from_dict(
+                posterior={
+                    "beta_raw": rng.normal(size=(2, 50, 1)),
+                    "trend": rng.normal(size=(2, 50, len(fit_dates))),
+                }
+            ),
+            target="demand",
+            parents=["aov"],
+            y_mean=0.0,
+            y_std=1.0,
+            x_stds=np.array([1.0]),
+            dates=fit_dates,
+            inference_method="nuts",
+            fit_end=analysis["analysis_start"],
+        )
+        state.traces[("demand", analysis["analysis_start"])] = stub
+
+        for path in ("/rca/aov", "/rca/revenue", "/rca/bookings"):
+            r = client.post(path, params=analysis)
             assert r.status_code != 500, (
                 f"POST {path} returned 500 on a degenerate but ordinary tree — a "
-                "non-finite value reached the encoder (roadmap C17)."
+                "non-finite value reached the encoder (roadmap C17/C29)."
             )
             _strict(r.json())
+
+        # The poisoned probabilistic node degrades by name inside a wider
+        # analysis ("one bad node does not end the analysis") …
+        body = client.post("/rca/bookings", params=analysis).json()
+        demand = body["nodes"]["demand"]
+        assert demand["status"] == "attribution_failed"
+        assert "aov" in demand["status_reason"]
+
+        # … and refuses by name when it is itself the target.
+        r = client.post("/rca/demand", params=analysis)
+        assert r.status_code == 422, (
+            "the H1 shape must be a named refusal for the target, not a "
+            f"published NaN (got {r.status_code})"
+        )
+        _strict(r.json())
+        assert "aov" in r.json()["detail"]
 
         r = client.get("/metrics/aov")
         assert r.status_code == 200
@@ -573,8 +722,8 @@ def test_a_saturated_direction_probability_publishes_its_ceiling():
     one line away from the code that withholds a degenerate probability as "a
     confidence read off no information at all".
     """
-    n = rca_mod._N_BOOT
-    value, censored = rca_mod.prob_same_direction(np.linspace(1.0, 2.0, n))
+    n = stats_mod.N_BOOT
+    value, censored = stats_mod.prob_same_direction(np.linspace(1.0, 2.0, n))
     assert censored, "every replicate on one side is a saturated count, not certainty"
     assert value == pytest.approx(1.0 - 1.0 / n)
 
@@ -582,7 +731,7 @@ def test_a_saturated_direction_probability_publishes_its_ceiling():
     # and is published exactly, uncensored.
     mixed = np.linspace(1.0, 2.0, n)
     mixed[0] = -1.0
-    value, censored = rca_mod.prob_same_direction(mixed)
+    value, censored = stats_mod.prob_same_direction(mixed)
     assert not censored and value == pytest.approx(1.0 - 1.0 / n)
 
 
@@ -593,7 +742,7 @@ def test_an_exact_sample_is_not_censored():
     intervention is exact arithmetic, not an estimate of a proportion. Clamping
     it would understate a sign that really is known.
     """
-    value, censored = rca_mod.prob_same_direction(np.full(64, 3.0))
+    value, censored = stats_mod.prob_same_direction(np.full(64, 3.0))
     assert value == 1.0 and not censored
 
 
@@ -627,7 +776,7 @@ def test_every_published_direction_probability_is_representable():
         **win(("2024-01-01", "2024-02-15"), ("2024-02-16", "2024-04-09")),
         draws=300,
     )
-    ceiling = 1.0 - 1.0 / rca_mod._N_BOOT
+    ceiling = 1.0 - 1.0 / stats_mod.N_BOOT
     published = [
         (name, c["parent"], c["prob_same_direction"])
         for name, node in result["nodes"].items()
@@ -638,7 +787,7 @@ def test_every_published_direction_probability_is_representable():
         assert psd is None or 0.5 <= psd <= ceiling, (
             f"{name} <- {parent} publishes prob_same_direction {psd}, outside "
             f"[0.5, 1 - 1/_N_BOOT = {ceiling}]. A proportion over "
-            f"{rca_mod._N_BOOT} replicates cannot take that value."
+            f"{stats_mod.N_BOOT} replicates cannot take that value."
         )
 
 
@@ -963,6 +1112,51 @@ def test_a_derived_nodes_zero_is_distinguishable_from_a_measured_one():
     assert compact["nodes"]["revenue"]["unexplained_status"] == "measured"
 
 
+def _js_code(path) -> str:
+    """JS source with // line comments and /* block comments */ stripped, so a
+    token count means code, not commentary (grill L6). Naive about comment
+    markers inside string literals — fine for counting identifiers that never
+    appear in user-facing strings."""
+    import re as _re
+
+    src = path.read_text()
+    src = _re.sub(r"/\*.*?\*/", "", src, flags=_re.S)
+    src = _re.sub(r"^\s*//.*$", "", src, flags=_re.M)
+    return src
+
+
+def test_every_rca_node_field_reaches_a_render_site():
+    """The invariant that would have caught grill H7 (roadmap C35): the engine
+    emitted `inference_method` on every RCA node, MCP published it with a
+    comment on why an agent needs it — and no UI surface ever read it, so an
+    ADVI analysis rendered byte-identical to a NUTS one for a year.
+
+    Enumerated from the payload itself: `_node_out()` with no overrides is the
+    engine's own list of every field a node can carry. Each must appear in the
+    frontend (app.js or disclosures.js, comments stripped) at least once, or
+    be a named exception with a reason. A new engine field lands in neither
+    and fails here — which is the only moment anyone will ask the question.
+    """
+    fields = set(rca_mod._node_out().keys())
+    js = _js_code(PACKAGE / "static" / "app.js") + _js_code(
+        PACKAGE / "static" / "disclosures.js"
+    )
+    # Named exceptions, each with the reason it is not rendered:
+    unrendered = {
+        # consumed to *position* the k̂ figure's ± suffix, via khatFigure's
+        # arithmetic — the name appears there, so it is not in this set; kept
+        # as documentation of the pattern for the next field.
+    }
+    missing = sorted(f for f in fields - set(unrendered) if f not in js)
+    assert not missing, (
+        f"RCA node fields the engine emits and no frontend surface reads: "
+        f"{missing}. Render each on at least one surface, or add it to the "
+        "named exceptions here with the reason a reader never needs it "
+        "(roadmap C35 — a correct payload rendered incompletely is the fifth "
+        "rule's defect)."
+    )
+
+
 def test_every_surface_that_prints_unexplained_labels_which_zero():
     """The fifth rule, which has no runner — so it is enumerated in the source.
 
@@ -972,7 +1166,7 @@ def test_every_surface_that_prints_unexplained_labels_which_zero():
     place `app.js` writes an `unexplained` row must build its label through
     `unexplainedRow`, never from a string literal.
     """
-    app_js = (PACKAGE / "static" / "app.js").read_text()
+    app_js = _js_code(PACKAGE / "static" / "app.js")
     literal_rows = [
         line
         for line in app_js.splitlines()
@@ -983,12 +1177,20 @@ def test_every_surface_that_prints_unexplained_labels_which_zero():
         f"`unexplainedRow(node)`, so it cannot distinguish a definitional zero "
         f"from a measured one: {literal_rows}"
     )
-    # Both surfaces must actually call it: the live RCA table and the export.
-    assert app_js.count("unexplainedRow(") >= 3, (
-        "expected `unexplainedRow` to be defined and used by both the live "
-        "table and the exported report"
+    # Both surfaces must actually *call* it (grill L6: the old form counted
+    # substrings, so the definition line — and even a comment — satisfied it).
+    # Comments are stripped by `_js_code`, and the definition lives in
+    # disclosures.js now, so every hit here is a genuine call expression.
+    calls = [
+        line for line in app_js.splitlines()
+        if "unexplainedRow(" in line and not line.lstrip().startswith("function ")
+    ]
+    assert len(calls) >= 2, (
+        f"expected the live table and the exported report each to call "
+        f"`unexplainedRow`; found {len(calls)} call sites"
     )
-    assert "definitional" in app_js, "the UI never mentions a definitional zero"
+    disclosures = _js_code(PACKAGE / "static" / "disclosures.js")
+    assert "definitional" in disclosures, "the UI never mentions a definitional zero"
 
 
 # --- No rate aggregate is an average of per-period ratios (roadmap 1.11c) -----
@@ -1066,7 +1268,7 @@ def test_the_payload_says_which_of_the_two_aggregates_a_rate_reports():
     declared one on — and the remedy for the second is nonsense advice for the
     first, which is what `doctor` used to give.
     """
-    from breakdown.engine.rca import (
+    from breakdown.engine.windows import (
         node_window_value,
         rate_window_method,
         rate_window_method_reason,
@@ -1620,7 +1822,9 @@ def test_no_surface_prints_a_bare_khat():
     Structural rather than pinned to today's five call sites, because the sixth
     surface is the one that will get this wrong.
     """
-    source = (PACKAGE / "static" / "app.js").read_text()
+    source = (PACKAGE / "static" / "app.js").read_text() + (
+        PACKAGE / "static" / "disclosures.js"
+    ).read_text()
     offenders = re.findall(r"fmtKhat\(\s*\w+\.khat\b\s*\)", source)
     assert not offenders, (
         f"app.js prints a bare k̂ at {len(offenders)} site(s): {sorted(set(offenders))}. "
@@ -1824,7 +2028,9 @@ def test_every_surface_that_publishes_a_bound_verdict_publishes_both():
         (PACKAGE / "mcp" / "shaping.py", 1),
         (PACKAGE / "static" / "app.js", 2),  # the outcome card and the table row
     ):
-        source = path.read_text()
+        # Comments stripped (grill L6): a substring count over raw source is
+        # satisfiable by the very comment explaining the count.
+        source = _js_code(path) if path.suffix == ".js" else path.read_text()
         assert source.count("non_physical") >= minimum, (
             f"{path.name} renders or publishes fewer than {minimum} references to "
             "`non_physical`. Every surface that carries the per-node "
@@ -1910,19 +2116,26 @@ def test_every_place_that_explains_a_suspect_fit_knows_the_model_can_be_the_caus
     It is also exactly the meta-defect the four rules were written about: the
     fix landed in `renderPosterior`'s explanation first and the export's
     `caveatBlock` — the neighbouring surface, same policy, same file — kept the
-    old sentence for one working session. This test enumerates rather than
-    pinning today's two call sites, so a *third* explanation added later is
-    caught the same way.
+    old sentence for one working session. Roadmap C37 then collapsed the five
+    drifting copies into `fitQualityNote` (disclosures.js), so the enumeration
+    now expects exactly two survivors: the shared vocabulary, and the Metric
+    tab's richer diagnostics-side version (which can also see k̂ figures). A
+    *third* prose explanation appearing anywhere is a copy escaping the
+    vocabulary and fails here.
     """
-    src = (PACKAGE / "static" / "app.js").read_text()
+    src = (PACKAGE / "static" / "app.js").read_text() + (
+        PACKAGE / "static" / "disclosures.js"
+    ).read_text()
 
     # Every passage that explains the verdict names the sampler-side causes in
     # prose. Find them by that enumeration rather than by a marker comment,
     # which a new author would not know to copy.
     sites = [m.start() for m in re.finditer(r"divergence[s]? (?:or|count)", src)]
-    assert len(sites) >= 2, (
-        f"expected at least the metric card's and the export's suspect explanations; "
-        f"found {len(sites)}"
+    assert len(sites) == 2, (
+        f"expected exactly two suspect explanations — fitQualityNote and the "
+        f"metric card's diagnostics version; found {len(sites)}. More means a "
+        "copy has escaped the shared vocabulary (roadmap C37); fewer means an "
+        "explanation stopped naming its causes."
     )
 
     for start in sites:

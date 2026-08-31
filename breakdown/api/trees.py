@@ -73,13 +73,19 @@ MAX_CACHED_TRACES = 256
 # simply caches fewer fits instead of OOM-killing the process.
 MAX_CACHED_TRACE_BYTES = 512 * 1024 * 1024
 
-# Bound for the two per-tree frame caches (see `TreeState`). Counts, not bytes:
-# a cached slice frame is a DataFrame of one metric by one dimension over one
-# window — 9,648 rows measured 435 KB, two orders of magnitude under a trace —
-# so 64 of each per tree is a few tens of MB at worst, and the count stays the
-# simplest thing that can be reasoned about.
+# Bounds for the two per-tree frame caches (see `TreeState`). Both count AND
+# bytes (roadmap C32): the previous count-only bound was justified by one
+# measurement of an ordinary frame (9,648 rows, 435 KB), and a frame scales
+# with the dimension's *cardinality* — 830 days × 5,000 slice values is
+# ~154 MB, so 64 of them is ~9.6 GB against the 2 GB demo box. 64 MiB per
+# cache per tree holds ~150 ordinary frames (more than the count bound ever
+# allowed) while a pathological dimension caches a handful, or none, instead
+# of OOM-killing the process. The residual, named on the roadmap row: the
+# *transient* fetch of one such frame still happens once per request until
+# top_k + an `__other__` roll-up move into the generated SQL.
 MAX_CACHED_SLICES = 64
 MAX_CACHED_FLOWS = 64
+MAX_CACHED_FRAME_BYTES = 64 * 1024 * 1024
 
 _TraceKey = Tuple[str, Optional[str]]
 
@@ -259,21 +265,73 @@ class TraceView(MutableMapping):
 
 
 class BoundedCache(Dict[Any, Any]):
-    """A dict that evicts its oldest entry once it exceeds `max_entries`.
+    """A dict that evicts oldest-first once it exceeds `max_entries` — or,
+    when `max_bytes` is set, once its entries' measured bytes exceed it.
 
     The same insertion-ordered spirit as `TraceStore`, small enough to stay a
     dict: callers `.get`, `[]=`, `len()` and `.clear()` it exactly as before,
     and the only added behaviour is on write.
+
+    The byte bound exists because the entry count was bounding the wrong
+    quantity (roadmap C32, grill H3, AGENTS.md rule 2): a cached slice frame
+    scales with the *dimension's cardinality* times the window, and 64 entries
+    of an ordinary frame (9,648 rows measured 435 KB) is a few tens of MB
+    while 64 frames of a 5,000-value dimension over 830 days is ~9.6 GB —
+    against the demo box's 2 GB. Bound by the thing that actually grows.
+
+    An entry larger than the whole budget is not cached at all (and the drop
+    is logged): caching it would evict everything else to hold one frame that
+    the next insert evicts anyway. The request still works — it just refetches
+    — which is the same trade `TraceStore` makes when a wide window shrinks
+    how many fits fit.
     """
 
-    def __init__(self, max_entries: int):
+    def __init__(self, max_entries: int, max_bytes: int = 0):
         super().__init__()
         self.max_entries = max_entries
+        self.max_bytes = max_bytes
+        self.total_bytes = 0
+        self._sizes: Dict[Any, int] = {}
+
+    @staticmethod
+    def _nbytes(value: Any) -> int:
+        """A DataFrame's resident size (deep: slice labels are object-dtype
+        strings, which shallow counting misses entirely). Unknown shapes
+        measure 0 and are bounded by the entry count alone."""
+        try:
+            return int(value.memory_usage(deep=True).sum())
+        except Exception:
+            return 0
 
     def __setitem__(self, key: Any, value: Any) -> None:
+        if key in self:
+            del self[key]
+        size = self._nbytes(value)
+        if self.max_bytes and size > self.max_bytes:
+            logger.warning(
+                "Not caching a %.0f MB frame (budget %.0f MB): it would evict "
+                "the whole cache and be evicted by the next insert. The "
+                "request is served; repeats of it will refetch.",
+                size / 1e6,
+                self.max_bytes / 1e6,
+            )
+            return
         super().__setitem__(key, value)
-        while len(self) > self.max_entries:
+        self._sizes[key] = size
+        self.total_bytes += size
+        while len(self) > self.max_entries or (
+            self.max_bytes and self.total_bytes > self.max_bytes and len(self) > 1
+        ):
             del self[next(iter(self))]
+
+    def __delitem__(self, key: Any) -> None:
+        super().__delitem__(key)
+        self.total_bytes -= self._sizes.pop(key, 0)
+
+    def clear(self) -> None:
+        super().clear()
+        self._sizes.clear()
+        self.total_bytes = 0
 
 
 @dataclass
@@ -291,6 +349,13 @@ class TreeState:
     # directory doesn't take down the other seven — the same degraded-startup
     # discipline the single-tree app had, scoped down.
     load_error: Optional[str] = None
+    # A stable, secret-free classification of `load_error` for the surfaces
+    # auth deliberately leaves open (roadmap C43): "parse_error" |
+    # "data_load_error". The full exception text stays on `load_error`, which
+    # only the log and the auth-gated routes read — it can carry the tree's
+    # SQL or a provider's hostnames and usernames, which is exactly what the
+    # unauthenticated /health was echoing.
+    load_error_kind: Optional[str] = None
     fetcher: Any = None
     data: Any = None
     loaded: bool = False
@@ -302,8 +367,12 @@ class TreeState:
     # package ever evicted from them. Per tree rather than process-wide,
     # because unlike a trace a frame is small (see `MAX_CACHED_SLICES`) and two
     # trees naming the same metric are two independent nodes anyway.
-    slice_cache: Dict[Any, Any] = field(default_factory=lambda: BoundedCache(MAX_CACHED_SLICES))
-    flow_cache: Dict[Any, Any] = field(default_factory=lambda: BoundedCache(MAX_CACHED_FLOWS))
+    slice_cache: Dict[Any, Any] = field(
+        default_factory=lambda: BoundedCache(MAX_CACHED_SLICES, MAX_CACHED_FRAME_BYTES)
+    )
+    flow_cache: Dict[Any, Any] = field(
+        default_factory=lambda: BoundedCache(MAX_CACHED_FLOWS, MAX_CACHED_FRAME_BYTES)
+    )
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     earliest: Dict[str, Optional[str]] = field(default_factory=dict)
     earliest_task: Optional[asyncio.Task] = None
@@ -380,6 +449,7 @@ def parse_tree(tree: TreeState) -> None:
             parser = Parser(f.read())
     except Exception as e:
         tree.load_error = f"{type(e).__name__}: {e}"
+        tree.load_error_kind = "parse_error"
         logger.error(
             "Failed to parse tree '%s' (%s); it will show as errored. %s",
             tree.id,

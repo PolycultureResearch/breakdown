@@ -27,7 +27,7 @@ about the whole process rather than one tree.
 | `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), per-metric `grains`/`kinds`/`data_through`, fitted models, per-metric `earliest_available` history discovery (UI bootstrap) |
 | `GET` | `/dag` | Full metric DAG (nodes + edges), each node carrying its whole definition. `sql` and `bind` come back `null` to a caller that presents no token when one is configured. See [Authentication](deploying.md#authentication) |
 | `GET` | `/series` | Every metric's series at its native grain, `{name: {grain, dates, values}}`. One call hydrates the UI's node cards. Mixed-grain trees have no shared date axis, so dates are per metric |
-| `GET` | `/metrics/{name}` | Metric definition, time series, posterior summary and fit diagnostics |
+| `GET` | `/metrics/{name}` | Metric definition, time series, posterior summary and fit diagnostics — plus top-level `inference_method` and `fit_end` for the fit those describe (`null` when nothing is fitted), so a reader never infers the sampler from the presence of a k̂ (roadmap C35) |
 | `GET` | `/metrics/{name}/query` | The query behind a metric's numbers, when the provider knows it. Optional `dimension` for the sliced form |
 | `GET` | `/metrics/{name}/ppc` | The observed-vs-replicated series behind this node's posterior predictive verdict — the arrays the Metric tab plots |
 | `POST` | `/analyze/{name}` | Run Bayesian sampling for a metric |
@@ -41,7 +41,7 @@ about the whole process rather than one tree.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/` | A one-line "the API is running" banner carrying no tree data. Open even under `BREAKDOWN_REQUIRE_AUTH` |
-| `GET` | `/health` | Always 200. `{"status": "ok", provider, metrics}`, or `{"status": "degraded", "error": …}` when the default tree can't serve. Liveness for orchestrators. The body, not the status code, says whether the tree is degraded. Open even under `BREAKDOWN_REQUIRE_AUTH` |
+| `GET` | `/health` | Always 200. `{"status": "ok", provider, metrics}`, or `{"status": "degraded", "error_kind": …, "error": …}` when the default tree can't serve. `error_kind` is a stable classification (`parse_error` \| `data_load_error` \| `auth_config_error` \| `discovery_error`) and `error` a generic sentence — never the exception text, which can carry the tree's SQL or a provider's hostnames and this route is deliberately open (roadmap C43). The full diagnostic is in the server log and on the auth-gated `GET /trees` card. Liveness for orchestrators; the body, not the status code, says whether the tree is degraded. Open even under `BREAKDOWN_REQUIRE_AUTH` |
 | `GET` | `/trees` | Every tree: title, owner, metric count, `state` (`loaded` \| `not_loaded` \| `loading` \| `error`), plus `period`/`goal` where declared and `progress` for a loaded tree that has a goal. Reads parsed YAML only and never triggers a data load |
 | `POST` | `/trees/{id}/load` | Fetch one tree's data now, and return its updated index card |
 | `GET` | `/progress/{run_id}` | Live stage of an in-flight RCA or simulation started with that `run_id` |
@@ -55,6 +55,13 @@ way to see what was actually asked of the warehouse, which left every number
 unfalsifiable by exactly the person being asked to trust it. This route returns
 the query behind a metric, so an analyst can check the number against the
 definition they think they have.
+
+When `BREAKDOWN_API_TOKEN` is set and the request does not present it, this
+route **refuses with a 403** — the same condition under which `GET /dag`
+redacts `sql`/`bind` (roadmap C31; through v0.1.1 it had no gate, handing out
+the exact statement `/dag` had just redacted). It refuses rather than nulling
+because a redacted `sql: null` would be indistinguishable from a provider
+that legitimately has no query.
 
 | Param | Description |
 |-------|-------------|
@@ -393,6 +400,7 @@ than buried in a status nobody would find useful.
 | `degenerate_single_period` | A formula node whose windows snapped to one period. The block bootstrap would return identical replicates, so intervals are withheld rather than reported at a falsely-zero width. |
 | `posterior_only_single_period` | The same for a posterior node. Coefficient uncertainty remains, but the window-sampling component is absent, so the interval is narrower than the truth. |
 | `nonfinite_bootstrap_replicates` | At least one interval on this node was computed from a subset of the bootstrap replicates, or withheld because too few survived. A resampled denominator can land on ~0 even when no single period is zero. The point estimates are unaffected, because they are the exact Shapley values, never bootstrap means. Only the intervals lost resolution. |
+| `degenerate_bootstrap_spread` | A parent holds the same value across a whole window (an unlaunched feature, a stock held flat), so every bootstrap replicate resamples the same number. Intervals that would be exactly zero-width are withheld — a zero-width interval is the absence of information, not certainty. |
 
 **Two-level attribution (formula nodes).** Each formula-node contribution *usually* carries a `decomposition`, `{"means": {estimate, ci_95}, "comovement": {estimate, ci_95}}` with `means + comovement = estimate` exactly per bootstrap replicate, and the node carries an `interaction` summary (the summed co-movement shift across parents, with its own CI). The UI's default **Headline** view is the classic price/volume/mix bridge built from these: one row per parent showing its means-bridge contribution, plus one explicit *co-movement shift* row, plus unexplained. The rows total to the gap. The **Detailed** toggle expands each parent to its full split. The interaction is shown as its own labeled row rather than silently folded into the factors; for products it is exactly the parents' covariance delta, for other formulas the full within-window co-movement/Jensen shift.
 
@@ -472,6 +480,7 @@ curl -X POST "http://localhost:9090/rca/signups/slices?dimension=region&referenc
 
 - `contribution` is the slice's own window-mean change; contributions sum exactly to the sliced gap (flows/stocks are sum identities over slices).
 - `excess = contribution − baseline_share × gap` is the localization signal: how much more of the gap the slice carries than its size predicts. Excesses sum to zero, because concentration is a reallocation of the gap. `prob_concentrated` is the bootstrap probability the excess direction is real; `noise_level: true` rows should not be narrated as localized.
+- `ci_status` here takes `ok`, `degenerate_single_period` (single-period windows: nothing to resample), or `degenerate_bootstrap_spread` (a slice constant within each window collapses its replicates). Under either degenerate value the affected `ci_95`, `prob_concentrated` and `noise_level` are `null` — withheld, not zero-width — and the `localized` verdict is withheld with them, because a `noise_level` the engine declined to measure is not evidence the leader is above noise.
 - Rate metrics return `attribution_method: "slice_blend"`: each slice splits into `within` (its own rate moved) and `mix` (traffic shifted between slices), summing exactly to the blended gap, with the total composition effect in `mix_total`.
 - `reconciliation` compares the slices' sum (or weighted blend) against the metric's own series. `"discrepant"` means the dimension doesn't cleanly partition the metric; attributions are then approximate, and say so.
 - **`localization`** is the headline verdict, in three states, and the UI, MCP and the test suite all read this one field rather than re-deriving the rule:

@@ -123,3 +123,12 @@ def test_dunder_version_matches_distribution_metadata():
     import breakdown
 
     assert breakdown.__version__ == version("metric-breakdown")
+
+
+def test_serve_rejects_reversed_dates(handoff_env):
+    """Grill L11: each date validated in isolation let a reversed pair through
+    to a clean startup and then a 503 per tree at first request — the
+    operator's mistake reported as the server's. Refused at parse time."""
+    with pytest.raises(SystemExit) as e:
+        cli.serve(start_date="2024-04-09", end_date="2024-01-01")
+    assert "before" in str(e.value)

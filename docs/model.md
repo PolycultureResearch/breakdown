@@ -473,6 +473,13 @@ seasonal business's off-season, makes every replicate resample the same
 number, so the interval would come out exactly zero-width. That is not certainty, it is the
 absence of information, and it is withheld: `ci_95: null` and
 `prob_same_direction: null` with `ci_status: "degenerate_bootstrap_spread"`.
+The slice panel holds the same posture: a slice constant within each window
+collapses its excess replicates, so its `ci_95`, `prob_concentrated` and
+`noise_level` are withheld under the same `ci_status`, and the `localized`
+verdict is withheld with them — a claim whose evidence was declined is not
+made. (Until roadmap C30/C34 the slice path published the zero-width interval,
+`prob_concentrated: 1.0`, and the verdict; the tree's guards stopped one
+module short of it.)
 More generally, **no published `ci_95` is ever zero-width**; if you see one,
 it is a bug.
 

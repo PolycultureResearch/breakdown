@@ -725,6 +725,15 @@ class BreakdownState(State):
                 or self._state.get("discovery_error")
                 or (tree.load_error if tree is not None else None)
             )
+        if key == "startup_error_kind":
+            tree = self._default_tree()
+            if self._state.get("auth_error"):
+                return "auth_config_error"
+            if self._state.get("discovery_error"):
+                return "discovery_error"
+            if tree is not None and tree.load_error is not None:
+                return tree.load_error_kind or "data_load_error"
+            return None
         return super().__getattr__(key)
 
     def __setattr__(self, key, value):
@@ -836,6 +845,7 @@ def load_tree(tree: TreeState) -> None:
         tree.loaded = True
     except Exception as e:
         tree.load_error = f"{type(e).__name__}: {e}"
+        tree.load_error_kind = "data_load_error"
         logger.error(
             "Data load failed for tree '%s' (%s); serving degraded. "
             "Run `breakdown doctor --tree %s` to diagnose. %s",
@@ -877,6 +887,25 @@ async def lifespan(app: FastAPI):
     app.state.auth_error = _auth_config_error()
     if app.state.auth_error:
         logger.error("Refusing to serve data routes: %s", app.state.auth_error)
+    # The *other* fail-open combination was silent (roadmap C42, grill M5):
+    # `_auth_config_error` refuses REQUIRE_AUTH-without-a-token with a 503 and
+    # the loud line above, while a non-loopback bind with no token at all —
+    # the Dockerfile's default CMD — served /mcp (which runs run_rca and
+    # run_whatif and returns the whole tree) to anything that could reach the
+    # port, with Host validation off, and logged nothing. Same file, opposite
+    # policy, no stated reason. It stays permitted — `docker run` works out of
+    # the box by decision (2026-08-30) — but never silently: this is the one
+    # unmissable line an operator gets before exposing the port.
+    _host = os.environ.get("BREAKDOWN_HOST", "127.0.0.1")
+    if _host not in ("127.0.0.1", "localhost") and not os.environ.get("BREAKDOWN_API_TOKEN"):
+        logger.error(
+            "Serving on %s with no BREAKDOWN_API_TOKEN: every route, including "
+            "/mcp (which runs analyses and returns the whole tree, with "
+            "DNS-rebinding protection off for non-loopback binds), is open to "
+            "anything that can reach this port. Set BREAKDOWN_API_TOKEN before "
+            "exposing it beyond a trusted network; see docs/deploying.md.",
+            _host,
+        )
     # run_id -> the latest progress update from an in-flight RCA or simulation.
     # Written from the worker thread, read by GET /progress. **Not** tree
     # state: run ids are already unique, and a poller shouldn't need to know
@@ -1144,6 +1173,26 @@ async def root():
     return {"message": "breakdown API is running. Visit /ui for the visualization."}
 
 
+_HEALTH_ERROR_TEXT = {
+    "parse_error": (
+        "The default tree failed to parse. The full diagnostic is in the "
+        "server log and on GET /trees."
+    ),
+    "data_load_error": (
+        "The default tree parsed but its data failed to load (a provider "
+        "credential, an unreachable source, or a bad window). The full "
+        "diagnostic is in the server log and on GET /trees; run "
+        "`breakdown doctor --tree <path>` to diagnose the provider."
+    ),
+    "auth_config_error": (
+        "Authentication is misconfigured: BREAKDOWN_REQUIRE_AUTH is set "
+        "without BREAKDOWN_API_TOKEN, so data routes refuse to serve."
+    ),
+    "discovery_error": ("Tree discovery failed. The full diagnostic is in the server log."),
+    None: "Startup failed. The full diagnostic is in the server log.",
+}
+
+
 @app.get("/health")
 async def health(request: Request):
     """Liveness + readiness in one: always 200 (the process is up), with
@@ -1154,7 +1203,19 @@ async def health(request: Request):
     per-tree view is `GET /trees`, which carries each tree's own state."""
     state = request.app.state
     if state.startup_error is not None:
-        return {"status": "degraded", "error": state.startup_error}
+        # A stable classification, never the exception text (roadmap C43,
+        # grill M6): this route is deliberately open — it must be safe for an
+        # orchestrator to poll unauthenticated — and the raw text was leaking
+        # the tree's SQL on a parse failure and provider hostnames and
+        # usernames on a connection failure, through the one route auth
+        # leaves open. The full diagnostic stays in the server log and on
+        # the auth-gated `GET /trees` card.
+        kind = state.startup_error_kind
+        return {
+            "status": "degraded",
+            "error_kind": kind,
+            "error": _HEALTH_ERROR_TEXT.get(kind, _HEALTH_ERROR_TEXT[None]),
+        }
     # A parse failure sets `load_error`, which `startup_error` reads, so
     # reaching here means the default tree parsed — its provider and metric
     # count are known whether or not its data has been fetched yet.
@@ -1238,6 +1299,11 @@ async def list_trees(request: Request):
     return {
         "default": state.default_tree,
         "trees": [_tree_card(t) for t in state.trees.values()],
+        # The discovery failure's full text lives here, not on /health
+        # (roadmap C43): with zero trees there is no card to carry it, this
+        # route is auth-gated whenever auth is configured, and the UI's
+        # degraded banner reads the index anyway.
+        "discovery_error": state.discovery_error,
     }
 
 
@@ -1331,8 +1397,10 @@ async def get_dag(request: Request):
     not also mean "our fully-qualified table names and filter logic are
     public". Redacted to `null` rather than dropped, so a client reading
     `def.sql` sees an absent query rather than a KeyError. Unset (the laptop
-    default) behaves exactly as before. The UI's "show query" panel reads
-    `GET /metrics/{name}/query`, not this route, so it loses nothing.
+    default) behaves exactly as before. `GET /metrics/{name}/query` refuses
+    under the same condition (roadmap C31) — an earlier edition of this
+    docstring pointed callers there while that route had no gate at all,
+    which was grill H2.
     """
     tree = _tree(request)
     _require_ready(tree)
@@ -1388,12 +1456,31 @@ async def get_metric_query(name: str, request: Request, dimension: Optional[str]
     the semantic-layer providers hand a metric name to someone else's planner
     and never see SQL — so the response says which case it is instead of
     implying the query is missing.
+
+    **When `/dag` redacts, this route refuses** (roadmap C31, grill H2). The
+    redaction there nulled `sql`/`bind` behind `BREAKDOWN_API_TOKEN` while
+    this route — which `get_dag`'s own docstring pointed callers at — handed
+    the full statement to anyone, fully-qualified table names and filter
+    logic included. It refuses with a 403 rather than nulling, because a
+    redacted `sql: null` here would be indistinguishable from `mock`'s
+    legitimate `sql: null` — a substitute wearing a real answer's shape,
+    which is rule 1's defect.
     """
     # Degraded startup leaves no parser, so this needs the same 503 the data
     # endpoints give rather than an AttributeError. Provenance is *more* useful
     # when things are broken, but it still needs a tree that loaded.
     tree = await _loaded_tree(request)
     _require_ready(tree)
+    token = os.environ.get("BREAKDOWN_API_TOKEN")
+    if token and not _presents_token(request, token):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Query provenance is redacted because BREAKDOWN_API_TOKEN is set "
+                "and this request does not present it. Send the token as a "
+                "Bearer authorization header to read the generated SQL."
+            ),
+        )
     parser = tree.parser
     metric = parser.get_metric(name)
     if not metric:
@@ -1509,13 +1596,23 @@ async def get_metric(name: str, request: Request):
 
     summary = None
     diagnostics = None
+    inference_method = None
+    fit_end = None
     fit = _pick_fit(traces, name)
     if fit is not None:
         summary = await asyncio.to_thread(_fit_summary, fit)
         diagnostics = fit.diagnostics
+        # Top-level, not only `diagnostics.method` (roadmap C35): the sampler
+        # and the window the fit ends at are the two facts that make one fit
+        # comparable with another, and the Metric tab was left *inferring*
+        # ADVI from the presence of a k̂. Same names the RCA node payload uses.
+        inference_method = fit.inference_method
+        fit_end = fit.fit_end
 
     return {
         "definition": metric.model_dump(),
+        "inference_method": inference_method,
+        "fit_end": fit_end,
         "time_series": time_series,
         "summary": summary,
         "diagnostics": diagnostics,
@@ -1659,16 +1756,24 @@ async def get_shapley(
     if name not in parser.dag:
         raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
 
+    # Off the event loop and under the tree lock, like every other engine call
+    # in this file (roadmap C33, grill H4): the enumeration is O(2ⁿ) and a
+    # 10-parent node measured 1.09s inline — one unauthenticated request
+    # freezing /health (the container healthcheck), every /progress poll and
+    # every /ui asset for the duration. `_MAX_SHAPLEY_PARENTS` caps the work;
+    # it does not stop it landing on the loop.
     try:
-        result = shapley_attribution(
-            parser.dag,
-            data,
-            name,
-            reference_start=reference_start,
-            reference_end=reference_end,
-            analysis_start=analysis_start,
-            analysis_end=analysis_end,
-        )
+        async with tree.lock:
+            result = await asyncio.to_thread(
+                shapley_attribution,
+                parser.dag,
+                data,
+                name,
+                reference_start=reference_start,
+                reference_end=reference_end,
+                analysis_start=analysis_start,
+                analysis_end=analysis_end,
+            )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 

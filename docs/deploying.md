@@ -152,9 +152,13 @@ its WHERE-clause business logic. On a deployment that bothered to configure a
 token, "the graph is public" should not also mean "our warehouse layout and
 filter logic are public". They are redacted to `null` rather than dropped, so a
 client reading `def.sql` sees an absent query instead of a missing key. With no
-token set (the laptop default) nothing is redacted. The UI's *show query* panel
-reads [`GET /metrics/{name}/query`](api-reference.md#get-metricsnamequery),
-which is gated normally, so it loses nothing.
+token set (the laptop default) nothing is redacted.
+[`GET /metrics/{name}/query`](api-reference.md#get-metricsnamequery) **refuses
+(403) under the same condition** rather than nulling — a redacted `sql: null`
+there would be indistinguishable from a provider that legitimately has no
+query. (Through v0.1.1 that route had no gate at all, handing out the exact
+statement `/dag` had just redacted; the UI's *show query* panel now needs the
+token wherever the redaction is in force.)
 
 **What this is not.** One shared secret, no per-user identity, no audit trail,
 and no revocation short of rotating the value and restarting. It is a down
@@ -184,8 +188,11 @@ The [`compose.yaml`](../compose.yaml) mounts `./tree.yml` read-only at `/config/
 > variables unset means the whole API is open to whatever can reach the host.
 > That is a choice, and it should be a deliberate one. See
 > [Authentication](#authentication) for exactly what each level gates: the token
-> alone gates `/mcp` and redacts `sql`/`bind` from `/dag`; `BREAKDOWN_REQUIRE_AUTH`
+> alone gates `/mcp`, redacts `sql`/`bind` from `/dag` and gates
+> `/metrics/{name}/query`; `BREAKDOWN_REQUIRE_AUTH`
 > extends the bearer check to every route but `/`, `/health` and `/ui`.
+> A non-loopback bind with neither variable set is permitted but logged
+> loudly at startup, naming exactly what is reachable.
 >
 > `BREAKDOWN_PUBLIC_URL` makes the MCP server's `report_url` deep links
 > resolve. Without it they point at `http://127.0.0.1:9090`, which is correct

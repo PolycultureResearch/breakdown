@@ -45,6 +45,12 @@ def serve(
             except ValueError:
                 raise SystemExit(f"{flag} must be a valid YYYY-MM-DD date, got '{value}'")
             os.environ[env] = value
+    # Ordering is checked here, not just per date (roadmap grill L11): the
+    # engine's own check lives inside `load_tree`'s try, so a reversed pair on
+    # a directory of trees gave a clean startup and then a 503 per tree at
+    # first click — the operator's mistake reported as the server's.
+    if start_date and end_date and end_date < start_date:
+        raise SystemExit(f"--end-date ({end_date}) is before --start-date ({start_date}).")
     # MCP deep links (rca_link etc.) default to this port; the bind host
     # tells the MCP transport whether Host-header validation still makes
     # sense (it doesn't off-loopback).

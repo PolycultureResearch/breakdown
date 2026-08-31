@@ -46,13 +46,18 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from breakdown.engine.rca import (
-    _N_BOOT,
-    _block_bootstrap_indices,
-    _sample_summary,
-    _window_info,
+from breakdown.engine.stats import (
+    GAP_REL_EPS,
+    MIN_CI_REPLICATES,
+    N_BOOT,
+    block_bootstrap_indices,
     direction_fields,
+    negligible_gap,
+    node_scale,
+    sample_summary,
+    share_of_gap,
 )
+from breakdown.engine.windows import window_info
 from breakdown.grains import BOOT_BLOCK, period_spine, rate_window_value, snap_window
 
 logger = logging.getLogger(__name__)
@@ -87,9 +92,6 @@ _LOCALIZATION_THRESHOLD = 0.25
 # The three states the verdict can take. `long_tail` exists because the
 # roll-up bucket is not a segment (roadmap 2.21): see `_localization`.
 LOCALIZATION_STATES = ("localized", "long_tail", "not_localized")
-# Bootstrap replicates surviving the finite filter below which an interval
-# would be quoted off too little resampling to mean anything.
-_MIN_CI_REPLICATES = 100
 
 
 def _rank_by_excess(rows: List[Dict[str, Any]], gap: float) -> None:
@@ -108,7 +110,7 @@ def _rank_by_excess(rows: List[Dict[str, Any]], gap: float) -> None:
     rows.sort(key=lambda r: -direction * (r["excess"] if r["excess"] is not None else 0.0))
 
 
-def _localization(rows: List[Dict[str, Any]], gap: float) -> Dict[str, Any]:
+def _localization(rows: List[Dict[str, Any]], gap: float, scale: float) -> Dict[str, Any]:
     """The headline verdict, computed beside the numbers it summarizes.
 
     Ranking always produces a first row, so without this gate a panel would
@@ -145,14 +147,22 @@ def _localization(rows: List[Dict[str, Any]], gap: float) -> Dict[str, Any]:
     bucket of leftovers.
     """
     top = rows[0] if rows else None
+    # Scale-relative, not absolute (roadmap C5/C30): an absolute `1e-12` let a
+    # float-residue gap on a large node clear this bar and gate the verdict on
+    # a division by nothing.
     concentration = (
         abs(top["excess"] / gap)
-        if top and top.get("excess") is not None and abs(gap) > 1e-12
+        if top and top.get("excess") is not None and not negligible_gap(gap, scale)
         else 0.0
     )
+    # `noise_level` must be affirmatively False — measured, and not noise. A
+    # `None` here is *withheld* (single period, or too few finite replicates,
+    # or a collapsed resampling), and `not None` treated withheld evidence as
+    # evidence: the panel printed "carries 97% of the gap" off two data points
+    # with every uncertainty field explicitly declined (roadmap C34, grill H5).
     concentrated = bool(
         top
-        and not top.get("noise_level")
+        and top.get("noise_level") is False
         and top.get("baseline_share") is not None
         and top.get("share_of_gap") is not None
         and concentration >= _LOCALIZATION_THRESHOLD
@@ -622,6 +632,11 @@ def slice_attribution(
             additivity,
         )
 
+    # `degenerate_bootstrap_spread` is the tree's own third state (roadmap C4a),
+    # absent here until C30: a slice constant within each window collapses its
+    # replicates, its interval is withheld, and this is where the payload says
+    # every interval on the panel is understated rather than leaving `ok`.
+    degenerate_spread = result.pop("degenerate_spread", False)
     result.update(
         {
             "metric": defn.name,
@@ -630,20 +645,32 @@ def slice_attribution(
             "grain": grain,
             "kind": kind,
             "effective_windows": {
-                "reference": _window_info(snapped_ref),
-                "analysis": _window_info(snapped_an),
+                "reference": window_info(snapped_ref),
+                "analysis": window_info(snapped_an),
             },
-            "ci_status": "degenerate_single_period" if single_period else "ok",
+            "ci_status": (
+                "degenerate_single_period"
+                if single_period
+                else "degenerate_bootstrap_spread"
+                if degenerate_spread
+                else "ok"
+            ),
             "caveats": caveats,
         }
     )
     return result
 
 
-def _excess_fields(excess_b: Optional[np.ndarray], single_period: bool) -> Dict[str, Any]:
-    """CI / direction-probability fields for one slice's excess replicates."""
+def _excess_fields(
+    excess_b: Optional[np.ndarray], single_period: bool, scale: float
+) -> Dict[str, Any]:
+    """CI / direction-probability fields for one slice's excess replicates.
+
+    The returned `degenerate` key is bookkeeping for the caller (folded into
+    the response's `ci_status`), not a row field — the caller pops it.
+    """
     if single_period or excess_b is None:
-        return {"ci_95": None, "prob_concentrated": None, "noise_level": None}
+        return {"ci_95": None, "prob_concentrated": None, "noise_level": None, "degenerate": False}
     # Replicates whose reference total came out ~0 carry no defined share, so
     # `share_b` is NaN there by construction (see `_bootstrap_excess`). NaN
     # propagates through `excess_b` into `np.percentile`, and then into
@@ -652,21 +679,28 @@ def _excess_fields(excess_b: Optional[np.ndarray], single_period: bool) -> Dict[
     # report on what survives; withhold the interval entirely if too few do,
     # which is the same posture as `single_period`.
     excess_b = excess_b[np.isfinite(excess_b)]
-    if excess_b.size < _MIN_CI_REPLICATES:
-        return {"ci_95": None, "prob_concentrated": None, "noise_level": None}
+    if excess_b.size < MIN_CI_REPLICATES:
+        return {"ci_95": None, "prob_concentrated": None, "noise_level": None, "degenerate": False}
+    # A slice constant within each window resamples every replicate to the same
+    # excess, and a zero-width interval is never a result (roadmap C4, closed
+    # for the tree in 2026-08-13 and open here until C30): the interval is
+    # withheld through the same guard `rca` uses, the direction probability
+    # with it — a probability read off a collapsed resampling is "confidence
+    # read off no information at all" — and the caller says why in `ci_status`.
+    summary = sample_summary(excess_b, scale)
+    if summary["ci_95"] is None:
+        return {"ci_95": None, "prob_concentrated": None, "noise_level": None, "degenerate": True}
     # Same estimator as RCA's `prob_same_direction`, so the same resolution
-    # ceiling: a proportion over `_N_BOOT` replicates has nothing between
+    # ceiling: a proportion over `N_BOOT` replicates has nothing between
     # 1 − 1/500 and 1, and publishing the saturated 1.0 claims a certainty the
     # bootstrap cannot express. `prob_concentrated` goes through the shared
     # helper rather than repeating the one-liner it used to be.
     fields = direction_fields(excess_b, key="prob_concentrated")
     return {
-        "ci_95": [
-            float(np.percentile(excess_b, 2.5)),
-            float(np.percentile(excess_b, 97.5)),
-        ],
+        "ci_95": summary["ci_95"],
         **fields,
         "noise_level": fields["prob_concentrated"] < _NOISE_PROB,
+        "degenerate": False,
     }
 
 
@@ -712,15 +746,18 @@ def _sum_attribution(
     ref_means = X_ref.mean(axis=0)
     an_means = X_an.mean(axis=0)
     contribution = an_means - ref_means
-    have_share = abs(baseline) >= 1e-12
+    # Scale-relative, not absolute (roadmap C5/C30): the node's own level is
+    # the yardstick for "is this baseline/gap zero?", here as in the tree.
+    scale = node_scale(baseline, actual)
+    have_share = not negligible_gap(baseline, scale)
     baseline_share = ref_means / baseline if have_share else None
     excess = contribution - baseline_share * gap if have_share else None
 
     if single_period:
         contribution_ci = excess_b = None
     else:
-        ref_idx = _block_bootstrap_indices(len(X_ref), _N_BOOT, rng, block=block)
-        an_idx = _block_bootstrap_indices(len(X_an), _N_BOOT, rng, block=block)
+        ref_idx = block_bootstrap_indices(len(X_ref), N_BOOT, rng, block=block)
+        an_idx = block_bootstrap_indices(len(X_an), N_BOOT, rng, block=block)
         # One index set per window shared across slices (joint resampling), so
         # cross-slice correlation within a window is preserved — same rationale
         # as tree RCA's cross-parent joint bootstrap.
@@ -732,30 +769,35 @@ def _sum_attribution(
         contribution_ci = an_means_b - ref_means_b
         with np.errstate(divide="ignore", invalid="ignore"):
             share_b = np.where(
-                np.abs(total_ref_b)[:, None] >= 1e-12,
+                (np.abs(total_ref_b)[:, None] > GAP_REL_EPS * scale) & (total_ref_b[:, None] != 0),
                 ref_means_b / total_ref_b[:, None],
                 np.nan,
             )
         excess_b = contribution_ci - share_b * gap_b[:, None]
 
     rows = []
+    degenerate_spread = False
     for j, g in enumerate(names):
         row = {
             "value": g,
             "baseline": float(ref_means[j]),
             "actual": float(an_means[j]),
             "contribution": float(contribution[j]),
-            "share_of_gap": float(contribution[j] / gap) if abs(gap) >= 1e-12 else None,
+            "share_of_gap": share_of_gap(float(contribution[j]), gap, scale),
             "baseline_share": float(baseline_share[j]) if have_share else None,
             "excess": float(excess[j]) if have_share else None,
         }
-        row.update(_excess_fields(excess_b[:, j] if excess_b is not None else None, single_period))
+        fields = _excess_fields(
+            excess_b[:, j] if excess_b is not None else None, single_period, scale
+        )
+        degenerate_spread = fields.pop("degenerate") or degenerate_spread
+        row.update(fields)
         if g == _OTHER:
             row["n_values"] = len(wide.columns) - len(kept)
         rows.append(row)
     _rank_by_excess(rows, gap)
 
-    if _OTHER in groups and have_share and abs(baseline) >= 1e-12:
+    if _OTHER in groups and have_share:
         other_share = float(groups[_OTHER][in_ref].mean() / baseline)
         if other_share > 0.5:
             caveats.append(
@@ -800,9 +842,10 @@ def _sum_attribution(
         "slices": rows,
         "mix_total": None,
         "reconciliation": recon,
+        "degenerate_spread": degenerate_spread,
         # After the overlap step above, deliberately: withheld shares mean a
         # withheld verdict.
-        **_localization(rows, gap),
+        **_localization(rows, gap, scale),
     }
 
 
@@ -932,6 +975,8 @@ def _rate_attribution(
     actual = float(np.nansum(s_an * r_an))
     gap = actual - baseline
 
+    # Same yardstick as the sum path and the tree (roadmap C5/C30).
+    scale = node_scale(baseline, actual)
     within, mix = _bennet(s_ref, r_ref, s_an, r_an)
     contribution = within + mix
     within_total = float(within.sum())
@@ -942,8 +987,8 @@ def _rate_attribution(
         excess_b = None
         mix_total = {"estimate": float(mix.sum()), "ci_95": None}
     else:
-        ref_idx = _block_bootstrap_indices(int(in_ref.sum()), _N_BOOT, rng, block=block)
-        an_idx = _block_bootstrap_indices(int(in_an.sum()), _N_BOOT, rng, block=block)
+        ref_idx = block_bootstrap_indices(int(in_ref.sum()), N_BOOT, rng, block=block)
+        an_idx = block_bootstrap_indices(int(in_an.sum()), N_BOOT, rng, block=block)
         # Joint date resampling: weights and rates share each replicate's
         # dates, so share/rate co-movement inside a window is preserved.
         s_ref_b, r_ref_b = _window_aggregates(Wg[in_ref][ref_idx], Rg[in_ref][ref_idx])
@@ -951,9 +996,10 @@ def _rate_attribution(
         within_b, mix_b = _bennet(s_ref_b, r_ref_b, s_an_b, r_an_b)
         s_bar_b = (s_ref_b + s_an_b) / 2.0
         excess_b = within_b - s_bar_b * within_b.sum(axis=1, keepdims=True)
-        mix_total = _sample_summary(mix_b.sum(axis=1))
+        mix_total = sample_summary(mix_b.sum(axis=1), scale)
 
     rows = []
+    degenerate_spread = False
     for j, g in enumerate(names):
         if both_zero[j]:
             continue
@@ -972,10 +1018,14 @@ def _rate_attribution(
             "within": float(within[j]),
             "mix": float(mix[j]),
             "contribution": float(contribution[j]),
-            "share_of_gap": float(contribution[j] / gap) if abs(gap) >= 1e-12 else None,
+            "share_of_gap": share_of_gap(float(contribution[j]), gap, scale),
             "excess": float(excess[j]),
         }
-        row.update(_excess_fields(excess_b[:, j] if excess_b is not None else None, single_period))
+        fields = _excess_fields(
+            excess_b[:, j] if excess_b is not None else None, single_period, scale
+        )
+        degenerate_spread = fields.pop("degenerate") or degenerate_spread
+        row.update(fields)
         if g == _OTHER:
             row["n_values"] = len(folded)
         rows.append(row)
@@ -1029,5 +1079,6 @@ def _rate_attribution(
         "slices": rows,
         "mix_total": mix_total,
         "reconciliation": recon,
-        **_localization(rows, gap),
+        "degenerate_spread": degenerate_spread,
+        **_localization(rows, gap, scale),
     }

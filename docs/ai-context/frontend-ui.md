@@ -256,7 +256,7 @@ Current hints: `method` (NUTS vs ADVI, carrying the S2 measurement — mean-fiel
 
 - **Cytoscape.js + cytoscape-dagre** (CDN) for the graph. Kept over React Flow: already in use, zero build step, dagre gives proper layered DAG layout. This doc supersedes the earlier React Flow plan.
 - **Plotly.js** (CDN) for time series — window shading via layout shapes, good hover for free.
-- **Vanilla JS** (`breakdown/static/app.js`), one stylesheet (`breakdown/static/style.css`), one `index.html`. No framework until the UI outgrows a single file. The files live *inside* the package so the wheel ships them (served via `importlib.resources`, still no build step).
+- **Vanilla JS** (`breakdown/static/app.js` plus `breakdown/static/disclosures.js`), one stylesheet (`breakdown/static/style.css`), one `index.html`. No framework, no build step — `disclosures.js` is a classic script loaded *before* `app.js`, sharing the global lexical environment. It holds the **disclosure vocabulary**: every status table and helper that turns an engine verdict into reader-facing words (`NODE_STATUS`, `CI_STATUS_NOTE`, `KHAT_NOTE`, `COLLIN_NOTE`, `PPC_NOTE`, `fitQualityNote`, `attributionLabel`, `unexplainedRow`, `windowBasis*`, `RCA_CAVEATS`, `gapDir`/`goodDir`), split out (roadmap C35/C36/C37) so "did every renderer get this field?" is a one-screen diff instead of three surfaces 2,300 lines apart. `test_every_rca_node_field_reaches_a_render_site` enforces the payload half. The files live *inside* the package so the wheel ships them (served via `importlib.resources`).
 
 ## API surface consumed
 
