@@ -276,10 +276,93 @@ def test_every_cache_on_tree_state_is_bounded():
             continue
         if not isinstance(value, trees_mod.BoundedCache):
             unbounded.append(field.name)
+            continue
+        # The type is not the bound (roadmap C32, grill H3): this test used to
+        # accept any BoundedCache, and the cache was bounded by entry *count*
+        # while the thing that grows is a frame's cardinality × window. Every
+        # frame cache must carry a byte budget.
+        assert value.max_bytes > 0, (
+            f"TreeState.{field.name} is a BoundedCache with no byte budget. "
+            "An entry scales with dimension cardinality times the loaded "
+            "window (~154 MB measured at 5,000 slice values × 830 days), so "
+            "a count bound alone is rule 2's defect with extra steps."
+        )
     assert not unbounded, (
         f"{unbounded} default to an unbounded dict on TreeState. Every cache "
         "here grows with distinct user-chosen windows until the process is "
         "OOM-killed (roadmap C8, 2.18). Use BoundedCache."
+    )
+
+
+def test_bounded_cache_evicts_by_bytes_not_only_count():
+    """The byte budget must actually fire (roadmap C32): a cache whose entries
+    are large evicts long before its entry count, and an entry bigger than the
+    whole budget is never cached at all (it would evict everything to be
+    evicted next)."""
+    frame = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=1000), "v": 1.0})
+    per = trees_mod.BoundedCache._nbytes(frame)
+    assert per > 0, "a DataFrame must measure as more than zero bytes"
+
+    cache = trees_mod.BoundedCache(max_entries=64, max_bytes=int(per * 3.5))
+    for i in range(6):
+        cache[i] = frame.copy()
+    assert len(cache) == 3, "byte eviction should hold ~3 entries, count allows 64"
+    assert cache.total_bytes <= cache.max_bytes
+    assert set(cache) == {3, 4, 5}, "eviction must be oldest-first"
+
+    huge = pd.DataFrame({"v": np.zeros(10)})
+    big_budget = trees_mod.BoundedCache(max_entries=64, max_bytes=1)
+    big_budget[0] = huge
+    assert len(big_budget) == 0, "an entry over the whole budget is not cached"
+
+    # Bookkeeping survives overwrite and clear — a drifting total_bytes is the
+    # M4 failure class (a budget that silently stops firing).
+    cache[3] = frame.copy()
+    assert cache.total_bytes == sum(cache._sizes.values())
+    cache.clear()
+    assert cache.total_bytes == 0 and not cache._sizes
+
+
+def test_no_async_route_calls_the_engine_inline():
+    """Every engine call in an async handler goes through `asyncio.to_thread`
+    (roadmap C33, grill H4): `GET /shapley` ran the O(2ⁿ) enumeration on the
+    event loop — a measured 1.09s stall freezing /health, every /progress poll
+    and every /ui asset — while every neighbouring route did it right. The
+    guard is the property, not the four call sites of the day: a *direct*
+    call to a heavy engine function inside any `async def` here fails.
+
+    `resolve_reference_window` is allowed by name: it is date arithmetic on
+    already-loaded metadata, and wrapping every trivial helper would bury the
+    rule. A sync helper (like `_run_slice`) may call the engine freely — it
+    only ever runs inside `to_thread`.
+    """
+    heavy = {
+        "run_rca",
+        "run_scenario",
+        "shapley_attribution",
+        "fit_metric",
+        "slice_attribution",
+        "entity_flows",
+        "load_tree",
+        "_fit_summary",
+        "_run_slice",
+    }
+    source = (PACKAGE / "api" / "main.py").read_text()
+    tree = ast.parse(source)
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef):
+            continue
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            name = getattr(call.func, "id", None)
+            if name in heavy:
+                offenders.append(f"{node.name}:{call.lineno} calls {name}()")
+    assert not offenders, (
+        f"{offenders}: engine work invoked inline in an async handler. Route "
+        "it through `async with tree.lock: await asyncio.to_thread(...)` like "
+        "its neighbours, or the event loop freezes for the duration (C33)."
     )
 
 

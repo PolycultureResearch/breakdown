@@ -174,7 +174,12 @@ def test_unknown_default_tree_is_a_startup_error(tree_dir, monkeypatch):
     with TestClient(app) as client:
         health = client.get("/health").json()
         assert health["status"] == "degraded"
-        assert "nope" in health["error"]
+        # Classification on the open route (roadmap C43); the named id — an
+        # operator-supplied string on a path-revealing message — lives on the
+        # gated index.
+        assert health["error_kind"] == "discovery_error"
+        assert "nope" not in health["error"]
+        assert "nope" in client.get("/trees").json()["discovery_error"]
 
 
 def test_one_broken_tree_does_not_take_down_the_others(tree_dir, monkeypatch):
@@ -277,7 +282,9 @@ def test_empty_directory_serves_degraded(tmp_path, monkeypatch):
     empty.mkdir()
     monkeypatch.setenv("BREAKDOWN_TREE", str(empty))
     with TestClient(app) as client:
-        assert "No metric trees found" in client.get("/health").json()["error"]
+        health = client.get("/health").json()
+        assert health["error_kind"] == "discovery_error"
+        assert "No metric trees found" in client.get("/trees").json()["discovery_error"]
 
 
 def test_unknown_tree_id_is_404(tree_dir):

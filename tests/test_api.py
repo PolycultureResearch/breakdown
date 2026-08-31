@@ -329,7 +329,12 @@ def test_degraded_startup_serves_instead_of_crashing(tmp_path, monkeypatch):
     with TestClient(app) as client:
         health = client.get("/health").json()
         assert health["status"] == "degraded"
-        assert "sql" in health["error"]
+        # The classification, never the exception text (roadmap C43): /health
+        # is deliberately unauthenticated, so the diagnostic — which here
+        # would quote the tree's own config — lives on the gated /trees card.
+        assert health["error_kind"] == "data_load_error"
+        assert "sql" not in health["error"]
+        assert "sql" in (client.get("/trees").json()["trees"][0].get("load_error") or "")
 
         resp = client.get("/dag")
         assert resp.status_code == 503
@@ -472,8 +477,12 @@ def test_cold_start_not_ready_tree_serves_degraded(tmp_path, monkeypatch):
     with TestClient(app) as client:
         health = client.get("/health").json()
         assert health["status"] == "degraded"
-        assert "not cold-start ready" in health["error"]
-        assert "sessions" in health["error"]
+        assert health["error_kind"] == "data_load_error"
+        # The blocker list still fails loudly — on the tree card, where auth
+        # can gate it (roadmap C43), rather than on the open /health body.
+        card_error = client.get("/trees").json()["trees"][0].get("load_error") or ""
+        assert "not cold-start ready" in card_error
+        assert "sessions" in card_error
 
 
 # --- dimensional slicing endpoint ---
@@ -1249,3 +1258,89 @@ def test_gate_prefixes_match_on_path_segments():
     assert not _open_path("/uiconfig")
     assert _open_path("/health") and not _open_path("/healthz")
     assert _open_path("/") and not _open_path("/meta")
+
+
+def test_query_provenance_refuses_when_dag_redacts(monkeypatch):
+    """Roadmap C31 (grill H2): with a token set and not presented, `GET /dag`
+    nulls `sql`/`bind` — and `GET /metrics/{name}/query`, the route `/dag`'s
+    own docstring points callers at, handed out the full statement with no
+    check at all. It refuses now, rather than nulling: a redacted `sql: null`
+    would be indistinguishable from `mock`'s legitimate `sql: null`."""
+    monkeypatch.setenv("BREAKDOWN_API_TOKEN", "s3cret")
+    with TestClient(app) as client:
+        bare = client.get("/metrics/revenue/query")
+        assert bare.status_code == 403
+        assert "BREAKDOWN_API_TOKEN" in bare.json()["detail"]
+
+        dag = client.get("/dag").json()
+        for _, definition in dag["nodes"]:
+            assert definition.get("sql") is None and definition.get("bind") is None
+
+        with_token = client.get(
+            "/metrics/revenue/query", headers={"Authorization": "Bearer s3cret"}
+        )
+        assert with_token.status_code == 200
+
+
+def test_query_provenance_stays_open_without_a_token(monkeypatch):
+    """The laptop default is unchanged: no token, no gate."""
+    monkeypatch.delenv("BREAKDOWN_API_TOKEN", raising=False)
+    with TestClient(app) as client:
+        assert client.get("/metrics/revenue/query").status_code == 200
+
+
+def test_health_degraded_carries_a_classification_not_the_exception(tmp_path, monkeypatch):
+    """Roadmap C43 (grill M6): /health is deliberately open, and it echoed
+    `startup_error` verbatim — a parse failure leaks the tree's SQL and a
+    provider failure leaks hostnames and usernames through the one route auth
+    leaves open. It now returns a stable `error_kind` and a generic sentence;
+    the text stays in the log and on the auth-gated `/trees` card."""
+    tree = tmp_path / "broken.yml"
+    tree.write_text(
+        "provider:\n  type: mock\n"
+        "metrics:\n"
+        "  - name: revenue\n    source: mock.revenue\n    kind: flow\n"
+        "    sql: SELECT amount FROM prod_gold.finance.orders_SECRET\n"
+        "    grain: banana\n"  # invalid grain -> parse/validation failure
+    )
+    monkeypatch.setenv("BREAKDOWN_TREE", str(tree))
+    with TestClient(app) as client:
+        body = client.get("/health").json()
+        assert body["status"] == "degraded"
+        assert body["error_kind"] == "parse_error"
+        assert "orders_SECRET" not in body["error"]
+        assert "banana" not in body["error"]
+        # The full diagnostic still exists where it belongs: the tree card.
+        card = client.get("/trees").json()["trees"][0]
+        assert "banana" in (card.get("load_error") or "")
+
+
+def test_open_bind_without_token_logs_an_unmissable_warning(monkeypatch, caplog):
+    """Roadmap C42 (grill M5): `serve --host 0.0.0.0` with no token is the
+    Dockerfile default and silently removed the last barrier on /mcp, while
+    the *less* dangerous fail-open combination got a 503 and a loud log in
+    the same file. It stays permitted (decision 2026-08-30) — but never
+    silently."""
+    import logging
+
+    monkeypatch.setenv("BREAKDOWN_HOST", "0.0.0.0")
+    monkeypatch.delenv("BREAKDOWN_API_TOKEN", raising=False)
+    with caplog.at_level(logging.ERROR, logger="breakdown.api.main"):
+        with TestClient(app):
+            pass
+    assert any("no BREAKDOWN_API_TOKEN" in r.message for r in caplog.records), (
+        "the fail-open bind must log before serving"
+    )
+
+
+def test_loopback_bind_without_token_stays_quiet(monkeypatch, caplog):
+    """The laptop default earns no warning — a warning that always fires is
+    read by nobody."""
+    import logging
+
+    monkeypatch.setenv("BREAKDOWN_HOST", "127.0.0.1")
+    monkeypatch.delenv("BREAKDOWN_API_TOKEN", raising=False)
+    with caplog.at_level(logging.ERROR, logger="breakdown.api.main"):
+        with TestClient(app):
+            pass
+    assert not any("BREAKDOWN_API_TOKEN" in r.message for r in caplog.records)

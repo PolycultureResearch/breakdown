@@ -26,7 +26,9 @@ services:
       # --- Access control. Decide this before the port is published. ---
       # With neither set, the whole API — tree, series, generated SQL, and the
       # /mcp endpoint that runs analyses — is open to anything that can reach
-      # the host. BREAKDOWN_API_TOKEN alone gates /mcp and redacts sql/bind
+      # the host. Binding open with no token is logged loudly at startup.
+      # BREAKDOWN_API_TOKEN alone gates /mcp, gates /metrics/{name}/query,
+      # and redacts sql/bind
       # from /dag. BREAKDOWN_REQUIRE_AUTH extends the same bearer check to
       # every route but /, /health and /ui — including the browser UI's own
       # fetches, so that mode assumes a proxy injecting the header. Set without

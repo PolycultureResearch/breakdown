@@ -5751,15 +5751,20 @@ async function init() {
     // cheap by contract (parsed YAML, no provider), so it costs a cold boot
     // nothing. /health reports the *default* tree, so a degraded default must
     // not hide an index full of healthy siblings.
+    let discoveryError = null;
     try {
       const index = await api("/trees");
       state.trees = index.trees;
       state.defaultTree = index.default;
+      discoveryError = index.discovery_error;
     } catch {
       state.trees = [];
     }
     if (!state.trees.length) {
-      showDegradedBanner(health.error || "No metric tree was discovered.");
+      // The index carries the discovery failure's real text (auth-gated where
+      // auth exists); /health deliberately carries only a classification
+      // (roadmap C43), so prefer the specific message when we can read it.
+      showDegradedBanner(discoveryError || health.error || "No metric tree was discovered.");
       setStatus("No data loaded", "error");
       return;
     }

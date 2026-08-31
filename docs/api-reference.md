@@ -41,7 +41,7 @@ about the whole process rather than one tree.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/` | A one-line "the API is running" banner carrying no tree data. Open even under `BREAKDOWN_REQUIRE_AUTH` |
-| `GET` | `/health` | Always 200. `{"status": "ok", provider, metrics}`, or `{"status": "degraded", "error": …}` when the default tree can't serve. Liveness for orchestrators. The body, not the status code, says whether the tree is degraded. Open even under `BREAKDOWN_REQUIRE_AUTH` |
+| `GET` | `/health` | Always 200. `{"status": "ok", provider, metrics}`, or `{"status": "degraded", "error_kind": …, "error": …}` when the default tree can't serve. `error_kind` is a stable classification (`parse_error` \| `data_load_error` \| `auth_config_error` \| `discovery_error`) and `error` a generic sentence — never the exception text, which can carry the tree's SQL or a provider's hostnames and this route is deliberately open (roadmap C43). The full diagnostic is in the server log and on the auth-gated `GET /trees` card. Liveness for orchestrators; the body, not the status code, says whether the tree is degraded. Open even under `BREAKDOWN_REQUIRE_AUTH` |
 | `GET` | `/trees` | Every tree: title, owner, metric count, `state` (`loaded` \| `not_loaded` \| `loading` \| `error`), plus `period`/`goal` where declared and `progress` for a loaded tree that has a goal. Reads parsed YAML only and never triggers a data load |
 | `POST` | `/trees/{id}/load` | Fetch one tree's data now, and return its updated index card |
 | `GET` | `/progress/{run_id}` | Live stage of an in-flight RCA or simulation started with that `run_id` |
@@ -55,6 +55,13 @@ way to see what was actually asked of the warehouse, which left every number
 unfalsifiable by exactly the person being asked to trust it. This route returns
 the query behind a metric, so an analyst can check the number against the
 definition they think they have.
+
+When `BREAKDOWN_API_TOKEN` is set and the request does not present it, this
+route **refuses with a 403** — the same condition under which `GET /dag`
+redacts `sql`/`bind` (roadmap C31; through v0.1.1 it had no gate, handing out
+the exact statement `/dag` had just redacted). It refuses rather than nulling
+because a redacted `sql: null` would be indistinguishable from a provider
+that legitimately has no query.
 
 | Param | Description |
 |-------|-------------|
