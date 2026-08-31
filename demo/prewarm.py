@@ -46,7 +46,17 @@ TOUR_RCAS = [
 SLICE_PROBE = ("2026-03-16", "2026-04-12", "2026-05-11", "2026-06-07")
 
 
-def call(url: str, method: str = "GET", timeout: int = 900):
+# 45 minutes per call, not 15. The old 900s was sized when on-demand fits ran
+# mean-field ADVI; roadmap S2 made every tour RCA fit with NUTS, and S3/S4/S22
+# then priced in the posterior predictive replicates, the collinearity score
+# and k̂'s standard error per fit. On the demo's shared-cpu-2x Fly machine a
+# tour story now runs past 15 minutes, which is why every "Deploy demo" run
+# since 2026-08-24 failed at exactly 4 × 900s — and why the public instance
+# silently served week-old code, missing the 0.2.0 security fixes among other
+# things. A deploy that takes two hours and completes beats one that fails
+# fast and leaves the old code up. (If this ceiling is ever hit again, the
+# lever is the machine size, not this number.)
+def call(url: str, method: str = "GET", timeout: int = 2700):
     req = urllib.request.Request(url, method=method)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         import json
