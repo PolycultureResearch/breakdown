@@ -3,7 +3,7 @@
 **A white paper on the models behind Bayesian metric trees, why each was chosen,
 and where each one stops being trustworthy.**
 
-> **Written:** 2026-08-04 · **Last updated:** 2026-08-29 ·
+> **Written:** 2026-08-04 · **Last updated:** 2026-08-30 ·
 > **Engine version:** 0.1.0
 >
 > **This is a living document.** The assessment in §3 and the improvements in §4
@@ -1182,8 +1182,10 @@ credit the data does not determine, in two bands the demo's own collinear pair
 shipped 2026-08-29**, closing §3.2 #5: every fit is now graded against its own
 posterior predictive distribution on four statistics, and a `severe` verdict
 moves `fit_quality` — so on the NUTS default that bit finally distinguishes a
-model that is wrong from a sampler that struggled. **S10 — the posterior
-predictive plot — is next, and S3 unblocked it.** One other item has shipped its first half: S20's
+model that is wrong from a sampler that struggled. **S10 shipped 2026-08-30**,
+putting that check on screen: the Metric tab now draws the fitted series
+against the quantile bands of the replicates, so the verdict can be *seen*
+rather than only read. One other item has shipped its first half: S20's
 *disclosure* (2026-08-17) — a fit whose window is ≥25% exact zeros now carries
 `likelihood_warnings` on every surface that shows its numbers, because the
 misspecification was silent and that failed this track's own
@@ -1210,7 +1212,7 @@ scheduled start.
 | S7 | Correlated cold-start beliefs | ○ open |
 | S8 | Local linear trend (opt-in) | ○ open |
 | S9 | Narrow nonlinear edges | ○ open |
-| S10 | Posterior predictive plot in the UI | ○ open — **next up**, unblocked by S3 |
+| S10 | Posterior predictive plot in the UI | ✅ shipped 2026-08-30 |
 | S11 | Prior-vs-posterior visualization | ○ open |
 | S12 | `ranked_causes` visibly a heuristic | ○ open |
 | S13 | Methods appendix in the exported report | ○ open |
@@ -1595,9 +1597,35 @@ periods, or the floor is not a floor.
 These do not add rigor; they add the ability to *see* it, which is often what
 determines whether a correct number gets believed.
 
-**Ship the posterior predictive plot** — `S10`, ○ open, blocked on S3. Once S3
-computes it, showing observed versus replicated series per node is the most
-persuasive single visual a Bayesian tool can offer.
+**Ship the posterior predictive plot** — `S10`, ✅ **shipped 2026-08-30**. The
+Metric tab now carries a *Posterior predictive check* panel: the series the
+node was fitted on, against the 50% and 95% quantile bands of the replicates
+S3 draws, the median replicate, and the periods the 95% band misses. It is the
+same check as S3 with the answer left in its original shape — "`min` failed at
+p = 0.016" does not say *where*, and on the demo's `trials_started` the picture
+does: a count floored at 6, whose model's 95% band reaches −2.4, drawn against
+a zero line.
+
+*The item was scheduled as "nearly free once S3 computes it", and that was
+wrong in a way worth recording.* S3 builds its `(500 × n_periods)` replicate
+array inside the `pm.Model()` context and **discards** it, deliberately: on
+White Cube's `trials_started` at the full window that array is 3.16 MB and its
+mean function another 3.16 MB, on every fit, in a cache budgeted in gigabytes.
+What persists is four p-values. So S10's real content was choosing what to
+keep. It keeps five quantiles and the observed series, computed while the draws
+are still in scope — 31.6 kB as numpy, 88 kB as JSON, 0.6% of the 24.6 MB
+trace it rides with, and metered rather than assumed. Recomputing behind a
+route was rejected outright: `sample_posterior_predictive` needs the model
+*graph*, not the trace, so a route would have to refit the node — a minute of
+sampling to redraw a chart, and a second posterior that is not the one the
+published p-values came from.
+
+*And it deliberately reports no second number.* The panel says how many periods
+fall outside the 95% band, without a threshold, a band or a status of its own.
+Across four demo nodes that count reads 5.6 / 4.6 / 4.5 / 3.6% while their PPC
+verdicts run `severe` / `moderate` / `ok` / `moderate` — it does not separate
+them, and publishing it as a verdict would be the same diagnostic answering
+twice (§4's S22 entry).
 
 **Prior-versus-posterior visualization** — `S11`, ○ open. Per coefficient: "you
 believed 0.1 ± 0.02; the data says 0.08 ± 0.01" makes the Bayesian update
@@ -1631,6 +1659,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-08-30 | **S10 shipped — the posterior predictive check is now something you can look at.** The Metric tab gains a *Posterior predictive check* panel: the series the node was fitted on, against the 50% and 95% quantile bands of the replicates S3 draws, the median replicate, and the periods the 95% band misses. Same check, answer left in its original shape — *"`min` failed at p = 0.016"* does not say **where**, and on the demo's `trials_started` the picture does: a count floored at 6 whose model's 95% band reaches −2.4, read against a zero line the chart draws deliberately. **The roadmap's "nearly free once S3 computes it" was wrong, and that was the item's real content.** S3 builds its `(500 × n_periods)` replicate array inside the `pm.Model()` context and *discards* it under rule 2 — 3.16 MB for the replicates and 3.16 MB for the mean function on `trials_started`'s 790-day window, on every fit, in a cache budgeted in gigabytes — so what persists is four p-values and no per-period series at all. S10 persists **five quantiles plus the observed series**, computed while the draws are still in scope: 31.6 kB as numpy, 160 kB as the lists that ride on the fit, 88 kB as JSON, **0.6% of the 24.6 MB trace beside it**, and `_trace_nbytes` now counts it (and `dates`, which it had never counted) rather than trusting that ratio to hold. Recomputing on demand was rejected outright: `sample_posterior_predictive` needs the model *graph*, so a route would refit the node — a minute of NUTS to redraw a chart, against a second posterior the published p-values did not come from. It lives on `FitResult` behind `GET /metrics/{name}/ppc`, not in `diagnostics`, because that dict is copied whole onto `GET /metrics/{name}` and its `ppc` block onto every RCA node and every MCP payload — 88 kB × 106 nodes of chart data handed to an agent that cannot see a chart; `test_no_per_node_payload_carries_a_series` makes that structural rather than remembered. **The rendering pass found two defects the payload could not have had.** Plotly's default SI exponent format labels a formula node's identity residual of 4.5e-13 as `400f`, which reads as four hundred of something rather than as machine epsilon; and a five-entry Plotly legend in a 360 px sidebar wraps to five rows drawn *inside* the plot, over the densest part of the series. Fixed with powers of ten on the axis, the UI's own `fmt()` on every hovered number, and an HTML key beneath the chart. A third was a sentence: the caption asserted that fewer than 5% of periods fall outside an in-sample band "here", which is false on the very node the feature was built for (5.6%). Nothing is tinted by verdict — the geometry is the evidence, and a band drawn red on a node already labelled `severe` would be an illustration of a label rather than the thing behind it. |
 | 2026-08-29 | **S3 shipped — every fit is now graded against its own posterior predictive distribution, and `fit_quality` finally distinguishes a wrong model from a struggling sampler.** Replicated series are simulated from each fitted posterior and compared with the fitted series on four statistics — `min`, `max`, `resid_max`, `resid_acf1` — as two-sided **mid-p** p-values in two bands (`moderate` p < 0.10, `severe` p < 0.02), published as `ppc_status` / `ppc` / `ppc_warnings` on the fit, on every RCA and what-if node, over MCP with its own `how_to_read` entry and on `explain_metric`, and in the UI. **§3.2 #5 is closed.** `severe` sets `fit_quality: "suspect"`, and because it is the only thing that can do so on a NUTS fit, the meaning of that bit changed: `suspect` on the exact sampler now says the *model* is wrong for the data, where before it could only say the sampler struggled — two failures that want opposite responses, and the UI's suspect-explanation branch had to become conditional so it would stop naming a cause that did not happen. Three measurements shaped the design. **The obvious statistic is vacuous and was cut:** the series' standard deviation matches its replicates by construction, because `y` is z-scored and `sigma_obs` is free — p = 0.479 / 0.499 / 0.521 across a well-specified, a t(3) and a Poisson world, and `resid_sd` the same. A statistic that cannot fail reads as a check that passed, so it is deliberately absent and a test pins the absence. **Mid-p is not a refinement but a correctness fix:** scored with a plain `≥`, a statistic with a point mass returns p = 1.000 on a *correctly* specified node, which put the probe's only false alarm on the good world. **And the bands are wider than convention on purpose** — four statistics per node cross a 0.05 bar 19% of the time by chance, and these are disclosure triggers rather than tests. The worry that motivated the whole calibration — that a local-level trend with one latent per period would absorb every misspecification and make the check vacuous — was measured and did not hold: the tight HalfNormal(0.05) step-size prior keeps the level from chasing noise. On the trees this repo ships the separation is clean (five of six probabilistic nodes `ok` at p = 0.30–0.96, one `moderate`), and the residuals are stated rather than implied: it is an in-sample check, so it grades the likelihood and the mean function and not the DAG, and four statistics is not every way a model can be wrong. **S10 is unblocked** and is the track's next item. |
 | 2026-08-27 | **S4 closed: the engine now names the parents whose split of credit the data does not determine.** Correlated parents were already reported honestly — since S2 made NUTS the default, each gets a wide interval and their total a narrow one — but nothing said the two widths were *one ridge measured twice*, and RCA publishes the split per parent. Every fit with two or more regressors now scores its own design matrix (`X` as the model sees it: z-scored, lag-shifted, in `list(dag.predecessors(...))` order) and publishes `collinearity_status` / `collinearity` / `collinearity_warnings` on the fit, on every RCA node, over MCP with a `how_to_read` entry, and in the UI. **The demo set the thresholds, and that is the finding worth recording.** The pair this paper cites in §3.2 #6 — `trial_activation_rate` and `trial_days_active`, whose split lands at 0.680 / 0.682 / 0.697 across BLAS implementations from one seed — measures **\|r\| = 0.863** over the 62 weeks an RCA of that story fits it on (0.941 over the full 112-week window). A single conventional 0.9 bar would therefore have passed *in silence* the exact node the weakness was written about, so the diagnostic carries two bands: `moderate` (\|r\| ≥ 0.7, Dormann et al. 2013; VIF ≥ 5) — their total is sound, the split is soft — and `high` (\|r\| ≥ 0.9; VIF ≥ 10) — the split is not a measured quantity. On the 106-metric reference tree the five multi-parent nodes separate cleanly across those bands: 0.146 and 0.504 `ok`, 0.761 and 0.841 `moderate`, 0.909 with VIF 10.6 `high`. VIF is reported only for three or more parents (with two it is identically 1/(1−r²)) and earns its place on the multi-way degeneracy no pair shows — `x4 = x1+x2+x3` has every pairwise r near 0.58 and every VIF above 100. Two deliberate non-choices: it does **not** move `fit_quality` (a collinear fit is a correct fit that is properly unsure; the hazard is reading one parent's share alone, not the node), and it does **not** attempt to repair the split, because no diagnostic can recover a division of credit the data does not contain — the remedy named in the warning is authorial. §3.2 #6 moves from ○ to ✅ with its residual stated, §4.1's S4 entry carries the shipped design, and `docs/model.md` gains a *Parents that move together* section. S17 still owes the collinear coverage case; the fixture it needs now exists (`tests/test_engine.py`'s `_ridge_frame` / `_separable_frame` / `_multiway_frame`). |
 | 2026-08-27 | **S22 closed: k̂ now reports its own error, and the route that publishes it is seeded.** Two independent defects behind one diagnostic. (a) `POST /analyze/{name}` passed no `random_seed` while `run_rca` and `run_scenario` both passed `0`, so the manual-fit route — the one the UI's Analyze button and the "confirm this with NUTS" workflow use — returned a different posterior, and a different k̂, from two identical requests. Re-measured on the White Cube tree at full window before the fix: `customer_churn_rate` **1.23 then 1.91**, `trials_started` **0.94 then 1.19** (the same nodes had given 1.23/0.79 and 0.89/0.77 five days earlier — the spread is itself unstable, which is the argument). All three fitting paths now read one `FIT_RANDOM_SEED`, enforced by an AST-walking invariant test rather than by three call sites happening to agree, and the four demo figures this paper quotes reproduce exactly from the route: 10.18 / 1.07 / 0.85 / 1.36. (b) k̂ is fitted to the tail of 1000 sampled importance ratios (95 tail points), so it is an estimate; `khat_se` now publishes the generalized Pareto shape parameter's asymptotic standard error over that tail, corrected for the shrinkage in ArviZ's empirical-Bayes estimator, and it was validated against the thing it describes — holding one approximation fixed and re-estimating k̂ over 60 draws, published-SE ÷ empirical-SD came out **1.06 / 1.11 / 0.90 / 1.04** across k̂ 0.03 to 1.15. **The size of that error is the finding:** ~0.15 near the 0.5 bar and ~0.2 near k̂ = 1, against a `suspect` band that is 0.2 wide — so that band is frequently not resolvable, and `trial_conversion_rate` on the demo tree is a live case at **0.854 ± 0.172**. Such a fit now carries `khat_borderline: true`, a warning naming the two bands the estimate cannot separate, and `fit_quality: "suspect"` — including from an `ok` k̂, because "not shown to be far from the posterior" is a weaker claim than "close to it". `khat_status` keeps meaning which band the point estimate is in, so nothing downstream had to reinterpret it. Shrinking the error was rejected on cost: the tail grows as √n, so halving the error costs 16× the draws. §3.2 #1's third residual and §4.1's S2 entry are updated; §4 gains an S22 row. |

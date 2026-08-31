@@ -12,6 +12,7 @@ const state = {
   cy: null,
   selected: null,      // selected metric name
   metricCache: {},     // name -> GET /metrics/{name} response
+  ppcCache: {},        // name -> GET /metrics/{name}/ppc response (roadmap S10; window-scaled, so it has its own route and its own cache)
   cardConfig: {        // node-card display (canvas-wide, with per-node overrides)
     variant: "full",   // "num" | "delta" | "spark" | "full"
     deltaLen: 7,       // period-over-period comparison length, in data points
@@ -69,6 +70,19 @@ const COL = (() => {
 })();
 
 /* ---------- helpers ---------- */
+
+/* A palette color at partial opacity, for a Plotly `fillcolor`. Trace-level
+   `opacity` would have done it, but it dims the trace's line and markers too,
+   and two stacked bands then compose by multiplying rather than by the alphas
+   you asked for. The palette is authored as 6-digit hex in style.css; anything
+   else is returned untouched so a future `rgb()`/`oklch()` token degrades to
+   opaque rather than to nothing. */
+function withAlpha(hex, alpha) {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec((hex || "").trim());
+  if (!m) return hex;
+  const [r, g, b] = m.slice(1).map((h) => parseInt(h, 16));
+  return `rgba(${r},${g},${b},${alpha})`;
+}
 
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
@@ -3023,6 +3037,12 @@ function renderMetricTab(name, data) {
     </section>
 
     <section>
+      <h3>Posterior predictive check</h3>
+      <div id="ppc-chart"></div>
+      <div class="chart-caption" id="ppc-caption"></div>
+    </section>
+
+    <section>
       <h3>Analyze</h3>
       <div class="analyze-row">
         <label for="an-method">Method</label>
@@ -3049,6 +3069,7 @@ function renderMetricTab(name, data) {
 
   renderTimeSeries(name, data.time_series);
   renderPosterior(name, data);
+  renderPpcBand(name, data);
   $("an-run").addEventListener("click", () => runAnalyze(name));
   wireAnalyzeNote();
   wireNodeVariant(name);
@@ -3369,6 +3390,215 @@ function renderPosterior(name, data) {
     </details>`;
 }
 
+/* Roadmap S10: observed vs replicated, drawn.
+
+   S3 already tells the reader whether the fitted model can generate its own
+   data, in four p-values. This shows the same thing in its original shape,
+   because "`min` failed at p = 0.016" does not say *where*, and a picture of
+   the band does. It is also the check with the widest audience: the p-value
+   asks for statistical literacy, the plot asks whether the grey band covers
+   the blue line.
+
+   Three states, and the two that draw nothing still say something (rule 3).
+   An unfitted node, a fit whose band could not be built, and a fit whose PPC
+   was `unavailable` all render prose naming which case it is — never an empty
+   chart frame, which reads as "checked, nothing to report".
+
+   Deliberately not colored by verdict. The band is the same grey on a
+   `severe` node as on an `ok` one, because the honest signal is the geometry:
+   on White Cube's `trials_started` the band's lower edge runs below a floor
+   the series never crosses, and that is visible without being told. Tinting
+   the chart would put the verdict in two places and make the picture an
+   illustration of a label rather than the evidence behind it. */
+function ppcPanelNote(text) {
+  const chart = $("ppc-chart"), caption = $("ppc-caption");
+  if (!chart || !caption) return;
+  // Only a div Plotly actually owns; `purge` on a virgin one is wasted work,
+  // and the tab is rebuilt wholesale so that is the common case.
+  if (chart.data) Plotly.purge(chart);
+  chart.innerHTML = "";
+  caption.innerHTML = `<span class="muted">${text}</span>`;
+}
+
+async function renderPpcBand(name, data) {
+  // Same signal `/metrics/{name}` used to decide whether to summarize a fit
+  // (`_pick_fit`), so this cannot ask the server for a band the card has
+  // already said does not exist.
+  if (!data.summary) {
+    ppcPanelNote(
+      "No model fitted yet, so nothing has been checked. Run an analysis below to "
+      + "simulate series from this metric's posterior and compare them with its history.",
+    );
+    return;
+  }
+  ppcPanelNote("Loading the replicated series…");
+
+  let res = state.ppcCache[name];
+  if (!res) {
+    try {
+      res = await api(treePath(`/metrics/${encodeURIComponent(name)}/ppc`));
+      state.ppcCache[name] = res;
+    } catch (err) {
+      ppcPanelNote(`The replicated series could not be loaded: ${esc(err.message)}.`);
+      return;
+    }
+  }
+  // The tab is rebuilt wholesale on every node click, so the elements this
+  // was going to paint may belong to a different metric by now.
+  if (state.selected !== name || !$("ppc-chart")) return;
+
+  const band = res.band;
+  if (!band) {
+    ppcPanelNote(
+      `This fit was <strong>not checked</strong> against its own posterior predictive `
+      + `distribution: ${esc(res.reason || "no reason given")}. That is the absence of a `
+      + `check, not a clean bill of health — if this node's likelihood is wrong for its `
+      + `data, nothing here will say so.`,
+    );
+    return;
+  }
+
+  const x = band.dates;
+  const rep = band.replicated;
+  const q = band.quantiles || {};
+  const qpct = (k) => `${((q[k] ?? 0) * 100).toFixed(1)}%`;
+  // Each observed point carries the interval it is being judged against, so a
+  // hover answers "inside or outside?" without the reader eyeballing it — the
+  // answer this chart cannot give by eye at 790 periods in 360 pixels.
+  //
+  // Pre-formatted with `fmt`, not left to a Plotly `hovertemplate` number
+  // format. d3's SI notation renders a formula node's identity residual of
+  // 4.5e-13 as **"455f"**, which reads as four hundred and fifty-five of
+  // something rather than as machine epsilon — a number the payload got right
+  // and the render made false. `fmt` is what every other number in this UI
+  // goes through, so the hover agrees with the β table beside it too.
+  const custom = band.observed.map((v, i) => [fmt(v), fmt(rep.lo95[i]), fmt(rep.hi95[i])]);
+  const outsideSet = new Set(band.outside || []);
+
+  const line = (y, color, width, dash) =>
+    ({ x, y, mode: "lines", line: { color, width, dash }, hoverinfo: "skip", showlegend: false });
+
+  const traces = [
+    // Lower edges first: `tonexty` fills to the immediately preceding trace.
+    line(rep.lo95, COL.source, 0),
+    { ...line(rep.hi95, COL.source, 0), fill: "tonexty", fillcolor: withAlpha(COL.source, 0.35) },
+    line(rep.lo50, COL.source, 0),
+    { ...line(rep.hi50, COL.source, 0), fill: "tonexty", fillcolor: withAlpha(COL.source, 0.62) },
+    line(rep.median, withAlpha(COL.text2, 0.7), 1, "dot"),
+    {
+      x,
+      y: band.observed,
+      customdata: custom,
+      mode: "lines",
+      connectgaps: false,
+      // Thin. The band is what the reader is checking and the observed line
+      // is what they are checking it against, so a heavy line hides the
+      // evidence behind the claim.
+      line: { color: COL.accent, width: 1 },
+      showlegend: false,
+      hovertemplate:
+        "%{x|%b %d, %Y}<br>observed %{customdata[0]}"
+        + "<br>95% band %{customdata[1]} – %{customdata[2]}<extra></extra>",
+    },
+    {
+      x: x.filter((_, i) => outsideSet.has(i)),
+      y: band.observed.filter((_, i) => outsideSet.has(i)),
+      customdata: custom.filter((_, i) => outsideSet.has(i)),
+      mode: "markers",
+      // Neutral, hollow, no heavier than the median line. A warning color
+      // here would be a lie on a healthy node: about 5% of periods fall
+      // outside a 95% band when the model is exactly right, so ~40 red dots
+      // on a clean 790-period fit would read as 40 findings.
+      marker: { size: 4.5, color: "rgba(0,0,0,0)", line: { color: COL.text2, width: 1 } },
+      showlegend: false,
+      hovertemplate:
+        "%{x|%b %d, %Y}<br>observed %{customdata[0]}"
+        + "<br>95% band %{customdata[1]} – %{customdata[2]}"
+        + "<extra>outside the 95% band</extra>",
+    },
+  ];
+
+  Plotly.newPlot(
+    "ppc-chart",
+    traces,
+    {
+      margin: { l: 45, r: 8, t: 6, b: 22 },
+      height: 240,
+      // The key is HTML, below the chart (see `.ppc-key`). Plotly's own legend
+      // has five entries and this panel is ~360px wide, so it wraps to five
+      // rows and draws them *inside* the plot area — over the densest part of
+      // a daily series, which is the part the reader opened this to see.
+      showlegend: false,
+      xaxis: { tickfont: { size: 10 }, gridcolor: COL.rule },
+      // The zero line is drawn deliberately, not inherited. On a count or a
+      // rate the whole `min` finding is *whether the band crosses it* — the
+      // demo's `trials_started` never goes below 6 and its 95% band reaches
+      // −2.4 — and without the line the reader has nothing to read that
+      // against. It is on by default in Plotly, which is exactly why it was
+      // worth pinning: a later restyle that switched it off would delete the
+      // evidence and change nothing anyone would notice in review.
+      yaxis: {
+        tickfont: { size: 10 },
+        gridcolor: COL.rule,
+        zeroline: true,
+        zerolinecolor: COL.text2,
+        zerolinewidth: 1,
+        // Powers of ten, not SI prefixes. Plotly's default (`"B"`) labels a
+        // formula node's identity residual — around 4e-13 — as `400f`, and a
+        // reader who has never met a femto-dollar reads that as four hundred.
+        // `"power"` renders it as 4×10⁻¹³, which is the finding: the identity
+        // holds to machine precision.
+        exponentformat: "power",
+      },
+      plot_bgcolor: COL.panel,
+      paper_bgcolor: COL.panel,
+      hovermode: "closest",
+    },
+    { displayModeBar: false, responsive: true },
+  );
+
+  const n = band.n_periods;
+  const out = (band.outside || []).length;
+  // What the line *is*. A formula node fits `observed - formula(parents)`, so
+  // its band is a band of the residual and shares neither units nor zero
+  // point with the chart above it. Saying "observed" of a residual would be
+  // the fifth rule's failure with no payload error behind it.
+  const what = band.fitted_quantity === "formula_residual"
+    ? `the <strong>residual</strong> this node fits (observed − formula(parents)), not ${esc(name)} itself`
+    : `${esc(name)} itself`;
+  $("ppc-caption").innerHTML =
+    `<div class="ppc-key">
+       <span><i class="obs"></i>observed</span>
+       <span><i class="med"></i>median replicate</span>
+       <span><i class="b50"></i>${qpct("lo50")}–${qpct("hi50")} of replicates</span>
+       <span><i class="b95"></i>${qpct("lo95")}–${qpct("hi95")} of replicates</span>
+       <span><i class="out"></i>outside the 95% band</span>
+     </div>`
+    + `${band.n_draws.toLocaleString()} series simulated from this node's posterior, against the `
+    + `${n.toLocaleString()} period${n === 1 ? "" : "s"} it was fitted on `
+    + `(${esc(x[0])} → ${esc(x[x.length - 1])}). The line is ${what}. `
+    + `<strong>${out.toLocaleString()}</strong> of ${n.toLocaleString()} periods `
+    + `(${((out / Math.max(n, 1)) * 100).toFixed(1)}%) fall outside the 95% band. `
+    // The reference rate, and deliberately no claim about which side of it
+    // *this* node landed on. An earlier draft said "and fewer than that here",
+    // which is false on the demo's `trials_started` (5.6%) — a sentence the
+    // number printed beside it contradicts. The count is not a verdict anyway:
+    // across four demo nodes it reads 5.6 / 4.6 / 4.5 / 3.6% while their PPC
+    // verdicts run severe / moderate / ok / moderate, which is why S3's
+    // p-values are the verdict and this is a description of the picture.
+    + `About 5% would when the model is right, and usually somewhat fewer on an in-sample band `
+    + `like this one, since the model was fitted on the same history. `
+    + `It grades the likelihood and the trend against the window shown, and says nothing about `
+    + `periods outside it.`
+    // Only where the advice is true. At 88 weekly periods the chart is already
+    // legible and telling the reader to zoom is noise; at 790 daily ones it is
+    // the difference between a readable band and a blue scribble.
+    + (n > 300
+      ? ` <em>Drag to zoom into a stretch, double-click to reset</em> — ${n.toLocaleString()} `
+        + `periods is denser than this panel has pixels, and the band is only readable up close.`
+      : "");
+}
+
 async function runAnalyze(name) {
   const method = $("an-method").value;
   const draws = $("an-draws").value;
@@ -3383,6 +3613,8 @@ async function runAnalyze(name) {
       { method: "POST" }
     );
     delete state.metricCache[name];
+    // The band belongs to a fit, and this request replaced it (roadmap S10).
+    delete state.ppcCache[name];
     state.meta = await api(treePath("/meta"));
     markFitted();
     status.textContent = "Done.";
@@ -3449,6 +3681,10 @@ async function runRCA() {
     updateShareMenu();
     state.meta = await api(treePath("/meta")); // on-demand fits may have been cached
     state.metricCache = {};
+    // An RCA fits nodes on demand, so a node that had no band now has one and
+    // a node that had one may be showing a band from a different fit window
+    // (roadmap S10). Dropped with `metricCache` for exactly that reason.
+    state.ppcCache = {};
     markFitted();
     applyRcaOverlay();
     renderRcaTab();

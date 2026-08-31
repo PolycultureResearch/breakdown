@@ -56,6 +56,34 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
 
 ### Added
 
+- **The posterior predictive check is now something you can look at** (roadmap
+  S10). The Metric tab gains a **Posterior predictive check** panel under the
+  posterior: the series the node was fitted on, drawn over the 50% and 95%
+  quantile bands of the series its own fitted posterior generates, with the
+  median replicate and the periods that fall outside the 95% band. The same
+  arrays are served by the new **`GET /metrics/{name}/ppc`**.
+
+  It answers what a p-value cannot. "`min` failed at p = 0.004" does not say
+  *where*; on the demo tree's `trials_started` — a count that never drops below
+  6 — the chart shows the model's 95% band running down through the zero line,
+  which is the same fact in a form anyone can check.
+
+  **Not free, despite the plan.** The check's replicate array is built inside
+  the model context and discarded, deliberately: it is 3.16 MB on a 790-day fit,
+  and the trace cache is budgeted in gigabytes. What is persisted instead is
+  five quantiles plus the observed series — 88 kB of JSON, 0.6% of the trace it
+  rides with, and now counted by the cache's own byte meter (which had never
+  counted `dates` either). It lives behind its own route rather than on
+  `GET /metrics/{name}`, and is deliberately absent from every RCA node and
+  every MCP payload, where `ppc_status` and `ppc_warnings` already travel.
+
+  Nothing in the chart is coloured by the verdict, and the count of periods
+  outside the band carries no threshold: across four demo nodes it reads 5.6 /
+  4.6 / 4.5 / 3.6% while their verdicts run `severe` / `moderate` / `ok` /
+  `moderate`. A node with no fit, or one whose check could not run, says so in
+  words — an empty chart reads as a clean one.
+
+
 - **Every fit is now checked against its own posterior predictive distribution**
   (roadmap S3). Series are simulated from the fitted posterior and compared with
   the series the model was actually fitted on, across four statistics — `min`,

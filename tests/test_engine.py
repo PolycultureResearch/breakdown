@@ -2004,3 +2004,86 @@ def test_ppc_is_absent_rather_than_ok_on_a_node_that_was_never_fitted():
 
     block, warnings = _ppc_diagnostic(np.zeros(10), None, None, "y", "day")
     assert block is None and warnings == []
+
+
+# --- Roadmap S10: the band S3's p-values are a summary of --------------------
+
+
+def test_ppc_band_carries_the_fitted_window_in_the_metrics_own_units():
+    """The plot's whole payload, on the node S3's own test flags.
+
+    Every array is the length of the *fitted* window, not the loaded one, and
+    the observed series is in raw units — the fit runs z-scored, so a band
+    left in that space would share no axis with the metric's own history and
+    a reader could not tell a floor violation from a rounding difference.
+    """
+    parser = Parser(COUNT_YAML)
+    frame = _count_frame()
+    fit = fit_metric(parser.dag, frame, "y", draws=300, tune=300, random_seed=0)
+
+    band = fit.ppc_band
+    assert band["reason"] is None
+    n = band["n_periods"]
+    assert n == len(fit.dates)
+    assert band["dates"][0] == fit.dates[0].strftime("%Y-%m-%d")
+    assert band["dates"][-1] == fit.dates[-1].strftime("%Y-%m-%d")
+
+    # Raw units: the observed series is the metric's own history back again.
+    np.testing.assert_allclose(band["observed"], frame["y"].to_numpy(dtype=float), rtol=1e-9)
+
+    rep = band["replicated"]
+    assert set(rep) == {"lo95", "lo50", "median", "hi50", "hi95"}
+    assert all(len(v) == n for v in rep.values())
+    # Quantiles are ordered because they are quantiles; a band drawn from
+    # crossed edges fills the wrong way and reads as a negative-width interval.
+    for lo, hi in (("lo95", "lo50"), ("lo50", "median"), ("median", "hi50"), ("hi50", "hi95")):
+        assert all(a <= b + 1e-9 for a, b in zip(rep[lo], rep[hi]))
+
+    # `outside` indexes the observed series, and says only what it says: the
+    # periods the 95% band misses. No status, no band, no second verdict.
+    assert all(0 <= i < n for i in band["outside"])
+    for i in band["outside"]:
+        assert band["observed"][i] < rep["lo95"][i] or band["observed"][i] > rep["hi95"][i]
+    assert band["fitted_quantity"] == "metric"
+
+
+def test_ppc_band_never_reaches_an_encoder_with_a_non_finite_value():
+    """Rule 3. One NaN quantile is a 500 through `allow_nan=False`, and a hole
+    in a band reads as certainty rather than as an absence."""
+    from breakdown.engine.model import _ppc_band
+
+    dates = pd.date_range("2024-01-01", periods=5)
+    y = np.arange(5, dtype=float)
+
+    # The block still exists — it is what carries the reason — but it carries
+    # no arrays for a caller to draw.
+    band = _ppc_band(y, np.full((8, 5), np.nan), dates, 0.0, 1.0, False, "y")
+    assert band.get("observed") is None
+    assert "non-finite" in band["reason"]
+
+    # A shape that cannot be zipped is withheld the same way, not truncated.
+    band = _ppc_band(y, np.zeros((8, 3)), dates, 0.0, 1.0, False, "y")
+    assert band.get("observed") is None and "do not match" in band["reason"]
+
+    # And so is a date index that does not line up with the fitted periods.
+    band = _ppc_band(y, np.zeros((8, 5)), dates[:3], 0.0, 1.0, False, "y")
+    assert band.get("observed") is None and "fitted dates" in band["reason"]
+
+    # There is no band at all when there were no draws to build one from.
+    assert _ppc_band(y, None, dates, 0.0, 1.0, False, "y") is None
+
+
+def test_ppc_band_says_when_the_series_it_plots_is_a_residual():
+    """A formula node fits `observed - formula(parents)`, so its band is a band
+    of the residual. Plotting that against the metric's own history would be
+    two quantities on one axis, and the payload has to make the label
+    impossible to omit."""
+    parser = Parser(YAML_WITH_FORMULA)
+    data = generate_mock_data(n_days=60)
+    fit = fit_metric(parser.dag, data, "revenue", draws=200, tune=200, random_seed=0)
+
+    band = fit.ppc_band
+    assert band["fitted_quantity"] == "formula_residual"
+    # And the numbers are the residual's, not revenue's: revenue runs in the
+    # thousands, its identity residual around zero.
+    assert abs(float(np.mean(band["observed"]))) < float(data["revenue"].mean()) / 10

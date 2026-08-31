@@ -495,6 +495,23 @@ section:first-of-type h3 { border-top: none; padding-top: 0; }
 .win-ref { background: rgba(148, 163, 184, 0.35); }
 .win-an { background: rgba(79, 70, 229, 0.22); }
 
+/* Roadmap S10's posterior predictive chart keys its five series here rather
+   than in a Plotly legend, for the reason `.win-ref` above exists at all: in a
+   ~360px sidebar a five-entry legend wraps to five rows and Plotly draws it
+   inside the plot area, over the densest part of the series. Same swatch
+   vocabulary, one row that wraps. */
+.ppc-key { display: flex; flex-wrap: wrap; gap: 3px 12px; margin: 3px 0 5px; }
+.ppc-key span { display: inline-flex; align-items: center; gap: 5px; }
+.ppc-key i { display: inline-block; width: 13px; height: 9px; border-radius: 2px; }
+.ppc-key i.obs { height: 0; border-top: 2px solid var(--accent); border-radius: 0; }
+.ppc-key i.med { height: 0; border-top: 2px dotted var(--text-2); border-radius: 0; }
+.ppc-key i.b50 { background: var(--source); opacity: 0.62; }
+.ppc-key i.b95 { background: var(--source); opacity: 0.35; }
+.ppc-key i.out {
+  width: 9px; height: 9px; border-radius: 50%;
+  border: 1px solid var(--text-2); background: none;
+}
+
 .data-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .data-table th {
   text-align: left;
