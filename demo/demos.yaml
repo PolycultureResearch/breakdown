@@ -1,0 +1,99 @@
+# The registry of hosted Breakdown demos — one entry per fake_companies
+# vertical. This is the single place that knows a demo's URL, which scenario
+# generated its data, and where the prebuilt dataset + ground truth live.
+#
+# Consumers:
+#   demo/check_demos.py       probes every `deployed: true` demo's /health + /manifest
+#   demo/fetch_demo_data.py   downloads the dataset bundles named under `dataset:`
+#   agents                    read this file instead of hardcoding URLs/paths
+#
+# `url` is the address that answers today. `custom_domain` is the intended
+# vanity hostname — as of 2026-08-31 none of them have DNS records yet
+# (the polycultureresearch.com apex points at GitHub Pages); wiring one up is
+# a CNAME to the Fly app + `fly certs add <hostname>` + swapping it into
+# `url` here. BREAKDOWN_PUBLIC_URL in the app's fly.toml must move with it.
+#
+# Paths under `fake_companies:` are relative to a fake_companies checkout
+# (github.com/PolycultureResearch/fake_companies). `tree` is the served pitch
+# tree in THIS repo (null = not yet authored; the scenario tree in
+# fake_companies/examples/ is the starting point). Dataset bundles are built
+# by fake_companies scripts/build_demo_datasets.py and published as release
+# assets; each `<slug>.duckdb` has raw tables plus dbt marts + MetricFlow
+# semantic already materialized, and `<slug>.ground_truth.json` is the
+# planted-anomaly scoring key (`fake-companies score` grades RCA answers
+# against it).
+
+release: https://github.com/PolycultureResearch/fake_companies/releases/tag/datasets-v1
+
+demos:
+  - slug: white_cube
+    company: White Cube
+    vertical: b2c_saas
+    url: https://white-cube-demo.fly.dev
+    custom_domain: white-cube-demo.polycultureresearch.com  # DNS not wired yet
+    fly_app: white-cube-demo
+    deployed: true
+    tree: demo/white_cube_tree.yml
+    stories: knowledge/demo_guided_tour.md
+    fake_companies:
+      config: configs/white_cube_b2c_app.yaml
+      scenario_tree: examples/breakdown_white_cube_tree.yml
+      dbt_project: dbt/b2c_saas
+    dataset:
+      duckdb: https://github.com/PolycultureResearch/fake_companies/releases/download/datasets-v1/white_cube.duckdb
+      ground_truth: https://github.com/PolycultureResearch/fake_companies/releases/download/datasets-v1/white_cube.ground_truth.json
+      run_manifest: https://github.com/PolycultureResearch/fake_companies/releases/download/datasets-v1/white_cube.run_manifest.json
+
+  - slug: alpenglow
+    company: Alpenglow Supply Co.
+    vertical: retail_dtc
+    url: https://alpenglow-demo.fly.dev
+    custom_domain: alpenglow-demo.polycultureresearch.com  # DNS not wired yet
+    fly_app: alpenglow-demo
+    deployed: false  # planned; flip when the Fly app + DNS exist
+    tree: null
+    stories: null
+    fake_companies:
+      config: configs/alpenglow_retail_dtc.yaml
+      scenario_tree: examples/breakdown_alpenglow_tree.yml
+      dbt_project: dbt/retail_dtc
+    dataset:
+      duckdb: https://github.com/PolycultureResearch/fake_companies/releases/download/datasets-v1/alpenglow.duckdb
+      ground_truth: https://github.com/PolycultureResearch/fake_companies/releases/download/datasets-v1/alpenglow.ground_truth.json
+      run_manifest: https://github.com/PolycultureResearch/fake_companies/releases/download/datasets-v1/alpenglow.run_manifest.json
+
+  - slug: meridian
+    company: Meridian Partners
+    vertical: b2b_services
+    url: https://meridian-demo.fly.dev
+    custom_domain: meridian-demo.polycultureresearch.com  # DNS not wired yet
+    fly_app: meridian-demo
+    deployed: false  # planned; flip when the Fly app + DNS exist
+    tree: null
+    stories: null
+    fake_companies:
+      config: configs/meridian_b2b_services.yaml
+      scenario_tree: examples/breakdown_meridian_tree.yml
+      dbt_project: dbt/b2b_services
+    dataset:
+      duckdb: https://github.com/PolycultureResearch/fake_companies/releases/download/datasets-v1/meridian.duckdb
+      ground_truth: https://github.com/PolycultureResearch/fake_companies/releases/download/datasets-v1/meridian.ground_truth.json
+      run_manifest: https://github.com/PolycultureResearch/fake_companies/releases/download/datasets-v1/meridian.run_manifest.json
+
+  - slug: bristlecone
+    company: Bristlecone Botanicals
+    vertical: cpg_wholesale
+    url: https://bristlecone-demo.fly.dev
+    custom_domain: bristlecone-demo.polycultureresearch.com  # DNS not wired yet
+    fly_app: bristlecone-demo
+    deployed: false  # planned; flip when the Fly app + DNS exist
+    tree: null
+    stories: null
+    fake_companies:
+      config: configs/bristlecone_cpg.yaml
+      scenario_tree: examples/breakdown_bristlecone_tree.yml
+      dbt_project: dbt/cpg_wholesale
+    dataset:
+      duckdb: https://github.com/PolycultureResearch/fake_companies/releases/download/datasets-v1/bristlecone.duckdb
+      ground_truth: https://github.com/PolycultureResearch/fake_companies/releases/download/datasets-v1/bristlecone.ground_truth.json
+      run_manifest: https://github.com/PolycultureResearch/fake_companies/releases/download/datasets-v1/bristlecone.run_manifest.json

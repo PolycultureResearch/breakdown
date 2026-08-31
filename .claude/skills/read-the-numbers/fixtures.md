@@ -37,7 +37,7 @@ uv run breakdown serve --tree demo/white_cube_tree.yml \
 ```
 
 **Both env vars are required and the second one looks wrong on purpose.** The
-tree declares a `dbt` provider whose `project_path` is
+tree declares a `local` provider whose `project_path` is
 `${WHITE_CUBE_DBT_PROJECT}`, so parsing fails outright without it — the tree
 shows as errored and every route 503s. Pointing it at a nonexistent path is what
 `tests/test_white_cube_demo.py` does deliberately: if anything reaches a

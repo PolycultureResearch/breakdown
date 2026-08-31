@@ -318,6 +318,26 @@ def test_health_ok():
         assert body["metrics"] == len(app.state.parser.config.metrics)
 
 
+def test_manifest_reports_deployment_identity(monkeypatch):
+    """/manifest is the agent-facing "which demo am I talking to" card: the
+    BREAKDOWN_DEMO_* env vars a deploy stamps come back verbatim (lowercased
+    keys), alongside the package version and the default tree's index card."""
+    monkeypatch.setenv("BREAKDOWN_DEMO_SLUG", "white_cube")
+    monkeypatch.setenv("BREAKDOWN_DEMO_VERTICAL", "b2c_saas")
+    with TestClient(app) as client:
+        body = client.get("/manifest").json()
+        assert body["app"] == "breakdown"
+        assert body["status"] == "ok"
+        assert body["version"]
+        assert body["demo"] == {"slug": "white_cube", "vertical": "b2c_saas"}
+        card = body["default_tree"]
+        assert card["metric_count"] == len(app.state.parser.config.metrics)
+        assert card["provider"] == "mock"
+        # The C43 rule: this route is open, so the card is redacted — no
+        # load_error (raw exception text), no goal/progress payload.
+        assert set(card) == {"id", "title", "provider", "metric_count", "state"}
+
+
 def test_degraded_startup_serves_instead_of_crashing(tmp_path, monkeypatch):
     """A bad provider config (here: warehouse metrics without `sql`, caught
     before any connection attempt) must not kill startup — the process
