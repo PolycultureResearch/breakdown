@@ -1522,6 +1522,60 @@ async def get_metric(name: str, request: Request):
     }
 
 
+@router.get("/metrics/{name}/ppc")
+async def get_metric_ppc(name: str, request: Request):
+    """Roadmap S10: the observed-vs-replicated series behind this node's
+    posterior predictive verdict.
+
+    A route of its own rather than a field on `GET /metrics/{name}`, and the
+    reason is that route's own history: `_fit_summary` had to be memoized
+    because `clearRCA` re-fetches *every* fitted metric back to back, and on a
+    106-metric tree that is 106 requests. The band is ~88 kB of JSON per fitted
+    node — measured on White Cube's `trials_started` over 790 days, and
+    window-scaled, unlike everything else on that response — so folding it in
+    would have made a bookkeeping loop move megabytes to repaint some edge
+    labels. Only the metric card wants it, and only when it is open.
+
+    Three answers, all 200, because "this node has no band" is information and
+    not an error:
+
+    - `ppc_status: null` — no fit is cached for this metric. Nothing was
+      checked; the card says so and offers the Analyze button.
+    - `band: null` with a `reason` — a fit exists and the check or the band
+      could not be produced. Unchecked, named, never an empty chart (rule 3).
+    - `band` — the arrays, all of length `band.n_periods`.
+    """
+    tree = await _loaded_tree(request)
+    _require_ready(tree)
+    metric = tree.parser.get_metric(name)
+    if not metric:
+        raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
+
+    # The same `_pick_fit` the metric route summarizes, so the band and the
+    # `ppc_status` rendered beside it always describe one fit. Two routes
+    # choosing independently is how a chart comes to illustrate a verdict that
+    # was reached about a different window.
+    fit = _pick_fit(tree.traces, name)
+    if fit is None:
+        return {"metric": name, "ppc_status": None, "band": None, "reason": None}
+
+    band = getattr(fit, "ppc_band", None)
+    status = fit.diagnostics.get("ppc_status")
+    if not band or band.get("reason") is not None:
+        return {
+            "metric": name,
+            "ppc_status": status,
+            "band": None,
+            # A band withheld for its own reason says that reason; one absent
+            # because the check never ran says the check's. Either way the
+            # card prints a sentence, not a blank panel.
+            "reason": (band or {}).get("reason")
+            or (fit.diagnostics.get("ppc") or {}).get("reason")
+            or "this fit stored no posterior predictive band",
+        }
+    return {"metric": name, "ppc_status": status, "band": band, "reason": None}
+
+
 @router.post("/analyze/{name}")
 async def analyze_metric(
     name: str,

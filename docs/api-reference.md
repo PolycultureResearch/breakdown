@@ -29,6 +29,7 @@ about the whole process rather than one tree.
 | `GET` | `/series` | Every metric's series at its native grain, `{name: {grain, dates, values}}`. One call hydrates the UI's node cards. Mixed-grain trees have no shared date axis, so dates are per metric |
 | `GET` | `/metrics/{name}` | Metric definition, time series, posterior summary and fit diagnostics |
 | `GET` | `/metrics/{name}/query` | The query behind a metric's numbers, when the provider knows it. Optional `dimension` for the sliced form |
+| `GET` | `/metrics/{name}/ppc` | The observed-vs-replicated series behind this node's posterior predictive verdict — the arrays the Metric tab plots |
 | `POST` | `/analyze/{name}` | Run Bayesian sampling for a metric |
 | `GET` | `/shapley/{name}` | Shapley attribution for a formula metric |
 | `POST` | `/rca/{name}` | Root cause analysis over the metric's ancestors |
@@ -91,6 +92,58 @@ curl "http://localhost:9090/metrics/signups/query?dimension=region"
   `SnapshotFetcher` delegates to whichever provider it wraps.
 - 404 for an unknown metric, or a `dimension` the metric doesn't declare.
 
+## `GET /metrics/{name}/ppc`
+
+The per-period evidence behind `ppc_status` (roadmap S10): the series the node
+was fitted on, and the quantiles of the series its own fitted posterior
+generates. No parameters. Answers about the same fit
+`GET /metrics/{name}` summarizes.
+
+```json
+{
+  "metric": "trials_started",
+  "ppc_status": "severe",
+  "band": {
+    "dates": ["2024-06-01", "..."],
+    "observed": [18.0, "..."],
+    "quantiles": {"lo95": 0.025, "lo50": 0.25, "median": 0.5, "hi50": 0.75, "hi95": 0.975},
+    "replicated": {"lo95": [...], "lo50": [...], "median": [...], "hi50": [...], "hi95": [...]},
+    "outside": [12, 47, "..."],
+    "n_draws": 500,
+    "n_periods": 790,
+    "fitted_quantity": "metric",
+    "reason": null
+  },
+  "reason": null
+}
+```
+
+- Every array is `n_periods` long and in the **raw units of the fitted
+  quantity**. `fitted_quantity` is `"metric"` or `"formula_residual"` — a
+  formula node fits `observed − formula(parents)`, so plotting its band against
+  the metric's own history would put two different quantities on one axis.
+- `dates` are the **fitted** periods, at the node's own grain, after the lag
+  trim and the `fit_end` cut. For a model fitted by an RCA that window stops
+  before the analysis window; `observed` travels with the band rather than
+  being joined client-side against `/metrics/{name}`'s `time_series`, which
+  covers the loaded window instead.
+- `outside` indexes the periods where `observed` falls outside `lo95`/`hi95`.
+  It carries no threshold and no status of its own — about 5% of periods fall
+  outside a 95% band when the model is right, so the count is a description of
+  the picture, not a second verdict. `ppc_status` is the verdict.
+- Three answers, all **200**, because "no band" is information rather than an
+  error: `ppc_status: null` with `band: null` means no fit is cached (nothing
+  was checked); a `band: null` with a `reason` means a fit exists and the check
+  or the band could not be produced (unchecked, and the reason says why); a
+  `band` means the arrays are real. 404 only for an unknown metric.
+
+It is a separate route because it is the one payload here that scales with the
+fitted window — 88 kB of JSON on an 790-day node against ~600 bytes for the
+`ppc` verdict block — and `GET /metrics/{name}` is fetched once per fitted
+metric by the UI's own bookkeeping. For the same reason the band is **not** on
+any RCA or what-if node and not on any MCP payload: `ppc_status` and
+`ppc_warnings` travel there, and the series stays here.
+
 ## `POST /analyze/{name}`
 
 Query parameters:
@@ -150,7 +203,9 @@ and compared with the fitted series on `min`, `max`, `resid_max` and
 `resid_acf1`. Unlike the collinearity fields below, **`severe` does move
 `fit_quality` to `suspect`** — and on a NUTS fit it is the only thing that can,
 so `suspect` there means the model is wrong for the data rather than that the
-sampler struggled. See [the model guide](model.md#can-the-model-generate-its-own-data).
+sampler struggled. See [the model guide](model.md#can-the-model-generate-its-own-data), and
+[`GET /metrics/{name}/ppc`](#get-metricsnameppc) for the per-period series behind
+the verdict.
 
 Whichever sampler ran, a fit with two or more parents also reports
 **`collinearity_status`** — `ok`, `moderate`, `high` or `unavailable` — plus

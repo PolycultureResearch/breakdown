@@ -295,6 +295,70 @@ def test_the_trace_store_is_bounded_by_size_not_only_by_count():
     )
 
 
+def test_every_window_scaled_field_on_a_fit_is_metered_or_named():
+    """Rule 2's other half: the budget only bounds what the meter can see.
+
+    `_trace_nbytes` summed the trace's xarray groups and nothing else, which
+    was right while the trace was the only per-period thing on a `FitResult`.
+    It stopped being right quietly — `dates` is one value per fitted period,
+    and roadmap S10's `ppc_band` is six — and each was individually small
+    enough to justify not counting, which is the `slice_cache` argument
+    verbatim.
+
+    So the classification is enumerated rather than assumed: every field on
+    the dataclass is either metered, bounded by the tree the operator wrote,
+    or a named exception with a reason. A new field lands in none of the three
+    and fails here, which is the only moment anyone will ask the question.
+    """
+    metered = {"trace", "dates", "ppc_band"}
+    # Bounded by the tree's shape (a name, a grain, a parent list, a fixed
+    # diagnostics block), not by the window a caller loaded.
+    bounded_by_the_tree = {
+        "target",
+        "parents",
+        "y_mean",
+        "y_std",
+        "x_stds",
+        "inference_method",
+        "fit_end",
+        "grain",
+        "diagnostics",
+    }
+    # `summary_json` scales with the window (one `az.summary` row per `trend`
+    # latent) but is filled lazily on the first `GET /metrics/{name}`, after
+    # the store already weighed this entry. Counting it would need the store
+    # to re-measure on read, which is a different design; the exception is
+    # named here so it stays deliberate.
+    measured_too_late = {"summary_json"}
+
+    names = {f.name for f in dataclasses.fields(model_mod.FitResult)}
+    unclassified = names - metered - bounded_by_the_tree - measured_too_late
+    assert not unclassified, (
+        f"{sorted(unclassified)} are new fields on FitResult that this test has "
+        "never seen. If a field carries one value per fitted period, "
+        "`_trace_nbytes` must count it — the trace store's budget is the only "
+        "thing standing between a wide window and an OOM (rule 2). If it does "
+        "not, add it to `bounded_by_the_tree` here and say why."
+    )
+
+    # And `metered` is a claim, so it is tested rather than asserted: the
+    # measured size has to actually move when each of those fields grows.
+    class _Fit:
+        trace = None
+        dates = pd.DatetimeIndex([])
+        ppc_band = None
+
+    base = trees_mod._trace_nbytes(_Fit())
+
+    long_dates = _Fit()
+    long_dates.dates = pd.date_range("2024-01-01", periods=1000)
+    assert trees_mod._trace_nbytes(long_dates) > base, "`dates` is not metered"
+
+    with_band = _Fit()
+    with_band.ppc_band = {"n_periods": 1000}
+    assert trees_mod._trace_nbytes(with_band) > base, "`ppc_band` is not metered"
+
+
 # --- Rule 3: no engine result reaches an encoder unsanitized ------------------
 
 
@@ -1875,3 +1939,84 @@ def test_every_place_that_explains_a_suspect_fit_knows_the_model_can_be_the_caus
             "the model did. Add the `severe` branch (see `caveatBlock` and "
             "`renderPosterior` in app.js)."
         )
+
+
+def _numeric_runs(payload, path="") -> list:
+    """Every list of plain numbers reachable in `payload`, as `(path, length)`.
+
+    A list of dicts is not one of these: `time_series`, `ranked_causes` and
+    `contributions` are all per-period or per-node *records*, which is a
+    different thing from a raw series.
+    """
+    found = []
+    if isinstance(payload, dict):
+        for k, v in payload.items():
+            found += _numeric_runs(v, f"{path}.{k}")
+    elif isinstance(payload, list):
+        if payload and all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) for v in payload
+        ):
+            found.append((path, len(payload)))
+        else:
+            for i, v in enumerate(payload):
+                found += _numeric_runs(v, f"{path}[{i}]")
+    return found
+
+
+def test_no_per_node_payload_carries_a_series(tmp_path, monkeypatch):
+    """Roadmap S10's placement decision, as a property rather than a location.
+
+    S3's `ppc` block is copied onto *every* RCA node and shaped into every MCP
+    payload, and S10 needed a per-period array of six series. Putting it there
+    would have been the obvious move and would have cost ~88 kB per node — on
+    a 106-metric analysis, nine megabytes of decomposition handed to an agent
+    that cannot read a chart. So the band lives on `FitResult` and reaches one
+    route, and this is the property that makes that structural: nothing on a
+    per-node payload is a series.
+
+    Enumerating rather than pinning `ppc_band` by name, because the next
+    author to want a per-period array on a node will not call it that. A
+    handful of numbers (a few quantile levels, a pair of bounds) is fine and is
+    what the cap allows; a window's worth is not.
+    """
+    from fastapi.testclient import TestClient
+
+    from breakdown.mcp.shaping import compact_rca
+
+    # 32 is comfortably above every legitimate fixed-length array on a node
+    # (five quantile levels, two interval bounds) and far below any window a
+    # tree is worth fitting on — `MIN_FIT_PERIODS` alone is larger.
+    cap = 32
+
+    monkeypatch.setenv("BREAKDOWN_START_DATE", "2024-01-01")
+    monkeypatch.setenv("BREAKDOWN_END_DATE", "2024-04-09")
+    with TestClient(app) as client:
+        assert client.post("/analyze/order_count?draws=150").status_code == 200
+
+        payloads = {
+            "GET /metrics/{name}.diagnostics": client.get("/metrics/order_count").json()[
+                "diagnostics"
+            ],
+        }
+        rca = client.post(
+            "/rca/revenue", params={"analysis_start": "2024-03-27", "analysis_end": "2024-04-09"}
+        ).json()
+        for name, node in rca["nodes"].items():
+            payloads[f"POST /rca/revenue nodes.{name}"] = node
+        for name, node in (compact_rca(rca).get("nodes") or {}).items():
+            payloads[f"compact_rca nodes.{name}"] = node
+
+        offenders = [
+            (where, path, n)
+            for where, payload in payloads.items()
+            for path, n in _numeric_runs(payload)
+            if n > cap
+        ]
+
+    assert not offenders, (
+        f"{offenders} — a per-node payload carries a series of numbers. These "
+        "payloads are emitted once per node (an RCA over the reference tree has "
+        "106 of them) and shaped into an agent's context verbatim, so anything "
+        "that scales with the fitted window belongs on the fit and behind its "
+        "own route, the way roadmap S10's `ppc_band` does."
+    )

@@ -316,6 +316,46 @@ statistics per node cross that band often enough on honest fits that wiring it
 to `fit_quality` would make `suspect` the common verdict and drain it of
 meaning.
 
+### Looking at it
+
+A p-value says a statistic failed; it does not say **where**. The Metric tab
+carries a **Posterior predictive check** panel under the posterior: the series
+the node was actually fitted on, drawn over the 50% and 95% quantile bands of
+the series simulated from its posterior, with the median replicate and the
+periods that fall outside the 95% band marked. `GET /metrics/{name}/ppc`
+returns the same arrays if you would rather plot them yourself.
+
+Read the geometry, not the colour — nothing in the chart is tinted by the
+verdict, deliberately. On the demo tree's `trials_started`, a count that never
+goes below 6, the lower edge of the 95% band runs down to −2.4 and crosses the
+zero line: that is the `min` failure, and it is the same fact the warning
+states in words. On a node the check passes, the band contains the line and
+the reader can see that it does.
+
+Four things the panel is careful about, and each is a way it could mislead:
+
+- **It is the *fitted* window, not the loaded one.** A model fitted for an RCA
+  stops before the analysis window on purpose, so its band ends there; the
+  caption states the range. Do not read the chart as covering the period the
+  RCA is about.
+- **On a formula node the line is the residual**, `observed − formula(parents)`,
+  because that is what the model fits — not the metric, whose own history is
+  the chart above. The caption says so. On an exact identity that residual is
+  numerical dust, and the axis will say `4×10⁻¹³` rather than pretend
+  otherwise.
+- **The count of periods outside the band is a description, not a verdict.**
+  It carries no threshold and no status. Across the four demo nodes it reads
+  5.6 / 4.6 / 4.5 / 3.6% while their verdicts run `severe` / `moderate` / `ok`
+  / `moderate`: it does not separate them. The p-values are the verdict.
+- **A tight band is not a good model.** The local-level trend carries one
+  latent per period, so it tracks; a band that hugs the line means the trend
+  absorbed the movement, which is the in-sample limitation below (limitation
+  10) seen rather than described.
+
+When a node has no fit, or the check could not run, the panel says which —
+in words, with the reason. It never draws an empty chart, because an empty
+chart reads as a clean one.
+
 ## Reading coefficients: `beta` vs `beta_raw`
 
 The posterior contains both. `beta` is in z-scored units ("a 1-sd move in the

@@ -124,6 +124,15 @@ class FitResult:
     # later would silently turn the memo off and put that second back on every
     # `GET /metrics/{name}` — a defect no test would name.
     summary_json: Optional[Dict[str, Any]] = None
+    # Roadmap S10: the per-period observed-vs-replicated band S3's p-values are
+    # a summary of (see `_ppc_band`). A field of its own rather than a key in
+    # `diagnostics`, and that placement is the design decision: `diagnostics`
+    # is copied wholesale onto `GET /metrics/{name}`, and its `ppc` block is
+    # copied onto every RCA node and shaped into every MCP payload. This array
+    # scales with the fitted window, so riding in there would put ~88 kB on
+    # each of a 106-metric RCA's nodes and hand an agent a decomposition it
+    # cannot read. Here it can only reach the one route that asks for it.
+    ppc_band: Optional[Dict[str, Any]] = None
 
 
 def scale_prior_params(distribution: str, params: Dict[str, Any], scale: float) -> Dict[str, Any]:
@@ -1274,6 +1283,146 @@ def _ppc_diagnostic(
     )
 
 
+#: Roadmap S10. The quantiles of the replicated series kept per fitted period,
+#: and the whole of what S10 persists.
+#:
+#: **Why a band and not the replicates.** S3's `_posterior_predictive_draws`
+#: builds a `(n_draws, n_periods)` replicate array inside the model context and
+#: discards it, for the reason its docstring gives: on White Cube's
+#: `trials_started` at the full window that array is 500 x 790 float64 =
+#: **3.16 MB**, and the matching `mu` another 3.16 MB, on every fit, in a cache
+#: whose budget is measured in gigabytes (rule 2 — bound the thing that grows
+#: with the loaded window). Storing them so the UI could draw them would put
+#: 6.3 MB on every trace to render a chart 400 pixels wide. Measured on that
+#: same fit, five quantiles of the same array are **31.6 kB** as numpy,
+#: **160 kB** as the Python lists that ride on the `FitResult` (which is what
+#: `_trace_nbytes` meters), and **88 kB** as the JSON the browser gets — 0.6%
+#: of the 24.6 MB trace they ride with. They scale on the same axis the trace
+#: does, so the existing byte budget bounds them in proportion, and
+#: `_trace_nbytes` counts them explicitly rather than relying on that ratio
+#: continuing to hold.
+#:
+#: Recomputing on demand behind a route was the other candidate and is worse
+#: than either: `sample_posterior_predictive` needs the model *graph*, not the
+#: trace, so a route would have to refit the node — a minute of NUTS to redraw
+#: a chart, and a second posterior that is not the one the reported p-values
+#: were computed from.
+#:
+#: Five and not three: the outer pair is the 95% interval the verdict is about,
+#: the inner pair keeps a wide band from reading as "anything would fit", and
+#: the median is what the eye tracks against the observed line. Estimated from
+#: 500 thinned draws, so the outer pair rests on ~12 order statistics each —
+#: enough for a band, which is why S3's p-values do not need more draws either.
+_PPC_BAND_QUANTILES = {
+    "lo95": 0.025,
+    "lo50": 0.25,
+    "median": 0.5,
+    "hi50": 0.75,
+    "hi95": 0.975,
+}
+
+
+def _ppc_band(
+    y: np.ndarray,
+    y_rep: Optional[np.ndarray],
+    dates: pd.DatetimeIndex,
+    y_mean: float,
+    y_std: float,
+    is_residual: bool,
+    target: str,
+) -> Optional[Dict[str, Any]]:
+    """Roadmap S10: the per-period material for an observed-vs-replicated plot.
+
+    S3 asks whether the model could have generated its own data and answers in
+    four p-values. This is the same question with the answer left in its
+    original shape — the series, and the spread of series the fitted model
+    generates around it — because a reader who is told `min` failed at p = 0.016
+    still cannot see *where*, and a reader who is shown the band can.
+
+    Returns a block whose arrays are all length `n_periods` and all JSON-safe,
+    or `None` when there was nothing to build it from. Rule 3 twice over:
+
+    - Every value is checked finite before it is emitted. One NaN quantile is
+      an unhandled 500 through Starlette's `allow_nan=False` encoder, and the
+      whole band is withheld under a named `reason` rather than emitted with a
+      hole in it — a chart with a gap in the band reads as "the model is
+      certain here", which is the opposite of not knowing.
+    - `fitted_quantity` says **what** the series is. A formula node fits the
+      residual `observed - formula(parents)`, not the metric, so plotting its
+      band against the metric's own history would be a chart of two different
+      quantities sharing an axis. The caller renders the label; the payload
+      makes it impossible to render without one.
+
+    Values are returned in the raw units of the fitted quantity (the fit runs
+    z-scored; `y_mean`/`y_std` invert that), and the observed series is carried
+    here rather than joined client-side against `/metrics/{name}`'s
+    `time_series`. That series covers the loaded window, while this one covers
+    the *fitted* window — shorter by the lag trim and by `fit_end`, which for
+    an RCA fit deliberately stops before the analysis window. Two arrays of
+    different length, silently zipped, is a chart that is wrong everywhere
+    after the first missing period.
+    """
+    if y_rep is None:
+        return None
+
+    y = np.asarray(y, dtype=float)
+    n = len(y)
+    reason = ""
+    if y_rep.ndim != 2 or y_rep.shape[1] != n:
+        reason = (
+            f"replicated series of shape {getattr(y_rep, 'shape', None)} do not match the "
+            f"{n} fitted periods"
+        )
+    elif len(dates) != n:
+        reason = f"{len(dates)} fitted dates do not match the {n} fitted periods"
+    if reason:
+        msg = (
+            f"The posterior predictive band for '{target}' was not stored: {reason}. The "
+            "metric card will say the band is unavailable rather than draw one."
+        )
+        logger.warning(msg)
+        return {"reason": reason}
+
+    # Raw units, so the chart shares an axis with the metric's own history.
+    observed = y * y_std + y_mean
+    qs = np.quantile(y_rep, list(_PPC_BAND_QUANTILES.values()), axis=0) * y_std + y_mean
+
+    if not np.isfinite(observed).all() or not np.isfinite(qs).all():
+        reason = "the observed series or its replicated quantiles contain non-finite values"
+        msg = (
+            f"The posterior predictive band for '{target}' was not stored: {reason}. The "
+            "metric card will say the band is unavailable rather than draw one."
+        )
+        logger.warning(msg)
+        return {"reason": reason}
+
+    replicated = {name: qs[i].tolist() for i, name in enumerate(_PPC_BAND_QUANTILES)}
+    lo, hi = np.asarray(replicated["lo95"]), np.asarray(replicated["hi95"])
+    # The periods the model's own 95% predictive interval misses. Published as
+    # indices and deliberately without a threshold, band or verdict of its own:
+    # S3's p-values are the verdict on this fit, and a second thresholded
+    # number computed from the same draws would be the same diagnostic
+    # answering twice (the rule S22 was written for). It is here so the chart
+    # can mark the periods and caption how many there are, which is a
+    # description of the picture rather than a claim about the model.
+    outside = [int(i) for i in np.flatnonzero((observed < lo) | (observed > hi))]
+
+    return {
+        "dates": [d.strftime("%Y-%m-%d") for d in pd.DatetimeIndex(dates)],
+        "observed": observed.tolist(),
+        "quantiles": dict(_PPC_BAND_QUANTILES),
+        "replicated": replicated,
+        "outside": outside,
+        "n_draws": int(y_rep.shape[0]),
+        "n_periods": n,
+        # "metric" | "formula_residual" — see the docstring. Not a boolean:
+        # a third fitted quantity later gets a name here rather than a second
+        # flag beside this one.
+        "fitted_quantity": "formula_residual" if is_residual else "metric",
+        "reason": None,
+    }
+
+
 def _ppc_warning(
     target: str,
     grain: str,
@@ -1930,6 +2079,18 @@ def fit_metric(
         else _ppc_unavailable(target, ppc_reason)
     )
 
+    # Roadmap S10, from the same draws and before they go out of scope. The
+    # verdict above is a summary of this; keeping both means the reader who is
+    # told `min` failed at p = 0.016 can also see which periods it failed on.
+    # When the draws themselves could not be produced there is no band either,
+    # and the absent band is `None` with `ppc_status: "unavailable"` beside it
+    # saying why — an unchecked model, never an empty chart (rule 3).
+    ppc_band = (
+        _ppc_band(y, y_rep, dates, y_mean, y_std, bool(defn.formula and parents), target)
+        if ppc_reason is None
+        else {"reason": ppc_reason}
+    )
+
     if diagnostics["fit_quality"] == "suspect":
         logger.warning("Fit for '%s' is suspect: %s", target, diagnostics)
     if seasonality_warnings:
@@ -2022,4 +2183,5 @@ def fit_metric(
         fit_end=fit_end,
         grain=grain,
         diagnostics=diagnostics,
+        ppc_band=ppc_band,
     )

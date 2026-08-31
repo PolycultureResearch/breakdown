@@ -110,6 +110,20 @@ through `new_subscriptions` (−16.5%) and `trial_conversions` (−18.9%) to
   engine does not have yet. Two of the tree's three learned nodes come back
   clean, so this is a diagnosis and not a smoke alarm.
 
+- **And since 2026-08-30 (roadmap S10) there is a picture to point at, which is
+  the stronger move.** Open `trials_started` in the Metric tab and scroll to
+  **Posterior predictive check**: the blue line is the 790 days the model was
+  fitted on, the grey bands are the 50% and 95% ranges of the series that model
+  *generates*. Drag across the first two months to zoom in. The lower edge of
+  the 95% band drops through the zero line — on a metric that never goes below
+  6 trials in a day. That is the p = 0.004 on `min`, shown rather than asserted,
+  and it is the single most convincing thing on the screen: the tool is arguing
+  against its own number, with the evidence, in a chart anyone can read.
+  Contrast it with `trial_conversion_rate` (88 weekly periods, `ok`), where the
+  band contains the line throughout. Nothing in either chart is coloured by the
+  verdict; the shape is the finding. Say that too — a tool that tints the bad
+  one red is asking to be believed, and this one is asking to be checked.
+
 **Note the lag.** The analysis window starts a week *after* the break. The
 engine compares `trial_conversions` not over the calendar window but over
 **2026-02-02 → 2026-03-01**, shifted back a week — the anomaly's exact start

@@ -982,6 +982,48 @@ def test_metric_summary_is_computed_once_per_fit(monkeypatch):
     assert len(calls) == 1, "the summary was recomputed on every GET"
 
 
+def test_ppc_band_route_answers_all_three_of_its_states():
+    """Roadmap S10. The band has a route of its own because it is
+    window-scaled and `GET /metrics/{name}` is fetched once per fitted metric
+    by `clearRCA`; all three of its answers are 200, because "this node has no
+    band" is information rather than an error."""
+    with TestClient(app) as client:
+        assert client.get("/metrics/nonexistent/ppc").status_code == 404
+
+        # No fit yet: nothing was checked, and the payload says so with a null
+        # status rather than an empty band that reads as a clean one.
+        before = client.get("/metrics/daily_sessions/ppc")
+        assert before.status_code == 200
+        assert before.json() == {
+            "metric": "daily_sessions",
+            "ppc_status": None,
+            "band": None,
+            "reason": None,
+        }
+
+        assert client.post("/analyze/daily_sessions?draws=150").status_code == 200
+        resp = client.get("/metrics/daily_sessions/ppc")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ppc_status"] in ("ok", "moderate", "severe")
+        band = body["band"]
+        n = band["n_periods"]
+        assert len(band["dates"]) == n and len(band["observed"]) == n
+        assert all(len(v) == n for v in band["replicated"].values())
+        assert band["fitted_quantity"] == "metric"
+        # Rule 3 at the encoder that actually broke before: Starlette refuses
+        # NaN, so a band with one in it is a 500 on the whole route.
+        json.dumps(body, allow_nan=False)
+
+        # And it is only here. `diagnostics` rides on `GET /metrics/{name}`
+        # whole and its `ppc` block onto every RCA node, so a window-scaled
+        # array in either would be paid once per node. The general property is
+        # `test_no_per_node_payload_carries_a_series` in the invariants file.
+        diag = client.get("/metrics/daily_sessions").json()["diagnostics"]
+        assert diag["ppc_status"] is not None
+        assert "ppc_band" not in diag and "band" not in diag["ppc"]
+
+
 def test_non_ascii_bearer_token_is_401_not_500(monkeypatch):
     """`hmac.compare_digest` raises TypeError comparing strs with non-ASCII, so
     a header of `Bearer sécret` was a 500 from inside the middleware — an
@@ -1096,6 +1138,7 @@ _DATA_ROUTES = [
     ("get", "/series"),
     ("get", "/metrics/revenue"),
     ("get", "/metrics/revenue/query"),
+    ("get", "/metrics/revenue/ppc"),
     ("post", "/analyze/revenue"),
     ("get", "/shapley/revenue?analysis_start=2024-03-01&analysis_end=2024-04-09"),
     ("post", "/rca/revenue?analysis_start=2024-03-01&analysis_end=2024-04-09"),

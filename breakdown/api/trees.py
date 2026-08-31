@@ -94,19 +94,66 @@ def _trace_nbytes(fit: Any) -> int:
 
     Unknown shapes (a test double, a fit whose trace is not xarray-backed)
     measure 0 and are bounded by the entry count alone.
+
+    The trace is not the only thing on a fit that scales with the loaded
+    window, and until roadmap S10 it was the only thing counted. `dates` is one
+    value per fitted period, and S10's `ppc_band` is six — the observed series
+    plus five replicate quantiles. Both are small against the trace they ride
+    with (measured together at 0.65% of it — 167 kB against a 24.6 MB trace —
+    on the demo tree's `trials_started` over 790 days), and *small,
+    therefore unmeasured* is precisely the argument the `slice_cache` defect
+    was made of. A meter that cannot see a term under-reports every entry by a
+    fixed fraction and stops being a bound on the thing that grows. Count them.
+
+    One field is deliberately not counted, and it is named rather than
+    forgotten: `summary_json` is filled lazily by `_fit_summary` on the first
+    `GET /metrics/{name}`, which is *after* the store measured this entry, so
+    at insert time there is nothing there to weigh.
+    `test_every_window_scaled_field_on_a_fit_is_metered_or_named` holds the
+    exception open.
     """
+    total = 0
     trace = getattr(fit, "trace", None)
     groups = getattr(trace, "groups", None)
-    if groups is None:
-        return 0
+    if groups is not None:
+        try:
+            for name in groups():
+                group = getattr(trace, name, None)
+                nbytes = getattr(group, "nbytes", 0)
+                total += int(nbytes)
+        except Exception:  # pragma: no cover - never let sizing break a cache write
+            return 0
+    return total + _fit_series_nbytes(fit)
+
+
+#: Bytes one `ppc_band` period costs. Six series (observed plus five
+#: quantiles) of Python floats — 24 bytes for the float object, 8 for the list
+#: slot pointing at it — plus ~11 for that period's `YYYY-MM-DD` string.
+#: Analytic rather than `sys.getsizeof` (which does not recurse into a list)
+#: or `pickle.dumps` (which is the second full copy `_trace_nbytes` exists to
+#: avoid).
+_PPC_BAND_BYTES_PER_PERIOD = 6 * 32 + 11
+
+
+def _fit_series_nbytes(fit: Any) -> int:
+    """The per-period arrays hanging off a `FitResult` outside its trace.
+
+    O(1): both lengths are already known — `dates` reports its own, and the
+    band carries `n_periods` — so nothing here walks a series.
+    """
     total = 0
+    dates = getattr(fit, "dates", None)
     try:
-        for name in groups():
-            group = getattr(trace, name, None)
-            nbytes = getattr(group, "nbytes", 0)
-            total += int(nbytes)
-    except Exception:  # pragma: no cover - never let sizing break a cache write
-        return 0
+        # A DatetimeIndex is int64 nanoseconds behind the object wrapper.
+        total += len(dates) * 8 if dates is not None else 0
+    except TypeError:  # pragma: no cover - a test double with no length
+        pass
+    band = getattr(fit, "ppc_band", None)
+    if isinstance(band, dict):
+        try:
+            total += max(int(band.get("n_periods") or 0), 0) * _PPC_BAND_BYTES_PER_PERIOD
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            pass
     return total
 
 
