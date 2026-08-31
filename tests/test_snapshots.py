@@ -7,8 +7,8 @@ import os
 import pandas as pd
 import pytest
 
-from breakdown.api.main import _wrap_snapshots
 from breakdown.data_fetch import BaseDataFetcher, MockDataFetcher
+from breakdown.loading import wrap_snapshots
 from breakdown.parser import BindingSpec
 from breakdown.snapshots import MANIFEST, SnapshotFetcher, SnapshotStore, definition_sha
 
@@ -218,19 +218,19 @@ def test_read_only_dir_serves_uncached(tmp_path, caplog):
 
 def test_wrap_snapshots_skips_mock(tmp_path):
     inner = MockDataFetcher()
-    assert _wrap_snapshots(inner, "mock", str(tmp_path / "t.yml")) is inner
+    assert wrap_snapshots(inner, "mock", str(tmp_path / "t.yml")) is inner
 
 
 def test_wrap_snapshots_off_switch(tmp_path, monkeypatch):
     monkeypatch.setenv("BREAKDOWN_SNAPSHOT_DIR", "off")
     inner = CountingFetcher()
-    assert _wrap_snapshots(inner, "warehouse", str(tmp_path / "t.yml")) is inner
+    assert wrap_snapshots(inner, "warehouse", str(tmp_path / "t.yml")) is inner
 
 
 def test_wrap_snapshots_defaults_tree_adjacent(tmp_path, monkeypatch):
     monkeypatch.delenv("BREAKDOWN_SNAPSHOT_DIR", raising=False)
     monkeypatch.delenv("BREAKDOWN_REFRESH", raising=False)
-    wrapped = _wrap_snapshots(CountingFetcher(), "warehouse", str(tmp_path / "sub" / "t.yml"))
+    wrapped = wrap_snapshots(CountingFetcher(), "warehouse", str(tmp_path / "sub" / "t.yml"))
     assert isinstance(wrapped, SnapshotFetcher)
     assert wrapped.store.directory == str(tmp_path / "sub" / ".breakdown" / "snapshots")
     assert wrapped.refresh is False
@@ -239,7 +239,7 @@ def test_wrap_snapshots_defaults_tree_adjacent(tmp_path, monkeypatch):
 def test_wrap_snapshots_env_overrides(tmp_path, monkeypatch):
     monkeypatch.setenv("BREAKDOWN_SNAPSHOT_DIR", str(tmp_path / "cache"))
     monkeypatch.setenv("BREAKDOWN_REFRESH", "1")
-    wrapped = _wrap_snapshots(CountingFetcher(), "cloud", str(tmp_path / "t.yml"))
+    wrapped = wrap_snapshots(CountingFetcher(), "cloud", str(tmp_path / "t.yml"))
     assert wrapped.store.directory == str(tmp_path / "cache")
     assert wrapped.refresh is True
 

@@ -1387,28 +1387,28 @@ def test_a_formula_node_above_the_shapley_cap_is_refused_at_parse_time():
     # `compute_shapley` refuses it too — that is the chokepoint a direct
     # library caller cannot walk around — but an author should hear about a
     # 13-parent node when the tree loads, not five minutes into an RCA.
-    from breakdown.engine.model import _MAX_SHAPLEY_PARENTS
+    from breakdown.engine.model import MAX_SHAPLEY_PARENTS
 
     with pytest.raises(ValueError) as exc:
-        Parser(_wide_formula_tree(_MAX_SHAPLEY_PARENTS + 1))
+        Parser(_wide_formula_tree(MAX_SHAPLEY_PARENTS + 1))
     msg = str(exc.value)
     assert "Formula node 'total' has too many parents" in msg
-    assert f"at most {_MAX_SHAPLEY_PARENTS} are supported" in msg
+    assert f"at most {MAX_SHAPLEY_PARENTS} are supported" in msg
 
 
 def test_a_formula_node_at_the_shapley_cap_parses():
-    from breakdown.engine.model import _MAX_SHAPLEY_PARENTS
+    from breakdown.engine.model import MAX_SHAPLEY_PARENTS
 
-    parser = Parser(_wide_formula_tree(_MAX_SHAPLEY_PARENTS))
-    assert len(list(parser.dag.predecessors("total"))) == _MAX_SHAPLEY_PARENTS
+    parser = Parser(_wide_formula_tree(MAX_SHAPLEY_PARENTS))
+    assert len(list(parser.dag.predecessors("total"))) == MAX_SHAPLEY_PARENTS
 
 
 def test_the_cap_is_only_for_formula_nodes():
     # A probabilistic node's parents are regressors, not coalition players:
     # nothing enumerates 2^n over them.
-    from breakdown.engine.model import _MAX_SHAPLEY_PARENTS
+    from breakdown.engine.model import MAX_SHAPLEY_PARENTS
 
-    n = _MAX_SHAPLEY_PARENTS + 1
+    n = MAX_SHAPLEY_PARENTS + 1
     parents = [f"p{i}" for i in range(n)]
     tree = (
         "metrics:\n"

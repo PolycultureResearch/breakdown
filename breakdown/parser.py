@@ -1564,7 +1564,7 @@ class Parser:
     @staticmethod
     def _validate_shapley_parents(G: nx.DiGraph) -> None:
         """A formula node's parents are enumerated in coalitions by
-        `compute_shapley`, which refuses more than `_MAX_SHAPLEY_PARENTS` of
+        `compute_shapley`, which refuses more than `MAX_SHAPLEY_PARENTS` of
         them. That refusal is the chokepoint no direct library caller can walk
         around, but by the time it fires the author is minutes into an RCA — so
         the same limit is checked here, where a too-wide node surfaces at tree
@@ -1582,18 +1582,18 @@ class Parser:
         own functions (roadmap C14), so reaching it from here loads no part of
         the inference stack.
         """
-        from breakdown.engine.model import _MAX_SHAPLEY_PARENTS
+        from breakdown.engine.model import MAX_SHAPLEY_PARENTS
 
         for name in G.nodes:
             defn = G.nodes[name]["definition"]
             if defn.formula is None:
                 continue
             n = len(list(G.predecessors(name)))
-            if n > _MAX_SHAPLEY_PARENTS:
+            if n > MAX_SHAPLEY_PARENTS:
                 raise ValueError(
                     f"Formula node '{name}' has too many parents for exact "
                     f"Shapley attribution: {n} parents, at most "
-                    f"{_MAX_SHAPLEY_PARENTS} are supported (the coalition "
+                    f"{MAX_SHAPLEY_PARENTS} are supported (the coalition "
                     "enumeration is O(2^n), so each extra parent doubles the "
                     "work). Split the node into intermediate sums — group some "
                     "parents under their own formula node and make that node the "

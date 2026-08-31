@@ -517,6 +517,11 @@ def test_a_degenerate_tree_still_encodes_strictly(tmp_path, monkeypatch):
         # the fit (which ends at analysis_start) can never have seen it — the
         # exact H1 shape.
         frame.loc[frame.index[-3], "aov"] = float("nan")
+        # And an inf (roadmap C40, grill M3): `math.isnan(inf)` is False, so
+        # ±inf sailed through three route sanitizers into the strict encoder
+        # while their neighbours checked isfinite. DuckDB returns inf for
+        # float division by zero, so the vector is a provider or a snapshot.
+        frame.loc[frame.index[-4], "revenue"] = float("inf")
 
         # A stub NUTS fit through the trace-cache seam: `run_rca` reuses it
         # via `cached_fit_is_usable` and fits nothing. The refusal under test
@@ -569,6 +574,12 @@ def test_a_degenerate_tree_still_encodes_strictly(tmp_path, monkeypatch):
         assert r.status_code == 200
         _strict(r.json())
 
+        # The inf poked above must come back withheld (`null`), not 500.
+        for path in ("/metrics/revenue", "/series"):
+            r = client.get(path)
+            assert r.status_code == 200, f"GET {path} choked on an inf (C40)"
+            _strict(r.json())
+
 
 def test_round_floats_never_emits_a_non_finite_number():
     """Rule 3 on the agent-facing side: `null` is the MCP shape of a NaN."""
@@ -616,7 +627,7 @@ def test_every_subset_enumeration_declares_a_cap():
 
 
 @pytest.mark.parametrize(
-    "cap", [(model_mod, "_MAX_SHAPLEY_PARENTS"), (simulate_mod, "_MAX_SOURCES")]
+    "cap", [(model_mod, "MAX_SHAPLEY_PARENTS"), (simulate_mod, "_MAX_SOURCES")]
 )
 def test_the_declared_caps_are_small_enough_to_be_caps(cap):
     """A cap of 20 would be 1,000x the work of 10 and is not a cap.
@@ -630,7 +641,7 @@ def test_the_declared_caps_are_small_enough_to_be_caps(cap):
 
 def test_compute_shapley_refuses_above_its_cap():
     """Rule 4 behaviourally, at the chokepoint a library caller cannot bypass."""
-    n = model_mod._MAX_SHAPLEY_PARENTS + 1
+    n = model_mod.MAX_SHAPLEY_PARENTS + 1
     parents = [f"p{i}" for i in range(n)]
     formula = " + ".join(parents)
     with pytest.raises(ValueError, match="too many parents"):
@@ -1138,9 +1149,7 @@ def test_every_rca_node_field_reaches_a_render_site():
     and fails here — which is the only moment anyone will ask the question.
     """
     fields = set(rca_mod._node_out().keys())
-    js = _js_code(PACKAGE / "static" / "app.js") + _js_code(
-        PACKAGE / "static" / "disclosures.js"
-    )
+    js = _js_code(PACKAGE / "static" / "app.js") + _js_code(PACKAGE / "static" / "disclosures.js")
     # Named exceptions, each with the reason it is not rendered:
     unrendered = {
         # consumed to *position* the k̂ figure's ± suffix, via khatFigure's
@@ -1182,7 +1191,8 @@ def test_every_surface_that_prints_unexplained_labels_which_zero():
     # Comments are stripped by `_js_code`, and the definition lives in
     # disclosures.js now, so every hit here is a genuine call expression.
     calls = [
-        line for line in app_js.splitlines()
+        line
+        for line in app_js.splitlines()
         if "unexplainedRow(" in line and not line.lstrip().startswith("function ")
     ]
     assert len(calls) >= 2, (

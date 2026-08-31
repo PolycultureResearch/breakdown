@@ -20,6 +20,7 @@ from breakdown.engine.simulate import (
     ScenarioRequest,
     run_scenario,
 )
+from breakdown.grains import build_grained
 from breakdown.parser import Parser
 from tests.synthetic import generate_mock_data
 
@@ -641,3 +642,70 @@ def test_a_non_rate_node_is_untouched_by_the_ceiling():
     assert result["nodes"]["average_order_value"]["non_physical"] is False
     assert result["nodes"]["revenue"]["non_physical"] is False
     assert not [w for w in result["warnings"] if w["kind"] == "non_physical"]
+
+
+DISCONNECTED_MONTH_YAML = JAFFLE_YAML + """
+  - name: board_mrr
+    source: dbt.metric.board_mrr
+    grain: month
+"""
+
+
+def _data_with_month_node(n: int = 60):
+    dates = pd.date_range("2024-01-01", periods=n)
+    day = {
+        m: pd.DataFrame({"date": dates, m: np.full(n, v)})
+        for m, v in (
+            ("daily_sessions", 1000.0),
+            ("order_count", 100.0),
+            ("average_order_value", 50.0),
+            ("revenue", 5000.0),
+        )
+    }
+    months = pd.DataFrame(
+        {"date": pd.to_datetime(["2024-01-01", "2024-02-01"]), "board_mrr": [9000.0, 9100.0]}
+    )
+    names = list(day) + ["board_mrr"]
+    return build_grained(
+        {**day, "board_mrr": months},
+        grain_of={**{m: "day" for m in day}, "board_mrr": "month"},
+        kind_of={m: "flow" for m in names},
+    )
+
+
+def test_an_unrelated_month_node_no_longer_blocks_a_sub_month_scenario():
+    """Roadmap C39 (grill M2): the baseline loop raised for *every* node, so
+    one disconnected month-grain metric made every sub-month what-if on the
+    tree unusable. A node outside the affected cone is now omitted from
+    `nodes` and named in `warnings`; a node the scenario propagates through
+    still refuses loudly."""
+    dag = Parser(DISCONNECTED_MONTH_YAML).dag
+    data = _data_with_month_node()
+    two_weeks = {"baseline_start": "2024-01-01", "baseline_end": "2024-01-14"}
+
+    result = run_scenario(
+        dag,
+        data,
+        {},
+        ScenarioRequest(
+            **two_weeks,
+            interventions=[Intervention(metric="order_count", mode="pct", value=0.10)],
+        ),
+    )
+    assert "board_mrr" not in result["nodes"]
+    skips = [w for w in result["warnings"] if w["kind"] == "baseline_unavailable"]
+    assert [w["metric"] for w in skips] == ["board_mrr"]
+    assert "whole 'month' period" in skips[0]["detail"]
+    assert result["nodes"]["revenue"]["status"] == "affected"
+
+    # The cone still refuses: intervene ON the month node over the same window.
+    with pytest.raises(ValueError, match="whole 'month' period"):
+        run_scenario(
+            dag,
+            data,
+            {},
+            ScenarioRequest(
+                **two_weeks,
+                interventions=[Intervention(metric="board_mrr", mode="pct", value=0.10)],
+            ),
+        )

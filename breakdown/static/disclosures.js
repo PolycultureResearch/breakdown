@@ -45,6 +45,11 @@ const NODE_STATUS = {
     short: "attribution failed",
     explains: "Its movement below is measured from the data and stands; what is missing is the decomposition, because the formula has no finite value over these windows.",
   },
+  frame_unavailable: {
+    label: "not analyzed — no aligned data at this grain",
+    short: "no aligned frame",
+    explains: "This metric's series and its parents' share no whole period at its grain over the loaded window (for example, a monthly node whose daily parent covers no whole month), so there is nothing to measure and nothing was fitted. The reason names the metrics and the grain.",
+  },
   undefined_over_window: {
     label: "no value — every period undefined",
     short: "undefined over window",

@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 
 from breakdown.engine.model import (
-    _MAX_SHAPLEY_PARENTS,
+    MAX_SHAPLEY_PARENTS,
     FitResult,
     compute_shapley,
     fit_metric,
@@ -217,8 +217,8 @@ def test_compute_shapley_mismatched_lengths_raise():
 
 
 def test_compute_shapley_at_cap_still_works():
-    """Exactly `_MAX_SHAPLEY_PARENTS` parents is supported, and exact."""
-    parents = [f"p{i}" for i in range(_MAX_SHAPLEY_PARENTS)]
+    """Exactly `MAX_SHAPLEY_PARENTS` parents is supported, and exact."""
+    parents = [f"p{i}" for i in range(MAX_SHAPLEY_PARENTS)]
     baselines = {p: 100.0 + i for i, p in enumerate(parents)}
     actuals = {p: 110.0 + 2 * i for i, p in enumerate(parents)}
     formula = " + ".join(parents)
@@ -232,7 +232,7 @@ def test_compute_shapley_at_cap_still_works():
 def test_compute_shapley_over_cap_refuses_by_name():
     """Past the cap the O(2^n) enumeration is refused, not approximated —
     naming the node, its parent count, the cap, and the remedy."""
-    n = _MAX_SHAPLEY_PARENTS + 1
+    n = MAX_SHAPLEY_PARENTS + 1
     parents = [f"p{i}" for i in range(n)]
     vals = {p: 1.0 for p in parents}
 
@@ -242,13 +242,13 @@ def test_compute_shapley_over_cap_refuses_by_name():
     msg = str(exc.value)
     assert "total_revenue" in msg
     assert f"{n} parents" in msg
-    assert f"at most {_MAX_SHAPLEY_PARENTS}" in msg
+    assert f"at most {MAX_SHAPLEY_PARENTS}" in msg
     assert "Split" in msg
 
 
 def test_compute_shapley_over_cap_refuses_without_node_name():
     """Callers that don't have the node name still get an identifiable refusal."""
-    parents = [f"p{i}" for i in range(_MAX_SHAPLEY_PARENTS + 1)]
+    parents = [f"p{i}" for i in range(MAX_SHAPLEY_PARENTS + 1)]
     vals = {p: 1.0 for p in parents}
     formula = " + ".join(parents)
 
@@ -261,7 +261,7 @@ def test_run_rca_refuses_wide_formula_node():
     enumerations per formula node cannot bypass it."""
     from breakdown.engine.rca import run_rca
 
-    n = _MAX_SHAPLEY_PARENTS + 1
+    n = MAX_SHAPLEY_PARENTS + 1
     parents = [f"p{i}" for i in range(n)]
     yaml = "metrics:\n"
     for p in parents:
@@ -282,7 +282,7 @@ def test_run_rca_refuses_wide_formula_node():
         total = total + v
     cols["total"] = total
 
-    with pytest.raises(ValueError, match=f"at most {_MAX_SHAPLEY_PARENTS}"):
+    with pytest.raises(ValueError, match=f"at most {MAX_SHAPLEY_PARENTS}"):
         run_rca(
             Parser(yaml).dag,
             pd.DataFrame(cols),

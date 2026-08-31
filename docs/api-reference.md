@@ -376,7 +376,8 @@ skipped node has the same shape as an attributed one.
 | `ok` | Attributed normally. |
 | `window_shorter_than_grain` | Your windows hold no whole period at this node's grain, e.g. a 3-day window on a monthly node. `status_reason` names the grain and the windows. Nothing is wrong with the data; widen the window, or accept that this node can't speak to a change this short. When the **target** itself has no whole period, the request is a 422 before any fitting, because with no measured movement on the target there is nothing to attribute anywhere. The error names the grain and the most recent whole period the data holds. Through a parser-built tree that is the only way this case can arise (the target is always the coarsest node in its own scope), so on a served tree you will meet the 422, not the status. |
 | `fit_failed` | The node's own model could not be fitted. Overwhelmingly this is a series with no variance across the fit window: a parent held at zero the whole time, which for a seasonal business is simply its off-season. A constant series cannot be normalized, so there is no coefficient to attribute with. |
-| `attribution_failed` | A formula node whose exact decomposition is not a finite number over these windows, in practice a zero denominator somewhere in the window. The node's own `baseline`, `actual` and `gap` are read off the data, not the model, so they are real and are still reported. Only the split across parents is missing. |
+| `attribution_failed` | A formula node whose exact decomposition is not a finite number over these windows, in practice a zero denominator somewhere in the window — or, since roadmap C29, a probabilistic node whose parent series holds a non-finite value inside a window (an undefined rate period the fit never saw). The node's own `baseline`, `actual` and `gap` are read off the data where readable, and the split across parents is withheld with the reason. |
+| `frame_unavailable` | The node's series and its parents' share no whole period at its grain over the loaded window (e.g. a monthly node whose daily parent covers no whole month), so nothing could be measured at all — `baseline`/`actual`/`gap` are `null`, not zero (roadmap C38; this was an unhandled 500). When the **target** itself has no aligned frame, the request is a 422 carrying the same diagnostic. |
 
 `fit_failed` and `attribution_failed` exist because the alternative was worse.
 One unfittable node used to abort the entire tree analysis and return nothing
@@ -538,6 +539,17 @@ curl -X POST "http://localhost:9090/simulate" \
     "interventions": [{"metric": "daily_sessions", "mode": "pct", "value": 0.10}]
   }'
 ```
+
+Analysis routes (`/rca`, `/simulate`, `/analyze`, `/shapley`, slicing) can
+also answer **409**: a previous run on this tree was cancelled mid-flight
+(engine threads cannot be), and its orphan is still finishing — retry once it
+completes (roadmap C41). And a metric **outside the scenario's affected cone**
+whose baseline window holds no whole period at its grain (or no defined value)
+is omitted from `nodes` and named in `warnings` as
+`{"kind": "baseline_unavailable", "metric": …, "detail": …}` rather than
+blocking the whole scenario (roadmap C39) — a disconnected monthly metric no
+longer makes every sub-month what-if unusable. A metric the scenario actually
+propagates through still refuses loudly, unchanged.
 
 The response carries `mode` (`fitted` | `cold_start`), the resolved
 `baseline_window` (null in cold start), `n_draws`, `seed`, a `sources`

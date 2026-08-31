@@ -57,6 +57,7 @@ breakdown/
   formula.py         # Shared formula validation / safe evaluation
   grains.py          # All grain arithmetic: period snapping, kind-aware resampling
   data_fetch.py      # BaseDataFetcher + Mock / Local / Cloud / Warehouse implementations
+  loading.py         # Tree + provider → aligned GrainedData (no HTTP; doctor and the app share it)
   snapshots.py       # Parquet read-through cache at the fetcher boundary
   dbt_manifest.py    # In-tree models for dbt's semantic_manifest.json
   dbt_bridge.py      # semantic_manifest.json → BindingSpec per node (no dbt Cloud)

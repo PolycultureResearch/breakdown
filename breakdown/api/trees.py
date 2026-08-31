@@ -29,6 +29,7 @@ Two things are deliberately *not* per-tree:
 import asyncio
 import logging
 import os
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, MutableMapping, Optional, Tuple
 
@@ -197,6 +198,18 @@ class TraceStore:
         self._entries: Dict[Tuple[str, str, Optional[str]], Any] = {}
         self._sizes: Dict[Tuple[str, str, Optional[str]], int] = {}
         self.total_bytes = 0
+        # One lock for every mutation (roadmap C41, grill M4). The module
+        # docstring's "two trees' caches are disjoint" was true of the *keys*
+        # and false of the store: every TreeState's TraceView writes into this
+        # one `_entries` dict and this one `total_bytes`, from worker threads
+        # the per-tree asyncio locks do not serialize against each other. Two
+        # concurrent RCAs on two trees reproduce `dictionary changed size
+        # during iteration` inside `_evict` (the C8 failure class, back on the
+        # writer side) and drift `total_bytes` low — which silently disarms
+        # the byte budget rule 2 exists for. Microseconds per fit; and on the
+        # free-threaded 3.14 build the race window stops being "a few
+        # bytecodes" and becomes routine.
+        self._lock = threading.Lock()
 
     def view(self, tree_id: str) -> "TraceView":
         return TraceView(self, tree_id)
@@ -244,18 +257,21 @@ class TraceView(MutableMapping):
         # order), so drop the old entry and its bytes first rather than
         # overwriting in place.
         store = self._store
-        store._forget(store_key)
-        store._entries[store_key] = value
+        # Sizing outside the lock (it walks xarray metadata); mutation inside.
         size = _trace_nbytes(value)
-        store._sizes[store_key] = size
-        store.total_bytes += size
-        store._evict()
+        with store._lock:
+            store._forget(store_key)
+            store._entries[store_key] = value
+            store._sizes[store_key] = size
+            store.total_bytes += size
+            store._evict()
 
     def __delitem__(self, key: _TraceKey) -> None:
         store_key = (self._tree_id, *key)
-        if store_key not in self._store._entries:
-            raise KeyError(key)
-        self._store._forget(store_key)
+        with self._store._lock:
+            if store_key not in self._store._entries:
+                raise KeyError(key)
+            self._store._forget(store_key)
 
     def __iter__(self) -> Iterator[_TraceKey]:
         return iter([k[1:] for k in list(self._store._entries) if k[0] == self._tree_id])
@@ -373,6 +389,15 @@ class TreeState:
     flow_cache: Dict[Any, Any] = field(
         default_factory=lambda: BoundedCache(MAX_CACHED_FLOWS, MAX_CACHED_FRAME_BYTES)
     )
+    # Thread-side twin of `lock` (roadmap C41, grill M11): the asyncio lock
+    # releases when the awaiting coroutine is *cancelled*, but the engine
+    # thread it launched keeps running — writing into `traces` — so a second
+    # run can start beside the orphan and two NUTS fits side by side is an
+    # OOM on the 2 GB box. Acquired non-blocking inside the worker function
+    # itself (`_guarded` in api/main.py): contention is impossible in the
+    # ordinary flow, so hitting it *means* an orphan is still finishing, and
+    # the honest answer is a 409 naming that, not a second sampler.
+    engine_guard: threading.Lock = field(default_factory=threading.Lock)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     earliest: Dict[str, Optional[str]] = field(default_factory=dict)
     earliest_task: Optional[asyncio.Task] = None

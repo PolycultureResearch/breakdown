@@ -1344,3 +1344,27 @@ def test_loopback_bind_without_token_stays_quiet(monkeypatch, caplog):
         with TestClient(app):
             pass
     assert not any("BREAKDOWN_API_TOKEN" in r.message for r in caplog.records)
+
+
+def test_an_orphaned_engine_run_answers_409_not_a_second_sampler():
+    """Roadmap C41 (grill M11): cancelling a request releases the asyncio
+    tree lock while the engine thread runs on. The thread-side guard makes
+    the overlap a named 409 instead of two NUTS working sets on one box."""
+    with TestClient(app) as client:
+        tree = next(iter(app.state.trees.values()))
+        assert tree.engine_guard.acquire(blocking=False)
+        try:
+            resp = client.get(
+                "/shapley/revenue?reference_start=2024-03-13&reference_end=2024-03-26"
+                "&analysis_start=2024-03-27&analysis_end=2024-04-09"
+            )
+            assert resp.status_code == 409
+            assert "finishing" in resp.json()["detail"]
+        finally:
+            tree.engine_guard.release()
+        # Released, the identical request runs.
+        resp = client.get(
+            "/shapley/revenue?reference_start=2024-03-13&reference_end=2024-03-26"
+            "&analysis_start=2024-03-27&analysis_end=2024-04-09"
+        )
+        assert resp.status_code == 200

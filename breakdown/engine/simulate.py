@@ -465,6 +465,9 @@ def run_scenario(
     # asserted baseline need not equal beta·parents — the intercept/trend
     # absorb the level in fitted mode, and only deltas propagate here.
     base_mu: Dict[str, float] = {}
+    # Nodes omitted from this scenario, with the reason (roadmap C39). Only
+    # ever populated in fitted mode; cold start declares every baseline.
+    baseline_unavailable: Dict[str, str] = {}
     base_draws: Dict[str, np.ndarray] = {}
     # (cold start) Draws come from `_baseline_draws`: the declared belief's
     # distribution, truncated to the declared `plausible` bounds (C7a) — the
@@ -518,10 +521,32 @@ def run_scenario(
                 # intervention's simulated level is exactly its pinned value.
                 base_mu[n] = float(base_draws[n].mean())
     else:
+        # The refusal below is scoped (roadmap C39, grill M2): a scenario's
+        # load-bearing nodes are the seeds and everything downstream — the
+        # cone a delta can actually reach — and only those may hard-fail the
+        # whole scenario. The loop used to raise for *every* node, so one
+        # disconnected month-grain metric made every sub-month what-if on the
+        # tree unusable ("a process serves several trees, and they are
+        # peers", scoped down to nodes). A node outside the cone that has no
+        # whole period (or no defined value) is omitted from `nodes` and
+        # named in `warnings` — absent-with-a-reason, never a fabricated row.
+        needed_seeds = {iv.metric for iv in scenario.interventions} | {
+            a.target for a in assumptions
+        }
+        needed = set(needed_seeds)
+        for s in needed_seeds:
+            needed |= nx.descendants(dag, s)
         for n in dag.nodes:
             g = fit_grain(dag, n)
             snapped = snap_window(b_start, b_end, g)
             if snapped is None:
+                if n not in needed:
+                    baseline_unavailable[n] = (
+                        f"baseline window holds no whole '{g}' period; the metric "
+                        "is outside this scenario's affected cone, so it is "
+                        "omitted rather than blocking the scenario"
+                    )
+                    continue
                 raise ValueError(
                     f"Baseline window [{scenario.baseline_start}, "
                     f"{scenario.baseline_end}] contains no whole '{g}' period for "
@@ -539,6 +564,15 @@ def run_scenario(
             )
             window_basis_reason[n] = rate_window_method_reason(data, n, window_basis[n])
             if not np.isfinite(base_mu[n]):
+                if n not in needed:
+                    baseline_unavailable[n] = (
+                        f"every whole '{g}' period of the baseline window is "
+                        "undefined; the metric is outside this scenario's "
+                        "affected cone, so it is omitted rather than blocking "
+                        "the scenario"
+                    )
+                    del base_mu[n]
+                    continue
                 raise ValueError(
                     f"Metric '{n}' has no value over the baseline window "
                     f"[{scenario.baseline_start}, {scenario.baseline_end}]: every "
@@ -832,6 +866,20 @@ def run_scenario(
 
     nodes_out: Dict[str, Any] = {}
     for node in dag.nodes:
+        if node not in base_mu:
+            # Absent with a reason, never a fabricated row (roadmap C39): the
+            # warning is rendered by the panel the UI already has, and an
+            # agent reading `nodes` cannot mistake omission for a zero.
+            warnings.append(
+                {
+                    "kind": "baseline_unavailable",
+                    "metric": node,
+                    "detail": baseline_unavailable.get(
+                        node, "no baseline could be computed for this window"
+                    ),
+                }
+            )
+            continue
         base = base_mu[node]
         hist = hist_stats[node]
         baseline_ci = None

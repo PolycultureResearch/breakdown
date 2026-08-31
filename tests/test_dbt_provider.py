@@ -410,7 +410,7 @@ metrics:
 
 
 def test_the_factory_routes_dbt_to_this_fetcher(tmp_path, monkeypatch):
-    from breakdown.api.main import _build_fetcher
+    from breakdown.loading import build_fetcher
     from breakdown.parser import Parser
 
     parser = Parser(
@@ -430,7 +430,7 @@ metrics:
         return "fetcher"
 
     monkeypatch.setattr("breakdown.dbt_provider.fetcher_from_project", fake)
-    assert _build_fetcher(parser.config.provider, parser.dag, parser.config.metrics) == "fetcher"
+    assert build_fetcher(parser.config.provider, parser.dag, parser.config.metrics) == "fetcher"
     assert called["project_path"] == str(tmp_path)
 
 
@@ -438,7 +438,7 @@ def test_a_nodes_own_bind_overrides_the_manifest(tmp_path, monkeypatch):
     # The tree corrects what dbt declares without editing the dbt project. The
     # override is keyed by the queried name (the last segment of `source`),
     # which is what the fetcher looks bindings up by.
-    from breakdown.api.main import _build_fetcher
+    from breakdown.loading import build_fetcher
     from breakdown.parser import Parser
 
     parser = Parser(
@@ -464,7 +464,7 @@ metrics:
         return "fetcher"
 
     monkeypatch.setattr("breakdown.dbt_provider.fetcher_from_project", fake)
-    _build_fetcher(parser.config.provider, parser.dag, parser.config.metrics)
+    build_fetcher(parser.config.provider, parser.dag, parser.config.metrics)
     assert set(seen["overrides"]) == {"revenue"}
     assert seen["overrides"]["revenue"].relation == "analytics.fct_orders"
 

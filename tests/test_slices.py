@@ -902,3 +902,43 @@ def test_pivot_refuses_duplicate_date_slice_pairs():
     )
     with pytest.raises(ValueError, match="more than one row per"):
         _pivot(long_df, "'m' by 'region'")
+
+
+def test_a_weightless_window_is_refused_by_name():
+    """Roadmap C44 (grill M10): a reference window whose declared weight sums
+    to zero across every slice used to surface as numpy's own words ("zero-size
+    array to reduction operation maximum") from deep inside reconciliation —
+    in the module whose every other refusal names the metric and the remedy."""
+    dates = _dates(REF[0], REF[1]).union(_dates(AN[0], AN[1]))
+    an_mask = ((dates >= pd.Timestamp(AN[0])) & (dates <= pd.Timestamp(AN[1]))).astype(float)
+    n = len(dates)
+    weights = {
+        "amer": pd.Series(600.0 * an_mask, index=dates),
+        "emea": pd.Series(300.0 * an_mask, index=dates),
+    }
+    rates = {
+        "amer": pd.Series(np.full(n, 0.20), index=dates),
+        "emea": pd.Series(np.full(n, 0.10), index=dates),
+    }
+    w_arr = np.stack([weights[k].to_numpy() for k in weights])
+    r_arr = np.stack([rates[k].to_numpy() for k in weights])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        # The unsliced series stays defined everywhere (a real deployment's
+        # unsliced rate comes from its own query), so the *weight* refusal is
+        # what fires — not the missing-periods check on the unsliced series.
+        blend = np.where(
+            w_arr.sum(axis=0) > 0, (w_arr * r_arr).sum(axis=0) / w_arr.sum(axis=0), 0.15
+        )
+    unsliced = pd.DataFrame({"date": dates, "conversion_rate": blend})
+    with pytest.raises(ValueError) as e:
+        slice_attribution(
+            _rate_defn(),
+            "region",
+            _long(rates),
+            unsliced,
+            *REF,
+            *AN,
+            weight_sliced=_long(weights),
+        )
+    msg = str(e.value)
+    assert "weight" in msg and "reference" in msg and "conversion_rate" in msg
