@@ -1406,3 +1406,38 @@ def test_ranked_causes_only_lists_metrics_something_attributed_to():
     by_metric = {r["metric"]: r for r in ranked}
     assert by_metric["order_count"] == {"metric": "order_count", "score": 0.0, "via": "revenue"}
     assert "daily_sessions" not in by_metric
+
+
+def test_a_node_with_no_aligned_frame_degrades_by_name(monkeypatch):
+    """Roadmap C38 (grill M1): `GrainedData.fit_frame` raises RuntimeError on
+    an empty grain join, the scoping loop called it outside any try, and the
+    route catches ValueError — so a month-grain ancestor whose parent covers
+    no whole month was an unhandled 500 with the diagnostic thrown away. A
+    non-target node now degrades to `frame_unavailable` with the reason ("one
+    bad node does not end the analysis"); the target re-raises as ValueError
+    so the API's 422 carries the message."""
+    from breakdown.grains import GrainedData
+
+    dag, data = make_tree()
+    real = GrainedData.fit_frame
+
+    def broken(self, node, parents, grain):
+        if node == "order_count":
+            raise RuntimeError(
+                "No overlapping whole 'month' periods across 'order_count' "
+                "and its parents ['daily_sessions']."
+            )
+        return real(self, node, parents, grain)
+
+    monkeypatch.setattr(GrainedData, "fit_frame", broken)
+
+    result = rca_on(dag, make_tree()[1], {}, "revenue")
+    node = result["nodes"]["order_count"]
+    assert node["status"] == "frame_unavailable"
+    assert "No overlapping" in node["status_reason"]
+    assert node["baseline"] is None and node["gap"] is None
+    # The rest of the tree still answers.
+    assert result["nodes"]["revenue"]["status"] == "ok"
+
+    with pytest.raises(ValueError, match="No overlapping"):
+        rca_on(dag, make_tree()[1], {}, "order_count")

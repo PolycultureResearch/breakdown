@@ -905,11 +905,27 @@ def run_rca(
     # only then 422'd. A window that holds no whole period at a node's grain is
     # *not* a coverage failure — that node is skipped here and reported with a
     # status below, exactly as before.
-    scoped: Dict[str, Tuple[str, pd.DataFrame, Any, Any]] = {}
+    scoped: Dict[str, Tuple[str, Optional[pd.DataFrame], Any, Any]] = {}
+    frame_failures: Dict[str, str] = {}
     for node in sorted(nodes_in_scope):
         defn = dag.nodes[node]["definition"]
         grain = fit_grain(dag, node)
-        frame = data.fit_frame(node, list(dag.predecessors(node)), grain)
+        # Guarded (roadmap C38, grill M1): `GrainedData.fit_frame` raises
+        # RuntimeError when the grain join is empty — a month-grain node whose
+        # day-grain parent covers no whole month — and this call sat outside
+        # any try while `_earliest_readable_reference` wraps the identical
+        # call 700 lines up. The route catches only ValueError, so the
+        # diagnostic became an unhandled 500. A non-target node degrades to a
+        # per-node status (the module's headline); the target re-raises as
+        # ValueError so the API's 422 carries the message.
+        try:
+            frame = data.fit_frame(node, list(dag.predecessors(node)), grain)
+        except (ValueError, RuntimeError) as e:
+            if node == target:
+                raise ValueError(str(e)) from e
+            frame_failures[node] = str(e)
+            scoped[node] = (grain, None, None, None)
+            continue
         snapped_ref = snap_window(reference_start, reference_end, grain)
         snapped_an = snap_window(analysis_start, analysis_end, grain)
         if snapped_ref is None or snapped_an is None:
@@ -1002,7 +1018,11 @@ def run_rca(
                 fit_end=analysis_start,
                 random_seed=FIT_RANDOM_SEED,
             )
-        except ValueError as e:
+        except (ValueError, RuntimeError) as e:
+            # RuntimeError included (roadmap C38): PyMC's SamplingError — a
+            # model that fails to initialize — subclasses it, and "one bad
+            # node does not end the analysis" was false for exactly that
+            # node until it degraded here like every other unfittable one.
             fit_failures[node] = str(e)
             continue
         traces[(node, analysis_start)] = fit
@@ -1017,6 +1037,17 @@ def run_rca(
         parents = list(dag.predecessors(node))
         # Grain frame, snapped windows and coverage were all resolved above.
         grain, frame, snapped_ref, snapped_an = scoped[node]
+
+        # No aligned frame at all (roadmap C38): unlike
+        # `window_shorter_than_grain` there are no window values to read, so
+        # baseline/actual/gap stay at `_node_out`'s withheld defaults.
+        if frame is None:
+            nodes_out[node] = _node_out(
+                status="frame_unavailable",
+                grain=grain,
+                status_reason=frame_failures.get(node),
+            )
+            continue
 
         # Windows are interpreted per node at its grain: only whole periods
         # fully inside the requested [start, end] count. A non-target node

@@ -609,7 +609,7 @@ def check_dbt(
     try:
         # Overrides matter here as much as at runtime: a node's own `bind:`
         # block replaces what the manifest declares, so checking without them
-        # validates a binding the server will never use. Mirrors _build_fetcher.
+        # validates a binding the server will never use. Mirrors loading.build_fetcher.
         from breakdown.data_fetch import provider_query_name
 
         overrides = {
@@ -957,9 +957,12 @@ def check_snapshots(
     # verification of the sha, never the inventory. `None` serves legacy-style
     # (with the store's own warning), which mirrors what the server would do.
     try:
-        from breakdown.api.main import _build_fetcher  # lazy: pulls FastAPI
+        # From the loading pipeline, not the web app (roadmap C-grill M9):
+        # this import used to pull FastAPI into a CLI connectivity check,
+        # with a comment apologising for it.
+        from breakdown.loading import build_fetcher
 
-        inner = _build_fetcher(cfg, parser.dag, parser.config.metrics)
+        inner = build_fetcher(cfg, parser.dag, parser.config.metrics)
     except Exception:
         inner = None
 
@@ -1004,14 +1007,14 @@ def check_fit_readiness(
     result reports **history headroom**: whether the provider has history
     before --start-date (RCA trains on everything loaded, so an earlier start
     strengthens fits and default reference windows)."""
-    from breakdown.api.main import _build_fetcher, _wrap_snapshots  # lazy: pulls FastAPI
     from breakdown.data_fetch import provider_query_name
     from breakdown.engine.model import MIN_FIT_PERIODS
+    from breakdown.loading import build_fetcher, wrap_snapshots
 
     cfg = parser.config.provider
     try:
-        fetcher = _build_fetcher(cfg, parser.dag, parser.config.metrics)
-        fetcher = _wrap_snapshots(fetcher, cfg.type, tree_path, slice_span=(start_date, end_date))
+        fetcher = build_fetcher(cfg, parser.dag, parser.config.metrics)
+        fetcher = wrap_snapshots(fetcher, cfg.type, tree_path, slice_span=(start_date, end_date))
     except Exception as e:
         return [CheckResult.fail("fit readiness", f"could not build fetcher: {e}")]
 

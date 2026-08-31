@@ -179,7 +179,7 @@ _PRIOR_DISTRIBUTIONS = frozenset({"Normal", "HalfNormal", "Exponential", "LogNor
 #: identical enumeration over scenario sources. Refusing is deliberate: a
 #: sampled or truncated Shapley value is a *different number*, and this project
 #: does not substitute one quietly for the one the author asked for.
-_MAX_SHAPLEY_PARENTS = 10
+MAX_SHAPLEY_PARENTS = 10
 
 
 def compute_shapley(
@@ -202,18 +202,18 @@ def compute_shapley(
     By Shapley efficiency the values sum (per position) to
     formula(actuals) - formula(baselines).
 
-    Refuses more than `_MAX_SHAPLEY_PARENTS` parents — see that constant.
+    Refuses more than `MAX_SHAPLEY_PARENTS` parents — see that constant.
     `node` is the metric being attributed; it only names the node in that
     refusal, so callers that have it should pass it.
     """
     n = len(parent_names)
     if n == 0:
         return {}
-    if n > _MAX_SHAPLEY_PARENTS:
+    if n > MAX_SHAPLEY_PARENTS:
         who = f"'{node}'" if node else f"with formula '{formula}'"
         raise ValueError(
             f"Formula node {who} has too many parents for exact Shapley "
-            f"attribution: {n} parents, at most {_MAX_SHAPLEY_PARENTS} are "
+            f"attribution: {n} parents, at most {MAX_SHAPLEY_PARENTS} are "
             "supported (the coalition enumeration is O(2^n), so each extra "
             "parent doubles the work). Split the node into intermediate sums — "
             "group some parents under their own formula node and make that node "

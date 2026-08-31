@@ -427,3 +427,45 @@ def test_mcp_unknown_tree_names_the_known_ones(tree_dir):
         res = _call_tool(client, "get_tree", {"tree": "nope"})
         assert res["isError"] is True
         assert "list_trees" in res["content"][0]["text"]
+
+
+def test_trace_store_survives_concurrent_writers():
+    """Roadmap C41 (grill M4): every tree's TraceView writes into one shared
+    dict and one `total_bytes`, from worker threads the per-tree asyncio locks
+    never serialize against each other. Unlocked, this reproduces "dictionary
+    changed size during iteration" inside `_evict` and drifts `total_bytes`
+    low — which silently disarms the byte budget rule 2 exists for."""
+    import threading
+
+    import pandas as pd
+
+    from breakdown.api.trees import TraceStore
+
+    class _Fit:
+        trace = None
+        ppc_band = None
+        dates = pd.date_range("2024-01-01", periods=200)
+
+    store = TraceStore(max_entries=16, max_bytes=0)
+    views = [store.view(f"tree{i}") for i in range(4)]
+    errors = []
+
+    def hammer(view):
+        try:
+            for i in range(400):
+                view[(f"m{i % 8}", None)] = _Fit()
+        except Exception as e:  # noqa: BLE001 - the failure mode under test
+            errors.append(e)
+
+    threads = [threading.Thread(target=hammer, args=(v,)) for v in views]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, errors
+    assert store.total_bytes == sum(store._sizes.values()), (
+        "total_bytes drifted from the per-entry sizes — the byte budget is "
+        "no longer a bound"
+    )
+    assert len(store._entries) <= store.max_entries

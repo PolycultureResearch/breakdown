@@ -280,6 +280,14 @@ def _select_slices(
 
 
 def _reconciliation(residual: np.ndarray, baseline: float) -> Dict[str, Any]:
+    # Backstop (roadmap C44): the callers refuse the no-defined-periods case
+    # by name before reaching here, so an empty residual is a caller bug —
+    # named as such rather than surfacing numpy's reduction error.
+    if residual.size == 0:
+        raise ValueError(
+            "reconciliation received no defined periods — the caller should "
+            "have refused this window by name before reconciling (C44)"
+        )
     scale = max(abs(baseline), 1e-12)
     share = float(np.abs(residual).mean()) / scale
     return {
@@ -502,6 +510,11 @@ def _overlap(residual: np.ndarray, baseline: float) -> Dict[str, Any]:
     less than the metric is a different problem (a dropped slice, a filtered
     query) that this label must not hide.
     """
+    if residual.size == 0:
+        raise ValueError(
+            "overlap received no defined periods — the caller should have "
+            "refused this window by name before measuring overlap (C44)"
+        )
     scale = max(abs(baseline), 1e-12)
     return {
         "mean": float(residual.mean()),
@@ -855,7 +868,15 @@ def _window_aggregates(W: np.ndarray, R: np.ndarray) -> Tuple[np.ndarray, np.nda
     weight = W.sum(axis=-2)
     total = weight.sum(axis=-1, keepdims=True)
     with np.errstate(divide="ignore", invalid="ignore"):
-        s = np.where(total > 0, weight / total, 0.0)
+        # NaN, not 0.0 (roadmap C44): a window with no weight has no shares —
+        # `baseline: 0.0, actual: 0.0, gap: 0.0` was a fabricated number
+        # wearing a measurement's clothes, the one substitution in this
+        # module that was neither logged nor named (`rca.node_window_value`
+        # reports the same case as `undefined_over_window`). The whole-window
+        # case is refused upstream by name; a NaN here can therefore only be
+        # a bootstrap replicate that resampled all-zero dates, and those are
+        # dropped by `_excess_fields`' finite filter rather than averaged.
+        s = np.where(total > 0, weight / total, np.nan)
         r = np.where(weight > 0, (W * R).sum(axis=-2) / weight, np.nan)
     return s, r
 
@@ -967,6 +988,22 @@ def _rate_attribution(
 
     in_ref = all_dates.isin(ref_dates)
     in_an = all_dates.isin(an_dates)
+    # Refuse-by-name before any aggregate is formed (roadmap C44, grill
+    # M10): a window whose weight sums to zero across every slice has no
+    # blend — a mis-specified `weight:`, or a filter that matches nothing —
+    # and the previous behaviour was numpy's own words from deep inside
+    # `_reconciliation` ("zero-size array to reduction operation maximum"),
+    # in the one module whose every other refusal names the metric, the
+    # dimension and the remedy.
+    for label, m in (("reference", in_ref), ("analysis", in_an)):
+        if float(Wg[m].sum()) == 0.0:
+            raise ValueError(
+                f"Slicing '{defn.name}' by a weight that holds no data: the "
+                f"declared weight metric sums to zero over every {label}-window "
+                f"period for every slice. Check that this dimension's `weight:` "
+                "names the rate's true denominator, and that its sliced series "
+                "actually covers these windows."
+            )
     s_ref, r_ref = _window_aggregates(Wg[in_ref], Rg[in_ref])
     s_an, r_an = _window_aggregates(Wg[in_an], Rg[in_an])
 

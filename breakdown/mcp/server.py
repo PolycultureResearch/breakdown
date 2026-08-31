@@ -279,7 +279,7 @@ async def explain_metric(name: str, tree: Optional[str] = None) -> Dict[str, Any
     else:
         s = data.series(name)
         values = [
-            None if (v is None or (isinstance(v, float) and math.isnan(v))) else float(v)
+            None if (v is None or (isinstance(v, float) and not math.isfinite(v))) else float(v)
             for v in s[name].tolist()
         ]
         finite = [v for v in values if v is not None]
