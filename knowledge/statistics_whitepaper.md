@@ -808,10 +808,12 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
    default states it exactly, subject to the ordinary MCMC diagnostics it
    reports (R̂, divergences, ESS); the approximation is available, and it says
    how far off it is. That is the weakness closed.
-2. **The short-window block bootstrap is attenuated by construction.** — ✅ the
-   two named defects are fixed
+2. **The short-window block bootstrap is attenuated by construction.** — ◑ the
+   two named defects are fixed in `rca.py`
    ([C4](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend),
-   shipped 2026-08-13); **a measured residual is now disclosed under
+   shipped 2026-08-13) and reopened one module over
+   ([C30](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend),
+   2026-08-30 — see the correction below); **a measured residual is now disclosed under
    [S6](roadmap.md#statistical-rigor-s--a-standing-workstream)**.
    `_block_bootstrap_indices` capped the effective block at `n // 2`, which
    landed on the midpoint of the very degeneracy curve its docstring reasoned
@@ -822,6 +824,13 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
    longer keys on `n_periods == 1`: a *constant parent* is detected on the
    resampled spread and its interval is withheld rather than shipped
    zero-width, and no published `ci_95` is zero-width by any route.
+   **Correction (2026-08-30):** that last clause was true of `rca.py` and false
+   one module over — `slices._excess_fields` builds its interval with no
+   degeneracy guard and publishes zero-width, in a module that already imports
+   the guarded `_sample_summary` for a different number. The 2026-08-29 grill's
+   H6 traced it; reopened as
+   [C30](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend),
+   whose fix is one shared implementation rather than a third copy.
    **What the fix did not retire, and what taking the measurement exposed:**
    under serial dependence a short window is weakly informative *whatever* the
    block — 0.17–0.61 of the true sampling variance at ρ=0.6, which is a property
@@ -992,6 +1001,13 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
    move to net out to the gap — so a share far past 100% lowers the score, which
    is what it always should have meant. A node's parents' weights sum to at most
    1, so a hop can no longer inflate influence at all.
+   **Correction (2026-08-30):** "the guard is relative" is true of `rca.py` and
+   of nothing beside it — every gap test in `slices.py` and `simulate.py` is
+   still the absolute `1e-12`, and the exact case `_share_of_gap`'s docstring
+   retires (a $1e-4 float residue on a $1e9 node) was executed by the
+   2026-08-29 grill against the slice panel, which published the share the tree
+   withholds. Reopened as
+   [C30](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend).
    **One correction this paper owes its own reader**, because the entry above
    framed the defect as a near-zero-gap edge case and that framing was too
    narrow: it was reproduced on the **bundled demo tree**, over an ordinary
@@ -1193,7 +1209,11 @@ disclosed-limitation bar; the likelihood itself stays here.
 
 **Ahead of all of it:**
 [**Horizon 0**](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend),
-the correctness gate — **closed 2026-08-17: every row is ✅.** Two of its items
+the correctness gate — closed 2026-08-17 with every row ✅, and **reopened
+2026-08-30 with C29–C44** from the
+[third grill](grill_2026_08_29.md); two of those (C29, C30) are the C4/C5
+guards that never reached `slices.py`/`simulate.py`, which is why §3.2 #2 and
+#8 carry dated corrections rather than clean ✅s. Two of its original items
 were the defect halves of S items listed below — C4 of S6 (shipped
 2026-08-13, which unblocked S17; an earlier edition of this paragraph said C4
 "blocks any honest reading of S17's rebuilt coverage test," and that stopped
@@ -1225,6 +1245,7 @@ scheduled start.
 | S20 | Zero-inflated and count likelihoods | ○ open — disclosure half scheduled first |
 | S21 | Fit through undefined periods by masking the likelihood | ○ optional — build on demand |
 | S22 | k̂'s own Monte-Carlo error, and a seeded manual-fit path | ✅ closed 2026-08-27 |
+| S23 | Reference-window sensitivity — the uncertainty the bootstrap never sees | ○ open |
 | 3.4 | Counterfactual RCA (Horizon 3, not the S track) | ○ open |
 
 Below, the reasoning behind each — ordered by value per unit of effort.
@@ -1592,6 +1613,29 @@ probabilistic and gappy), and because two questions must be settled first:
 periods is not a fit on 100), and `MIN_FIT_PERIODS` must count *observed*
 periods, or the floor is not a floor.
 
+**Reference-window sensitivity** — `S23`, ○ open. Named by the 2026-08-29
+grill as the weakest load-bearing assumption in the engine, and it is not one
+of the disclosed ones. Every number this engine publishes is a contrast of two
+window means, and the only uncertainty ever quantified — §2.5's block
+bootstrap — resamples periods *inside* the two windows. Nothing anywhere
+resamples the choice of window itself, and that choice is usually the
+engine's: `default_reference_window` applies four heuristics in sequence
+(4× the analysis length with a 28-day floor, whole-week rounding under
+seasonality, a readability clamp, a coarse-period extension), none of which is
+a property of the data. Everything downstream moves with it — `baseline`,
+`gap`, `relative_change`, `share_of_gap`, `excess`, `localized`, and the
+entire `ranked_causes` ordering, since `_hop_weights` is a function of
+`share_of_gap` — and the payload's only signal is `reference_defaulted: true`,
+which discloses *that* the engine chose without saying what the choice cost.
+"Fixed" means: recompute the target's gap and the top-ranked cause under two
+or three neighbouring reference blocks and publish the spread — a
+sensitivity band, not a wider interval, because window choice is not sampling
+error and folding it into `ci_95` would misstate both. The minimal honest
+version is a named caveat beside `reference_defaulted`, the same move
+`unexplained_status` and `window_aggregate_reason` made. The test of done is
+the sentence a reader can finally evaluate: whether "checkout_conversion is
+the top cause" survives moving the reference window by one week.
+
 ### 4.3 Explainability
 
 These do not add rigor; they add the ability to *see* it, which is often what
@@ -1660,6 +1704,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 | Date | Change |
 |---|---|
 | 2026-08-30 | **S10 shipped — the posterior predictive check is now something you can look at.** The Metric tab gains a *Posterior predictive check* panel: the series the node was fitted on, against the 50% and 95% quantile bands of the replicates S3 draws, the median replicate, and the periods the 95% band misses. Same check, answer left in its original shape — *"`min` failed at p = 0.016"* does not say **where**, and on the demo's `trials_started` the picture does: a count floored at 6 whose model's 95% band reaches −2.4, read against a zero line the chart draws deliberately. **The roadmap's "nearly free once S3 computes it" was wrong, and that was the item's real content.** S3 builds its `(500 × n_periods)` replicate array inside the `pm.Model()` context and *discards* it under rule 2 — 3.16 MB for the replicates and 3.16 MB for the mean function on `trials_started`'s 790-day window, on every fit, in a cache budgeted in gigabytes — so what persists is four p-values and no per-period series at all. S10 persists **five quantiles plus the observed series**, computed while the draws are still in scope: 31.6 kB as numpy, 160 kB as the lists that ride on the fit, 88 kB as JSON, **0.6% of the 24.6 MB trace beside it**, and `_trace_nbytes` now counts it (and `dates`, which it had never counted) rather than trusting that ratio to hold. Recomputing on demand was rejected outright: `sample_posterior_predictive` needs the model *graph*, so a route would refit the node — a minute of NUTS to redraw a chart, against a second posterior the published p-values did not come from. It lives on `FitResult` behind `GET /metrics/{name}/ppc`, not in `diagnostics`, because that dict is copied whole onto `GET /metrics/{name}` and its `ppc` block onto every RCA node and every MCP payload — 88 kB × 106 nodes of chart data handed to an agent that cannot see a chart; `test_no_per_node_payload_carries_a_series` makes that structural rather than remembered. **The rendering pass found two defects the payload could not have had.** Plotly's default SI exponent format labels a formula node's identity residual of 4.5e-13 as `400f`, which reads as four hundred of something rather than as machine epsilon; and a five-entry Plotly legend in a 360 px sidebar wraps to five rows drawn *inside* the plot, over the densest part of the series. Fixed with powers of ten on the axis, the UI's own `fmt()` on every hovered number, and an HTML key beneath the chart. A third was a sentence: the caption asserted that fewer than 5% of periods fall outside an in-sample band "here", which is false on the very node the feature was built for (5.6%). Nothing is tinted by verdict — the geometry is the evidence, and a band drawn red on a node already labelled `severe` would be an illustration of a label rather than the thing behind it. |
+| 2026-08-30 | **A third hostile review ([grill 2026-08-29](grill_2026_08_29.md), against `6531a02`), and two claims in this paper stopped being true before they were written.** §3.2 #2 said "no published `ci_95` is zero-width by any route" and #8 said the near-zero-gap guard "is relative" — both true of `rca.py`, both false in `slices.py`/`simulate.py`, where C4's degeneracy guard and C5's scale-relative epsilon never arrived; the grill executed both counter-cases (a `[-25.0, -25.0]` interval published as `ci_status: ok`; a share of 1.016 on a $1e9 node's float residue, on the exact case `_share_of_gap`'s docstring retires). Both sections now carry the correction; the defects are [C29–C44](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend), reopening Horizon 0 sixteen rows wide — seven of the grill's nine top findings are the same meta-defect the four rules were written for: a policy chosen carefully in one file and not propagated to its neighbour, twice a fix from a previous grill stopping one function short. No other §3.2 weakness changed status: the grill *confirmed* the provider boundary (rule 1) clean, both coalition caps intact, and the engine free of module-level state — the failures are one layer up, in propagation. §4 gains **S23** (reference-window sensitivity, the grill's "weakest load-bearing assumption"): the block bootstrap quantifies within-window sampling only, and nothing anywhere resamples the engine's own choice of reference window, which every published number moves with. Rationale in §4.2. |
 | 2026-08-29 | **S3 shipped — every fit is now graded against its own posterior predictive distribution, and `fit_quality` finally distinguishes a wrong model from a struggling sampler.** Replicated series are simulated from each fitted posterior and compared with the fitted series on four statistics — `min`, `max`, `resid_max`, `resid_acf1` — as two-sided **mid-p** p-values in two bands (`moderate` p < 0.10, `severe` p < 0.02), published as `ppc_status` / `ppc` / `ppc_warnings` on the fit, on every RCA and what-if node, over MCP with its own `how_to_read` entry and on `explain_metric`, and in the UI. **§3.2 #5 is closed.** `severe` sets `fit_quality: "suspect"`, and because it is the only thing that can do so on a NUTS fit, the meaning of that bit changed: `suspect` on the exact sampler now says the *model* is wrong for the data, where before it could only say the sampler struggled — two failures that want opposite responses, and the UI's suspect-explanation branch had to become conditional so it would stop naming a cause that did not happen. Three measurements shaped the design. **The obvious statistic is vacuous and was cut:** the series' standard deviation matches its replicates by construction, because `y` is z-scored and `sigma_obs` is free — p = 0.479 / 0.499 / 0.521 across a well-specified, a t(3) and a Poisson world, and `resid_sd` the same. A statistic that cannot fail reads as a check that passed, so it is deliberately absent and a test pins the absence. **Mid-p is not a refinement but a correctness fix:** scored with a plain `≥`, a statistic with a point mass returns p = 1.000 on a *correctly* specified node, which put the probe's only false alarm on the good world. **And the bands are wider than convention on purpose** — four statistics per node cross a 0.05 bar 19% of the time by chance, and these are disclosure triggers rather than tests. The worry that motivated the whole calibration — that a local-level trend with one latent per period would absorb every misspecification and make the check vacuous — was measured and did not hold: the tight HalfNormal(0.05) step-size prior keeps the level from chasing noise. On the trees this repo ships the separation is clean (five of six probabilistic nodes `ok` at p = 0.30–0.96, one `moderate`), and the residuals are stated rather than implied: it is an in-sample check, so it grades the likelihood and the mean function and not the DAG, and four statistics is not every way a model can be wrong. **S10 is unblocked** and is the track's next item. |
 | 2026-08-27 | **S4 closed: the engine now names the parents whose split of credit the data does not determine.** Correlated parents were already reported honestly — since S2 made NUTS the default, each gets a wide interval and their total a narrow one — but nothing said the two widths were *one ridge measured twice*, and RCA publishes the split per parent. Every fit with two or more regressors now scores its own design matrix (`X` as the model sees it: z-scored, lag-shifted, in `list(dag.predecessors(...))` order) and publishes `collinearity_status` / `collinearity` / `collinearity_warnings` on the fit, on every RCA node, over MCP with a `how_to_read` entry, and in the UI. **The demo set the thresholds, and that is the finding worth recording.** The pair this paper cites in §3.2 #6 — `trial_activation_rate` and `trial_days_active`, whose split lands at 0.680 / 0.682 / 0.697 across BLAS implementations from one seed — measures **\|r\| = 0.863** over the 62 weeks an RCA of that story fits it on (0.941 over the full 112-week window). A single conventional 0.9 bar would therefore have passed *in silence* the exact node the weakness was written about, so the diagnostic carries two bands: `moderate` (\|r\| ≥ 0.7, Dormann et al. 2013; VIF ≥ 5) — their total is sound, the split is soft — and `high` (\|r\| ≥ 0.9; VIF ≥ 10) — the split is not a measured quantity. On the 106-metric reference tree the five multi-parent nodes separate cleanly across those bands: 0.146 and 0.504 `ok`, 0.761 and 0.841 `moderate`, 0.909 with VIF 10.6 `high`. VIF is reported only for three or more parents (with two it is identically 1/(1−r²)) and earns its place on the multi-way degeneracy no pair shows — `x4 = x1+x2+x3` has every pairwise r near 0.58 and every VIF above 100. Two deliberate non-choices: it does **not** move `fit_quality` (a collinear fit is a correct fit that is properly unsure; the hazard is reading one parent's share alone, not the node), and it does **not** attempt to repair the split, because no diagnostic can recover a division of credit the data does not contain — the remedy named in the warning is authorial. §3.2 #6 moves from ○ to ✅ with its residual stated, §4.1's S4 entry carries the shipped design, and `docs/model.md` gains a *Parents that move together* section. S17 still owes the collinear coverage case; the fixture it needs now exists (`tests/test_engine.py`'s `_ridge_frame` / `_separable_frame` / `_multiway_frame`). |
 | 2026-08-27 | **S22 closed: k̂ now reports its own error, and the route that publishes it is seeded.** Two independent defects behind one diagnostic. (a) `POST /analyze/{name}` passed no `random_seed` while `run_rca` and `run_scenario` both passed `0`, so the manual-fit route — the one the UI's Analyze button and the "confirm this with NUTS" workflow use — returned a different posterior, and a different k̂, from two identical requests. Re-measured on the White Cube tree at full window before the fix: `customer_churn_rate` **1.23 then 1.91**, `trials_started` **0.94 then 1.19** (the same nodes had given 1.23/0.79 and 0.89/0.77 five days earlier — the spread is itself unstable, which is the argument). All three fitting paths now read one `FIT_RANDOM_SEED`, enforced by an AST-walking invariant test rather than by three call sites happening to agree, and the four demo figures this paper quotes reproduce exactly from the route: 10.18 / 1.07 / 0.85 / 1.36. (b) k̂ is fitted to the tail of 1000 sampled importance ratios (95 tail points), so it is an estimate; `khat_se` now publishes the generalized Pareto shape parameter's asymptotic standard error over that tail, corrected for the shrinkage in ArviZ's empirical-Bayes estimator, and it was validated against the thing it describes — holding one approximation fixed and re-estimating k̂ over 60 draws, published-SE ÷ empirical-SD came out **1.06 / 1.11 / 0.90 / 1.04** across k̂ 0.03 to 1.15. **The size of that error is the finding:** ~0.15 near the 0.5 bar and ~0.2 near k̂ = 1, against a `suspect` band that is 0.2 wide — so that band is frequently not resolvable, and `trial_conversion_rate` on the demo tree is a live case at **0.854 ± 0.172**. Such a fit now carries `khat_borderline: true`, a warning naming the two bands the estimate cannot separate, and `fit_quality: "suspect"` — including from an `ok` k̂, because "not shown to be far from the posterior" is a weaker claim than "close to it". `khat_status` keeps meaning which band the point estimate is in, so nothing downstream had to reinterpret it. Shrinking the error was rejected on cost: the tail grows as √n, so halving the error costs 16× the draws. §3.2 #1's third residual and §4.1's S2 entry are updated; §4 gains an S22 row. |
