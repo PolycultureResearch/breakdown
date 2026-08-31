@@ -6,14 +6,12 @@ import pytest
 
 from breakdown.engine.rca import (
     NonFiniteAttribution,
-    _block_bootstrap_indices,
-    _effective_block,
     _hop_weights,
     _rank_causes,
-    _share_of_gap,
     run_rca,
     shapley_attribution,
 )
+from breakdown.engine.stats import block_bootstrap_indices, effective_block, share_of_gap
 from breakdown.grains import BOOT_BLOCK
 from breakdown.parser import Parser
 from tests.synthetic import generate_mock_data, win
@@ -426,12 +424,12 @@ metrics:
 
 def test_block_bootstrap_indices_contract():
     rng = np.random.default_rng(0)
-    idx = _block_bootstrap_indices(20, 50, rng)
+    idx = block_bootstrap_indices(20, 50, rng)
 
     assert idx.shape == (50, 20)
     assert idx.min() >= 0 and idx.max() < 20
     # Deterministic given the seed.
-    idx2 = _block_bootstrap_indices(20, 50, np.random.default_rng(0))
+    idx2 = block_bootstrap_indices(20, 50, np.random.default_rng(0))
     np.testing.assert_array_equal(idx, idx2)
 
 
@@ -439,7 +437,7 @@ def test_block_bootstrap_indices_short_window():
     """n < block degenerates gracefully: valid shape/range, and the resampled
     window means still vary (the bootstrap must not collapse to rotations)."""
     rng = np.random.default_rng(0)
-    idx = _block_bootstrap_indices(3, 100, rng)
+    idx = block_bootstrap_indices(3, 100, rng)
 
     assert idx.shape == (100, 3)
     assert idx.min() >= 0 and idx.max() < 3
@@ -872,7 +870,7 @@ def _iid_variance_ratio(n: int, n_boot: int = 20000, seed: int = 0) -> float:
     block covering the whole window gives 0.
     """
     rng = np.random.default_rng(seed)
-    idx = _block_bootstrap_indices(n, n_boot, rng, block=BOOT_BLOCK["day"])
+    idx = block_bootstrap_indices(n, n_boot, rng, block=BOOT_BLOCK["day"])
     flat = (np.arange(n_boot)[:, None] * n + idx).reshape(-1)
     counts = np.bincount(flat, minlength=n_boot * n).reshape(n_boot, n)
     return float(((counts.astype(float) ** 2).sum(axis=1).mean() - n) / n)
@@ -888,15 +886,15 @@ def test_block_length_is_capped_at_a_quarter_of_the_window():
     interval; monotonicity of the rule is what rules that out.
     """
     ns = range(1, 61)
-    blocks = [_effective_block(n, BOOT_BLOCK["day"]) for n in ns]
+    blocks = [effective_block(n, BOOT_BLOCK["day"]) for n in ns]
 
     assert all(b >= 1 for b in blocks)
     assert all(b == 1 or 4 * b <= n for n, b in zip(ns, blocks))
     assert blocks == sorted(blocks), "the block must never shrink as the window grows"
     # The two windows this is quoted on: the README's fortnight, and the
     # default reference floor.
-    assert _effective_block(14, 7) == 3
-    assert _effective_block(28, 7) == 7
+    assert effective_block(14, 7) == 3
+    assert effective_block(28, 7) == 7
 
 
 def test_short_window_variance_is_not_halved_by_the_block_cap():
@@ -1077,12 +1075,12 @@ def test_share_of_gap_is_withheld_relative_to_the_node_scale():
     denominated in millions published shares in the thousands, while a real
     move on a node denominated in rates was thrown away."""
     # Float residue at the scale of a large node: no share.
-    assert _share_of_gap(5.0, 1e-4, 1e9) is None
+    assert share_of_gap(5.0, 1e-4, 1e9) is None
     # A real move on a tiny node: a share, where the absolute guard withheld it.
-    assert _share_of_gap(5e-14, 1e-13, 1e-9) == pytest.approx(0.5)
+    assert share_of_gap(5e-14, 1e-13, 1e-9) == pytest.approx(0.5)
     # An ordinary gap is untouched, and a dead-flat node still has no share.
-    assert _share_of_gap(984.5, 595.5, 26386.5) == pytest.approx(1.6533, rel=1e-3)
-    assert _share_of_gap(0.0, 0.0, 0.0) is None
+    assert share_of_gap(984.5, 595.5, 26386.5) == pytest.approx(1.6533, rel=1e-3)
+    assert share_of_gap(0.0, 0.0, 0.0) is None
 
 
 def test_hop_weight_penalizes_a_share_above_the_gap():

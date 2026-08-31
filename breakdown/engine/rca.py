@@ -81,6 +81,26 @@ from breakdown.engine.model import (
 )
 from breakdown.engine.progress import ProgressFn
 from breakdown.engine.progress import report as _report
+from breakdown.engine.stats import (
+    DEGENERATE_CI_REL,
+    GAP_REL_EPS,
+    MIN_CI_REPLICATES,
+    N_BOOT,
+    block_bootstrap_indices,
+    degenerate_means,
+    direction_fields,
+    node_scale,
+    sample_summary,
+    share_of_gap,
+)
+from breakdown.engine.windows import (
+    UndefinedOverWindow,
+    node_window_value,
+    rate_window_method,
+    rate_window_method_reason,
+    window_info,
+    window_values,
+)
 from breakdown.formula import eval_formula
 from breakdown.grains import (
     BOOT_BLOCK,
@@ -89,7 +109,6 @@ from breakdown.grains import (
     ensure_grained,
     fit_grain,
     next_start,
-    rate_window_value,
     shift_periods,
     snap_window,
     steps_between,
@@ -97,93 +116,8 @@ from breakdown.grains import (
 )
 from breakdown.parser import _SIMPLE_RATIO
 
-# Bootstrap replicates per window; fixed so contribution CIs are comparable
-# across nodes and runs.
-_N_BOOT = 500
-
-# Surviving replicates required before a bootstrap interval is reported at all
-# (same threshold and posture as `slices._excess_fields`).
-_MIN_CI_REPLICATES = 100
-
 # Dates named in a diagnostic before it truncates, as `_align_to_spine` does.
 _MAX_SHOWN_DATES = 5
-
-# The moving-block bootstrap's block may not exceed this fraction of the window
-# (see `_block_bootstrap_indices`).
-_BLOCK_CAP_DIVISOR = 4
-
-# A published interval is degenerate — withheld rather than reported — when its
-# width is this small *relative to the node's own level*. An absolute threshold
-# is wrong here: a metric denominated in millions carries float noise of a size
-# that a metric denominated in rates never reaches. 1e-9 of the node's level is
-# far below any interval a real resampling produces and comfortably above the
-# ~1e-13 relative noise of a mean-of-means over 500 replicates, so it catches
-# the exactly-zero case and its rounding-artifact neighbours without ever
-# swallowing a real interval.
-_DEGENERATE_CI_REL = 1e-9
-
-# `gap` is treated as zero — and `share_of_gap` withheld — below this fraction
-# of the node's own level. Relative, not absolute (roadmap C5): a $1e-6 gap on a
-# $26K node and a 1e-6 gap on a rate of 0.4 are not the same claim.
-_GAP_REL_EPS = 1e-12
-
-
-def prob_same_direction(
-    samples: np.ndarray, n_effective: Optional[int] = None
-) -> Tuple[float, bool]:
-    """Share of `samples` on the dominant side of zero, published at the
-    resolution the estimator actually has.
-
-    This is a proportion over a finite sample, so the only values it can take
-    are `k/n`: with `n = _N_BOOT` there is **nothing between 1 − 1/500 = 0.998
-    and 1.0**. A saturated count — every replicate landing on one side — is
-    therefore not a measurement of certainty; it is the estimator running out
-    of resolution, and it happens most readily where the evidence is thinnest.
-    Publishing it as `1.00` claimed a certainty no bootstrap can express and
-    added a decimal place it does not have, which is C5's defect (a saturated
-    clamp reading as certainty) on the probability side rather than the
-    interval side.
-
-    So a saturated estimate publishes the ceiling and says it is censored
-    there: the second return value is True, and every renderer prints the
-    number as a bound (`>99.8%`) rather than a value. Callers that hold a
-    coarser factor pass `n_effective` — the RCA posterior path multiplies the
-    coefficient posterior by only `_N_BOOT` distinct resampled window deltas,
-    so more posterior draws buy no window-sampling resolution.
-
-    A sample with **no spread at all** is exempt: an identical set is not an
-    estimate of a proportion but exact arithmetic (a deterministic propagation
-    in `simulate`), and its sign is genuinely known. In RCA that case never
-    arrives here — the caller withholds the interval and the probability with
-    it, "a confidence read off no information at all".
-    """
-    p = float(max((samples > 0).mean(), (samples < 0).mean()))
-    n = samples.size if n_effective is None else min(samples.size, n_effective)
-    ceiling = 1.0 - 1.0 / n if n else 1.0
-    if p <= ceiling or float(samples.min()) == float(samples.max()):
-        return p, False
-    return ceiling, True
-
-
-def direction_fields(
-    samples: Optional[np.ndarray],
-    key: str = "prob_same_direction",
-    n_effective: Optional[int] = None,
-) -> Dict[str, Any]:
-    """`prob_same_direction`'s payload fields, for whichever name a surface
-    gives it (`prob_concentrated` on slices, `prob_direction` on what-if).
-
-    `None` samples means withheld. The `<key>_censored` flag follows the
-    `lag`/`parent_windows` idiom — present only when it is true, so an
-    uncensored payload is byte-identical to what it was before.
-    """
-    if samples is None:
-        return {key: None}
-    value, censored = prob_same_direction(samples, n_effective)
-    out: Dict[str, Any] = {key: value}
-    if censored:
-        out[f"{key}_censored"] = True
-    return out
 
 
 class NonFiniteAttribution(ValueError):
@@ -360,7 +294,7 @@ def _validate_coverage(
     """Every window a node reads must lie inside that node's own data.
 
     A window that falls *entirely* outside the data already raises in
-    `_window_values`. The case this catches is the quiet one: a window that
+    `window_values`. The case this catches is the quiet one: a window that
     only *partly* overlaps the data silently averages the periods that happen
     to exist, so a reference mean over 30 requested days can be computed from
     the 4 that were loaded — a wrong number, not a missing one.
@@ -405,323 +339,6 @@ def _validate_coverage(
                 parent,
                 lag,
             )
-
-
-class UndefinedOverWindow(ValueError):
-    """A node has no value over one of the windows it was asked about.
-
-    Its own subclass for the same reason `NonFiniteAttribution` is one: the
-    condition degrades to a per-node status inside `run_rca` and must not
-    swallow the unrelated `ValueError`s the same calls raise. A `ValueError`
-    still, so the API turns it into a 422 carrying the message when it is the
-    target that has no value.
-    """
-
-
-def window_mean(data: pd.DataFrame, col: str, start: pd.Timestamp, end: pd.Timestamp) -> float:
-    """Mean of `col` over rows whose date is within [start, end] (inclusive).
-
-    `data["date"]` must already be datetime. Raises if the window is empty.
-
-    **Flows and stocks only.** A rate's window value is not the mean of its
-    per-period ratios — see `node_window_value`, which is the entry point every
-    caller uses and which routes a rate to `grains.rate_window_value`. Calling
-    this on a rate column is the defect `resample_up` already refuses in the
-    time direction, and `tests/test_project_invariants.py` enumerates the
-    package to keep this function from acquiring a caller that does.
-    """
-    return float(_window_values(data, col, start, end).mean())
-
-
-def node_window_value(
-    data,
-    node: str,
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-    grain: Optional[str] = None,
-    *,
-    frame: Optional[pd.DataFrame] = None,
-) -> float:
-    """The single number `node` reports for the window [start, end], by kind.
-
-    The one place a metric's window becomes a scalar, so the kind rules cannot
-    be applied in one caller and forgotten in its neighbour:
-
-    - **flow / stock** — the mean per period, unchanged.
-    - **rate** — `Σ(rate·denominator) / Σdenominator` over the window's defined
-      periods (`grains.rate_window_value`), which is what a window's rate *is*.
-      A period whose denominator is zero contributes to neither sum and drops
-      out, so a window containing an undefined period still has a defined rate.
-      A rate that declares no `denominator` falls back to the plain average of
-      its defined periods, which is the pre-1.11 number and is disclosed at
-      load rather than silently presented as the aggregate. Which of the two
-      arithmetics ran — and, for the fallback, *why* — is `rate_window_method`,
-      which every payload carrying one of these numbers reports beside it.
-
-    Returns `nan` when the window holds no defined period; callers report that
-    as a status rather than publishing it. Raises when the window holds no
-    period at all — a different failure, and one the caller chose.
-    """
-    grained = ensure_grained(data)
-    kind = grained.kind_of.get(node, "flow")
-    at = grain or grained.grain_of.get(node, "day")
-    source = frame if frame is not None else grained.series(node, at)
-    values = _window_values(source, node, start, end)
-    if kind != "rate":
-        return float(values.mean())
-    return rate_window_value(values, _window_weights(grained, node, source, start, end, at))
-
-
-def _window_weights(
-    grained, node: str, source: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp, at: str
-) -> Optional[np.ndarray]:
-    """The denominator's per-period values over this window, or None.
-
-    Aligned **on the dates**, never on position or length. `source` may be a fit
-    frame whose inner join dropped a period (a finer parent's partial coarse
-    period), so two arrays of equal length can still be describing different
-    weeks — a misalignment nobody could see. A denominator that cannot cover the
-    window's periods weights nothing, and the disclosed fallback is better than
-    a silent mis-weighting.
-
-    One implementation, two callers: the value (`node_window_value`) and the
-    label for how it was formed (`rate_window_method`). If those two ever
-    disagreed the payload would describe an arithmetic it did not perform, which
-    is the defect class this whole item is about.
-    """
-    weights = grained.weights_for(node, at)
-    if weights is None:
-        return None
-    dates = pd.DatetimeIndex(source.loc[_window_mask(source, start, end), "date"])
-    aligned = weights.reindex(dates)
-    return None if aligned.isna().any() else aligned.to_numpy(dtype=float)
-
-
-def rate_window_method(
-    data,
-    node: str,
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-    grain: Optional[str] = None,
-    *,
-    frame: Optional[pd.DataFrame] = None,
-) -> Optional[str]:
-    """How `node_window_value` formed this window's number, for the payload.
-
-    `None` for a flow or a stock — they have one aggregation and it is not in
-    question. For a rate, one of:
-
-    - `"components"` — `Σ(rate·den) / Σden` over the declared denominator. The
-      real thing.
-    - `"period_mean_none_exists"` — the node declares `no_denominator`: there is
-      no pair of series whose sums make this quantity, so the mean of the
-      defined periods is not a fallback from something better, it is the only
-      number there is. The reason travels beside it.
-    - `"period_mean_undeclared"` — nobody has said what this rate is a rate of.
-      Same arithmetic as above, completely different meaning: the tree could
-      compute the real aggregate once someone declares the denominator.
-    - `"period_mean_weights_unavailable"` — a denominator *is* declared, but its
-      series does not cover this window's periods, so this particular window
-      fell back. Rare, and worth seeing rather than reading as `components`.
-
-    The first three are the three states of `denominator` (roadmap 1.11); the
-    fourth exists because labelling a window `components` while averaging its
-    ratios would be a payload that misdescribes its own arithmetic.
-    """
-    grained = ensure_grained(data)
-    if grained.kind_of.get(node, "flow") != "rate":
-        return None
-    at = grain or grained.grain_of.get(node, "day")
-    if node not in grained.denominator_of:
-        return (
-            "period_mean_none_exists"
-            if node in grained.no_denominator_of
-            else "period_mean_undeclared"
-        )
-    source = frame if frame is not None else grained.series(node, at)
-    if _window_weights(grained, node, source, start, end, at) is None:
-        return "period_mean_weights_unavailable"
-    return "components"
-
-
-def rate_window_method_reason(data, node: str, method: Optional[str]) -> Optional[str]:
-    """The sentence that goes beside `rate_window_method`, in prose.
-
-    The status is what a consumer branches on; this is what a *person* reads,
-    and for `period_mean_none_exists` it is the author's own words, carried from
-    the tree's `no_denominator:` without editing. That is the point of writing
-    the reason there rather than in a comment: the argument reaches whoever is
-    looking at the number, which is where the question actually gets re-opened.
-    """
-    if method is None or method == "components":
-        return None
-    grained = ensure_grained(data)
-    if method == "period_mean_none_exists":
-        return grained.no_denominator_of.get(node)
-    if method == "period_mean_weights_unavailable":
-        return (
-            f"'{node}' declares denominator '{grained.denominator_of.get(node)}', but its "
-            "series does not cover every period of these windows, so this value is the "
-            "mean of the per-period ratios rather than Σnumerator / Σdenominator."
-        )
-    return (
-        f"'{node}' declares no `denominator` and no `no_denominator`, so this value is "
-        "the mean of its defined per-period ratios rather than Σnumerator / "
-        "Σdenominator — which is a different number whenever the denominators differ. "
-        "Nobody has said which of the two this metric is; declaring either settles it."
-    )
-
-
-def _window_mask(data: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> pd.Series:
-    """Rows of `data` whose date is within [start, end] (inclusive)."""
-    return (data["date"] >= start) & (data["date"] <= end)
-
-
-def _window_values(
-    data: pd.DataFrame, col: str, start: pd.Timestamp, end: pd.Timestamp
-) -> np.ndarray:
-    """Per-period values of `col` over rows whose date is within [start, end]
-    (inclusive). Raises if the window is empty."""
-    mask = _window_mask(data, start, end)
-    if not mask.any():
-        raise ValueError(f"No data for '{col}' in window [{start.date()}, {end.date()}]")
-    return data.loc[mask, col].values.astype(float)
-
-
-def _effective_block(n: int, block: int) -> int:
-    """The block length actually used on a window of `n` periods.
-
-    Non-decreasing in `n` — the property the previous ``n // 2`` cap lacked,
-    which is what let a user widen a window by one period and get a *narrower*
-    interval. See `_block_bootstrap_indices` for the measurements behind the
-    divisor.
-    """
-    return max(1, min(block, n // _BLOCK_CAP_DIVISOR))
-
-
-def _block_bootstrap_indices(n: int, n_boot: int, rng, block: int = 7) -> np.ndarray:
-    """(n_boot, n) integer index array; circular moving-block bootstrap.
-
-    Each replicate concatenates ceil(n / block') blocks of block' consecutive
-    positions (wrapping circularly) starting at uniform positions, truncated to
-    n. The effective block length is capped at ``n // _BLOCK_CAP_DIVISOR``
-    (min 1): the circular block bootstrap's resampled variance of a window mean
-    is deflated by roughly ``1 - block / n`` — with one block covering the whole
-    window it degenerates to rotations whose means are all identical and the
-    variance collapses to zero — so the cap is what bounds that deflation.
-
-    **Why a quarter** (roadmap C4b; the sweep is in the C4 report and is where
-    roadmap S6 starts). Measured as the ratio of the resampled variance of the
-    window mean to its true sampling variance, over 400 realizations x 500
-    replicates per cell:
-
-    - iid series, under the previous ``n // 2`` cap: 0.46-0.63 for every
-      n <= 16, i.e. the interval was routinely *half* the width it should be
-      precisely on short windows — and non-monotone in n, so n=13 measured 0.55
-      and n=14 measured 0.50. A user widening the window by a day got a
-      narrower interval.
-    - iid series, under ``n // 4``: 0.74-0.90 across every n from 4 to 56, and
-      the block rule ``min(BOOT_BLOCK, n // 4)`` is itself non-decreasing in n.
-      Residual wobble in the ratio (<= 0.11) is unavoidable with an integer
-      block length; what the cap buys is a *bound*, ~25% attenuation instead of
-      ~50%.
-    - AR(1), rho=0.6: ``n // 4`` sits on or within 0.03 of the best block length
-      at every n measured (n=8, 12, 14, 16, 20, 28), while ``n // 2`` gave up
-      0.05-0.07 of the ratio at each. Under serial dependence the cap is not a
-      trade-off at all — the old one was simply on the wrong side of the peak.
-
-    Note the AR(1) ratios are 0.17-0.61 in absolute terms whatever the block
-    length: a short window carries little information about a serially
-    dependent series' long-run variance, and no choice of block recovers it.
-    That is a property of window resampling, not of this cap.
-    """
-    if n < 1:
-        raise ValueError("Cannot bootstrap an empty window.")
-    block = _effective_block(n, block)
-    n_blocks = -(-n // block)  # ceil
-    starts = rng.integers(0, n, size=(n_boot, n_blocks))
-    idx = (starts[:, :, None] + np.arange(block)[None, None, :]) % n
-    return idx.reshape(n_boot, n_blocks * block)[:, :n]
-
-
-def _node_scale(baseline: float, actual: float) -> float:
-    """The node's own level, used as the yardstick for "is this number zero?".
-
-    Contributions, gaps and interval widths are all in the node's units, so its
-    window means are the natural scale to judge them against. Non-finite window
-    means score as no scale at all, which makes every relative test fall back to
-    exact zero.
-    """
-    values = [abs(v) for v in (baseline, actual) if v is not None and np.isfinite(v)]
-    return max(values) if values else 0.0
-
-
-def _degenerate_means(means: np.ndarray) -> bool:
-    """True when a window's resampled means never move (roadmap C4a).
-
-    This is the condition `single_period` was a special case of: with one
-    period there is nothing to resample, but a parent that is *constant* over
-    any window — an unlaunched feature, an unmoved stock, a seasonal business
-    between cycles — resamples to the same mean just as surely, and the window
-    contributes no sampling uncertainty at all.
-
-    Judged relative to the parent's own level, so it holds for a metric
-    denominated in millions as well as one denominated in rates, and so a
-    spread that is a rounding artifact counts as no spread. A parent held
-    identically at zero has level zero and needs the spread to be exactly zero,
-    which it is.
-    """
-    lo = float(np.min(means))
-    hi = float(np.max(means))
-    return hi - lo <= _DEGENERATE_CI_REL * max(abs(lo), abs(hi))
-
-
-def _share_of_gap(estimate: float, gap: float, scale: float) -> Optional[float]:
-    """`estimate / gap`, or None when the gap is zero at the node's own scale.
-
-    Shares are deliberately *not* clamped — two parents pulling in opposite
-    directions is the case the field exists to express, and `docs/model.md`
-    says so. The only thing withheld is the division by a gap that is not
-    distinguishable from zero relative to the node's level (roadmap C5): the
-    old absolute `abs(gap) < 1e-12` guard let a $1e-4 gap on a $1e9 node —
-    pure float residue — publish shares in the thousands.
-    """
-    if gap is None or not np.isfinite(gap) or abs(gap) <= _GAP_REL_EPS * scale or gap == 0:
-        return None
-    return estimate / gap
-
-
-def _sample_summary(samples: np.ndarray, scale: float = 0.0) -> Dict[str, Any]:
-    """Point estimate plus a 95% interval — or no interval at all.
-
-    Nothing this module publishes may carry a zero-width `ci_95` (roadmap C4).
-    Two quite different things produce one: a resampling that collapsed (the
-    node's `ci_status` says so), and a quantity that is zero *by construction*
-    — a term the model does not contain, or an identity with no co-movement.
-    Both are honestly reported as "no interval"; only the first is a
-    degeneracy, and the second is better prevented upstream by not emitting the
-    term at all.
-
-    `scale` is the level to judge "zero width" against — the node's own, for
-    quantities in the node's units. Without one, only an exactly zero width
-    counts, which is the conservative reading for a caller that has no scale to
-    offer.
-    """
-    lo = float(np.percentile(samples, 2.5))
-    hi = float(np.percentile(samples, 97.5))
-    return {
-        "estimate": float(samples.mean()),
-        "ci_95": None if hi - lo <= _DEGENERATE_CI_REL * scale else [lo, hi],
-    }
-
-
-def _window_info(snapped) -> Dict[str, Any]:
-    """The whole periods a requested window snapped to, for the response."""
-    return {
-        "start": str(snapped.first_start.date()),
-        "end": str(snapped.last_end.date()),
-        "n_periods": snapped.n_periods,
-    }
 
 
 def _lagged_windows(snapped_ref, snapped_an, lag: int, grain: str) -> Dict[str, Any]:
@@ -855,6 +472,98 @@ def _node_out(**fields) -> Dict[str, Any]:
     return record
 
 
+def _nonfinite_window_clauses(
+    frame: pd.DataFrame,
+    parents,
+    lags: Dict[str, int],
+    grain: str,
+    windows,
+    include_zeros: bool,
+) -> list:
+    """Name which parent series is undefined (or zero, when zeros are fatal)
+    over which window, on which dates — the clause list both non-finite
+    refusals build their message from.
+
+    An **undefined** period and a zero are reported separately: they have
+    different remedies. A zero denominator is a data fact to narrow the window
+    around; an undefined rate period is a period the source had no value for,
+    and the node it feeds cannot be decomposed over any window containing one
+    (roadmap 1.11c). Zeros are only fatal where something divides by them
+    (`include_zeros`, the formula path); the posterior path multiplies, so
+    only non-finite values are named there.
+    """
+    clauses = []
+    for p in parents:
+        lag = lags.get(p, 0)
+        for label, first_start, last_start in windows:
+            mask = (frame["date"] >= shift_periods(first_start, -lag, grain)) & (
+                frame["date"] <= shift_periods(last_start, -lag, grain)
+            )
+            sub = frame.loc[mask, ["date", p]]
+            vals = sub[p].to_numpy(dtype=float)
+            checks = [
+                ("undefined on", np.isnan(vals)),
+                (
+                    "zero or non-finite on" if include_zeros else "non-finite on",
+                    ((vals == 0.0) if include_zeros else np.zeros(vals.shape, dtype=bool))
+                    | (~np.isfinite(vals) & ~np.isnan(vals)),
+                ),
+            ]
+            for kind_label, bad in checks:
+                if not bad.any():
+                    continue
+                dates = [str(d.date()) for d in sub.loc[bad, "date"]]
+                shown = ", ".join(dates[:_MAX_SHOWN_DATES])
+                if len(dates) > _MAX_SHOWN_DATES:
+                    shown += ", …"
+                via = f" (read at lag {lag})" if lag else ""
+                clauses.append(
+                    f"parent '{p}'{via} is {kind_label} {len(dates)} of "
+                    f"{len(vals)} {label}-window {grain}(s) ({shown})"
+                )
+    return clauses
+
+
+def _refuse_nonfinite_parent_windows(
+    frame: pd.DataFrame,
+    node: str,
+    parents,
+    lags: Dict[str, int],
+    grain: str,
+    windows,
+) -> None:
+    """Refuse a posterior attribution whose parent windows hold a non-finite
+    value, before any of it is computed (roadmap C29, grill H1).
+
+    The fit never sees these periods — it ends at `analysis_start`, so a rate
+    parent with a zero-denominator period *inside* the analysis window passes
+    every fit-time check — and without this refusal the NaN rides
+    `beta_raw × Δwindow` into `estimate`, a `[nan, nan]` interval that defeats
+    the degeneracy guard (a NaN comparison is False), a `prob_same_direction`
+    below its own 0.5 floor, and Starlette's `allow_nan=False` encoder as an
+    unhandled 500. The formula branch of this same function has refused this
+    by name since C17; this is the same policy, one `elif` over. Filtering the
+    samples to finite instead was rejected: replicates that happen to exclude
+    the undefined period describe a quietly-censored window — a different
+    number wearing the same key.
+    """
+    bad = [p for p in parents if not np.isfinite(frame[p].to_numpy(dtype=float)).all()]
+    if not bad:
+        return
+    windowed = _nonfinite_window_clauses(frame, bad, lags, grain, windows, include_zeros=False)
+    if not windowed:
+        # Non-finite values only outside both windows never enter the window
+        # deltas; the attribution is finite and there is nothing to refuse.
+        return
+    raise NonFiniteAttribution(
+        f"Posterior attribution for '{node}' is not a finite number: "
+        f"{'; '.join(windowed)}. "
+        "An undefined parent period inside a window leaves the contribution "
+        "with no finite value: narrow the window to exclude those periods, or "
+        "fix the series at the source."
+    )
+
+
 def _nonfinite_diagnosis(
     frame: pd.DataFrame,
     target: str,
@@ -881,36 +590,7 @@ def _nonfinite_diagnosis(
 
     `windows` is `(label, first_start, last_start)` per window, at `grain`.
     """
-    clauses = []
-    for p in parents:
-        lag = lags.get(p, 0)
-        for label, first_start, last_start in windows:
-            mask = (frame["date"] >= shift_periods(first_start, -lag, grain)) & (
-                frame["date"] <= shift_periods(last_start, -lag, grain)
-            )
-            sub = frame.loc[mask, ["date", p]]
-            vals = sub[p].to_numpy(dtype=float)
-            # An **undefined** period and a zero are reported separately: they
-            # have different remedies. A zero denominator is a data fact to
-            # narrow the window around; an undefined rate period is a period
-            # the source had no value for, and the node it feeds cannot be
-            # decomposed over any window containing one (roadmap 1.11c).
-            for kind_label, bad in (
-                ("undefined on", np.isnan(vals)),
-                ("zero or non-finite on", (vals == 0.0) | (~np.isfinite(vals) & ~np.isnan(vals))),
-            ):
-                if not bad.any():
-                    continue
-                dates = [str(d.date()) for d in sub.loc[bad, "date"]]
-                shown = ", ".join(dates[:_MAX_SHOWN_DATES])
-                if len(dates) > _MAX_SHOWN_DATES:
-                    shown += ", …"
-                via = f" (read at lag {lag})" if lag else ""
-                clauses.append(
-                    f"parent '{p}'{via} is {kind_label} {len(dates)} of "
-                    f"{len(vals)} {label}-window {grain}(s) ({shown})"
-                )
-
+    clauses = _nonfinite_window_clauses(frame, parents, lags, grain, windows, include_zeros=True)
     detail = (
         "; ".join(clauses)
         if clauses
@@ -1030,7 +710,7 @@ def shapley_attribution(
         # Cohort-aligned lagged identities (formula + lags): a parent's
         # values are read from windows shifted back by its lag.
         lag = defn.lags.get(p, 0)
-        return _window_values(
+        return window_values(
             frame, p, shift_periods(start, -lag, grain), shift_periods(end, -lag, grain)
         )
 
@@ -1137,8 +817,8 @@ def shapley_attribution(
         "analysis_window": {"start": analysis_start, "end": analysis_end},
         "reference_defaulted": reference_defaulted,
         "effective_windows": {
-            "reference": _window_info(snapped_ref),
-            "analysis": _window_info(snapped_an),
+            "reference": window_info(snapped_ref),
+            "analysis": window_info(snapped_an),
         },
         "baseline": baseline,
         "actual": actual,
@@ -1190,7 +870,7 @@ def run_rca(
     rather than assumed. `draws` is the posterior draw count either way
     (per chain under NUTS); it is forwarded here rather than left to
     `fit_metric` because this module resamples that posterior itself (see
-    `_N_BOOT` below), so its size is the orchestrator's business. The warm-up
+    `N_BOOT` below), so its size is the orchestrator's business. The warm-up
     and chain budgets are pure sampler mechanics and come from `fit_metric`'s
     `NUTS_TUNE` / `NUTS_CHAINS` — one spelling for the whole engine, so that
     the route a caller arrives through cannot change the posterior they get
@@ -1369,8 +1049,8 @@ def run_rca(
         block = BOOT_BLOCK[grain]
 
         effective_windows = {
-            "reference": _window_info(snapped_ref),
-            "analysis": _window_info(snapped_an),
+            "reference": window_info(snapped_ref),
+            "analysis": window_info(snapped_an),
         }
         # The node's own window values, by kind — a rate aggregates from its
         # components rather than averaging its per-period ratios (1.11c), so a
@@ -1419,8 +1099,8 @@ def run_rca(
         # against the node's own level rather than an absolute epsilon, so the
         # answers do not depend on whether the metric is denominated in
         # millions or in rates (roadmap C4a/C5).
-        ci_scale = _node_scale(baseline, actual)
-        relative_change = gap / baseline if abs(baseline) > _GAP_REL_EPS * ci_scale else None
+        ci_scale = node_scale(baseline, actual)
+        relative_change = gap / baseline if abs(baseline) > GAP_REL_EPS * ci_scale else None
 
         # An unfittable node still reports its own movement — baseline, actual
         # and gap are read off the data, not the model. Only the attribution is
@@ -1506,7 +1186,7 @@ def run_rca(
             # replicate's own resampled means (replicate b occupies positions
             # [b*n, (b+1)*n) of the flattened per-day games).
             ref_vals = {
-                p: _window_values(
+                p: window_values(
                     frame,
                     p,
                     shift_periods(ref_start, -defn.lags.get(p, 0), grain),
@@ -1515,7 +1195,7 @@ def run_rca(
                 for p in parents
             }
             an_vals = {
-                p: _window_values(
+                p: window_values(
                     frame,
                     p,
                     shift_periods(an_start, -defn.lags.get(p, 0), grain),
@@ -1530,7 +1210,7 @@ def run_rca(
                 # so including it in the resampling would let replicates
                 # disagree with the exact value about which periods exist. The
                 # blocks then run over the defined subsequence, which is the
-                # same compromise `_block_bootstrap_indices` already makes
+                # same compromise `block_bootstrap_indices` already makes
                 # about serial dependence, applied to a shorter series.
                 def _defined(vals):
                     keep = np.isfinite(eval_formula(defn.formula, vals))
@@ -1540,17 +1220,17 @@ def run_rca(
                 an_vals = _defined(an_vals)
             n_an = len(next(iter(an_vals.values())))
             n_ref = len(next(iter(ref_vals.values())))
-            ref_idx = _block_bootstrap_indices(n_ref, _N_BOOT, rng, block=block)
-            an_idx = _block_bootstrap_indices(n_an, _N_BOOT, rng, block=block)
+            ref_idx = block_bootstrap_indices(n_ref, N_BOOT, rng, block=block)
+            an_idx = block_bootstrap_indices(n_an, N_BOOT, rng, block=block)
             boot_ref_means = {p: ref_vals[p][ref_idx].mean(axis=1) for p in parents}
             boot_an_means = {p: an_vals[p][an_idx].mean(axis=1) for p in parents}
 
             phi_means = compute_shapley(
                 defn.formula, parents, boot_ref_means, boot_an_means, node=node
             )
-            zero_b = np.zeros(_N_BOOT * max(n_an, n_ref))
+            zero_b = np.zeros(N_BOOT * max(n_an, n_ref))
             phi_cov_an = (
-                {p: zero_b[: _N_BOOT * n_an] for p in parents}
+                {p: zero_b[: N_BOOT * n_an] for p in parents}
                 if from_components
                 else compute_shapley(
                     defn.formula,
@@ -1561,7 +1241,7 @@ def run_rca(
                 )
             )
             phi_cov_ref = (
-                {p: zero_b[: _N_BOOT * n_ref] for p in parents}
+                {p: zero_b[: N_BOOT * n_ref] for p in parents}
                 if from_components
                 else compute_shapley(
                     defn.formula,
@@ -1616,7 +1296,7 @@ def run_rca(
             # degeneracy, and saying so would cry wolf on every additive node
             # in every tree.
             degenerate_inputs = any(
-                _degenerate_means(boot_ref_means[p]) or _degenerate_means(boot_an_means[p])
+                degenerate_means(boot_ref_means[p]) or degenerate_means(boot_an_means[p])
                 for p in parents
             )
             withheld_nonfinite = False
@@ -1624,7 +1304,7 @@ def run_rca(
             def _finite(samples: np.ndarray) -> Optional[np.ndarray]:
                 nonlocal withheld_nonfinite
                 finite = samples[np.isfinite(samples)]
-                if finite.size < _MIN_CI_REPLICATES:
+                if finite.size < MIN_CI_REPLICATES:
                     withheld_nonfinite = True
                     return None
                 if finite.size < samples.size:
@@ -1643,20 +1323,20 @@ def run_rca(
                 # it — a collapsed resampling (the node's `ci_status` names
                 # that one) or a term that is zero by construction, like the
                 # co-movement of an additive identity.
-                if hi - lo <= _DEGENERATE_CI_REL * ci_scale:
+                if hi - lo <= DEGENERATE_CI_REL * ci_scale:
                     return None
                 return [lo, hi]
 
             def _summary(point: float, samples: np.ndarray) -> Dict[str, Any]:
                 return {"estimate": float(point), "ci_95": _ci(samples)}
 
-            interaction_b = np.zeros(_N_BOOT)
+            interaction_b = np.zeros(N_BOOT)
             interaction_exact = 0.0
             for p in parents:
                 means_b = phi_means[p]
-                comovement_b = phi_cov_an[p].reshape(_N_BOOT, n_an).mean(axis=1) - phi_cov_ref[
+                comovement_b = phi_cov_an[p].reshape(N_BOOT, n_an).mean(axis=1) - phi_cov_ref[
                     p
-                ].reshape(_N_BOOT, n_ref).mean(axis=1)
+                ].reshape(N_BOOT, n_ref).mean(axis=1)
                 interaction_b = interaction_b + comovement_b
                 phi_b = means_b + comovement_b
 
@@ -1684,7 +1364,7 @@ def run_rca(
                 contribution = {
                     "parent": p,
                     "estimate": estimate,
-                    "share_of_gap": _share_of_gap(estimate, gap, ci_scale),
+                    "share_of_gap": share_of_gap(estimate, gap, ci_scale),
                     "ci_95": ci,
                     **direction_fields(phi_b_finite),
                 }
@@ -1783,6 +1463,35 @@ def run_rca(
             arr = fit.trace.posterior["beta_raw"].values.reshape(-1, len(parents))
             n_post = arr.shape[0]
 
+            # Refuse-by-name before any attribution math (roadmap C29): the
+            # same degrade the formula branch has had since C17, so one bad
+            # node still does not end the analysis.
+            try:
+                _refuse_nonfinite_parent_windows(
+                    frame,
+                    node,
+                    parents,
+                    defn.lags,
+                    grain,
+                    [("reference", ref_start, ref_end), ("analysis", an_start, an_end)],
+                )
+            except NonFiniteAttribution as e:
+                if node == target:
+                    raise
+                nodes_out[node] = _node_out(
+                    status="attribution_failed",
+                    status_reason=str(e),
+                    grain=grain,
+                    effective_windows=effective_windows,
+                    baseline=baseline,
+                    actual=actual,
+                    gap=gap,
+                    relative_change=relative_change,
+                    attribution_method=attribution_method,
+                    **rate_fields,
+                )
+                continue
+
             # Map window period starts onto the fitted time index: t = grain
             # steps since the first fitted period, matching the model's
             # internal t = arange(len(y)). For day grain this is exactly the
@@ -1815,18 +1524,18 @@ def run_rca(
             # interval, which asserted infinite precision about a term the
             # model does not contain. Absent-means-no-such-term is the same
             # idiom as `lag` / `parent_windows` on an unlagged contribution.
-            components = {"trend": _sample_summary(trend_delta, ci_scale)}
+            components = {"trend": sample_summary(trend_delta, ci_scale)}
             if defn.seasonality:
                 seasonal_delta = (
                     seasonal_window_delta(fit.trace, defn.seasonality, t_ref, t_an) * fit.y_std
                 )
-                components["seasonal"] = _sample_summary(seasonal_delta, ci_scale)
+                components["seasonal"] = sample_summary(seasonal_delta, ci_scale)
 
             # Window bootstrap indices, shared across this node's parents
             # (joint resampling); lag-shifted windows span the same number of
             # periods on the grain spine, so the same position indices apply.
-            ref_idx = _block_bootstrap_indices(len(t_ref), _N_BOOT, rng, block=block)
-            an_idx = _block_bootstrap_indices(len(t_an), _N_BOOT, rng, block=block)
+            ref_idx = block_bootstrap_indices(len(t_ref), N_BOOT, rng, block=block)
+            an_idx = block_bootstrap_indices(len(t_an), N_BOOT, rng, block=block)
 
             estimate_sum = 0.0
             # The same degeneracy the formula path guards against (roadmap
@@ -1843,13 +1552,13 @@ def run_rca(
                 # The parent values that influenced the analysis window are
                 # those `lag` grain steps earlier, so shift both windows back
                 # by whole periods (stays on the spine across month bounds).
-                p_ref_vals = _window_values(
+                p_ref_vals = window_values(
                     frame,
                     p,
                     shift_periods(ref_start, -lag, grain),
                     shift_periods(ref_end, -lag, grain),
                 )
-                p_an_vals = _window_values(
+                p_an_vals = window_values(
                     frame,
                     p,
                     shift_periods(an_start, -lag, grain),
@@ -1858,23 +1567,23 @@ def run_rca(
                 r_idx = (
                     ref_idx
                     if len(p_ref_vals) == ref_idx.shape[1]
-                    else _block_bootstrap_indices(len(p_ref_vals), _N_BOOT, rng, block=block)
+                    else block_bootstrap_indices(len(p_ref_vals), N_BOOT, rng, block=block)
                 )
                 a_idx = (
                     an_idx
                     if len(p_an_vals) == an_idx.shape[1]
-                    else _block_bootstrap_indices(len(p_an_vals), _N_BOOT, rng, block=block)
+                    else block_bootstrap_indices(len(p_an_vals), N_BOOT, rng, block=block)
                 )
                 boot_ref = p_ref_vals[r_idx].mean(axis=1)
                 boot_an = p_an_vals[a_idx].mean(axis=1)
                 degenerate_inputs = (
-                    degenerate_inputs or _degenerate_means(boot_ref) or _degenerate_means(boot_an)
+                    degenerate_inputs or degenerate_means(boot_ref) or degenerate_means(boot_an)
                 )
                 delta_samples = boot_an - boot_ref
                 # Shuffle so posterior draw i is not systematically paired with
                 # the same bootstrap replicate across parents.
                 delta_samples = rng.permutation(delta_samples)
-                samples = arr[:, i] * delta_samples[np.arange(n_post) % _N_BOOT]
+                samples = arr[:, i] * delta_samples[np.arange(n_post) % N_BOOT]
                 estimate = float(samples.mean())
                 estimate_sum += estimate
                 lo = float(np.percentile(samples, 2.5))
@@ -1883,18 +1592,18 @@ def run_rca(
                 # parent constant in one window still leaves the coefficient
                 # posterior varying, and that interval is understated (hence
                 # the node's `ci_status`) rather than absent.
-                degenerate = hi - lo <= _DEGENERATE_CI_REL * ci_scale
+                degenerate = hi - lo <= DEGENERATE_CI_REL * ci_scale
                 contribution = {
                     "parent": p,
                     "estimate": estimate,
-                    "share_of_gap": _share_of_gap(estimate, gap, ci_scale),
+                    "share_of_gap": share_of_gap(estimate, gap, ci_scale),
                     "ci_95": None if degenerate else [lo, hi],
-                    # `n_effective=_N_BOOT`: `samples` is one value per posterior
+                    # `n_effective=N_BOOT`: `samples` is one value per posterior
                     # draw, but the window delta multiplying them takes only
-                    # `_N_BOOT` distinct values, so a NUTS fit's 4,000 draws do
+                    # `N_BOOT` distinct values, so a NUTS fit's 4,000 draws do
                     # not resolve the direction any finer than the bootstrap
                     # behind them does. Take the coarser of the two.
-                    **direction_fields(None if degenerate else samples, n_effective=_N_BOOT),
+                    **direction_fields(None if degenerate else samples, n_effective=N_BOOT),
                 }
                 # Lagged parents were measured over their own earlier windows;
                 # surface which ones. Keys absent entirely when unlagged.

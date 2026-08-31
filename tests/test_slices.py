@@ -213,9 +213,15 @@ def _rate_defn():
     )
 
 
-def _rate_inputs(shift_shares=False, new_slice=False, rate_drop=None):
+def _rate_inputs(shift_shares=False, new_slice=False, rate_drop=None, wiggle=False):
     """Weights + per-slice rates whose per-date blend defines the unsliced
-    rate, so reconciliation is exact by construction."""
+    rate, so reconciliation is exact by construction.
+
+    `wiggle` adds a small deterministic within-window perturbation. The default
+    constant series collapse the block bootstrap (every replicate identical),
+    which since roadmap C30 is *reported* — `degenerate_bootstrap_spread`,
+    intervals withheld — so tests about the ordinary path opt into variance
+    while tests about the degenerate path keep the constants."""
     dates = _dates(REF[0], REF[1]).union(_dates(AN[0], AN[1]))
     an_mask = ((dates >= pd.Timestamp(AN[0])) & (dates <= pd.Timestamp(AN[1]))).astype(float)
     n = len(dates)
@@ -240,6 +246,12 @@ def _rate_inputs(shift_shares=False, new_slice=False, rate_drop=None):
     if rate_drop is not None:
         name, delta = rate_drop
         rates[name] = rates[name] - delta * an_mask
+    if wiggle:
+        saw = np.where(np.arange(n) % 2 == 0, 1.0, -1.0)
+        for k in weights:
+            weights[k] = weights[k] + 10.0 * saw
+        for k in rates:
+            rates[k] = rates[k] + 0.002 * saw
     w_arr = np.stack([weights[k].to_numpy() for k in weights])
     r_arr = np.stack([rates[k].to_numpy() for k in weights])
     blend = (w_arr * r_arr).sum(axis=0) / w_arr.sum(axis=0)
@@ -408,13 +420,13 @@ def test_excess_fields_drops_non_finite_replicates():
     from breakdown.engine.slices import _excess_fields
 
     clean = np.concatenate([np.full(600, 5.0), np.full(400, 7.0)])
-    fields = _excess_fields(clean.copy(), single_period=False)
+    fields = _excess_fields(clean.copy(), single_period=False, scale=6.0)
     assert fields["ci_95"] is not None
 
     # Same replicates with a minority poisoned: still answerable, and finite.
     poisoned = clean.copy()
     poisoned[:150] = np.nan
-    fields = _excess_fields(poisoned, single_period=False)
+    fields = _excess_fields(poisoned, single_period=False, scale=6.0)
     assert fields["ci_95"] is not None
     assert all(np.isfinite(v) for v in fields["ci_95"]), "NaN reached the response"
     assert np.isfinite(fields["prob_concentrated"])
@@ -422,7 +434,7 @@ def test_excess_fields_drops_non_finite_replicates():
     # Too few survive to quote an interval: withheld, not fabricated.
     mostly_nan = clean.copy()
     mostly_nan[:-20] = np.nan
-    assert _excess_fields(mostly_nan, single_period=False)["ci_95"] is None
+    assert _excess_fields(mostly_nan, single_period=False, scale=6.0)["ci_95"] is None
 
 
 # --- non-additive labelling (roadmap 3.8 §5) --------------------------------
@@ -729,7 +741,7 @@ def test_a_concentrated_rate_slice_can_be_localized():
     Before the fix the field was never emitted, so the verdict was
     structurally false for every `kind: rate` dimension — on the product's
     showcase sentence."""
-    sliced, weight_sliced, unsliced = _rate_inputs(rate_drop=("emea", 0.04))
+    sliced, weight_sliced, unsliced = _rate_inputs(rate_drop=("emea", 0.04), wiggle=True)
     result = slice_attribution(
         _rate_defn(),
         "region",
@@ -746,6 +758,36 @@ def test_a_concentrated_rate_slice_can_be_localized():
     assert result["localized"] is True
     assert result["localization"] == "localized"
     assert result["localization_threshold"] == 0.25
+
+
+def test_a_collapsed_resampling_withholds_the_interval_and_the_verdict():
+    """Roadmap C30 (grill H6a): a slice constant within each window resamples
+    every replicate to the same excess. Before the fix that published a
+    zero-width `ci_95` (the exact interval C4 retired from the tree in
+    2026-08-13), `prob_concentrated: 1.0`, and a `localized` verdict — evidence
+    withheld everywhere, certainty claimed anyway. Now the response says what
+    happened (`degenerate_bootstrap_spread`), withholds interval and direction
+    (roadmap C34: withheld noise_level is not "not noise"), and declines the
+    verdict."""
+    sliced, weight_sliced, unsliced = _rate_inputs(rate_drop=("emea", 0.04))
+    result = slice_attribution(
+        _rate_defn(),
+        "region",
+        sliced,
+        unsliced,
+        *REF,
+        *AN,
+        weight_sliced=weight_sliced,
+    )
+    assert result["ci_status"] == "degenerate_bootstrap_spread"
+    top = result["slices"][0]
+    assert top["value"] == "emea"
+    assert top["ci_95"] is None
+    assert top["prob_concentrated"] is None
+    assert top["noise_level"] is None
+    assert result["localized"] is False
+    # The bookkeeping key never reaches the payload.
+    assert "degenerate" not in top
 
 
 def test_an_even_rate_move_is_not_localized():

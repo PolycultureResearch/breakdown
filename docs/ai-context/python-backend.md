@@ -24,6 +24,8 @@ breakdown/
   engine/
     model.py       # fit_metric() — BSTS via PyMC; compute_shapley(); summarize_trace()
     rca.py         # run_rca() + shapley_attribution() — all window-over-window attribution
+    stats.py       # shared uncertainty vocabulary: bootstrap, degeneracy guards, direction probability
+    windows.py     # shared window→scalar vocabulary: node_window_value, rate_window_method
     slices.py      # slice_attribution() — dimensional slicing of one metric's gap (pure, no I/O)
     simulate.py    # run_scenario() — do-operator what-if; fitted (posterior draws) or cold start (data=None)
     progress.py    # report() — advisory progress callbacks; swallows callback exceptions
@@ -43,7 +45,7 @@ breakdown/
 Design rules:
 
 - The engine is **stateless**: `fit_metric` is a pure function (DAG + data + target → trace). The only trace cache lives in `app.state.traces`; `run_rca` receives it as an argument and adds on-demand fits to it in place.
-- All attribution (window means, Shapley over windows, posterior attribution) lives in `engine/rca.py`. `engine/model.py` keeps only the pure Shapley enumeration.
+- All attribution (window means, Shapley over windows, posterior attribution) lives in `engine/rca.py`. `engine/model.py` keeps only the pure Shapley enumeration. The statistics the three attribution modules share — the block bootstrap, the degeneracy guards, the scale-relative gap epsilon, `direction_fields` — live once in `engine/stats.py`, and the window→scalar rules (`node_window_value`, `rate_window_method`) in `engine/windows.py` (roadmap C30): three drifting private copies of "percentile pair, withheld if degenerate" are how grill-2026-08-29 H1/H6 happened, so the shared implementations are public names imported by `rca.py`, `slices.py` and `simulate.py` alike.
 - **Parent order is load-bearing:** everywhere, parents come from `list(dag.predecessors(name))`; this is the axis order of `beta`/`beta_raw`. Any new component must use the same call.
 - **Grain logic lives only in `grains.py`.** Every node is fetched/fitted/attributed at its own declared grain (`fit_grain(dag, node)` == the node's grain, guaranteed by parse-time rules); engine entry points accept `Union[pd.DataFrame, GrainedData]` via `ensure_grained()` — a plain wide daily frame wraps as all-day flow metrics, which keeps tests and legacy call sites working unchanged.
 

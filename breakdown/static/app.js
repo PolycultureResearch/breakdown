@@ -1080,8 +1080,8 @@ const CI_STATUS_NOTE = {
     why: "Enough bootstrap replicates came out non-finite (a resampled denominator mean landing on zero) that an interval was withheld entirely, or computed only from the replicates that survived. Point estimates are unaffected: they are the exact Shapley values, never bootstrap means.",
   },
   degenerate_bootstrap_spread: {
-    text: "intervals withheld: a parent does not vary in this window",
-    why: "At least one parent holds the same value across the whole window — an unlaunched feature, a stock held flat, a seasonal business's off-season — so every bootstrap replicate resamples the same number and the interval would come out exactly zero-width. A zero-width interval is not certainty, it is the absence of information, so it is withheld (roadmap C4).",
+    text: "intervals withheld: the resampling cannot move",
+    why: "At least one parent — or, on the slice panel, a slice — holds the same value across the whole window: an unlaunched feature, a stock held flat, a seasonal business's off-season. Every bootstrap replicate then resamples the same number and the interval would come out exactly zero-width. A zero-width interval is not certainty, it is the absence of information, so it is withheld (roadmap C4/C30).",
   },
 };
 

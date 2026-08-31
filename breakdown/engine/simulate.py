@@ -66,8 +66,8 @@ from breakdown.engine.model import (
 )
 from breakdown.engine.progress import ProgressFn
 from breakdown.engine.progress import report as _report
-from breakdown.engine.rca import (
-    direction_fields,
+from breakdown.engine.stats import direction_fields, negligible_gap, node_scale
+from breakdown.engine.windows import (
     node_window_value,
     rate_window_method,
     rate_window_method_reason,
@@ -974,10 +974,13 @@ def run_scenario(
             ppc_status = dx.get("ppc_status")
             ppc_warnings = dx.get("ppc_warnings")
 
+        # Scale-relative, not absolute (roadmap C5/C30): a per-source estimate
+        # that is float residue at this node's own level is not a contribution.
+        node_level = node_scale(base, simulated)
         contribs = [
             {"source": sid, "estimate": est}
             for sid, est in contributions[node].items()
-            if abs(est) > 1e-12
+            if not negligible_gap(est, node_level)
         ]
         contribs.sort(key=lambda c: abs(c["estimate"]), reverse=True)
 
@@ -992,7 +995,7 @@ def run_scenario(
                     float(np.percentile(d, 97.5)),
                 ],
             },
-            "relative_delta": (estimate / base) if abs(base) >= 1e-12 else None,
+            "relative_delta": (estimate / base) if not negligible_gap(base, node_level) else None,
             # Same estimator, same resolution ceiling as RCA's
             # `prob_same_direction`: a proportion over `n_draws` draws has
             # nothing between 1 − 1/n and 1, so a saturated Monte Carlo

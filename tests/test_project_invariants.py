@@ -53,6 +53,7 @@ from breakdown.data_fetch import _align_to_spine
 from breakdown.engine import model as model_mod
 from breakdown.engine import rca as rca_mod
 from breakdown.engine import simulate as simulate_mod
+from breakdown.engine import stats as stats_mod
 from breakdown.parser import Parser
 
 PACKAGE = Path(__file__).resolve().parent.parent / "breakdown"
@@ -367,12 +368,28 @@ def _strict(payload) -> None:
 
 
 def test_a_degenerate_tree_still_encodes_strictly(tmp_path, monkeypatch):
-    """Rule 3, end to end through the surface that actually broke.
+    """Rule 3, end to end through every attribution path that can carry a NaN.
 
     One zero-denominator period used to reach Starlette's `allow_nan=False`
     encoder as an unhandled 500, and `round_floats` turned the same NaN into
-    `null` for an agent (C17). Both routes are exercised on a tree carrying a
-    zero denominator *and* a zero-variance parent.
+    `null` for an agent (C17). The formula path was fixed then — and the
+    posterior path of the same function published NaN for another year,
+    because this test's one scenario contained no probabilistic node (roadmap
+    C29, grill H1). So the tree now carries all three degenerate shapes:
+
+    - a zero denominator on a derived rate (`aov`) — the C17 formula case;
+    - a zero-variance parent (`promo`, a real parent of `bookings`) — the C4a
+      case (an earlier edition declared `promo` standalone while its docstring
+      called it a parent; the flat-parent path was never actually wired);
+    - a probabilistic node (`demand`) whose rate parent is **undefined inside
+      the analysis window but outside the fit window** — the fit never sees
+      the NaN, and only the attribution-time refusal stands between it and
+      the encoder. The fit itself is a stub through the trace-cache seam, so
+      no sampler runs here.
+
+    The property asserted is the strict-encoding half of "every float a node
+    payload carries is finite or None": `json.dumps(..., allow_nan=False)`
+    raises on any non-finite float, and withheld values are `None`.
     """
     tree = tmp_path / "degenerate.yml"
     tree.write_text(
@@ -384,6 +401,11 @@ def test_a_degenerate_tree_still_encodes_strictly(tmp_path, monkeypatch):
         "  - name: aov\n    source: mock.aov\n    kind: rate\n"
         '    formula: "revenue / order_count"\n'
         "    parents: [revenue, order_count]\n"
+        "  - name: demand\n    source: mock.demand\n    kind: flow\n"
+        "    parents: [aov]\n"
+        "  - name: bookings\n    source: mock.bookings\n    kind: flow\n"
+        '    formula: "demand + promo"\n'
+        "    parents: [demand, promo]\n"
     )
     # monkeypatch, not os.environ: the app reads these at lifespan, so leaving
     # them set points every later test in the session at a tmp_path tree that
@@ -393,9 +415,13 @@ def test_a_degenerate_tree_still_encodes_strictly(tmp_path, monkeypatch):
     monkeypatch.setenv("BREAKDOWN_START_DATE", "2024-01-01")
     monkeypatch.setenv("BREAKDOWN_END_DATE", "2024-04-09")
 
+    import arviz as az
     from fastapi.testclient import TestClient
 
     from breakdown.api.main import app
+    from breakdown.engine.model import FitResult
+
+    analysis = {"analysis_start": "2024-03-27", "analysis_end": "2024-04-09"}
 
     with TestClient(app, raise_server_exceptions=False) as client:
         state = app.state.trees["degenerate"]
@@ -404,17 +430,57 @@ def test_a_degenerate_tree_still_encodes_strictly(tmp_path, monkeypatch):
         # denominator, and a parent held flat (the C4 production shape)
         frame.loc[frame.index[-3], "order_count"] = 0.0
         frame["promo"] = 0.0
+        # 1.11c's undefined rate period, placed inside the analysis window so
+        # the fit (which ends at analysis_start) can never have seen it — the
+        # exact H1 shape.
+        frame.loc[frame.index[-3], "aov"] = float("nan")
 
-        for path, params in (
-            ("/rca/aov", {"analysis_start": "2024-03-27", "analysis_end": "2024-04-09"}),
-            ("/rca/revenue", {"analysis_start": "2024-03-27", "analysis_end": "2024-04-09"}),
-        ):
-            r = client.post(path, params=params)
+        # A stub NUTS fit through the trace-cache seam: `run_rca` reuses it
+        # via `cached_fit_is_usable` and fits nothing. The refusal under test
+        # fires before any of the stub's numbers are read.
+        rng = np.random.default_rng(0)
+        fit_dates = pd.date_range("2024-01-01", "2024-03-26", freq="D")
+        stub = FitResult(
+            trace=az.from_dict(
+                posterior={
+                    "beta_raw": rng.normal(size=(2, 50, 1)),
+                    "trend": rng.normal(size=(2, 50, len(fit_dates))),
+                }
+            ),
+            target="demand",
+            parents=["aov"],
+            y_mean=0.0,
+            y_std=1.0,
+            x_stds=np.array([1.0]),
+            dates=fit_dates,
+            inference_method="nuts",
+            fit_end=analysis["analysis_start"],
+        )
+        state.traces[("demand", analysis["analysis_start"])] = stub
+
+        for path in ("/rca/aov", "/rca/revenue", "/rca/bookings"):
+            r = client.post(path, params=analysis)
             assert r.status_code != 500, (
                 f"POST {path} returned 500 on a degenerate but ordinary tree — a "
-                "non-finite value reached the encoder (roadmap C17)."
+                "non-finite value reached the encoder (roadmap C17/C29)."
             )
             _strict(r.json())
+
+        # The poisoned probabilistic node degrades by name inside a wider
+        # analysis ("one bad node does not end the analysis") …
+        body = client.post("/rca/bookings", params=analysis).json()
+        demand = body["nodes"]["demand"]
+        assert demand["status"] == "attribution_failed"
+        assert "aov" in demand["status_reason"]
+
+        # … and refuses by name when it is itself the target.
+        r = client.post("/rca/demand", params=analysis)
+        assert r.status_code == 422, (
+            "the H1 shape must be a named refusal for the target, not a "
+            f"published NaN (got {r.status_code})"
+        )
+        _strict(r.json())
+        assert "aov" in r.json()["detail"]
 
         r = client.get("/metrics/aov")
         assert r.status_code == 200
@@ -573,8 +639,8 @@ def test_a_saturated_direction_probability_publishes_its_ceiling():
     one line away from the code that withholds a degenerate probability as "a
     confidence read off no information at all".
     """
-    n = rca_mod._N_BOOT
-    value, censored = rca_mod.prob_same_direction(np.linspace(1.0, 2.0, n))
+    n = stats_mod.N_BOOT
+    value, censored = stats_mod.prob_same_direction(np.linspace(1.0, 2.0, n))
     assert censored, "every replicate on one side is a saturated count, not certainty"
     assert value == pytest.approx(1.0 - 1.0 / n)
 
@@ -582,7 +648,7 @@ def test_a_saturated_direction_probability_publishes_its_ceiling():
     # and is published exactly, uncensored.
     mixed = np.linspace(1.0, 2.0, n)
     mixed[0] = -1.0
-    value, censored = rca_mod.prob_same_direction(mixed)
+    value, censored = stats_mod.prob_same_direction(mixed)
     assert not censored and value == pytest.approx(1.0 - 1.0 / n)
 
 
@@ -593,7 +659,7 @@ def test_an_exact_sample_is_not_censored():
     intervention is exact arithmetic, not an estimate of a proportion. Clamping
     it would understate a sign that really is known.
     """
-    value, censored = rca_mod.prob_same_direction(np.full(64, 3.0))
+    value, censored = stats_mod.prob_same_direction(np.full(64, 3.0))
     assert value == 1.0 and not censored
 
 
@@ -627,7 +693,7 @@ def test_every_published_direction_probability_is_representable():
         **win(("2024-01-01", "2024-02-15"), ("2024-02-16", "2024-04-09")),
         draws=300,
     )
-    ceiling = 1.0 - 1.0 / rca_mod._N_BOOT
+    ceiling = 1.0 - 1.0 / stats_mod.N_BOOT
     published = [
         (name, c["parent"], c["prob_same_direction"])
         for name, node in result["nodes"].items()
@@ -638,7 +704,7 @@ def test_every_published_direction_probability_is_representable():
         assert psd is None or 0.5 <= psd <= ceiling, (
             f"{name} <- {parent} publishes prob_same_direction {psd}, outside "
             f"[0.5, 1 - 1/_N_BOOT = {ceiling}]. A proportion over "
-            f"{rca_mod._N_BOOT} replicates cannot take that value."
+            f"{stats_mod.N_BOOT} replicates cannot take that value."
         )
 
 
@@ -1066,7 +1132,7 @@ def test_the_payload_says_which_of_the_two_aggregates_a_rate_reports():
     declared one on — and the remedy for the second is nonsense advice for the
     first, which is what `doctor` used to give.
     """
-    from breakdown.engine.rca import (
+    from breakdown.engine.windows import (
         node_window_value,
         rate_window_method,
         rate_window_method_reason,
