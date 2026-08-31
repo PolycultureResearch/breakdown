@@ -317,14 +317,16 @@ def resample_up(
     to_grain: str,
     kind: str,
     label: str = "series",
-    drop_partial: bool = True,
 ) -> pd.Series:
     """Aggregate a period-start-indexed series from `from_grain` up to
     `to_grain` by its kind: flow → sum, stock → last. Rates never resample —
     the only correct coarse rate is recomputed from its components.
 
-    With `drop_partial` (default), coarse periods not fully covered by fine
-    periods are dropped — a partial-week sum is a lie, not an estimate.
+    Coarse periods not fully covered by fine periods are dropped — a
+    partial-week sum is a lie, not an estimate. This used to be a
+    `drop_partial: bool = True` parameter that no caller ever varied (grill
+    L2): a knob nobody turns is a policy pretending to be a choice, and every
+    reader had to reason about the False branch to learn there wasn't one.
     """
     _check_grain(from_grain)
     _check_grain(to_grain)
@@ -351,11 +353,8 @@ def resample_up(
     coarse = floor_period(pd.DatetimeIndex(series.index), to_grain)
     grouped = series.groupby(coarse)
     agg = grouped.sum() if kind == "flow" else grouped.last()
-    if drop_partial:
-        expected = np.array(
-            [steps_between(next_start(g, to_grain), g, from_grain) for g in agg.index]
-        )
-        agg = agg[grouped.size().to_numpy() >= expected]
+    expected = np.array([steps_between(next_start(g, to_grain), g, from_grain) for g in agg.index])
+    agg = agg[grouped.size().to_numpy() >= expected]
     agg.index.name = series.index.name
     return agg
 

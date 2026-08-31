@@ -41,6 +41,14 @@ const state = {
     method: "nuts",
     readerMode: false, // entered via deep link: results first, builder collapsed
   },
+  // Created by buildGraph(), null until it runs (grill L9: these four were
+  // real fields of this object that its own map never listed — and `defs` is
+  // the sole source of `direction` for every good/bad tint, which is exactly
+  // the kind of load-bearing fact an undocumented lifetime hides).
+  defs: null,     // name -> definition from GET /dag; goodDir reads `direction` off it
+  revAdj: null,   // name -> parent names (reverse adjacency)
+  fwdAdj: null,   // name -> child names
+  coldBase: null, // cold-start operating points (provider: none trees only)
 };
 
 const $ = (id) => document.getElementById(id);

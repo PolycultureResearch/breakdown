@@ -26,6 +26,9 @@ from breakdown.engine.rca import run_rca
 from breakdown.parser import Parser
 from tests.synthetic import win
 
+# Grill L10: this module fits real samplers; `-m "not slow"` is the fast loop.
+pytestmark = pytest.mark.slow
+
 PROB_YAML = """
 metrics:
   - name: x

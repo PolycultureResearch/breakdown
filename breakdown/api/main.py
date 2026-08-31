@@ -178,12 +178,28 @@ def _progress_reporter(state, run_id: Optional[str], stage: str):
     """
     if not run_id:
         return None
-    while len(state.progress) >= MAX_PROGRESS_ENTRIES:
-        state.progress.pop(next(iter(state.progress)))
+    # Entries are popped when their run completes, so everything present is a
+    # *live* run — and the old eviction (`pop(next(iter(...)))`) therefore
+    # always killed one mid-flight, whose poller then read "finished or never
+    # started" while it kept executing (grill L5). Full means refuse: the
+    # run proceeds without a progress channel, which is what every non-UI
+    # caller gets anyway, and the log says why.
+    if len(state.progress) >= MAX_PROGRESS_ENTRIES:
+        logger.warning(
+            "progress registry full (%d live runs): run %s proceeds without a progress channel",
+            MAX_PROGRESS_ENTRIES,
+            run_id,
+        )
+        return None
     state.progress[run_id] = {"stage": stage}
 
     def report(update: Dict[str, Any]) -> None:
-        state.progress[run_id] = update
+        # Membership-guarded: after a cancelled request's `finally` pops this
+        # run, its orphaned thread (roadmap C41) keeps reporting — an
+        # unguarded write would resurrect the entry as a zombie that nothing
+        # ever pops again.
+        if run_id in state.progress:
+            state.progress[run_id] = update
 
     return report
 
@@ -1384,6 +1400,13 @@ async def analyze_metric(
     tune: int = Query(default=NUTS_TUNE, ge=50, le=5000),
     chains: int = Query(default=NUTS_CHAINS, ge=1, le=8),
     fit_end: Annotated[OptionalIsoDate, Query()] = None,
+    # Grill L4: the one route that holds the tree lock for a whole NUTS run
+    # was also the only analysis route with no progress channel — a second
+    # viewer's /rca queued behind `/analyze?chains=8&draws=5000` polled
+    # `{"stage": "waiting"}` with no way to learn what it was waiting for.
+    run_id: Optional[str] = Query(
+        default=None, description="Opaque id to poll on GET /progress/{run_id}"
+    ),
 ):
     tree = await _loaded_tree(request)
     _require_data(tree)
@@ -1392,6 +1415,8 @@ async def analyze_metric(
 
     if name not in parser.dag:
         raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
+    state = request.app.state
+    report = _progress_reporter(state, run_id, "waiting")
 
     # `fit_end` lets the "confirm with NUTS" workflow reproduce exactly what
     # RCA fitted; `OptionalIsoDate` is what checks it is a date.
@@ -1403,22 +1428,28 @@ async def analyze_metric(
     # the PSIS k-hat it reported changed between two identical requests
     # (1.23 then 1.91 on the demo's `customer_churn_rate`). A diagnostic that
     # answers differently about the same fit is not one.
-    async with tree.lock:
-        fit = await asyncio.to_thread(
-            _guarded,
-            tree,
-            fit_metric,
-            parser.dag,
-            data,
-            name,
-            draws=draws,
-            tune=tune,
-            inference_method=inference_method,
-            chains=chains,
-            fit_end=fit_end,
-            random_seed=FIT_RANDOM_SEED,
-        )
-        _remember_fit(tree.traces, (name, fit_end), fit)
+    try:
+        async with tree.lock:
+            if report:
+                report({"stage": "fitting", "metric": name, "current": 1, "total": 1})
+            fit = await asyncio.to_thread(
+                _guarded,
+                tree,
+                fit_metric,
+                parser.dag,
+                data,
+                name,
+                draws=draws,
+                tune=tune,
+                inference_method=inference_method,
+                chains=chains,
+                fit_end=fit_end,
+                random_seed=FIT_RANDOM_SEED,
+            )
+            _remember_fit(tree.traces, (name, fit_end), fit)
+    finally:
+        if run_id:
+            state.progress.pop(run_id, None)
 
     return {
         "status": "success",

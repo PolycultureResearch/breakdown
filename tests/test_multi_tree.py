@@ -465,7 +465,6 @@ def test_trace_store_survives_concurrent_writers():
 
     assert not errors, errors
     assert store.total_bytes == sum(store._sizes.values()), (
-        "total_bytes drifted from the per-entry sizes — the byte budget is "
-        "no longer a bound"
+        "total_bytes drifted from the per-entry sizes — the byte budget is no longer a bound"
     )
     assert len(store._entries) <= store.max_entries
