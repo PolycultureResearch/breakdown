@@ -104,7 +104,8 @@ compose.yaml
 ```bash
 uv sync
 uv run breakdown serve --reload        # UI at http://localhost:9090/ui
-uv run pytest tests/ -v
+uv run pytest tests/ -v                # full suite (~8 min: NUTS is the default sampler)
+uv run pytest tests/ -m "not slow"     # the fast loop (~1 min): everything that never fits
 ```
 
 `uv sync` installs every provider extra (the dev group pulls

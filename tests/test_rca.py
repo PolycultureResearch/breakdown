@@ -16,6 +16,9 @@ from breakdown.grains import BOOT_BLOCK
 from breakdown.parser import Parser
 from tests.synthetic import generate_mock_data, win
 
+# Grill L10: this module fits real samplers; `-m "not slow"` is the fast loop.
+pytestmark = pytest.mark.slow
+
 JAFFLE_YAML = """
 metrics:
   - name: daily_sessions

@@ -20,10 +20,14 @@ The pre-fix characterization versions of these tests (asserting
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from breakdown.engine.rca import run_rca, shapley_attribution
 from breakdown.parser import Parser
 from tests.synthetic import win
+
+# Grill L10: this module fits real samplers; `-m "not slow"` is the fast loop.
+pytestmark = pytest.mark.slow
 
 YAML = """
 metrics:

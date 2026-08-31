@@ -141,12 +141,16 @@ SNAPSHOTS = os.path.join(DEMO, ".breakdown", "snapshots")
 # Tolerance for a figure the tour prints. See the module docstring.
 TOUR = dict(abs=0.001)
 
-pytestmark = pytest.mark.skipif(
-    not os.path.isdir(SNAPSHOTS) or not os.listdir(SNAPSHOTS),
-    reason=(
-        "demo snapshots not present — `demo/` is repo-only, not part of the distribution; "
-        "in a checkout, run `make -C demo snapshots`"
-    ),
+# Grill L10: this module fits real samplers; `-m "not slow"` is the fast loop.
+pytestmark = [pytest.mark.slow]
+pytestmark.append(
+    pytest.mark.skipif(
+        not os.path.isdir(SNAPSHOTS) or not os.listdir(SNAPSHOTS),
+        reason=(
+            "demo snapshots not present — `demo/` is repo-only, not part of the distribution; "
+            "in a checkout, run `make -C demo snapshots`"
+        ),
+    )
 )
 
 START, END = "2024-06-01", "2026-07-30"
@@ -227,8 +231,10 @@ def slices(client, metric, dimension, ref, ana):
 # slice of co-movement back in. `new_subscriptions` in story A is 130.0% on
 # screen and 1.2899 in the payload; both decompositions are complete.
 #
-# These three helpers are ports of `breakdown/static/app.js` — `shareOf` (~3062)
-# over `decomposition.means` (~3130), and the `localized` rule (~2856). There is
+# These three helpers are ports of `breakdown/static/app.js` — `shareOf` over
+# `decomposition.means`, and the `localized` rule in `renderSlicePanel` (cite
+# function names, never line numbers: the grill found every ~NNNN here 300–800
+# lines stale, in the file that declares itself the Python↔JS parity seam). There is
 # no JS test runner here (MVP-first, deliberately), so this is the seam: if that
 # rendering changes, change these with it, and re-measure the tour.
 
@@ -267,9 +273,16 @@ def prints(value, spec="{:.1f}%", scale=100.0):
 
 
 def ui_share(node, parent):
-    """A driver's share as the Headline table prints it: means over gap."""
+    """A driver's share as the Headline table prints it: means over gap.
+
+    Guarded like both app.js copies (grill L7: this port dropped the guard
+    the originals carry by name) — a withheld numerator or a negligible gap
+    prints "—", never a divided nothing."""
     (c,) = [c for c in node["contributions"] if c["parent"] == parent]
-    return c["decomposition"]["means"]["estimate"] / node["gap"]
+    v, gap = c["decomposition"]["means"]["estimate"], node["gap"]
+    if v is None or gap is None or abs(gap) <= 1e-12:
+        return None
+    return v / gap
 
 
 def ui_comovement(node):
@@ -438,7 +451,7 @@ def test_story_a_signup_regression_traverses_and_localizes(client):
     assert ui_comovement(tc) == pytest.approx(-0.007, **TOUR)
 
     # The slice the tour scripts. `signups` sits below the lagged edge and is
-    # not itself a lagged parent, so `sliceWindowsFor` (app.js ~2743) finds no
+    # not itself a lagged parent, so `sliceWindowsFor` (app.js) finds no
     # `parent_windows` for it and the UI slices over its own effective windows
     # — the calendar block. These are the numbers on the presenter's screen.
     s = slices(client, "signups", "device", ref, ana)
@@ -709,7 +722,8 @@ def test_known_gap_the_rca_table_cannot_show_the_lag(client):
 
     The tour used to script the presenter to point at a `lag 1` tag and a parent
     window in the RCA attribution table. That table renders neither (app.js
-    ~3126-3183 has no lag column and no parent_windows); the lag reaches the
+    `componentRowsHtml`/the contribution table has no lag column and no
+    parent_windows); the lag reaches the
     screen only via the Metric tab's declared-lag chip and the slice panel's
     window footer.
 
@@ -725,7 +739,7 @@ def test_known_gap_the_rca_table_cannot_show_the_lag(client):
     ]
     assert c["lag"] == 1 and c["parent_windows"] is not None
 
-    # `sliceWindowsFor("trial_conversions")` (app.js ~2743) finds this
+    # `sliceWindowsFor("trial_conversions")` (app.js) finds this
     # contribution and slices over its `parent_windows`, so the panel footer
     # reads "2025-12-29 → 2026-01-25 vs 2026-02-02 → 2026-03-01 · windows
     # shifted back 1 week for the lag" — the one place the shift is on screen.
