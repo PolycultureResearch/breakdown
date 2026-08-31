@@ -13,6 +13,44 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-31
+
+A third adversarial review of the whole repo
+([`knowledge/grill_2026_08_29.md`](knowledge/grill_2026_08_29.md)) ran against
+this cycle's tip; every High and Medium finding was verified and fixed here
+(roadmap C29–C44), alongside the S2/S3/S4/S10/S22 statistical work below.
+This is a **minor** bump under the pre-1.0 contract: several HTTP surfaces
+changed shape or behavior, each called out in its section.
+
+### Security
+
+- **`GET /metrics/{name}/query` refuses (403) whenever `GET /dag` redacts**
+  (roadmap C31). With `BREAKDOWN_API_TOKEN` set, `/dag` nulled `sql`/`bind` —
+  and this route, which `/dag`'s own docstring pointed callers at, handed the
+  full statement (fully-qualified table names, WHERE-clause business logic) to
+  anyone with no check at all. It refuses rather than nulling, because a
+  redacted `sql: null` would be indistinguishable from a provider that
+  legitimately has none. **Migration:** the UI's *show query* panel, and any
+  script scraping this route, must send the bearer token wherever the
+  redaction is in force; with no token set (the laptop default) nothing
+  changed.
+- **`GET /health` no longer echoes exception text** (roadmap C43). It is
+  deliberately unauthenticated — orchestrators must be able to poll it — and
+  it was returning the raw startup error: a parse failure leaked the tree's
+  own SQL, a provider failure leaked warehouse hostnames and usernames.
+  Degraded responses now carry a stable `error_kind` (`parse_error` |
+  `data_load_error` | `auth_config_error` | `discovery_error`) plus a generic
+  sentence; the full diagnostic lives in the server log and on the auth-gated
+  `GET /trees` card (and, for discovery failures, in the index's new
+  `discovery_error` field). **Breaking** for anything parsing the old `error`
+  text.
+- **Binding non-loopback with no token now logs an unmissable startup error**
+  (roadmap C42) naming exactly what is reachable — `serve --host 0.0.0.0`
+  with no `BREAKDOWN_API_TOKEN` is the container default and used to expose
+  `/mcp` (which runs analyses and returns the whole tree, with DNS-rebinding
+  protection necessarily off) in silence. Still permitted — `docker run`
+  works out of the box — but never silently.
+
 ### Changed
 
 - **NUTS is now the default sampler everywhere, ADVI is an explicit opt-in, and
@@ -53,6 +91,59 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
   changes too: the approximation's 95% interval on the coefficient straddled
   zero and the exact fit's excludes it — under-confident about a real effect,
   not over-confident about a spurious one.
+
+- **A NaN can no longer become a published attribution — the guards that
+  existed in one module now exist once, for all three** (roadmap C29/C30/C34;
+  grill H1/H6/H5). The posterior attribution branch published `estimate: nan`,
+  `ci_95: [nan, nan]` and an arithmetically impossible direction probability
+  when a rate parent had an undefined (zero-denominator) period inside the
+  analysis window — the fit ends at the window's start, so no fit-time check
+  ever saw it. It now refuses by name before any attribution math, exactly as
+  the formula branch has since C17: `attribution_failed` with the parent and
+  dates when the node is an ancestor, a 422 carrying the same diagnostic when
+  it is the target. The slice panel gains the tree's own honesty: a slice
+  constant within each window reports `ci_status:
+  "degenerate_bootstrap_spread"` with interval, `prob_concentrated` and the
+  `localized` verdict withheld together (it used to publish a zero-width
+  interval, probability 1.0, and the verdict), and every gap test in
+  `slices.py`/`simulate.py` is now scale-relative (the C5 epsilon), so a
+  float-residue gap on a large node cannot publish shares in the thousands.
+  The shared implementations live in the new `engine/stats.py` and
+  `engine/windows.py`.
+- **`POST /simulate` no longer refuses a whole scenario over an unrelated
+  node's grain** (roadmap C39). The baseline loop hard-failed if *any* metric
+  in the tree lacked a whole period in the baseline window, so one
+  disconnected monthly metric made every sub-month what-if unusable. Only
+  nodes the scenario actually propagates through may refuse it now; a node
+  outside the affected cone with no baseline is omitted from `nodes` and
+  named in `warnings` as `{"kind": "baseline_unavailable", …}`. **Breaking**
+  for consumers assuming every tree metric appears in `nodes`.
+- **Analysis routes can answer 409** (roadmap C41): cancelling a request
+  releases the tree's async lock, but engine threads cannot be cancelled — so
+  a second run could start beside the orphan (two NUTS working sets on a 2 GB
+  box is an OOM). A per-tree thread-side guard now turns that overlap into a
+  409 with a retry hint. The process-wide trace store also gained the
+  `threading.Lock` its cross-tree writers always needed: concurrent RCAs on
+  two trees could corrupt its eviction bookkeeping and silently disarm the
+  byte budget.
+- **Engine errors that used to be unhandled 500s are named answers**
+  (roadmap C38/C44/C40): an empty grain join (a monthly node whose daily
+  parent covers no whole month) degrades to a new per-node status
+  `frame_unavailable` — or a 422 with the diagnostic when it is the target;
+  a PyMC sampling failure degrades to `fit_failed` instead of ending the
+  analysis; a slice whose declared `weight` sums to zero over a window is
+  refused naming the metric, the weight and the remedy (it used to surface
+  numpy's own "zero-size array" message); and the four response sanitizers
+  that checked `isnan` now check `isfinite`, so a provider-supplied `inf`
+  comes back as `null` instead of a 500.
+- **The frontend's disclosure vocabulary moved to `disclosures.js`**
+  (grill H7/M12/M7) — a second classic `<script>`, still no build step. Every
+  fitted node's header now names its sampler (`posterior · NUTS` /
+  `posterior · ADVI`, with the k̂ figure beside a clean ADVI label), the
+  exported report's Methods footnote names the sampler(s) used, the five
+  drifted wordings of `fit_quality: "suspect"` collapsed into one cause-aware
+  note, and the what-if overlay routes through the same null-safe direction
+  helper as RCA — a withheld delta no longer tints the canvas.
 
 ### Added
 
@@ -177,6 +268,22 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
   (ARPU, AOV, sends per subscriber, a retention rate above 100%) must leave it
   off, and the startup log names any `share: true` node whose own history
   disagrees.
+
+- **`GET /metrics/{name}` carries top-level `inference_method` and `fit_end`**
+  for the fit its diagnostics describe (`null` when nothing is fitted), so no
+  consumer has to infer the sampler from the presence of a k̂ (roadmap C35).
+- **`POST /analyze/{name}` takes `run_id`** and reports through
+  `GET /progress/{run_id}` like the other analysis routes — it holds the tree
+  lock longest and was the only one that could not say what a queued viewer
+  was waiting for. The progress registry also stopped evicting *live* runs
+  when full (it now refuses new registrations instead, with a log line) and
+  ignores updates from a cancelled run's orphaned thread.
+- **A fast test loop for contributors**: `uv run pytest tests/ -m "not slow"`
+  runs everything that never touches a sampler (~940 tests, about a minute)
+  against the full suite's ~8; CI still runs everything.
+- **`breakdown/loading.py`**: the tree-plus-provider loading pipeline,
+  extracted from the FastAPI module so `breakdown doctor` no longer imports
+  the web app to check a database connection.
 
 ### Removed
 
@@ -641,4 +748,5 @@ release, tag `v0.1.0`, point the link below at
 published` and uploads via Trusted Publishing. -->
 [0.1.1]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.1.1
 [0.1.0]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.1.0
-[Unreleased]: https://github.com/PolycultureResearch/breakdown/compare/v0.1.1...HEAD
+[0.2.0]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.2.0
+[Unreleased]: https://github.com/PolycultureResearch/breakdown/compare/v0.2.0...HEAD

@@ -3,8 +3,8 @@
 **A white paper on the models behind Bayesian metric trees, why each was chosen,
 and where each one stops being trustworthy.**
 
-> **Written:** 2026-08-04 · **Last updated:** 2026-08-30 ·
-> **Engine version:** 0.1.0
+> **Written:** 2026-08-04 · **Last updated:** 2026-08-31 ·
+> **Engine version:** 0.2.0
 >
 > **This is a living document.** The assessment in §3 and the improvements in §4
 > describe the engine *as it stands on the last-updated date above*. Both
