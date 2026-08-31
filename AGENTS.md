@@ -143,9 +143,17 @@ is covered in [docs/deploying.md](docs/deploying.md).
 - **The DAG node carries its definition.** `dag.nodes[name]["definition"]` is the
   validated `MetricDefinition` and the single source of truth downstream (attribute
   access, not dict `.get`).
-- **Frontend stays a single file each, no build step.**
-  `breakdown/static/{index.html,app.js,style.css}`, dependencies from CDN. Keep it
-  vanilla until the UI genuinely outgrows one file. (The files live inside the
+- **Frontend stays vanilla, no build step.**
+  `breakdown/static/{index.html,app.js,disclosures.js,style.css}`, dependencies
+  from CDN, classic scripts sharing the global lexical environment. One
+  deliberate split (2026-08-31, amending the old "a single file each" wording
+  under its own "until the UI genuinely outgrows one file" clause): the
+  **disclosure vocabulary** — every table and helper that turns an engine
+  verdict into words a reader sees — lives in `disclosures.js`, loaded before
+  `app.js`, because three render surfaces 2,300+ lines apart is how
+  `fit_quality` drifted into four wordings (grill 2026-08-29 H7/M12/M7). New
+  verdict wording goes there, never inline in a renderer. Keep it vanilla; no
+  further splits without the same kind of evidence. (The files live inside the
   package so the wheel ships them.)
 - **Docs travel with the code.** When you change the API surface, update
   [`docs/api-reference.md`](docs/api-reference.md); the YAML schema,

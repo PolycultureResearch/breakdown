@@ -1112,6 +1112,51 @@ def test_a_derived_nodes_zero_is_distinguishable_from_a_measured_one():
     assert compact["nodes"]["revenue"]["unexplained_status"] == "measured"
 
 
+def _js_code(path) -> str:
+    """JS source with // line comments and /* block comments */ stripped, so a
+    token count means code, not commentary (grill L6). Naive about comment
+    markers inside string literals — fine for counting identifiers that never
+    appear in user-facing strings."""
+    import re as _re
+
+    src = path.read_text()
+    src = _re.sub(r"/\*.*?\*/", "", src, flags=_re.S)
+    src = _re.sub(r"^\s*//.*$", "", src, flags=_re.M)
+    return src
+
+
+def test_every_rca_node_field_reaches_a_render_site():
+    """The invariant that would have caught grill H7 (roadmap C35): the engine
+    emitted `inference_method` on every RCA node, MCP published it with a
+    comment on why an agent needs it — and no UI surface ever read it, so an
+    ADVI analysis rendered byte-identical to a NUTS one for a year.
+
+    Enumerated from the payload itself: `_node_out()` with no overrides is the
+    engine's own list of every field a node can carry. Each must appear in the
+    frontend (app.js or disclosures.js, comments stripped) at least once, or
+    be a named exception with a reason. A new engine field lands in neither
+    and fails here — which is the only moment anyone will ask the question.
+    """
+    fields = set(rca_mod._node_out().keys())
+    js = _js_code(PACKAGE / "static" / "app.js") + _js_code(
+        PACKAGE / "static" / "disclosures.js"
+    )
+    # Named exceptions, each with the reason it is not rendered:
+    unrendered = {
+        # consumed to *position* the k̂ figure's ± suffix, via khatFigure's
+        # arithmetic — the name appears there, so it is not in this set; kept
+        # as documentation of the pattern for the next field.
+    }
+    missing = sorted(f for f in fields - set(unrendered) if f not in js)
+    assert not missing, (
+        f"RCA node fields the engine emits and no frontend surface reads: "
+        f"{missing}. Render each on at least one surface, or add it to the "
+        "named exceptions here with the reason a reader never needs it "
+        "(roadmap C35 — a correct payload rendered incompletely is the fifth "
+        "rule's defect)."
+    )
+
+
 def test_every_surface_that_prints_unexplained_labels_which_zero():
     """The fifth rule, which has no runner — so it is enumerated in the source.
 
@@ -1121,7 +1166,7 @@ def test_every_surface_that_prints_unexplained_labels_which_zero():
     place `app.js` writes an `unexplained` row must build its label through
     `unexplainedRow`, never from a string literal.
     """
-    app_js = (PACKAGE / "static" / "app.js").read_text()
+    app_js = _js_code(PACKAGE / "static" / "app.js")
     literal_rows = [
         line
         for line in app_js.splitlines()
@@ -1132,12 +1177,20 @@ def test_every_surface_that_prints_unexplained_labels_which_zero():
         f"`unexplainedRow(node)`, so it cannot distinguish a definitional zero "
         f"from a measured one: {literal_rows}"
     )
-    # Both surfaces must actually call it: the live RCA table and the export.
-    assert app_js.count("unexplainedRow(") >= 3, (
-        "expected `unexplainedRow` to be defined and used by both the live "
-        "table and the exported report"
+    # Both surfaces must actually *call* it (grill L6: the old form counted
+    # substrings, so the definition line — and even a comment — satisfied it).
+    # Comments are stripped by `_js_code`, and the definition lives in
+    # disclosures.js now, so every hit here is a genuine call expression.
+    calls = [
+        line for line in app_js.splitlines()
+        if "unexplainedRow(" in line and not line.lstrip().startswith("function ")
+    ]
+    assert len(calls) >= 2, (
+        f"expected the live table and the exported report each to call "
+        f"`unexplainedRow`; found {len(calls)} call sites"
     )
-    assert "definitional" in app_js, "the UI never mentions a definitional zero"
+    disclosures = _js_code(PACKAGE / "static" / "disclosures.js")
+    assert "definitional" in disclosures, "the UI never mentions a definitional zero"
 
 
 # --- No rate aggregate is an average of per-period ratios (roadmap 1.11c) -----
@@ -1769,7 +1822,9 @@ def test_no_surface_prints_a_bare_khat():
     Structural rather than pinned to today's five call sites, because the sixth
     surface is the one that will get this wrong.
     """
-    source = (PACKAGE / "static" / "app.js").read_text()
+    source = (PACKAGE / "static" / "app.js").read_text() + (
+        PACKAGE / "static" / "disclosures.js"
+    ).read_text()
     offenders = re.findall(r"fmtKhat\(\s*\w+\.khat\b\s*\)", source)
     assert not offenders, (
         f"app.js prints a bare k̂ at {len(offenders)} site(s): {sorted(set(offenders))}. "
@@ -1973,7 +2028,9 @@ def test_every_surface_that_publishes_a_bound_verdict_publishes_both():
         (PACKAGE / "mcp" / "shaping.py", 1),
         (PACKAGE / "static" / "app.js", 2),  # the outcome card and the table row
     ):
-        source = path.read_text()
+        # Comments stripped (grill L6): a substring count over raw source is
+        # satisfiable by the very comment explaining the count.
+        source = _js_code(path) if path.suffix == ".js" else path.read_text()
         assert source.count("non_physical") >= minimum, (
             f"{path.name} renders or publishes fewer than {minimum} references to "
             "`non_physical`. Every surface that carries the per-node "
@@ -2059,19 +2116,26 @@ def test_every_place_that_explains_a_suspect_fit_knows_the_model_can_be_the_caus
     It is also exactly the meta-defect the four rules were written about: the
     fix landed in `renderPosterior`'s explanation first and the export's
     `caveatBlock` — the neighbouring surface, same policy, same file — kept the
-    old sentence for one working session. This test enumerates rather than
-    pinning today's two call sites, so a *third* explanation added later is
-    caught the same way.
+    old sentence for one working session. Roadmap C37 then collapsed the five
+    drifting copies into `fitQualityNote` (disclosures.js), so the enumeration
+    now expects exactly two survivors: the shared vocabulary, and the Metric
+    tab's richer diagnostics-side version (which can also see k̂ figures). A
+    *third* prose explanation appearing anywhere is a copy escaping the
+    vocabulary and fails here.
     """
-    src = (PACKAGE / "static" / "app.js").read_text()
+    src = (PACKAGE / "static" / "app.js").read_text() + (
+        PACKAGE / "static" / "disclosures.js"
+    ).read_text()
 
     # Every passage that explains the verdict names the sampler-side causes in
     # prose. Find them by that enumeration rather than by a marker comment,
     # which a new author would not know to copy.
     sites = [m.start() for m in re.finditer(r"divergence[s]? (?:or|count)", src)]
-    assert len(sites) >= 2, (
-        f"expected at least the metric card's and the export's suspect explanations; "
-        f"found {len(sites)}"
+    assert len(sites) == 2, (
+        f"expected exactly two suspect explanations — fitQualityNote and the "
+        f"metric card's diagnostics version; found {len(sites)}. More means a "
+        "copy has escaped the shared vocabulary (roadmap C37); fewer means an "
+        "explanation stopped naming its causes."
     )
 
     for start in sites:

@@ -1596,13 +1596,23 @@ async def get_metric(name: str, request: Request):
 
     summary = None
     diagnostics = None
+    inference_method = None
+    fit_end = None
     fit = _pick_fit(traces, name)
     if fit is not None:
         summary = await asyncio.to_thread(_fit_summary, fit)
         diagnostics = fit.diagnostics
+        # Top-level, not only `diagnostics.method` (roadmap C35): the sampler
+        # and the window the fit ends at are the two facts that make one fit
+        # comparable with another, and the Metric tab was left *inferring*
+        # ADVI from the presence of a k̂. Same names the RCA node payload uses.
+        inference_method = fit.inference_method
+        fit_end = fit.fit_end
 
     return {
         "definition": metric.model_dump(),
+        "inference_method": inference_method,
+        "fit_end": fit_end,
         "time_series": time_series,
         "summary": summary,
         "diagnostics": diagnostics,

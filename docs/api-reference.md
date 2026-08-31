@@ -27,7 +27,7 @@ about the whole process rather than one tree.
 | `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), per-metric `grains`/`kinds`/`data_through`, fitted models, per-metric `earliest_available` history discovery (UI bootstrap) |
 | `GET` | `/dag` | Full metric DAG (nodes + edges), each node carrying its whole definition. `sql` and `bind` come back `null` to a caller that presents no token when one is configured. See [Authentication](deploying.md#authentication) |
 | `GET` | `/series` | Every metric's series at its native grain, `{name: {grain, dates, values}}`. One call hydrates the UI's node cards. Mixed-grain trees have no shared date axis, so dates are per metric |
-| `GET` | `/metrics/{name}` | Metric definition, time series, posterior summary and fit diagnostics |
+| `GET` | `/metrics/{name}` | Metric definition, time series, posterior summary and fit diagnostics — plus top-level `inference_method` and `fit_end` for the fit those describe (`null` when nothing is fitted), so a reader never infers the sampler from the presence of a k̂ (roadmap C35) |
 | `GET` | `/metrics/{name}/query` | The query behind a metric's numbers, when the provider knows it. Optional `dimension` for the sliced form |
 | `GET` | `/metrics/{name}/ppc` | The observed-vs-replicated series behind this node's posterior predictive verdict — the arrays the Metric tab plots |
 | `POST` | `/analyze/{name}` | Run Bayesian sampling for a metric |

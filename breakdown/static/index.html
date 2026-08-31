@@ -209,6 +209,11 @@
         </div>
     </div>
 
+    <!-- disclosures.js first: the disclosure vocabulary (status tables, fit
+         verdict wording, direction mapping) as a classic script sharing the
+         global lexical environment — app.js calls into it. Still no build
+         step; see the file's own header for why it is separate. -->
+    <script src="disclosures.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
