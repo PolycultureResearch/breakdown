@@ -7,7 +7,7 @@
 # `pip install` and `import` read differently, which the README now states up
 # front.
 name = "metric-breakdown"
-version = "0.1.1"
+version = "0.2.0"
 description = "Bayesian metric trees: root cause analysis for business metrics over the dbt Semantic Layer"
 readme = "README.md"
 requires-python = ">=3.11"
