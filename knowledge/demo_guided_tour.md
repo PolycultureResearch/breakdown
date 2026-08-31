@@ -93,6 +93,22 @@ through `new_subscriptions` (−16.5%) and `trial_conversions` (−18.9%) to
 - `unexplained` on `new_mrr` and on `new_subscriptions` reads **0.0**. Both
   identities are exact; nothing is hiding in a remainder. (The test pins
   below-1e-9, not the digits.)
+- **`trials_started` carries two warnings, and they are a feature to point at
+  rather than a blemish to talk past.** Since 2026-08-29 (roadmap S3) its
+  header reads *⚠ suspect fit · ⚠ the model cannot generate this node's own
+  data (min, p 0.016)*. The engine is right: `trials_started` is an integer
+  count that never goes below 6 and skews upward, and it is being fitted with a
+  Gaussian likelihood, so the model generates a floor the series never reaches
+  (−1.85 observed against −2.26 replicated) and misses the peaks it does reach.
+  Nothing about the *attribution* above is affected — the 68.7% is a Shapley
+  decomposition of an identity, not an output of that model — and the flag is
+  about the learned `signups → trials_started` edge instead. Say that plainly:
+  most tools would have shipped this number with no indication that the
+  likelihood behind it is wrong, and the reason this one can tell you is that
+  it simulates from its own posterior and checks. It is also the honest limit
+  of the disclosure — the fix is a count likelihood (roadmap S20), which the
+  engine does not have yet. Two of the tree's three learned nodes come back
+  clean, so this is a diagnosis and not a smoke alarm.
 
 **Note the lag.** The analysis window starts a week *after* the break. The
 engine compares `trial_conversions` not over the calendar window but over

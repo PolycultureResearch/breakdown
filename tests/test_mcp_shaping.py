@@ -352,10 +352,22 @@ def test_how_to_read_guides():
         # ranks them, which is precisely the number the data does not
         # determine and the way this engine's output most easily becomes a
         # wrong decision.
-        assert 400 < len(guide) < 5000
+        #
+        # Raised to 5400 for `ppc_status` (roadmap S3) — a sixth entry, and the
+        # only one that tells an agent *what kind* of thing went wrong with a
+        # fit. `fit_quality: "suspect"` is a single bit covering two failures
+        # that want opposite responses: a sampler that struggled (re-run it,
+        # lengthen the chains) and a model that is wrong for the data (no
+        # re-run helps; the node needs a different likelihood or a different
+        # definition). Since S3, a NUTS fit can be `suspect` for the second
+        # reason — and an agent holding the bare bit would recommend the first,
+        # confidently, forever. The entry also has to say what its absence
+        # means, for the reason `khat_status` does.
+        assert 400 < len(guide) < 5400
     assert "unexplained" in RCA_HOW_TO_READ
     assert "window_aggregate" in RCA_HOW_TO_READ
     assert "collinearity_status" in RCA_HOW_TO_READ
+    assert "ppc_status" in RCA_HOW_TO_READ and "ppc_status" in WHATIF_HOW_TO_READ
     assert "khat_status" in RCA_HOW_TO_READ and "khat_status" in WHATIF_HOW_TO_READ
     assert "prob_direction" in WHATIF_HOW_TO_READ
     # C9: contributions sum to the *point* delta (`delta.estimate`), and the

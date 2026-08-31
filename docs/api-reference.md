@@ -141,6 +141,17 @@ borderline `ok` k̂, which has not shown the approximation to be close. Full
 interpretation in
 [`docs/model.md`](model.md#assumptions-and-limitations-to-keep-in-mind).
 
+Whichever sampler ran, every fit also reports **`ppc_status`** — `ok`,
+`moderate`, `severe` or `unavailable` — plus `ppc` (the evidence: `n_draws` and
+every `statistics` entry with its `statistic`, two-sided `p_value`, `observed`,
+`replicated_mean` and band) and, when anything was flagged, `ppc_warnings`. It
+is a posterior predictive check: series are simulated from the fitted posterior
+and compared with the fitted series on `min`, `max`, `resid_max` and
+`resid_acf1`. Unlike the collinearity fields below, **`severe` does move
+`fit_quality` to `suspect`** — and on a NUTS fit it is the only thing that can,
+so `suspect` there means the model is wrong for the data rather than that the
+sampler struggled. See [the model guide](model.md#can-the-model-generate-its-own-data).
+
 Whichever sampler ran, a fit with two or more parents also reports
 **`collinearity_status`** — `ok`, `moderate`, `high` or `unavailable` — plus
 `collinearity` (the evidence: `max_abs_correlation`, the flagged `pairs` with
@@ -283,6 +294,8 @@ Trimmed response:
 ```
 
 Every fitted (`attribution_method: "posterior"`) node also reports which model produced its numbers and how much that model can be trusted: `inference_method`, `fit_quality` (`ok` | `suspect`), and the PSIS fields `khat` / `khat_se` / `khat_status` / `khat_borderline` / `khat_warnings` described under [`POST /analyze/{name}`](#post-analyzename). On the NUTS default they are `null` throughout. Where they are not — because the request asked for `advi` — read `khat_status` before quoting a `ci_95` from that node: `unusable` means the interval is not a measurement of the real one, and `khat_borderline: true` means the check could not separate that verdict from the next band along.
+
+Every fitted node also carries `ppc_status` / `ppc` / `ppc_warnings`, described under [`POST /analyze/{name}`](#post-analyzename). On `severe`, that node's model does not reproduce the series it was fitted on, so its contributions and `share_of_gap` are conditional on a likelihood the data argues against — read the direction, not the magnitude. `severe` also sets that node's `fit_quality` to `suspect`.
 
 A fitted node with two or more parents also carries `collinearity_status` / `collinearity` / `collinearity_warnings`, described under [`POST /analyze/{name}`](#post-analyzename). On `moderate` or `high`, the node's per-parent `contributions` are a split the data does not fully determine: read the flagged parents as one cause and do not rank them against each other. The fields are absent (null) on nodes with fewer than two parents.
 
@@ -471,7 +484,10 @@ exactly to the point delta by Shapley efficiency), per-node results
 `fit_quality`, `khat_status`, `khat_borderline`, `khat_warnings` — the last
 three null on the NUTS default — `collinearity_status`,
 `collinearity_warnings` (the S4 verdict on the fit behind this node's slope;
-null where the node has fewer than two parents), `extrapolation`,
+null where the node has fewer than two parents), `ppc_status`, `ppc_warnings`
+(the S3 verdict on whether that fit's model reproduces its own history; a
+`severe` node's scenario magnitude rests on a model the data argues against),
+`extrapolation`,
 `non_physical`, `contributions`), plus
 `warnings` and always-on `caveats`. The run is seeded, so identical calls are
 byte-identical.

@@ -1061,6 +1061,378 @@ def _collinearity_diagnostic(
     return block, warnings
 
 
+# Roadmap S3. Triggers for a *disclosure*, not statistics — the same status as
+# the k-hat bands and `_COLLINEAR_R_*`, and read the same way.
+#
+# A posterior predictive p-value is the probability, under the fitted model,
+# of replicating data at least as extreme as what was observed on some test
+# statistic (Gelman et al., 2020; Gabry et al., 2019). It is deliberately
+# *not* a frequentist tail probability against a null: there is no null here
+# and nothing is being rejected. It asks one question — could this model have
+# produced this series? — and the bands below are where the answer stops being
+# "yes".
+#
+# Reported two-sided, as `2 * min(p, 1 - p)`, because both tails are findings:
+# a residual spread the model never replicates and one it always overshoots
+# are both misspecification, and a one-sided bar would report the first and
+# miss the second.
+#
+#   p_2s < 0.10  moderate. The observed series sits outside the central 90% of
+#                what the fitted model generates on this statistic. Worth
+#                saying; not on its own a reason to disbelieve the node.
+#   p_2s < 0.02  severe. Outside the central 98%. On a check the model is
+#                being graded against its own replicates, this is the model
+#                failing to generate its own data.
+#
+# The bands are wider than the conventional 0.05/0.01 for a reason this
+# engine's shape forces: four statistics are reported per node, so a node with
+# four independent honest checks crosses a 0.05 bar 19% of the time by chance
+# alone. These are disclosure triggers on a payload a reader scans, not
+# hypothesis tests, and the cost of spraying is that the ones that matter stop
+# being read.
+_PPC_P_MODERATE = 0.10
+_PPC_P_SEVERE = 0.02
+
+#: Which PPC verdicts move `fit_quality`, written as a predicate rather than
+#: an inline comparison so the policy is greppable and directly testable.
+#:
+#: Only `severe`. The roadmap row asked S3 to surface through the
+#: `fit_quality` channel, and for the strong band that is right: a model that
+#: cannot generate its own data is not a fit whose intervals mean what they
+#: say, which is exactly what the two-valued gate is for. `moderate` stays out
+#: of it — four statistics per node cross that band often enough on honest
+#: fits that wiring it to the gate would make `suspect` the common verdict and
+#: drain it of meaning, the same spray argument that set the bands wide in the
+#: first place. `unavailable` stays out for the reason S22 kept k-hat's
+#: borderline band out: an unchecked model is not a failed one.
+_PPC_GATING_STATUSES = ("severe",)
+
+
+def _ppc_moves_fit_quality(status: Optional[str]) -> bool:
+    """Whether a PPC verdict flips `fit_quality` to "suspect"."""
+    return status in _PPC_GATING_STATUSES
+
+
+#: Posterior draws used for the replicated series. The p-value's own Monte
+#: Carlo error is ~sqrt(p(1-p)/n): at n = 500 and p = 0.02 that is 0.006, so a
+#: `severe` verdict is separated from its band edge by three of its own
+#: standard errors. More draws buy accuracy this diagnostic cannot use — the
+#: bands are conventions, not measurements (cf. S22, which had to publish
+#: k-hat's error precisely because 0.5 and 0.7 *are* the finding there).
+_PPC_DRAWS = 500
+
+
+def _ppc_test_statistics(y: np.ndarray, mu: np.ndarray) -> Dict[str, float]:
+    """The four test statistics S3 scores, for one series against one `mu`.
+
+    Chosen by measurement, and the omission is the load-bearing part. The
+    obvious candidate — the standard deviation of the series — is **vacuous
+    here** and is deliberately absent: `_prepare_series` z-scores `y` and
+    `sigma_obs` is free, so the replicated spread matches the observed spread
+    by construction. Measured across a well-specified world, a t(3) world and
+    a Poisson-count world it returned p = 0.479 / 0.499 / 0.521 — a number
+    that cannot fail is worse than no number, because it reads as a check that
+    passed. The same argument retires `resid_sd` (0.511 / 0.526 / 0.482).
+
+    What survives measures something the local-level trend cannot absorb:
+
+    - `min` / `max`: the extremes of the series. A non-negative quantity fitted
+      Gaussian is caught here and nowhere else (the Poisson world returns
+      p = 0.000 on `min`), which makes this check a real version of what S20's
+      zero-share heuristic only approximates.
+    - `resid_max`: the largest single residual. Heavy tails live here
+      (p = 0.020 on the t(3) world, against 0.094 well-specified).
+    - `resid_acf1`: lag-1 autocorrelation of the residuals — structure the
+      mean function left behind, which is the check a local-level model most
+      needs and the one that will speak when S8's momentum case is real.
+    """
+    resid = y - mu
+    denom = float(np.sum(resid * resid))
+    return {
+        "min": float(np.min(y)),
+        "max": float(np.max(y)),
+        "resid_max": float(np.max(np.abs(resid))),
+        # Undefined for an all-zero residual vector; 0.0 is the right reading
+        # (no leftover structure) and cannot be reached by a real fit anyway.
+        "resid_acf1": (float(np.sum(resid[1:] * resid[:-1]) / denom) if denom > 0 else 0.0),
+    }
+
+
+def _ppc_diagnostic(
+    y: np.ndarray,
+    y_rep: Optional[np.ndarray],
+    mu: Optional[np.ndarray],
+    target: str,
+    grain: str,
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    """Roadmap S3: could the fitted model have generated the series it was fitted on?
+
+    Convergence diagnostics (r-hat, ESS, divergences) say the sampler explored
+    the posterior; k-hat (S2) says a variational approximation is close to it.
+    Neither asks whether the *model* is right, and a badly misspecified node
+    passes both in silence as long as it converges — §3.2 #5 of the white
+    paper. This asks, by simulating replicated series from the posterior and
+    comparing four test statistics against the observed ones.
+
+    `y_rep` is `(n_draws, n_periods)` replicated observations; `mu` the
+    matching `(n_draws, n_periods)` mean function, so the residual statistics
+    are computed per draw against that draw's own mean — the observed residual
+    is itself a posterior quantity here, not a single fitted-value residual.
+
+    Returns `(block, warnings)` in the shape S4 established:
+
+    - `block["status"]` is `"ok"` (checked, every statistic inside its band),
+      `"moderate"`, `"severe"` (the worst band any statistic reached), or
+      `"unavailable"` (the check could not run — unchecked, not clean, rule 3).
+      `None` when there was nothing to check.
+    - `block["statistics"]` carries **every** statistic with its p-value, not
+      only the flagged ones, so an `ok` is evidence rather than an assertion
+      and S10 has the series-level material it needs.
+    - `warnings` is self-contained prose, one string per flagged statistic.
+    """
+    if y_rep is None or mu is None:
+        return None, []
+
+    y = np.asarray(y, dtype=float)
+    n = len(y)
+    # Rule 3: a non-finite replicate or mean draw makes every statistic below
+    # NaN, and a NaN p-value rounds to `null` on the agent payload — a check
+    # that reads as absent rather than as failed. Withhold the whole block
+    # under a named status with its reason instead.
+    reason = ""
+    if y_rep.ndim != 2 or mu.ndim != 2 or y_rep.shape != mu.shape or y_rep.shape[1] != n:
+        reason = (
+            f"replicated series of shape {getattr(y_rep, 'shape', None)} and mean function of "
+            f"shape {getattr(mu, 'shape', None)} do not match the {n} fitted periods"
+        )
+    elif not np.isfinite(y).all():
+        reason = "the fitted series contains non-finite values"
+    elif not np.isfinite(y_rep).all() or not np.isfinite(mu).all():
+        reason = "the posterior predictive draws contain non-finite values"
+    if reason:
+        msg = (
+            f"The fit for '{target}' could not be checked against its own posterior "
+            f"predictive distribution: {reason}. That is an unchecked model, not a "
+            "validated one — if this node's likelihood is wrong for its data, nothing "
+            "here will say so (see docs/model.md)."
+        )
+        logger.warning(msg)
+        return (
+            {"status": "unavailable", "statistics": [], "n_draws": 0, "reason": reason},
+            [msg],
+        )
+
+    obs = _ppc_test_statistics(y, mu.mean(axis=0))
+    per_draw_obs = {k: [] for k in obs}
+    per_draw_rep = {k: [] for k in obs}
+    for rep_i, mu_i in zip(y_rep, mu):
+        o = _ppc_test_statistics(y, mu_i)
+        r = _ppc_test_statistics(rep_i, mu_i)
+        for k in obs:
+            per_draw_obs[k].append(o[k])
+            per_draw_rep[k].append(r[k])
+
+    n_draws = int(y_rep.shape[0])
+    statistics: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    worst = "ok"
+    for name in ("min", "max", "resid_max", "resid_acf1"):
+        o = np.asarray(per_draw_obs[name], dtype=float)
+        r = np.asarray(per_draw_rep[name], dtype=float)
+        # Mid-p. `>=` alone makes a statistic with ties (a count series whose
+        # minimum is 0 in most replicates) return p = 1.000 on a *correctly*
+        # specified node — measured, and it put the only false alarm of the
+        # probe on the good world. Splitting the tied mass removes it.
+        p_one = float(np.mean(r > o) + 0.5 * np.mean(r == o))
+        p_two = float(2.0 * min(p_one, 1.0 - p_one))
+        band = "ok"
+        if p_two < _PPC_P_SEVERE:
+            band = "severe"
+        elif p_two < _PPC_P_MODERATE:
+            band = "moderate"
+        statistics.append(
+            {
+                "statistic": name,
+                "p_value": p_two,
+                "observed": float(o.mean()),
+                "replicated_mean": float(r.mean()),
+                "status": band,
+            }
+        )
+        if band == "ok":
+            continue
+        if worst != "severe":
+            worst = "severe" if band == "severe" else "moderate"
+        msg = _ppc_warning(target, grain, n, name, p_two, float(o.mean()), float(r.mean()), band)
+        warnings.append(msg)
+        logger.warning(msg)
+
+    statistics.sort(key=lambda s: s["p_value"])
+    return (
+        {"status": worst, "statistics": statistics, "n_draws": n_draws, "reason": None},
+        warnings,
+    )
+
+
+def _ppc_warning(
+    target: str,
+    grain: str,
+    n: int,
+    name: str,
+    p: float,
+    observed: float,
+    replicated: float,
+    band: str,
+) -> str:
+    """The prose for one flagged statistic. Each names what the model failed to
+    reproduce and what that specifically threatens, because "the PPC failed" is
+    not actionable and the reader of a `share_of_gap` is who this has to reach."""
+    direction = "above" if observed > replicated else "below"
+    head = (
+        f"The fitted model for '{target}' does not reproduce its own data on "
+        f"'{name}' over the {n} fitted {grain} periods: observed {observed:+.3f} "
+        f"against {replicated:+.3f} replicated ({direction}), posterior predictive "
+        f"p = {p:.3f}. "
+    )
+    tail = {
+        "min": (
+            "The model generates low values the series never reaches — the usual cause is "
+            "a Gaussian likelihood on a quantity that cannot go below a floor (a count, a "
+            "rate, anything non-negative), which puts posterior mass on impossible values "
+            "and mis-states the intervals everywhere, not only at the floor"
+        ),
+        "max": (
+            "The model does not generate peaks the series actually reaches, so the spikes "
+            "are being absorbed as noise rather than modeled — anything this node's "
+            "intervals say about a period containing one is understated"
+        ),
+        "resid_max": (
+            "One or more periods sit far outside what this model calls noise. A "
+            "heavy-tailed or contaminated series fitted Gaussian inflates `sigma_obs` to "
+            "cover the outliers, which widens every interval on the node and drags the "
+            "trend toward the outlying periods"
+        ),
+        "resid_acf1": (
+            "The residuals are still autocorrelated, so structure the mean function should "
+            "carry — momentum, an unmodeled cycle, a lag this tree does not declare — is "
+            "being left in the noise term. That understates the uncertainty on every "
+            "coefficient, because the fit is treating correlated periods as independent "
+            "evidence"
+        ),
+    }[name]
+    close = (
+        ". The node's coefficients and its share of any gap are computed from this model, "
+        "so read them as conditional on a likelihood the data argues against"
+        if band == "severe"
+        else ". The fit is usable and this is a caveat on it, not a verdict against it"
+    )
+    return head + tail + close + " (see docs/model.md)."
+
+
+def _ppc_unavailable(target: str, reason: str) -> Tuple[Dict[str, Any], List[str]]:
+    """Rule 3 for the sampling half of S3: the draws could not be produced, so
+    say the model is *unchecked* rather than let the absence of a warning read
+    as a model that passed."""
+    msg = (
+        f"The fit for '{target}' could not be checked against its own posterior "
+        f"predictive distribution: {reason}. That is an unchecked model, not a validated "
+        "one — if this node's likelihood is wrong for its data, nothing here will say so "
+        "(see docs/model.md)."
+    )
+    logger.warning(msg)
+    return (
+        {"status": "unavailable", "statistics": [], "n_draws": 0, "reason": reason},
+        [msg],
+    )
+
+
+def _seasonal_draws(posterior: Any, seasonality: List[Any], t: np.ndarray) -> np.ndarray:
+    """`(n_draws, n_periods)` Fourier seasonal component from a trace.
+
+    Mirrors `_seasonal_component`'s `identifiable_harmonics` filter exactly, for
+    the same reason `seasonal_window_delta` does: a harmonic the model skipped
+    has no posterior variable to read.
+    """
+    n_draws = posterior.sizes["chain"] * posterior.sizes["draw"]
+    out = np.zeros((n_draws, len(t)))
+    for s in seasonality:
+        for k in identifiable_harmonics(s.period):
+            a = posterior[f"sin_{s.name}_h{k}"].values.reshape(-1)
+            b = posterior[f"cos_{s.name}_h{k}"].values.reshape(-1)
+            out += np.outer(a, np.sin(2 * np.pi * k * t / s.period))
+            out += np.outer(b, np.cos(2 * np.pi * k * t / s.period))
+    return out
+
+
+def _posterior_predictive_draws(
+    pm: Any,
+    trace: Any,
+    X: Optional[np.ndarray],
+    defn: MetricDefinition,
+    t: np.ndarray,
+    random_seed: Optional[int] = None,
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[str]]:
+    """Replicated series and the matching mean function, for S3.
+
+    Must be called **inside** the model context: `sample_posterior_predictive`
+    needs the graph, not just the trace.
+
+    Two things are load-bearing here. The posterior is thinned to
+    `_PPC_DRAWS` *before* the replicates are drawn — a 4-chain, 1000-draw
+    trace over an 830-period window is 3.3M floats of replicates and as many
+    again of mean function, allocated on every fit, and the p-value cannot use
+    that precision (rule 2's reasoning applied to a transient: bound the thing
+    that grows with the window).
+
+    And `mu` is reconstructed in numpy from `alpha`/`trend`/`beta` plus the
+    seasonal coefficients rather than added to the graph as a
+    `pm.Deterministic`. A stored `mu` would be a second trend-sized array on
+    every trace *forever*, in a cache the trace cap is measured in gigabytes
+    against, to hold values that are an exact function of variables already
+    there.
+
+    Returns `(y_rep, mu, None)`, or `(None, None, reason)` if either could not
+    be produced — never a partial or invented result.
+    """
+    try:
+        posterior = trace.posterior
+        n_draws = int(posterior.sizes["chain"] * posterior.sizes["draw"])
+        if n_draws < 1:
+            return None, None, "the posterior carries no draws"
+        step = max(1, n_draws // _PPC_DRAWS)
+        thinned = trace.sel(draw=slice(None, None, step)) if step > 1 else trace
+
+        pp = pm.sample_posterior_predictive(
+            thinned,
+            var_names=["obs"],
+            random_seed=random_seed,
+            progressbar=False,
+        )
+        y_rep = pp.posterior_predictive["obs"].values.reshape(-1, len(t))
+
+        post = thinned.posterior
+        mu = np.zeros_like(y_rep, dtype=float)
+        mu += post["alpha"].values.reshape(-1, 1)
+        mu += post["trend"].values.reshape(-1, len(t))
+        mu += _seasonal_draws(post, defn.seasonality, t)
+        if X is not None:
+            # `beta` is the Deterministic stack in `list(dag.predecessors)`
+            # order — the same axis order every other component reads.
+            mu += post["beta"].values.reshape(-1, X.shape[1]) @ X.T
+        if mu.shape != y_rep.shape:
+            return (
+                None,
+                None,
+                (
+                    f"reconstructed mean function of shape {mu.shape} does not match the "
+                    f"replicated series of shape {y_rep.shape}"
+                ),
+            )
+        return y_rep, mu, None
+    except Exception as exc:  # pragma: no cover - defensive; rule 3
+        return None, None, f"{type(exc).__name__}: {exc}"
+
+
 def _prepare_series(
     defn: MetricDefinition,
     parents: List[str],
@@ -1544,6 +1916,20 @@ def fit_metric(
             )
             diagnostics = _nuts_diagnostics(trace, draws, chains)
 
+        # Roadmap S3, inside the model context because that is the only place
+        # `sample_posterior_predictive` can run — and computed here for every
+        # method, because misspecification is a property of the model, not of
+        # how its posterior was approximated.
+        y_rep, mu_draws, ppc_reason = _posterior_predictive_draws(
+            pm, trace, X, defn, t, random_seed=random_seed
+        )
+
+    ppc, ppc_warnings = (
+        _ppc_diagnostic(y, y_rep, mu_draws, target, grain)
+        if ppc_reason is None
+        else _ppc_unavailable(target, ppc_reason)
+    )
+
     if diagnostics["fit_quality"] == "suspect":
         logger.warning("Fit for '%s' is suspect: %s", target, diagnostics)
     if seasonality_warnings:
@@ -1564,6 +1950,35 @@ def fit_metric(
         diagnostics["collinearity"] = collinearity
         if collinearity_warnings:
             diagnostics["collinearity_warnings"] = collinearity_warnings
+
+    # Roadmap S3. Like S4's block, this rides along whenever the check ran at
+    # all — `"ok"` included, because on a fitted node the absence of a warning
+    # has to be distinguishable from the absence of a check.
+    #
+    # Whether it moves `fit_quality` is the one design question this item had
+    # to answer with a measurement rather than a preference, and the answer is
+    # `severe` does and `moderate` does not. The roadmap row asked for the
+    # `fit_quality` channel, and for the strong band that is right: a model
+    # that cannot generate its own data is not a fit whose intervals mean what
+    # they say, which is exactly the two-valued gate consumers branch on. But
+    # four statistics per node cross a `moderate` band often enough on honest
+    # fits that wiring that band to the gate would make `suspect` the common
+    # case and drain it of meaning — the same spray argument that set the
+    # bands wide. So `moderate` speaks in its own channel and leaves the gate
+    # alone, and `unavailable` never moves it: an unchecked model is not a
+    # failed one (the rule S22 applied to k-hat's borderline band).
+    if ppc is not None:
+        diagnostics["ppc_status"] = ppc["status"]
+        diagnostics["ppc"] = ppc
+        if ppc_warnings:
+            diagnostics["ppc_warnings"] = ppc_warnings
+        if _ppc_moves_fit_quality(ppc["status"]):
+            diagnostics["fit_quality"] = "suspect"
+            logger.warning(
+                "Fit for '%s' is suspect: the posterior predictive check failed on %s",
+                target,
+                [s["statistic"] for s in ppc["statistics"] if s["status"] == "severe"],
+            )
 
     # Declared-direction check: expected_signs is not a prior, so the fit is
     # free to contradict it — but when it does, say so loudly. The classic

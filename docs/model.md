@@ -259,6 +259,63 @@ against each other**, however different their `share_of_gap` look. The durable
 fix is in the tree rather than the fit — merge the two metrics, drop one, or
 redefine one so it is not a restatement of the other.
 
+## Can the model generate its own data?
+
+Convergence diagnostics answer a narrower question than they look like they
+answer. R̂, the divergence count and effective sample size say the sampler
+explored the posterior; PSIS k̂ says a variational approximation landed close to
+it. None of them asks whether the **model is right for the metric** — and a
+badly misspecified node passes all of them in silence, as long as it converges.
+
+So every fit is now checked against itself. Series are simulated from the
+fitted posterior and compared with the series the model was actually fitted on,
+across four summaries. Each comparison produces a posterior predictive p-value:
+the probability, under this model, of generating data at least as extreme as
+what was observed. It is reported two-sided, because both tails are findings —
+a spread the model never reaches and one it always overshoots are both
+misspecification.
+
+| `ppc_status` | What it means |
+|---|---|
+| `ok` | Checked, and the model reproduces its own data on every statistic. |
+| `moderate` | Some statistic has a two-sided p < 0.10. A caveat on a usable fit, not a verdict against it. |
+| `severe` | Some statistic has a two-sided p < 0.02. The model cannot generate the data it was fitted on. Also sets `fit_quality: "suspect"`. |
+| `unavailable` | The check could not run. An unchecked model, not a validated one. |
+| *absent* | Nothing to check: a formula node, or no fit. |
+
+The four statistics are `min` and `max` (the extremes of the series),
+`resid_max` (the largest single residual) and `resid_acf1` (lag-1
+autocorrelation of the residuals). Each fails for a different reason, and
+`ppc_warnings` says which and what it threatens: a `min` failure is usually a
+Gaussian likelihood on a quantity that cannot go below a floor — a count, a
+rate, anything non-negative — which puts posterior mass on impossible values
+and mis-states intervals everywhere, not only near the floor. A `resid_acf1`
+failure means structure the mean function should carry is being left in the
+noise term, which understates uncertainty on every coefficient because the fit
+is treating correlated periods as independent evidence.
+
+One statistic is deliberately **absent**, and it is the one most people would
+add first: the standard deviation of the series. The fit normalizes `y` and
+`sigma_obs` is free, so a replicated standard deviation matches the observed
+one by construction. Measured across a well-specified series, a heavy-tailed
+one and a count series it returned p = 0.479 / 0.499 / 0.521 — a statistic that
+cannot fail is worse than no statistic, because a reader scores it as a check
+that passed.
+
+`ppc.statistics` carries **every** statistic with its p-value, not only the
+failing ones, so an `ok` is a measurement rather than an assertion.
+
+Unlike the collinearity check above, a `severe` verdict does move
+`fit_quality` to `"suspect"` — and on a NUTS fit it is the only thing that can
+have, so `suspect` there means *the model is wrong for this data*, not *the
+sampler struggled*. The two want opposite responses: no re-run fixes the first.
+What it changes is what you may do with the output: **read the direction rather
+than the magnitude**, and treat the node's definition or its likelihood as the
+thing to fix. A `moderate` verdict deliberately leaves the gate alone — four
+statistics per node cross that band often enough on honest fits that wiring it
+to `fit_quality` would make `suspect` the common verdict and drain it of
+meaning.
+
 ## Reading coefficients: `beta` vs `beta_raw`
 
 The posterior contains both. `beta` is in z-scored units ("a 1-sd move in the
@@ -701,9 +758,16 @@ ship in every cold-start response.
    anything it produced.
 7. **The observation model is Gaussian, and a mostly-zero series breaks it.**
    A series that is exactly zero for a long stretch of its fit window, a
-   seasonal business's off-season or a spiky count, converges happily and
-   reports `fit_quality: "ok"`, because convergence diagnostics measure the
-   optimizer, not the model. The fitted sigma is then a compromise between the
+   seasonal business's off-season or a spiky count, converges happily —
+   convergence diagnostics measure the sampler, not the model. Since the
+   posterior predictive check shipped, such a node will often *also* fail on
+   `min` and carry `ppc_status: "severe"`, because a Gaussian fitted to a
+   floored quantity generates values below the floor; that is the check
+   catching the misspecification directly rather than inferring it from a zero
+   count. Neither is a substitute for the other: `likelihood_warnings` fires on
+   the *shape* of the data whether or not the fit noticed, and the PPC fires on
+   what the fit actually does, including on floored series that are never
+   exactly zero. The fitted sigma is then a compromise between the
    zero regime and the live one: posterior mass sits on negative values of a
    non-negative series and the intervals mis-state everywhere. When a quarter
    or more of a node's fitted periods are exactly zero, the fit discloses it
@@ -735,6 +799,31 @@ ship in every cold-start response.
    on which linear-algebra library your machine ships, from the *same* seed.
    The pair's total is stable across all three. Read the pair, act on the
    pair, and fix the tree if you need the individual number.
+10. **The posterior predictive check grades the model against the window it
+   was fitted on, and nothing else.** A `ppc_status: "ok"` says this model
+   reproduces *this* history on four summaries — not that it will forecast, not
+   that the DAG is right, and not that an unmeasured confounder is absent. It
+   is also an in-sample check: the local-level trend carries one latent per
+   period, so a model flexible enough to track anything would in principle be
+   able to pass by tracking noise. The tight step-size prior (limitation 3) is
+   what keeps that from happening in practice, and the residual statistics are
+   chosen to measure what the trend cannot absorb — but a node with a
+   deliberately loosened `trend: {sigma: ...}` buys back that flexibility and
+   should have its PPC read as correspondingly weaker evidence. Four statistics
+   is also not all the ways a model can be wrong; an `ok` is the absence of
+   four specific failures, not a certificate.
+
+   **And the verdict depends on how much history the node was fitted on**, in
+   the way every goodness-of-fit check does: power to detect a *fixed*
+   misspecification grows with the number of fitted periods. The demo tree's
+   `trials_started` is a count series throughout — equally misspecified under a
+   Gaussian at every window — and its `min` p-value measures 0.076 over 219
+   fitted days, 0.012 over 401 and 0.016 over 618, i.e. `moderate` then
+   `severe` then `severe`. Nothing about the metric changed; only the evidence
+   did. So read `ppc_status: "ok"` on a short fit window as *not yet
+   detectable* rather than as *fine*, and do not read an escalation between two
+   analyses of the same node as the model having got worse. The verdict is
+   evidence about the model, and like any evidence it accumulates.
 
 ---
 

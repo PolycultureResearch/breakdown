@@ -854,6 +854,8 @@ def run_scenario(
                 "khat_warnings": None,
                 "collinearity_status": None,
                 "collinearity_warnings": None,
+                "ppc_status": None,
+                "ppc_warnings": None,
                 "extrapolation": {"flag": False, **hist},
                 # An unaffected node's simulated value *is* its baseline, so
                 # this flag would be a statement about the loaded data rather
@@ -933,6 +935,8 @@ def run_scenario(
         khat_warnings = None
         collinearity_status = None
         collinearity_warnings = None
+        ppc_status = None
+        ppc_warnings = None
         if not cold_start and node in needs_beta:
             dx = traces[(node, fit_end_key)].diagnostics
             fit_quality = dx.get("fit_quality")
@@ -961,6 +965,14 @@ def run_scenario(
             # needs is the verdict.
             collinearity_status = dx.get("collinearity_status")
             collinearity_warnings = dx.get("collinearity_warnings")
+            # Roadmap S3, and here for the same reason as S4 above: a scenario
+            # propagates through the very coefficients a misspecified model
+            # produced, so a node whose likelihood the data argues against
+            # makes the *magnitude* of everything downstream of it conditional
+            # on that model. Verdict and sentences here; the per-statistic
+            # p-values stay on the fit (`GET /metrics/{name}`).
+            ppc_status = dx.get("ppc_status")
+            ppc_warnings = dx.get("ppc_warnings")
 
         contribs = [
             {"source": sid, "estimate": est}
@@ -995,6 +1007,8 @@ def run_scenario(
             "khat_warnings": khat_warnings,
             "collinearity_status": collinearity_status,
             "collinearity_warnings": collinearity_warnings,
+            "ppc_status": ppc_status,
+            "ppc_warnings": ppc_warnings,
             "extrapolation": {"flag": bool(flag), **hist},
             # Per node, beside the per-node `extrapolation` flag, because the
             # two are different claims and the surfaces that render one must be

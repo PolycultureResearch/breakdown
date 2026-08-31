@@ -799,6 +799,23 @@ def _node_out(**fields) -> Dict[str, Any]:
         "collinearity_status": None,
         "collinearity": None,
         "collinearity_warnings": None,
+        # Roadmap S3. A property of the *model*, not of the sampler that fitted
+        # it or of the design matrix it was handed: `ppc_status` is `ok`
+        # (checked, the model reproduces its own data on every statistic),
+        # `moderate`, `severe` (the worst band any statistic reached),
+        # `unavailable` (the check could not run — unchecked, not clean) or
+        # null, which means there was nothing to check: a formula node, or a
+        # node that was never fitted. `ppc` carries every statistic with its
+        # p-value, flagged or not, so an `ok` is a measurement rather than an
+        # assertion.
+        #
+        # `severe` *does* move `fit_quality` — unlike collinearity above. A
+        # collinear fit is a correct fit that is unsure about the split; a fit
+        # whose model cannot generate its own data is not correct, and the
+        # gate is what says so.
+        "ppc_status": None,
+        "ppc": None,
+        "ppc_warnings": None,
         "fit_window": None,
         "seasonality_warnings": None,
         "likelihood_warnings": None,
@@ -1435,6 +1452,9 @@ def run_rca(
         collinearity_status = None
         collinearity = None
         collinearity_warnings = None
+        ppc_status = None
+        ppc = None
+        ppc_warnings = None
         fit_window = None
         seasonality_warnings = None
         likelihood_warnings = None
@@ -1747,6 +1767,10 @@ def run_rca(
             collinearity_status = fit.diagnostics.get("collinearity_status")
             collinearity = fit.diagnostics.get("collinearity")
             collinearity_warnings = fit.diagnostics.get("collinearity_warnings")
+            # Roadmap S3: whether this node's model can generate its own data.
+            ppc_status = fit.diagnostics.get("ppc_status")
+            ppc = fit.diagnostics.get("ppc")
+            ppc_warnings = fit.diagnostics.get("ppc_warnings")
             # What the model actually trained on: all loaded whole periods
             # before analysis_start — not the reference window.
             fit_window = {
@@ -1915,6 +1939,9 @@ def run_rca(
             collinearity_status=collinearity_status,
             collinearity=collinearity,
             collinearity_warnings=collinearity_warnings,
+            ppc_status=ppc_status,
+            ppc=ppc,
+            ppc_warnings=ppc_warnings,
             fit_window=fit_window,
             seasonality_warnings=seasonality_warnings,
             likelihood_warnings=likelihood_warnings,

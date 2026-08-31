@@ -1796,3 +1796,211 @@ def test_the_collinearity_verdict_reaches_the_rca_payload_and_mcp():
     assert compact["collinearity_warnings"]
     # The evidence rides only where it is bad news, exactly as `khat` does.
     assert compact["collinearity"]["pairs"][0]["correlation"] > 0.99
+
+
+# --- Posterior predictive checks (roadmap S3) ---------------------------------
+#
+# r-hat, ESS and divergences say the sampler explored the posterior; k-hat (S2)
+# says a variational approximation is close to it. Neither asks whether the
+# *model* is right for the data, and until S3 a badly misspecified node passed
+# both in silence as long as it converged.
+#
+# The fixtures below are a matched pair on purpose. `_gaussian_frame` is a
+# series the model's own likelihood generated, so it must come back `ok`; a
+# check that has never passed is not evidence when it fails. `_count_frame` is
+# the misspecification the Gaussian observation model cannot represent at all —
+# low-mean counts, floored at zero — and it is also the shape S20's zero-share
+# heuristic only approximates.
+
+
+def _gaussian_frame(n: int = 90, seed: int = 3) -> pd.DataFrame:
+    """A series drawn from the model's own likelihood: level + beta*x + normal."""
+    rng = np.random.default_rng(seed)
+    x = 100 + np.cumsum(rng.normal(0, 3, n))
+    y = 0.8 * x + np.cumsum(rng.normal(0, 0.5, n)) + rng.normal(0, 4.0, n)
+    return pd.DataFrame({"date": pd.date_range("2024-01-01", periods=n), "x": x, "y": y})
+
+
+def _count_frame(n: int = 90, seed: int = 5) -> pd.DataFrame:
+    """Low-mean Poisson counts: non-negative, floored, discrete.
+
+    A Gaussian likelihood fitted here puts posterior mass below zero on a
+    quantity that cannot go there, so the replicated series reaches minima the
+    observed one never does — which is exactly what the `min` statistic sees.
+    """
+    rng = np.random.default_rng(seed)
+    x = 10 + np.cumsum(rng.normal(0, 0.3, n))
+    y = rng.poisson(np.clip(0.25 * x - 1.5, 0.2, None)).astype(float)
+    return pd.DataFrame({"date": pd.date_range("2024-01-01", periods=n), "x": x, "y": y})
+
+
+COUNT_YAML = """
+metrics:
+  - name: x
+    source: dbt.metric.x
+  - name: y
+    source: dbt.metric.y
+    parents: [x]
+"""
+
+
+def test_ppc_passes_on_a_series_the_model_itself_generated():
+    """The passing case. Without it, a failure below proves nothing."""
+    parser = Parser(COUNT_YAML)
+    fit = fit_metric(parser.dag, _gaussian_frame(), "y", draws=300, tune=300, random_seed=0)
+
+    assert fit.diagnostics["ppc_status"] == "ok"
+    assert "ppc_warnings" not in fit.diagnostics
+    block = fit.diagnostics["ppc"]
+    assert block["reason"] is None
+    # `ok` is a measurement, not an assertion: every statistic rides along with
+    # its p-value so a reader can see how much headroom there was, and so S10
+    # has the material to plot.
+    assert {s["statistic"] for s in block["statistics"]} == {
+        "min",
+        "max",
+        "resid_max",
+        "resid_acf1",
+    }
+    assert all(s["status"] == "ok" for s in block["statistics"])
+    assert all(0.10 <= s["p_value"] <= 1.0 for s in block["statistics"])
+
+
+def test_ppc_flags_counts_the_gaussian_likelihood_cannot_generate():
+    """The misspecification convergence diagnostics cannot see.
+
+    This node converges — that is the entire point. r-hat, ESS and divergences
+    are all fine, because NUTS explored the posterior of a model that is simply
+    the wrong model for the data.
+    """
+    parser = Parser(COUNT_YAML)
+    fit = fit_metric(parser.dag, _count_frame(), "y", draws=300, tune=300, random_seed=0)
+
+    assert fit.diagnostics["ppc_status"] == "severe"
+    block = fit.diagnostics["ppc"]
+    worst = block["statistics"][0]
+    # Sorted by p-value, so the worst offender leads — and it is the floor.
+    assert worst["statistic"] == "min"
+    assert worst["p_value"] < 0.02
+
+    (msg,) = [m for m in fit.diagnostics["ppc_warnings"] if "'min'" in m]
+    assert "'y'" in msg and "cannot go below a floor" in msg
+    assert "docs/model.md" in msg
+
+    # `severe` moves the two-valued gate every consumer already branches on:
+    # a model that cannot generate its own data is not one whose intervals
+    # mean what they say. This is the one place S3 differs from S4.
+    assert fit.diagnostics["fit_quality"] == "suspect"
+
+
+def test_ppc_moderate_is_reachable_and_leaves_the_fit_quality_gate_alone():
+    """The band split is the design decision S3 had to make, so it gets a test.
+
+    Four statistics per node cross a `moderate` band often enough on honest
+    fits that wiring that band to `fit_quality` would make `suspect` the common
+    verdict and drain it of meaning. `severe` — a model that cannot generate
+    its own data — is a different claim and does move it.
+    """
+    from breakdown.engine.model import _ppc_diagnostic, _ppc_moves_fit_quality
+
+    # The policy itself, stated once and checked directly.
+    assert _ppc_moves_fit_quality("severe") is True
+    assert _ppc_moves_fit_quality("moderate") is False
+    assert _ppc_moves_fit_quality("unavailable") is False
+    assert _ppc_moves_fit_quality("ok") is False
+    assert _ppc_moves_fit_quality(None) is False
+
+    # And the `moderate` band is actually reachable — a band nothing can land
+    # in is not a band. The observed maximum sits just outside the bulk of the
+    # replicated maxima: extreme enough to notice, not enough to condemn.
+    n, draws = 40, 400
+    rng = np.random.default_rng(1)
+    mu = np.zeros((draws, n))
+    y_rep = rng.normal(0, 1.0, (draws, n))
+    rep_max = np.max(y_rep, axis=1)
+    # Take a genuine replicate — so every *other* statistic is typical by
+    # construction — and cap only its peak at the 3rd percentile of the
+    # replicated maxima: one-sided p ~ 0.97, two-sided ~ 0.06, which is inside
+    # `moderate` and outside `severe`. Rescaling the whole series instead would
+    # move `min` and `resid_max` too, and the block status is the worst of the
+    # four, so the test would be measuring the wrong statistic.
+    y = np.clip(rng.normal(0, 1.0, n), None, float(np.quantile(rep_max, 0.03)))
+
+    block, warnings = _ppc_diagnostic(y, y_rep, mu, "y", "day")
+    flagged = {s["statistic"]: s for s in block["statistics"] if s["status"] != "ok"}
+    assert "max" in flagged
+    assert flagged["max"]["status"] == "moderate"
+    assert 0.02 <= flagged["max"]["p_value"] < 0.10
+    assert block["status"] == "moderate"
+    assert not _ppc_moves_fit_quality(block["status"])
+    # The prose says it is a caveat, not a verdict — the distinction the band
+    # exists to carry.
+    (msg,) = [m for m in warnings if "'max'" in m]
+    assert "usable and this is a caveat on it" in msg
+
+
+def test_ppc_omits_the_dispersion_statistic_that_cannot_fail():
+    """`sd` is deliberately absent, and this pins the reason.
+
+    `_prepare_series` z-scores `y` and `sigma_obs` is free, so a replicated
+    standard deviation matches the observed one *by construction*. Measured
+    across a well-specified world, a t(3) world and a Poisson world it returned
+    p = 0.479 / 0.499 / 0.521 — a statistic that cannot fail is worse than no
+    statistic, because a reader scores it as a check that passed.
+    """
+    from breakdown.engine.model import _ppc_test_statistics
+
+    rng = np.random.default_rng(0)
+    stats = _ppc_test_statistics(rng.normal(0, 1, 50), rng.normal(0, 1, 50))
+    assert "sd" not in stats and "resid_sd" not in stats
+    assert set(stats) == {"min", "max", "resid_max", "resid_acf1"}
+
+
+def test_ppc_mid_p_does_not_false_alarm_on_a_tied_statistic():
+    """A statistic with a point mass — a count series whose minimum is 0 in most
+    replicates — returns p = 1.000 under a plain `>=` comparison, putting the
+    only false alarm on a *correctly* specified node. Mid-p splits the tied mass."""
+    from breakdown.engine.model import _ppc_diagnostic
+
+    n, draws = 40, 300
+    y = np.zeros(n)
+    mu = np.zeros((draws, n))
+    y_rep = np.zeros((draws, n))  # every replicate ties with the observation
+    block, warnings = _ppc_diagnostic(y, y_rep, mu, "y", "day")
+    # All ties: mid-p gives one-sided 0.5, two-sided 1.0 — the least extreme
+    # verdict there is, which is the honest reading of "identical".
+    by_name = {s["statistic"]: s for s in block["statistics"]}
+    assert by_name["min"]["p_value"] == pytest.approx(1.0)
+    assert block["status"] == "ok"
+    assert warnings == []
+
+
+def test_ppc_withholds_rather_than_invents_when_the_draws_are_unusable():
+    """Rule 3 at the S3 boundary: a NaN p-value rounds to `null` on the agent
+    payload, which reads as a check that never ran rather than one that failed.
+    Withhold the block under a named status carrying its reason."""
+    from breakdown.engine.model import _ppc_diagnostic
+
+    y = np.arange(20, dtype=float)
+    mu = np.zeros((10, 20))
+    y_rep = np.full((10, 20), np.nan)
+    block, warnings = _ppc_diagnostic(y, y_rep, mu, "y", "day")
+
+    assert block["status"] == "unavailable"
+    assert block["statistics"] == []
+    assert "non-finite" in block["reason"]
+    (msg,) = warnings
+    assert "unchecked model, not a validated one" in msg
+
+    # A shape mismatch is withheld too, and says which shapes.
+    block, _ = _ppc_diagnostic(y, np.zeros((10, 5)), np.zeros((10, 5)), "y", "day")
+    assert block["status"] == "unavailable"
+    assert "do not match" in block["reason"]
+
+
+def test_ppc_is_absent_rather_than_ok_on_a_node_that_was_never_fitted():
+    """Nothing to check is not the same as checked and clean."""
+    from breakdown.engine.model import _ppc_diagnostic
+
+    block, warnings = _ppc_diagnostic(np.zeros(10), None, None, "y", "day")
+    assert block is None and warnings == []
