@@ -51,9 +51,14 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
-      # A fresh machine has an empty trace cache, so the first RCA would pay for
-      # three ADVI fits. Warming here means the demo is fast the moment it is
-      # deployed rather than the moment someone unlucky opens it.
+      # A fresh machine has an empty trace cache, so the first RCA would pay
+      # for several NUTS fits (minutes each on this shared-CPU machine since
+      # roadmap S2). Warming here means the demo is fast the moment it is
+      # deployed rather than the moment someone unlucky opens it. Slow is
+      # expected — prewarm.py allows 45 minutes per tour story, and a deploy
+      # that takes two hours beats the failure mode this step had from
+      # 2026-08-24 to 2026-08-31: timing out at 15 min/story, failing the
+      # deploy, and leaving week-old code serving the public instance.
       - name: Warm the trace cache
         run: |
           python demo/prewarm.py --rcas \
