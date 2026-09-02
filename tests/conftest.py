@@ -22,3 +22,14 @@ if _extra:
         return _sample(*args, **{**kwargs, **_kwargs})
 
     pm.sample = _sample_with_overrides
+
+# Same status as above — measurement only. A comma-separated module list to
+# preload into the multiprocessing forkserver, so each sampler worker forks
+# from a process that has already imported pymc instead of importing it anew.
+# Python 3.14 made forkserver the Linux default, and the import is what each
+# of the four chain workers pays per fit.
+_preload = os.environ.get("BREAKDOWN_TEST_FORKSERVER_PRELOAD")
+if _preload:
+    import multiprocessing
+
+    multiprocessing.set_forkserver_preload(_preload.split(","))
