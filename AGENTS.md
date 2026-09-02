@@ -40,6 +40,7 @@ between them. The stance is **probabilistic and causal**, never frequentist:
 - [`docs/deploying.md`](docs/deploying.md) — serving several trees, authentication, Docker, `breakdown doctor`, snapshots, environment variables
 - [`docs/why-breakdown.md`](docs/why-breakdown.md) — the problem breakdown exists to solve
 - [`breakdown/examples/`](breakdown/examples/), [`knowledge/b2b_mrr_tree.yml`](knowledge/b2b_mrr_tree.yml) — the bundled runnable example and a full worked-reference tree
+- [`demo/demos.yaml`](demo/demos.yaml) — **the registry of hosted demos**, one per fake_companies vertical (White Cube live; Alpenglow/Meridian/Bristlecone planned): URL, generating scenario, and prebuilt dataset + ground-truth downloads. `python demo/check_demos.py` probes every deployed demo's `/health` + `/manifest`; `python demo/fetch_demo_data.py` pulls a vertical's duckdb (raw tables + dbt marts prebuilt) and its `ground_truth.json` — the planted-anomaly key, so an RCA answer can be *scored* (`fake-companies score` in the fake_companies repo) instead of eyeballed
 
 **Building breakdown** — contributing to the code:
 

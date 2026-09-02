@@ -34,6 +34,11 @@ primary_region = "iad"
   # MCP responses embed report_url deep links; without this they would point
   # at 127.0.0.1 and be useless to the person reading them.
   BREAKDOWN_PUBLIC_URL = "https://white-cube-demo.fly.dev"
+  # Echoed verbatim by GET /manifest so probes (demo/check_demos.py) and
+  # agents can tell which demo answered and which dataset built it.
+  BREAKDOWN_DEMO_SLUG = "white_cube"
+  BREAKDOWN_DEMO_VERTICAL = "b2c_saas"
+  BREAKDOWN_DEMO_DATASET = "fake_companies datasets-v1"
 
 [http_service]
   internal_port = 9090

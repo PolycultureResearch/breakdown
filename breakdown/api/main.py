@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import hmac
+import json
 import logging
 import math
 import os
@@ -16,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import AfterValidator
 from starlette.datastructures import State
 
+from breakdown import __version__
 from breakdown.api.trees import (
     MAX_CACHED_TRACES,
     TraceStore,
@@ -771,7 +773,9 @@ def _under(path: str, prefix: str) -> bool:
 #   browser needs one. A login, a cookie or a token-in-the-URL would be hosted
 #   mode (roadmap 3.5) and is deliberately not built here.
 # - `/` is a one-line "the API is running" message and carries nothing.
-_OPEN_PATHS = frozenset({"/", "/health"})
+# - `/manifest` is deployment identity (version, demo labels, snapshot
+#   freshness) — metadata a probe needs precisely when it can't authenticate.
+_OPEN_PATHS = frozenset({"/", "/health", "/manifest"})
 _OPEN_PREFIXES = ("/ui",)
 
 # Anything but an explicit off switch counts as on, so that a typo
@@ -933,6 +937,60 @@ async def health(request: Request):
         "provider": parser.config.provider.type,
         "metrics": len(parser.config.metrics),
     }
+
+
+@app.get("/manifest")
+async def manifest(request: Request):
+    """Which deployment answered: package version, the demo identity the
+    deploy stamped into the environment (``BREAKDOWN_DEMO_*`` env vars), the
+    default tree's index card, and snapshot freshness. One machine-readable
+    card so an agent (see ``demo/demos.yaml`` / ``demo/check_demos.py``) can
+    tell which demo it reached and how current its data is before exercising
+    it. Metadata only, so it stays open under BREAKDOWN_REQUIRE_AUTH for the
+    same reason `/health` does: it carries no tree data — which is also why
+    the degraded path reuses `/health`'s classified-kind-plus-generic-sentence
+    shape and `default_tree` is a redacted card (no `load_error`, whose raw
+    text the C43 rule keeps off open routes)."""
+    state = request.app.state
+    body: Dict[str, Any] = {"app": "breakdown", "version": __version__}
+    demo = {
+        key.removeprefix("BREAKDOWN_DEMO_").lower(): value
+        for key, value in sorted(os.environ.items())
+        if key.startswith("BREAKDOWN_DEMO_") and value
+    }
+    if demo:
+        body["demo"] = demo
+    if state.startup_error is not None:
+        kind = state.startup_error_kind
+        body["status"] = "degraded"
+        body["error_kind"] = kind
+        body["error"] = _HEALTH_ERROR_TEXT.get(kind, _HEALTH_ERROR_TEXT[None])
+        return body
+    body["status"] = "ok"
+    card = _tree_card(state.trees[state.default_tree])
+    body["default_tree"] = {
+        key: card[key] for key in ("id", "title", "provider", "metric_count", "state")
+    }
+    snapshot_dir = os.environ.get("BREAKDOWN_SNAPSHOT_DIR")
+    if snapshot_dir:
+        body["snapshots"] = _snapshot_summary(snapshot_dir)
+    return body
+
+
+def _snapshot_summary(directory: str) -> Optional[Dict[str, Any]]:
+    """Count + latest fetch time from the snapshot store's manifest; None when
+    the directory has no readable manifest (a non-snapshot deployment that
+    still sets the env var, or a half-written store)."""
+    from breakdown.snapshots import MANIFEST
+
+    try:
+        with open(os.path.join(directory, MANIFEST)) as fh:
+            entries = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    cards = [e for e in entries.values() if isinstance(e, dict)]
+    fetched = sorted(e["fetched_at"] for e in cards if e.get("fetched_at"))
+    return {"count": len(cards), "latest_fetched_at": fetched[-1] if fetched else None}
 
 
 def _goal_progress(tree: TreeState) -> Optional[Dict[str, Any]]:
