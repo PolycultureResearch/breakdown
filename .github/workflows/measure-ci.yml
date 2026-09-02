@@ -1,0 +1,84 @@
+name: Measure CI
+
+# TEMPORARY — delete before merging. Times the sampler-marked tests under
+# configurations that might explain where CI's minutes go:
+#
+#   baseline-3.13   the `test (3.13)` job's environment, slow tests only
+#   blas-3.13       + a system OpenBLAS PyTensor can link against (every CI
+#                   job today warns "could not link to a BLAS installation")
+#   cache-3.13      + the PyTensor compile directory cached across runs
+#                   (cold on the first run; compare the second)
+#   baseline-3.14   the `base-install` environment, slow tests only
+#   fork-3.14       + pm.sample(mp_ctx="fork"). Python 3.14 made forkserver
+#                   the Linux default, so each 4-chain fit re-imports pymc in
+#                   every worker; base-install took 38 min for the suite the
+#                   3.13 sdist job ran in 19 with identical package versions.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/trim-matrix-and-measure]
+
+jobs:
+  synced:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: baseline-3.13
+            blas: "no"
+            cache: "no"
+          - name: blas-3.13
+            blas: "yes"
+            cache: "no"
+          - name: cache-3.13
+            blas: "no"
+            cache: "yes"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v8.3.0
+        with:
+          enable-cache: true
+      - run: uv sync --python 3.13
+
+      - if: matrix.blas == 'yes'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libopenblas-dev
+          echo "PYTENSOR_FLAGS=blas__ldflags=-lopenblas" >> "$GITHUB_ENV"
+
+      - if: matrix.cache == 'yes'
+        uses: actions/cache@v4
+        with:
+          path: ~/.pytensor
+          key: pytensor-compiledir-${{ runner.os }}-py3.13-${{ hashFiles('uv.lock') }}
+
+      - name: Sampler tests
+        run: uv run --python 3.13 pytest tests/ -q -m slow --durations=15 -W ignore
+
+  base:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: baseline-3.14
+            sample_kw: ""
+          - name: fork-3.14
+            sample_kw: '{"mp_ctx": "fork"}'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v8.3.0
+        with:
+          enable-cache: true
+      - run: uv build --wheel
+      - run: |
+          uv venv --python 3.14 .venv-base
+          VIRTUAL_ENV=.venv-base uv pip install dist/*.whl "pytest>=9.0.2" "httpx>=0.28.1"
+      - name: Sampler tests
+        env:
+          BREAKDOWN_TEST_SAMPLE_KW: ${{ matrix.sample_kw }}
+        run: .venv-base/bin/python -m pytest tests/ -q -m slow --durations=15 -W ignore
