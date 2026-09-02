@@ -835,6 +835,7 @@ button.chip.active { background: var(--accent-soft); color: var(--accent); borde
    reads as missing ink. */
 .swatch.nodirection { border: 2px solid var(--border); }
 .edge-swatch.assume { border-top: 2px dotted var(--warn); }
+.edge-swatch.share { border-top: 5px solid var(--text-2); }
 
 .wf-row { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
 .wf-row label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }

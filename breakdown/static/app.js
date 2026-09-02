@@ -2057,14 +2057,26 @@ const CY_STYLE = [
     },
   },
   {
+    // Every in-scope contribution edge, tinted or not. Width (|share_of_gap|)
+    // and opacity (P(direction)) are measurements; the red/green hue below is
+    // a judgment that exists only when the child declares a `direction`. They
+    // must not share a selector: bound only to the tint classes, the largest
+    // share in an analysis rendered as a default 2px structural edge whenever
+    // it landed on an undeclared child — 60.5% of the gap, drawn exactly like
+    // "nothing to see here".
+    selector: "edge.rca-scope",
+    style: {
+      width: "data(w)",
+      "line-opacity": "data(op)",
+      "text-opacity": "data(op)",
+    },
+  },
+  {
     selector: "edge.rca-up",
     style: {
       "line-style": "solid",
       "line-color": COL.up,
       "target-arrow-color": COL.up,
-      width: "data(w)",
-      "line-opacity": "data(op)",
-      "text-opacity": "data(op)",
     },
   },
   {
@@ -2073,9 +2085,6 @@ const CY_STYLE = [
       "line-style": "solid",
       "line-color": COL.down,
       "target-arrow-color": COL.down,
-      width: "data(w)",
-      "line-opacity": "data(op)",
-      "text-opacity": "data(op)",
     },
   },
   {
@@ -2154,8 +2163,17 @@ const CY_STYLE = [
   },
   { selector: ".faded", style: { opacity: 0.25 } },
   {
+    // Cause-path selection is an underlay glow, never a recolor. The old
+    // amber repaint erased the good/bad hue on exactly the edges being
+    // inspected, and borrowed the caveat channel's color (⚠/◌/levers) for a
+    // selection state. Accent matches the other selection styles
+    // (node:selected, fitting-now); the data encodings show through it.
     selector: ".pathhl",
-    style: { "border-color": COL.warn, "line-color": COL.warn, "target-arrow-color": COL.warn },
+    style: {
+      "underlay-color": COL.accent,
+      "underlay-padding": 6,
+      "underlay-opacity": 0.2,
+    },
   },
 ];
 
@@ -3172,6 +3190,9 @@ function applyRcaOverlay() {
     node.contributions.forEach((c) => {
       const e = cy.getElementById(`${c.parent}->${name}`);
       if (!e.length) return;
+      // Magnitude + certainty render on every contribution edge via
+      // `rca-scope`; the rca-up/rca-down classes below add only the hue.
+      e.addClass("rca-scope");
       const share = c.share_of_gap == null ? 0 : Math.min(Math.abs(c.share_of_gap), 1);
       e.data("w", 2 + 6 * share);
       // Certainty channel: opacity from prob_same_direction. A *withheld* one
@@ -3211,7 +3232,7 @@ function ensureRcaLegendExtras() {
 
 function clearRcaStyles() {
   const cy = state.cy;
-  cy.elements().removeClass("faded rca-up rca-down pathhl rca-unexplained rca-not-analyzed");
+  cy.elements().removeClass("faded rca-scope rca-up rca-down pathhl rca-unexplained rca-not-analyzed");
   cy.nodes().forEach((n) => n.data("label", n.id()));
   cy.edges().forEach((e) => {
     e.data("w", 2);
