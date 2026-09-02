@@ -117,11 +117,12 @@ Everywhere else the tour would have had to quote a sampler-derived number (the
 quotes the *contrast* instead — a wide interval against a degenerate one — and
 that contrast is what is asserted, with a band rather than a point.
 
-Two claims the tour makes are **product defects, not stale numbers**, and are
-pinned here as such: `churn_arpu` has no declared `direction` so the UI colours
-it green, and the RCA table renders no `lag`. Those tests exist to go red when
-the defect is *fixed*, at which point the matching `⚠ known gap` note in the
-tour should be deleted.
+Two claims the tour once made were **product defects, not stale numbers**, and
+were pinned here as such: `churn_arpu` had no declared `direction` (and the UI
+coloured it green before roadmap C21), and the RCA table rendered no `lag`.
+Both are fixed and the tour's `⚠ known gap` notes are gone; the tests that
+pinned the defects now pin the fixed state, so they go red on *regression*
+rather than on repair.
 """
 
 import os
@@ -411,7 +412,7 @@ def test_story_a_signup_regression_traverses_and_localizes(client):
     # carries the one-week lag whose shifted window must land on the anomaly,
     # not on the calendar window. The tour quotes the full shifted pair,
     # because that is what the slice panel's footer prints — see
-    # test_known_gap_the_rca_table_cannot_show_the_lag.
+    # test_lag_and_parent_windows_travel_from_payload_to_slice.
     ns = d["nodes"]["new_subscriptions"]
     assert ns["attribution_method"] == "shapley"
     assert abs(ns["unexplained"]) < 1e-9
@@ -670,22 +671,20 @@ def test_story_b_the_churn_rate_by_country_is_a_long_tail_verdict(client):
     assert "top_k" in c["localization_remedy"]
 
 
-def test_known_gap_churn_arpu_is_undeclared_and_the_ui_colours_it_green(client):
-    """A product defect the tour must not paper over, filed separately.
+def test_churn_arpu_direction_is_declared_and_reaches_the_ui(client):
+    """The churn branch is uniformly classified, so story B may say "red".
 
-    Story B says the churn branch is red. `churn_arpu` rises here and carries
-    36.3% of the damage, and it renders **green, with an up arrow**, on the
-    presenter's screen. `demo/white_cube_tree.yml` declares no `direction` on it;
-    `MetricDefinition.direction` defaults to `up_is_good` (parser.py ~648) and
-    `/dag` serializes with `model_dump()`, so the default arrives at the UI
-    indistinguishable from a declared value. The UI is not free to do better
-    here — by the time it has the payload, silence and an explicit `up_is_good`
-    look identical — which is why this is filed as a defect rather than fixed by
-    editing the tree in passing.
-
-    This pins the defect, not the fix. It goes red when someone declares a
-    direction on `churn_arpu`, which is the moment the `⚠ known gap` note in
-    `knowledge/demo_guided_tour.md` must be deleted."""
+    This test used to pin the opposite, as
+    `test_known_gap_churn_arpu_is_undeclared_and_the_ui_colours_it_green`:
+    the tree declared nothing on `churn_arpu`, and before roadmap C21 the
+    parser default turned that silence into a green "improved" on a node
+    carrying 36.3% of the churn damage. C21 fixed the serialization half
+    (silence survives to the UI as silence); 2026-09-02 the authoring half
+    closed too — the tree declares `down_is_good`, every metric in
+    `demo/white_cube_tree.yml` now carries an explicit `direction`, and the
+    tour's `⚠ known gap` note is deleted. What this pins now: the declaration
+    exists, the whole tree is authored, and `/dag` delivers it — so the red
+    tint on a rising churn ARPU is a claim the tree actually made."""
     d = rca(client, "net_new_mrr", ("2026-03-16", "2026-04-12"), ("2026-05-11", "2026-06-07"))
     node = d["nodes"]["churn_arpu"]
     assert node["gap"] > 0  # up, and up is bad for a churn ARPU
@@ -697,39 +696,38 @@ def test_known_gap_churn_arpu_is_undeclared_and_the_ui_colours_it_green(client):
     yaml = pytest.importorskip("yaml")
     with open(TREE) as f:
         declared = {m["name"]: m.get("direction") for m in yaml.safe_load(f)["metrics"]}
-    assert declared["churn_arpu"] is None, (
-        "churn_arpu now declares a direction — the tree is authored, so delete "
-        "the remaining '⚠ known gap' note in knowledge/demo_guided_tour.md"
+    for metric in (
+        "churn_arpu",
+        "churned_mrr",
+        "churned_subscriptions",
+        "customer_churn_rate",
+    ):
+        assert declared[metric] == "down_is_good"
+    # The whole tree is authored: no metric leaves `direction` to silence,
+    # because an unclassified node renders grey and a canvas mixing "grey =
+    # unclassified" into an otherwise-judged RCA reads as a gap in the answer.
+    assert all(v is not None for v in declared.values()), sorted(
+        k for k, v in declared.items() if v is None
     )
-    # The neighbours that *are* declared, so this reads as one metric missed
-    # rather than a tree-wide omission.
-    for correct in ("churned_mrr", "churned_subscriptions", "customer_churn_rate"):
-        assert declared[correct] == "down_is_good"
 
-    # ...and the silence now survives serialization, so the UI renders it
-    # neutrally instead of claiming "improved". This assertion is the half that
-    # changed: `direction` defaulted to `up_is_good` in the parser, so the
-    # default arrived at the browser indistinguishable from a declaration and
-    # app.js's own `|| "up_is_good"` fallback could never fire. The tree is
-    # still under-authored — that is the known gap the tour flags — but an
-    # absent declaration is no longer a confident wrong one.
+    # ...and the declaration survives serialization, so the tint the UI paints
+    # is the tree's claim rather than a parser default (the C21 failure mode
+    # was exactly a default arriving indistinguishable from a declaration).
     defs = dict(client.get("/dag").json()["nodes"])
-    assert defs["churn_arpu"]["direction"] is None
+    assert defs["churn_arpu"]["direction"] == "down_is_good"
 
 
-def test_known_gap_the_rca_table_cannot_show_the_lag(client):
-    """The other product defect, also filed separately.
+def test_lag_and_parent_windows_travel_from_payload_to_slice(client):
+    """The lag the tour scripts is carried end to end.
 
-    The tour used to script the presenter to point at a `lag 1` tag and a parent
-    window in the RCA attribution table. That table renders neither (app.js
-    `componentRowsHtml`/the contribution table has no lag column and no
-    parent_windows); the lag reaches the
-    screen only via the Metric tab's declared-lag chip and the slice panel's
-    window footer.
-
-    So: the payload carries both, which is where the tour's date comes from, and
-    the slice panel really does print the shifted pair for the lagged parent.
-    That second assertion is what makes the rewritten script runnable."""
+    Once pinned as `test_known_gap_the_rca_table_cannot_show_the_lag`: the RCA
+    attribution table rendered no lag, and the tour steered presenters to the
+    slice-panel footer instead. The table now carries a `lag` chip with the
+    shifted windows in its tooltip (app.js `lagChip`/`lagWindowText`), so the
+    gap note is gone. What still needs pinning is the payload half that every
+    surface renders from: the contribution carries `lag` and `parent_windows`,
+    and slicing over those windows lands on the shifted pair the tour quotes —
+    which is what makes the script runnable."""
     ref, ana = ("2026-01-05", "2026-02-01"), ("2026-02-09", "2026-03-08")
     d = rca(client, "new_mrr", ref, ana)
     (c,) = [

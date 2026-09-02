@@ -20,12 +20,13 @@ against the committed snapshots, and each one is pinned, to the decimal place
 printed here, in `tests/test_white_cube_demo.py`. If a figure here stops
 matching what the demo shows, that test is red.
 
-Three things are deliberately **not** pinned, and each is marked where it
-appears: the sentences an assistant writes in the
+One thing is deliberately **not** pinned, and it is marked where it appears:
+the sentences an assistant writes in the
 [MCP section](#the-mcp-demo--same-engine-from-claude) — the tool calls and the
-fields behind them are pinned, the prose cannot be — and the **⚠ known gap**
-notes, which are product defects filed separately and which the presenter must
-not promise. Nothing else in this document is unasserted.
+fields behind them are pinned, the prose cannot be. (This list used to include
+two **⚠ known gap** notes; both defects are fixed and the notes are gone — see
+the Known-gaps section at the end.) Nothing else in this document is
+unasserted.
 
 **The UI's shares and the API's differ slightly, on purpose.** The Headline
 table gives the *co-movement* term its own row, so a driver's share there is its
@@ -129,24 +130,17 @@ engine compares `trial_conversions` not over the calendar window but over
 **2026-02-02 → 2026-03-01**, shifted back a week — the anomaly's exact start
 date. That is the trial period, modelled.
 
-> **⚠ Known gap — do not point at the RCA table for this.** The RCA attribution
-> table renders no `lag` and no parent window. There is no `lag 1` tag in the
-> `new_subscriptions` block to point at; earlier drafts of this script said
-> there was. The lag is visible in the UI in exactly two places, neither of them
-> that table:
->
-> - the **Metric** tab for `new_subscriptions`, whose parents list carries a
->   `lag 1 week(s)` chip on `trial_conversions` — the *declared* lag, not the
->   window it produced;
-> - the **slice panel** on the `trial_conversions` cause. Click **slice by →
->   device** there and the panel's footer reads `2025-12-29 → 2026-01-25 vs
->   2026-02-02 → 2026-03-01 · windows shifted back 1 week for the lag` — the
->   actual shifted window, on screen.
->
-> The API and MCP responses do carry both (`lag` and `parent_windows` on the
-> contribution), which is where the date above comes from. Until the table
-> renders it, script the slice-panel footer and say the shift was applied. Do
-> not promise a tagged row in the RCA table; there isn't one.
+> **Where the lag is on screen.** The RCA attribution table's
+> `new_subscriptions` block carries a `lag 1 week` chip on the
+> `trial_conversions` row, with the shifted window pair in its tooltip (the
+> export prints the pair in full). The **Metric** tab for `new_subscriptions`
+> shows the *declared* lag on its parents list. And the **slice panel** on the
+> `trial_conversions` cause prints the shifted windows in its footer — click
+> **slice by → device** and it reads `2025-12-29 → 2026-01-25 vs 2026-02-02 →
+> 2026-03-01 · windows shifted back 1 week for the lag`. All of it comes from
+> `lag` and `parent_windows` on the contribution, which the API and MCP
+> responses carry too. (An earlier edition of this script carried a ⚠ note
+> here — the table used to render no lag at all; see Known gaps.)
 
 **Then slice.** On the `signups` cause, click **slice by → device**:
 
@@ -240,17 +234,12 @@ mechanism did move. An engagement edge that never fires is worthless; the
 point is that this one fires when the mechanism moved and abstains when it
 did not.
 
-> **⚠ Known gap — one node on the churn branch has no colour.** `churn_arpu`
-> is up **+25.0%** and carries **36.3%** of the churn damage, and it renders
-> **uncoloured** — arrow and percentage, no red tint — because
-> `demo/white_cube_tree.yml` never declares a `direction` on it (see the
-> Known-gaps section at the end; it used to render green, which is fixed).
-> "The *entire* churn branch is red" is therefore not quite what the prospect
-> is looking at. Say "the churn branch" and point at `churned_mrr` /
-> `churned_subscriptions` / `customer_churn_rate`, which are all correctly
-> red; if someone notices the grey node, the honest answer is that the tree
-> never declared which way is good for that metric, and the product refuses
-> to guess.
+The whole churn branch reads red here, `churn_arpu` included: the tree
+declares `direction: down_is_good` on it, so a rising cost per cancellation
+tints as the bad news it is. "The *entire* churn branch is red" is a claim the
+prospect's screen matches. (It did not always — this spot carried a ⚠ note
+while `churn_arpu` declared no direction and rendered uncoloured; see Known
+gaps at the end.)
 
 **Then slice** `churned_mrr` by **plan**:
 
@@ -461,22 +450,23 @@ they are most of the way there.
 
 ## Known gaps — read before the call
 
-One thing this script used to claim is still false in the product rather than
-in the numbers. **Do not promise it on a call.**
+Nothing in this script is currently known to be false in the product. The two
+gaps that used to live here are both fixed, and the history stays because a
+presenter who saw an old screenshot may ask:
 
-1. **`churn_arpu` is uncoloured, not red.** It declares no `direction` in
-   `demo/white_cube_tree.yml`, so the canvas shows its movement — arrow and
-   percentage — without a good/bad tint. It used to render **green**, an
-   improvement, while carrying 27.3% of the churn damage in story B; that is
-   fixed, because an undeclared direction now survives serialization as
-   undeclared instead of defaulting to `up_is_good` before it reaches the UI.
-   What remains is an authoring gap in this tree, not a claim by the product:
-   the churn branch is not uniformly red because one of its nodes has never
-   been classified.
+*(The first — `churn_arpu` rendered uncoloured while carrying 36.3% of the
+churn damage in story B — closed in two halves. The serialization half first:
+an undeclared `direction` used to default to `up_is_good` before it reached
+the UI, painting the node **green** (roadmap C21); after that fix it rendered
+grey, honestly unclassified. The authoring half closed 2026-09-02:
+`demo/white_cube_tree.yml` now declares `direction: down_is_good` on it — with
+a composition caveat noted in the tree, since a falling churn ARPU can also
+mean cheaper customers are the ones leaving — so the churn branch reads
+uniformly red.)*
 
-*(The second gap listed here — that the RCA table rendered no lag — is fixed:
-the live table carries a `lag` chip with the shifted windows in its tooltip,
-and the export prints them in full.)*
+*(The second — that the RCA table rendered no lag — is fixed: the live table
+carries a `lag` chip with the shifted windows in its tooltip, and the export
+prints them in full.)*
 
 ---
 

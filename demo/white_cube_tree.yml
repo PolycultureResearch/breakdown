@@ -28,6 +28,9 @@ metrics:
   - name: marketing_spend
     description: "Ad-platform spend across paid channels"
     source: white_cube.metrics.marketing_spend
+    # A lever, not an outcome: spending more is a decision, not bad news, so
+    # the tree makes no good/bad claim about its movement.
+    direction: neutral
     format: currency
     dimensions:
       channel: spend__channel
@@ -35,6 +38,7 @@ metrics:
   - name: sessions
     description: "Web sessions. Paid sessions are bought; organic and referral are earned"
     source: white_cube.metrics.sessions
+    direction: up_is_good
     format:
       style: number
       unit: sessions / day
@@ -60,6 +64,7 @@ metrics:
     description: "Share of sessions that become signups"
     source: white_cube.metrics.visit_signup_rate
     kind: rate
+    direction: up_is_good
     # Upstream defines this metric as `signups / sessions` (a MetricFlow
     # `ratio` metric — see the dbt project's semantic manifest), so a window's
     # rate is Σsignups / Σsessions, not the mean of the daily rates.
@@ -81,6 +86,7 @@ metrics:
   - name: signups
     description: "New free accounts created"
     source: white_cube.metrics.signups
+    direction: up_is_good
     format:
       style: number
       unit: signups / day
@@ -96,6 +102,7 @@ metrics:
   - name: trials_started
     description: "Signups that start a 7-day trial rather than staying free"
     source: white_cube.metrics.trials_started
+    direction: up_is_good
     format:
       style: number
       unit: trials / day
@@ -116,6 +123,7 @@ metrics:
     source: white_cube.metrics.trial_activation_rate
     grain: week
     kind: rate
+    direction: up_is_good
     # Cohort-dated like trial_conversion_rate: fct_trials aggregates on
     # trial_start_date, so this week's activation rate describes the same
     # cohort as this week's conversion rate — the edge is contemporaneous.
@@ -131,6 +139,7 @@ metrics:
     source: white_cube.metrics.trial_days_active
     grain: week
     kind: rate
+    direction: up_is_good
     denominator: trials_started
     # Deliberately no `share`: this is a mean *count* per trial (0–7 days), not
     # a proportion of trials_started. It declares the same `denominator` as the
@@ -146,6 +155,7 @@ metrics:
     source: white_cube.metrics.trial_conversion_rate
     grain: week
     kind: rate
+    direction: up_is_good
     # Upstream defines this metric as `trial_conversions / trials_started` (a
     # MetricFlow `ratio` metric), and both sides are cohort-dated by trial
     # start — so the daily `trials_started` sums into exactly this node's week.
@@ -186,6 +196,7 @@ metrics:
     description: "Trials that converted, dated by the week the trial started"
     source: white_cube.metrics.trial_conversions
     grain: week
+    direction: up_is_good
     # Exact at week grain: trial_conversion_rate is this over trials_started, and
     # the daily trials_started parent resamples up by sum.
     formula: "trials_started * trial_conversion_rate"
@@ -204,6 +215,7 @@ metrics:
     description: "Paid subscriptions restarted by returning users — churned members and lapsed trials"
     source: white_cube.metrics.reactivations
     grain: week
+    direction: up_is_good
     format:
       style: number
       unit: subscriptions / week
@@ -216,6 +228,7 @@ metrics:
     description: "Paid subscriptions started without a trial"
     source: white_cube.metrics.direct_conversions
     grain: week
+    direction: up_is_good
     format:
       style: number
       unit: subscriptions / week
@@ -228,6 +241,7 @@ metrics:
     description: "Paid subscriptions booked, dated by the booking event"
     source: white_cube.metrics.new_subscriptions
     grain: week
+    direction: up_is_good
     # A cohort-aligned lagged identity, not a learned edge: every way into a
     # paid plan is one of these three terms. trial_conversions is cohort-dated
     # (fct_trials aggregates on trial_start_date) while this node is
@@ -252,6 +266,10 @@ metrics:
     source: white_cube.metrics.new_arpu
     grain: week
     kind: rate
+    # Mix caveat: this can rise because the professional plan's share of
+    # bookings rose, not because anyone pays more — but more dollars booked
+    # per subscription is still the direction the business wants.
+    direction: up_is_good
     format: currency
     dimensions:
       plan: { source: mrr_movement__plan, weight: new_subscriptions }
@@ -260,6 +278,7 @@ metrics:
     description: "MRR added by new and reactivated subscriptions"
     source: white_cube.metrics.new_mrr
     grain: week
+    direction: up_is_good
     formula: "new_subscriptions * new_arpu"
     parents: [new_subscriptions, new_arpu]
     format: currency
@@ -272,6 +291,7 @@ metrics:
     source: white_cube.metrics.active_subscriptions
     grain: week
     kind: stock
+    direction: up_is_good
     format:
       style: number
       unit: subscriptions
@@ -285,6 +305,7 @@ metrics:
     source: white_cube.metrics.member_activity_rate
     grain: week
     kind: rate
+    direction: up_is_good
     no_denominator: >-
       The true denominator is member-days (one per active subscription per
       day), which is deliberately not a tree metric; weighting by weekly
@@ -353,6 +374,9 @@ metrics:
     source: white_cube.metrics.churn_arpu
     grain: week
     kind: rate
+    # Dollars lost per cancellation: fewer is better. Mix caveat as with
+    # new_arpu — a drop can mean cheaper customers are the ones churning.
+    direction: down_is_good
     format: currency
     dimensions:
       plan: { source: mrr_movement__plan, weight: churned_subscriptions }
@@ -373,6 +397,7 @@ metrics:
     description: "MRR added by upgrades"
     source: white_cube.metrics.expansion_mrr
     grain: week
+    direction: up_is_good
     format: currency
     dimensions:
       plan: mrr_movement__plan
@@ -392,6 +417,7 @@ metrics:
     description: "Net MRR movement — what actually grows or shrinks the business each week"
     source: white_cube.metrics.net_new_mrr
     grain: week
+    direction: up_is_good
     formula: "new_mrr + expansion_mrr - contraction_mrr - churned_mrr"
     parents: [new_mrr, expansion_mrr, contraction_mrr, churned_mrr]
     format: currency
