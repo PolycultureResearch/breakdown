@@ -313,14 +313,14 @@ def ui_verdict(s):
 
 
 def test_the_tree_is_the_size_the_script_says():
-    """Section 0 of the tour is read aloud: "23 metrics in 400 lines, of which
-    284 are actual configuration". Pinned exactly rather than as a band — if you
+    """Section 0 of the tour is read aloud: "23 metrics in 426 lines, of which
+    303 are actual configuration". Pinned exactly rather than as a band — if you
     edit the tree, the sentence a presenter says about it needs editing too, and
     that is precisely the drift this module exists to catch."""
     with open(TREE) as f:
         lines = f.read().splitlines()
-    assert len(lines) == 400
-    assert len([ln for ln in lines if ln.strip() and not ln.strip().startswith("#")]) == 284
+    assert len(lines) == 426
+    assert len([ln for ln in lines if ln.strip() and not ln.strip().startswith("#")]) == 303
     assert len([ln for ln in lines if ln.startswith("  - name:")]) == 23
 
 
