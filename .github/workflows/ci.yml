@@ -28,20 +28,39 @@ jobs:
       - name: Format
         run: uv run ruff format --check .
 
-  # `requires-python = ">=3.11"` is a claim; this is what makes it true. Each
-  # version gets the full suite with every provider extra installed (the dev
-  # group pulls `metric-breakdown[all]`), so the dbt- and Databricks-backed
-  # tests actually run rather than skipping.
+  # `requires-python = ">=3.11"` is a claim; this is what makes it true. Every
+  # version gets the dev group with every provider extra installed (it pulls
+  # `metric-breakdown[all]`), so the dbt- and Databricks-backed tests actually
+  # run rather than skipping.
+  #
+  # Only one version runs the sampler tests. The ~300 tests marked `slow` are
+  # what makes the suite take 25-30 minutes on a runner, and nothing in a NUTS
+  # fit depends on the interpreter: the one cross-stack difference CI ever
+  # measured (roadmap S4, 2026-08-24) came from the BLAS, not the Python. What
+  # *does* differ by version is dependency resolution and import-time
+  # behaviour, and the ~940 fast tests cover that in about a minute. So 3.11
+  # and 3.12 run `-m "not slow"`, and the sampler is proven once, on 3.13 —
+  # the newest version every extra supports, and the one a fresh install gets.
   #
   # 3.14 is deliberately absent here and covered by `base-install` below: the
   # `dbt` extra cannot be used there (dbt-core's `mf` fails on import), so a
   # matrix entry would have to be special-cased into a different test.
   test:
+    name: test (${{ matrix.python-version }}, ${{ matrix.suite }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        include:
+          - python-version: "3.11"
+            suite: fast
+            select: -m "not slow"
+          - python-version: "3.12"
+            suite: fast
+            select: -m "not slow"
+          - python-version: "3.13"
+            suite: full
+            select: ""
     steps:
       - uses: actions/checkout@v5
 
@@ -54,7 +73,7 @@ jobs:
         run: uv sync --python ${{ matrix.python-version }}
 
       - name: Test
-        run: uv run --python ${{ matrix.python-version }} pytest tests/ -q
+        run: uv run --python ${{ matrix.python-version }} pytest tests/ -q ${{ matrix.select }}
 
   # The install most people will actually perform: no extras — engine, API, UI,
   # MCP server and the mock provider. Run on 3.14 because that is the version
