@@ -1,0 +1,76 @@
+# Template for a client archive config. Copy, fill in, and keep the copy in the
+# private archive repo: every other *.yml in this directory is gitignored
+# because it names a client's schema.
+#
+# Run `plan --profile` against it before extracting anything.
+
+name: acme
+
+# Only used in the profiles.yml block that `load` prints.
+dbt_profile_name: acme_analytics
+
+source:
+  type: databricks              # the only backend wired up; see README to add one
+  profile: acme                 # from `databricks auth login --profile acme`
+  http_path: ${DATABRICKS_HTTP_PATH}
+  catalog: acme
+  schema: default
+  # Or, instead of `profile`:
+  # host: ${DATABRICKS_HOST}
+  # token: ${DATABRICKS_TOKEN}
+
+target:
+  # The DuckDB filename's stem becomes the `database` part of every relation
+  # when dbt re-parses, so these two have to agree.
+  database_alias: acme
+  duckdb_file: acme.duckdb
+  schema: default
+
+deident:
+  salt_env: BREAKDOWN_ARCHIVE_SALT
+
+  # Identifiers. Hashed on the value alone, so the same value in any table or
+  # column gets the same digest and every join survives.
+  hash_columns: [user_id, customer_id, account_id, subscription_id]
+
+  # Safety net for columns added after this config was written.
+  drop_patterns:
+    - '(?i)email'
+    - '(?i)phone'
+    - '(?i)(^|_)ip(_|$)'
+    - '(?i)user_agent'
+    - '(?i)free_text|raw_response|open_ended'
+
+  # Kept as a stable readable label instead of dropped, so it stays sliceable.
+  pseudonymize_columns:
+    account_name: acct
+
+  # Dimension values that a pattern might otherwise grab. Hashing these would
+  # make every slice unreadable and protects nobody.
+  keep_columns: [plan_id, price_id, product_id, tier_name, currency]
+
+  # Leave both off unless the client requires otherwise. Every transformation
+  # has to preserve the arithmetic identities in the tree.
+  date_offset_days: 0
+  money_multiplier: 1.0
+  money_patterns: ['(?i)_usd$', '(?i)amount|revenue|price']
+
+tables:
+  - relation: fct_orders
+    tier: core
+    time_column: ordered_at
+    unique_on: [order_id]
+    note: Why this relation is in the archive, for whoever opens it in a year.
+
+  - relation: dim_customers
+    tier: dimensions
+    unique_on: [customer_id]
+
+# Without these, a broken extract looks exactly like a working one.
+identities:
+  - table: fct_orders
+    note: net revenue is gross minus discounts and returns
+    tolerance: 0.01
+    expression: >
+      COALESCE(net_revenue, 0)
+      - (COALESCE(gross_revenue, 0) - COALESCE(discounts, 0) - COALESCE(returns, 0))

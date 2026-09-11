@@ -139,10 +139,29 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
   demo metric tree, build-live/serve-hermetic runtime shape, and the Fly.io
   deployment. Companion: [`demo_guided_tour.md`](demo_guided_tour.md), the
   client-facing script (exact RCA windows and what each should conclude)
+- [`test_data_strategy.md`](test_data_strategy.md) — how Breakdown keeps being
+  tested against real and synthetic data once the pilot engagement ends: the
+  eight relations the trees resolve to and what else to take with them, a
+  de-identification policy that preserves the tree's arithmetic identities, the
+  DuckDB harness that lets the `dbt` provider run offline unchanged, and what a
+  third and fourth synthetic company would have to be *for*. Tooling:
+  [`tools/archive/`](../tools/archive/)
 - [`rca_lag_assessment.md`](rca_lag_assessment.md) — how RCA handles time lags
   today (declared lags shift fit and attribution windows correctly), and the
   planned improvements: surfacing lag-shifted parent windows, a Bayesian lag
   scan, distributed lags assessed and deferred
+
+## Reviews
+
+- [`grill_2026_08_29.md`](grill_2026_08_29.md) — the third hostile review, frozen
+  at `6531a02` (79 commits after the second). Seven high-severity findings, all
+  but one the same shape the four rules exist to prevent: a policy honored in one
+  function and not its neighbour — NaN reaching the encoder from RCA's posterior
+  branch only, C4/C5 stopping at `rca.py`, `/dag` redacting SQL that
+  `/metrics/{name}/query` serves openly, `GET /shapley` on the event loop. Plus
+  the two structural fixes worth making while they are cheap (`breakdown/loading.py`,
+  `engine/stats.py`) and the roadmap's own growth as a finding. Earlier reviews are
+  in [`archive/`](archive/).
 
 ## Archive
 

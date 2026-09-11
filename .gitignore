@@ -36,3 +36,12 @@ wheels/
 knowledge/grill_*.md
 _to_delete/
 _grill_tmp/
+
+# Client data archives written by tools/archive. Extracts, manifests and
+# per-client configs are client data or derived works; they belong in the
+# private archive repo, never here. Root-anchored so tools/archive/ itself
+# (the client-agnostic script) stays tracked.
+/archive/
+/archives/
+tools/archive/configs/*.yml
+!tools/archive/configs/example.yml
