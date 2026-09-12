@@ -1109,6 +1109,10 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     if (pn2) bits.push(`${pn2.text}${ppcStatText(node)}`);
     if (node.seasonality_warnings && node.seasonality_warnings.length) bits.push("⚠ seasonality unidentifiable from fitted history");
     if (node.likelihood_warnings && node.likelihood_warnings.length) bits.push("⚠ zero-inflated fit window — intervals approximate");
+    // Issue #113: which parents this node's table does not have a row for,
+    // and that the absence is an exclusion rather than a zero.
+    const dn2 = droppedParentsNote(node);
+    if (dn2) bits.push(dn2.text);
     return bits.length ? ` · ${esc(bits.join(" · "))}` : "";
   };
 
@@ -1139,6 +1143,12 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     }
     (node.seasonality_warnings || []).forEach((w) => out.push(esc(w)));
     (node.likelihood_warnings || []).forEach((w) => out.push(esc(w)));
+    // Issue #113, in full: the table below has a labelled row for the dropped
+    // parent, and this is the sentence that says why that row is not a zero.
+    const dnFull = droppedParentsNote(node);
+    if (dnFull) {
+      out.push(`<strong>${esc(dnFull.text.replace(/^⚠\s*/, ""))}.</strong> ${esc(dnFull.reasons)}. ${esc(dnFull.why)}`);
+    }
     // Roadmap S4, in full for the same reason: the per-parent table below is
     // the thing this caveat is about, and a reader of a circulated report has
     // no tooltip to tell them the ordering in it is not a finding.
@@ -1232,10 +1242,13 @@ function buildRcaReportHtml(res, treePng, stripPng) {
         // Same rows, same rule as the live table — via one function, so the two
         // cannot disagree about whether trend and seasonal are part of the sum.
         const comps = componentRowsHtml(node, 5, shareOf, ciCell);
+        // And the same labelled row for a parent the fit left out (issue
+        // #113), so the export's table is not one row short of the tree.
+        const droppedRows = droppedParentRowsHtml(node, 5);
         const unexpl5 = ux
           ? `<tr class="dim"><td>${esc(ux.label)}</td>${num(fmt(node.unexplained))}${num(uxShare)}<td class="num">—</td><td class="num">—</td></tr>`
           : "";
-        tables = `<table><tr><th>Parent</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>${rows}${comps}${unexpl5}</table>`;
+        tables = `<table><tr><th>Parent</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>${rows}${droppedRows}${comps}${unexpl5}</table>`;
       }
       const signWarn = (node.sign_warnings || []).map((w) => `<p class="warn">⚠ ${esc(w)}</p>`).join("");
       return `<section>
@@ -2306,13 +2319,26 @@ function markFitted() {
   });
 }
 
-/* Label a fitted probabilistic node's incoming edges with beta_raw. */
+/* Label a fitted probabilistic node's incoming edges with beta_raw.
+
+   The `beta_raw[i]` axis is the fit's own parent list (`fitted_parents`), not
+   the definition's: a parent constant over the fit window is dropped from the
+   regression (issue #113), so indexing the summary by `def.parents` would put
+   a sibling's coefficient on the wrong edge. The dropped edge is labelled as
+   not fitted rather than left blank, because blank is what an unfitted node
+   looks like too. `def.parents` remains the fallback for a server that
+   predates the field. */
 function labelBetaEdges(name, metricData) {
   const def = metricData.definition;
   const summary = metricData.summary;
   if (!summary || def.formula || !def.parents.length) return;
-  def.parents.forEach((p, i) => {
-    const key = def.parents.length > 1 ? `beta_raw[${i}]` : `beta_raw[0]`;
+  const axis = Array.isArray(metricData.fitted_parents) ? metricData.fitted_parents : def.parents;
+  (metricData.dropped_parents || []).forEach((d) => {
+    const edge = state.cy.getElementById(`${d.parent}->${name}`);
+    if (edge.length && !state.rca) edge.data("label", "β — not fitted (did not vary)");
+  });
+  axis.forEach((p, i) => {
+    const key = `beta_raw[${i}]`;
     const mean = summary.mean?.[key];
     const lo = summary["hdi_2.5%"]?.[key];
     const hi = summary["hdi_97.5%"]?.[key];
@@ -2605,7 +2631,10 @@ function renderPosterior(name, data) {
 
   let rows = "";
   if (!def.formula && def.parents.length) {
-    def.parents.forEach((p, i) => {
+    // The summary's `beta_raw[i]` rows follow the fit's own parent axis, not
+    // the definition's (issue #113, same reason as `labelBetaEdges`).
+    const axis = Array.isArray(data.fitted_parents) ? data.fitted_parents : def.parents;
+    axis.forEach((p, i) => {
       const key = `beta_raw[${i}]`;
       const mean = summary.mean?.[key];
       if (mean === undefined) return;
@@ -2618,6 +2647,14 @@ function renderPosterior(name, data) {
         <td><code>${esc(p)}</code></td>
         <td class="num">${fmt(mean)}</td>
         <td class="num">${hdi}</td>
+      </tr>`;
+    });
+    // A dropped parent keeps its row, labelled: a table one row shorter than
+    // the parent list reads as a coefficient nobody printed.
+    (data.dropped_parents || []).forEach((d) => {
+      rows += `<tr class="dim">
+        <td title="${esc(`${d.reason}\n\n${DROPPED_PARENT_WHY}`)}"><code>${esc(d.parent)}</code></td>
+        <td colspan="2">not fitted — did not vary over the fit window</td>
       </tr>`;
     });
   }
@@ -2657,6 +2694,13 @@ function renderPosterior(name, data) {
   const ppcWarningHtml = ((data.diagnostics && data.diagnostics.ppc_warnings) || [])
     .map((w) => `<p class="sign-warning">⚠ ${esc(w)}</p>`)
     .join("");
+
+  // Issue #113, under the same table for the same reason: the dim row above
+  // says a parent was not fitted; this says why that is not a zero.
+  const droppedNote = droppedParentsNote(data);
+  const droppedWarningHtml = droppedNote
+    ? `<p class="sign-warning">${esc(droppedNote.text)}. ${esc(droppedNote.reasons)}. ${esc(droppedNote.why)}</p>`
+    : "";
 
   // Diagnostics. These are MCMC-only, so an ADVI fit renders no numbers — but
   // it used to render *nothing at all*, which reads as "no problems found"
@@ -2810,6 +2854,7 @@ function renderPosterior(name, data) {
     ${signWarningHtml}
     ${collinWarningHtml}
     ${ppcWarningHtml}
+    ${droppedWarningHtml}
     ${diag}
     <details>
       <summary>All parameters (${params.length})</summary>
@@ -3765,6 +3810,13 @@ function renderRcaTab() {
         node.likelihood_warnings && node.likelihood_warnings.length
           ? ` · <span class="sign-flag" title="${esc(node.likelihood_warnings.join("\n\n"))}">⚠ zero-inflated fit window — intervals approximate</span>`
           : "";
+      // Issue #113: a parent the fit left out. The chip names it; the table
+      // below keeps a labelled row for it, so its absence from the
+      // contributions cannot read as "contributed nothing".
+      const dn = droppedParentsNote(node);
+      const droppedNote = dn
+        ? ` · <span class="${dn.cls}" title="${esc(`${dn.reasons}\n\n${dn.why}`)}">${esc(dn.text)}</span>`
+        : "";
       const twoLevel = node.contributions.some((c) => c.decomposition);
       let header, rows, nCols;
 
@@ -3835,6 +3887,7 @@ function renderRcaTab() {
       // precision nobody measured, so those rows are dropped instead (they add
       // nothing to the sum either way).
       const componentRows = componentRowsHtml(node, nCols, shareOf, ciCell);
+      const droppedRows = droppedParentRowsHtml(node, nCols);
 
       let unexplained = "";
       const ux = unexplainedRow(node);
@@ -3853,10 +3906,11 @@ function renderRcaTab() {
       }
       return `
         <div class="attr-block">
-          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${fitNote2}${khatFlag}${signNote}${collinNote}${ppcNoteHtml}${seasNote}${zeroNote}</span></h4>
+          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${fitNote2}${khatFlag}${signNote}${collinNote}${ppcNoteHtml}${seasNote}${zeroNote}${droppedNote}</span></h4>
           <table class="data-table">
             ${header}
             ${rows}
+            ${droppedRows}
             ${componentRows}
             ${unexplained}
           </table>

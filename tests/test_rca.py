@@ -800,10 +800,12 @@ metrics:
 
 
 def test_zero_variance_parent_leaves_the_rest_of_the_tree_intact():
-    """A parent held at zero for the whole fit window cannot be normalized, so
-    `fit_metric` raises. That used to abort the entire RCA and return nothing;
-    the node is now reported with a `fit_failed` status and everything else is
-    still attributed."""
+    """A node whose *only* parent is held at zero for the whole fit window has
+    no varying regressor, so `fit_metric` raises (since issue #113 a constant
+    parent is dropped, and with every parent dropped there is nothing left to
+    fit). That used to abort the entire RCA and return nothing; the node is
+    reported with a `fit_failed` status and everything else is still
+    attributed."""
     rng = np.random.default_rng(5)
     n = 100
     dates = pd.date_range("2024-01-01", periods=n)
@@ -823,7 +825,7 @@ def test_zero_variance_parent_leaves_the_rest_of_the_tree_intact():
 
     signups = result["nodes"]["signups"]
     assert signups["status"] == "fit_failed"
-    assert "zero variance" in signups["status_reason"]
+    assert "Every parent of 'signups' (['leads']) is constant" in signups["status_reason"]
     assert signups["gap"] is not None and signups["contributions"] == []
     assert ("signups", AN[0]) not in traces
 
@@ -1444,3 +1446,95 @@ def test_a_node_with_no_aligned_frame_degrades_by_name(monkeypatch):
 
     with pytest.raises(ValueError, match="No overlapping"):
         rca_on(dag, make_tree()[1], {}, "order_count")
+
+
+# ---------------------------------------------------------------------------
+# Issue #113: a parent constant over the fit window no longer costs the node
+# its attribution.
+
+CONSTANT_PARENT_YAML = """
+metrics:
+  - name: flat
+    source: dbt.metric.flat
+  - name: x1
+    source: dbt.metric.x1
+  - name: y
+    source: dbt.metric.y
+    parents: [flat, x1]
+"""
+
+SINGLE_CONSTANT_YAML = """
+metrics:
+  - name: flat
+    source: dbt.metric.flat
+  - name: y
+    source: dbt.metric.y
+    parents: [flat]
+"""
+
+
+def _constant_then_moving_frame(n: int = 100, seed: int = 3) -> pd.DataFrame:
+    """The issue's exact case. `flat` is 0.0 on every day the model trains on
+    (everything before the analysis window) and then comes alive inside it,
+    the way an expected-share curve does when a cycle starts early. `y`
+    really does depend on it, so the analysis-window move has a component no
+    coefficient can carry — and that component has to land in `unexplained`,
+    not on `x1`, and not on a `flat` row reading zero.
+
+    `flat` is listed first so a consumer still indexing `beta_raw` by the
+    DAG's parent list would read the wrong column."""
+    rng = np.random.default_rng(seed)
+    dates = pd.date_range("2024-01-01", periods=n)
+    x1 = 100 + np.cumsum(rng.normal(0, 3, n))
+    flat = np.where(dates >= pd.Timestamp(AN[0]), 5.0, 0.0)
+    y = 2.0 * x1 + 3.0 * flat + rng.normal(0, 1.0, n)
+    return pd.DataFrame({"date": dates, "flat": flat, "x1": x1, "y": y})
+
+
+def test_a_constant_parent_no_longer_fails_the_node():
+    parser = Parser(CONSTANT_PARENT_YAML)
+    data = _constant_then_moving_frame()
+    result = rca_on(parser.dag, data, {}, "y")
+
+    y = result["nodes"]["y"]
+    assert y["status"] == "ok", y["status_reason"]
+    assert y["attribution_method"] == "posterior"
+    # The contributions are over the parents that were fitted — no row for
+    # `flat`, and no zero pretending to be one.
+    assert [c["parent"] for c in y["contributions"]] == ["x1"]
+    (dropped,) = y["dropped_parents"]
+    assert dropped["parent"] == "flat"
+    assert "zero variance over fit window" in dropped["reason"]
+    # The coefficient that was read is x1's (beta 2), not something off the
+    # end of a one-column array indexed by a two-entry parent list.
+    (x1,) = y["contributions"]
+    assert x1["ci_95"] is not None and x1["estimate"] != 0
+    x1_gap = result["nodes"]["x1"]["gap"]
+    assert abs(x1["estimate"] - 2.0 * x1_gap) < 0.5 * abs(2.0 * x1_gap)
+    # `flat` moved by 5 inside the analysis window and y depends on it by 3,
+    # so ~15 of y's gap belongs to a parent nothing was attributed to. That
+    # is where it must show up: in `unexplained`, measured.
+    assert y["unexplained_status"] == "measured"
+    assert 10.0 < y["unexplained"] < 20.0, y["unexplained"]
+
+    # The rest of the payload is coherent: the constant source is in scope
+    # and reports its own movement; the ranking reaches x1 and not flat.
+    assert result["nodes"]["flat"]["status"] == "ok"
+    assert result["nodes"]["flat"]["gap"] == pytest.approx(5.0)
+    ranked = {c["metric"]: c for c in result["ranked_causes"]}
+    assert "x1" in ranked and "flat" not in ranked
+
+
+def test_a_node_whose_only_parent_is_constant_is_still_fit_failed():
+    """The all-constant case keeps the old degrade — one bad node, reported
+    with its reason, and the rest of the tree through — with a reason in the
+    author's terms rather than `_normalize`'s."""
+    parser = Parser(SINGLE_CONSTANT_YAML)
+    data = _constant_then_moving_frame()
+    result = rca_on(parser.dag, data, {}, "y")
+    y = result["nodes"]["y"]
+    assert y["status"] == "fit_failed"
+    assert "Every parent of 'y' (['flat']) is constant over the fit window" in y["status_reason"]
+    assert y["dropped_parents"] is None
+    # The movement is still read off the data; only the split is missing.
+    assert y["gap"] is not None and y["contributions"] == []

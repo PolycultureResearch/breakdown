@@ -106,7 +106,12 @@ class FitResult:
 
     trace: Any  # arviz.InferenceData
     target: str
-    parents: List[str]  # regressor parents ([] for roots/formula nodes)
+    # The regressor parents the model was actually fitted on: in
+    # `list(dag.predecessors(target))` order with any dropped parent removed.
+    # This, not the DAG's parent list, is the axis order of `beta` /
+    # `beta_raw`, so every consumer that indexes a coefficient walks this list
+    # (see `dropped_parents` below). `[]` for roots and formula nodes.
+    parents: List[str]
     y_mean: float  # of the fitted y series (residual for formula nodes)
     y_std: float
     x_stds: Optional[np.ndarray]  # per-parent stds of the (lag-shifted) regressors, None if no X
@@ -133,6 +138,15 @@ class FitResult:
     # each of a 106-metric RCA's nodes and hand an agent a decomposition it
     # cannot read. Here it can only reach the one route that asks for it.
     ppc_band: Optional[Dict[str, Any]] = None
+    # Issue #113: parents left out of the design matrix because their column
+    # had zero variance over the fit window, each as `{"parent", "reason"}`.
+    # A constant regressor is not identified — its column is a multiple of
+    # the intercept's — and carries no information about the target's
+    # movement, so leaving it out cannot change the posterior on the parents
+    # that were fitted; what is lost is a claim the data could not support.
+    # Empty on a fit that dropped nothing. At most one entry per parent, so
+    # bounded by the tree rather than by the loaded window.
+    dropped_parents: List[Dict[str, str]] = field(default_factory=list)
 
 
 def scale_prior_params(distribution: str, params: Dict[str, Any], scale: float) -> Dict[str, Any]:
@@ -1624,6 +1638,8 @@ def _prepare_series(
     float,
     Optional[np.ndarray],
     pd.DatetimeIndex,
+    List[str],
+    List[Dict[str, str]],
 ]:
     """
     Build the normalized observation vector y and regressor matrix X.
@@ -1636,7 +1652,25 @@ def _prepare_series(
     shifted back by its lag (`lags` in the YAML); the first max-lag rows are
     trimmed so every series aligns with no NaNs.
 
-    Returns (y, X, scale, y_mean, y_std, x_stds, dates):
+    **A parent whose column is constant over the fit window is dropped**
+    (issue #113), with a WARNING naming the node, the parent and the window.
+    The statistics are plain. A constant column is a multiple of the
+    intercept's, so its coefficient is not identified: the likelihood is flat
+    along it and the posterior would be the prior restated. And it carries no
+    information about how the target moved, because it did not move. So
+    leaving it out cannot change the posterior on the remaining parents; the
+    only thing lost is a claim the data could not have supported. The
+    alternative was to refuse the whole node (`_normalize` raising on the
+    column), which cost the node its attribution *and* every downstream
+    question about it, for a parent that by construction had nothing to say.
+    The drop is recorded, never silent: the parent goes on `dropped` with its
+    reason, and every surface that reads the fit says the attribution
+    excludes it. When **every** parent is constant the node is still refused,
+    with a reason that says so — a regression with no varying regressor has
+    nothing to learn, and fitting it as a root would be a different model
+    from the one the author declared.
+
+    Returns (y, X, scale, y_mean, y_std, x_stds, dates, fitted, dropped):
     - `scale[i] = x_std_i / y_std` converts raw-unit coefficients into
       normalized space; X and scale are None when there is nothing to regress on.
     - `y_mean`, `y_std` are the normalization constants of the fitted y series
@@ -1644,6 +1678,10 @@ def _prepare_series(
     - `x_stds` are the raw per-parent stds of the (lag-shifted) regressors, or
       None when there is no X.
     - `dates` is the date index actually used in the fit, after lag-trimming.
+    - `fitted` is the parent list the columns of X correspond to — the axis
+      order of `beta` — and `dropped` the `{"parent", "reason"}` records for
+      the parents left out, in `parents` order. Both are `[]` for roots and
+      formula nodes.
     """
     all_dates = pd.DatetimeIndex(pd.to_datetime(data["date"]))
 
@@ -1663,26 +1701,70 @@ def _prepare_series(
         target_vals = data[target].values.astype(float)[max_lag:]
         residual = target_vals - eval_formula(defn.formula, parent_arrays)
         y, y_mean, y_std = _normalize(pd.Series(residual, name=f"{target}_residual"))
-        return y, None, None, y_mean, y_std, None, all_dates[max_lag:]
+        return y, None, None, y_mean, y_std, None, all_dates[max_lag:], [], []
 
     y_series = data[target].iloc[max_lag:] if max_lag > 0 else data[target]
     y, y_mean, y_std = _normalize(y_series)
     dates = all_dates[max_lag:] if max_lag > 0 else all_dates
 
     if not parents:
-        return y, None, None, y_mean, y_std, None, dates
+        return y, None, None, y_mean, y_std, None, dates, [], []
 
-    X_cols, x_stds = [], []
+    window = f"{dates[0].date()}..{dates[-1].date()}"
+    X_cols, x_stds, fitted, dropped = [], [], [], []
     for p in parents:
         shifted = data[p].shift(lags.get(p, 0))
         if max_lag > 0:
             shifted = shifted.iloc[max_lag:]
+        if shifted.std() == 0:
+            # Judged on the column the model would see — lag-shifted and
+            # trimmed to the fit window — not on the loaded series. A parent
+            # that moves in the analysis window but not before it lands here
+            # too: RCA's fit ends at `analysis_start`, and the coefficient a
+            # window it never saw would have needed is not one it can learn.
+            held_at = float(shifted.iloc[0])
+            reason = f"zero variance over fit window {window} (held at {held_at:g})"
+            dropped.append({"parent": p, "reason": reason})
+            continue
         col, _, p_std = _normalize(shifted)
         X_cols.append(col)
         x_stds.append(p_std)
+        fitted.append(p)
+
+    if not fitted:
+        raise ValueError(
+            f"Every parent of '{target}' ({parents}) is constant over the fit window "
+            f"{window} — a regression with no varying regressor has nothing to "
+            "learn. Widen the window so at least one parent moves, or declare the "
+            "node without parents if none of them ever does."
+        )
+    # Logged only once the fit is known to proceed: a warning that says "the
+    # fit proceeds on the remaining parents" a line above a refusal saying it
+    # does not is exactly the kind of log a reader cannot trust.
+    for d in dropped:
+        logger.warning(
+            "Parent '%s' of '%s' dropped from the fit: %s. A constant regressor is "
+            "not identified and carries no information about the target's movement, "
+            "so the fit proceeds on %s and the attribution excludes '%s'.",
+            d["parent"],
+            target,
+            d["reason"],
+            fitted,
+            d["parent"],
+        )
 
     x_stds_arr = np.array(x_stds)
-    return y, np.column_stack(X_cols), x_stds_arr / y_std, y_mean, y_std, x_stds_arr, dates
+    return (
+        y,
+        np.column_stack(X_cols),
+        x_stds_arr / y_std,
+        y_mean,
+        y_std,
+        x_stds_arr,
+        dates,
+        fitted,
+        dropped,
+    )
 
 
 #: Fourier harmonics attempted per seasonality entry, before the Nyquist filter.
@@ -1956,6 +2038,15 @@ def fit_metric(
     re-fit behind the caller's back. What k-hat buys now is that choosing
     `"advi"` anyway is an informed choice rather than a trap.
 
+    A parent whose column is **constant over the fit window** is dropped from
+    the design matrix rather than failing the node (issue #113): a constant
+    regressor is not identified and carries no information about the target's
+    movement, so leaving it out leaves the posterior on the remaining parents
+    unchanged. The drop is logged and recorded on `FitResult.dropped_parents`
+    with its reason, and `FitResult.parents` — the `beta`/`beta_raw` axis —
+    lists only the parents actually fitted. A node whose parents are *all*
+    constant still raises, with a reason that says so. See `_prepare_series`.
+
     Every fit with two or more regressors is also checked for **parent
     collinearity** (roadmap S4) and reports
     `diagnostics["collinearity_status"]` / `["collinearity"]` /
@@ -2006,7 +2097,15 @@ def fit_metric(
         fit_end=fit_end,
     )
 
-    y, X, scale, y_mean, y_std, x_stds, dates = _prepare_series(defn, parents, data, target)
+    y, X, scale, y_mean, y_std, x_stds, dates, fitted_parents, dropped_parents = _prepare_series(
+        defn, parents, data, target
+    )
+    # From here on `fitted_parents` is the parent axis: `parents` minus any
+    # column `_prepare_series` dropped for zero variance (issue #113), in the
+    # same order. The design matrix, the collinearity check, the `beta_{p}`
+    # variables, the sign check and `FitResult.parents` all read it, so a
+    # dropped parent cannot shift a sibling's column index in one of them and
+    # not another.
     t = np.arange(len(y))
 
     # S20's disclosure half: the observation model is Gaussian, and a series
@@ -2051,7 +2150,7 @@ def fit_metric(
     # property of the design matrix, not of the trace, and a reader watching
     # the log deserves to know the split is unstable *before* waiting out the
     # fit that will report it.
-    collinearity, collinearity_warnings = _collinearity_diagnostic(X, parents, target, grain)
+    collinearity, collinearity_warnings = _collinearity_diagnostic(X, fitted_parents, target, grain)
 
     with pm.Model():
         trend_sigma_prior = defn.trend.sigma if defn.trend else 0.05
@@ -2059,7 +2158,7 @@ def fit_metric(
         trend_z = pm.Normal("trend_z", 0.0, 1.0, shape=len(y))
         trend = pm.Deterministic("trend", pt.cumsum(sigma_trend * trend_z))
         seasonal = _seasonal_component(defn.seasonality, t)
-        regression = _regression_component(defn, parents, X, scale)
+        regression = _regression_component(defn, fitted_parents, X, scale)
 
         alpha = pm.Normal("alpha", mu=0, sigma=1.0)
         sigma_obs = pm.HalfNormal("sigma_obs", 1.0)
@@ -2177,9 +2276,9 @@ def fit_metric(
     # the business), where the learned sign answers a different question than
     # the author meant.
     if defn.expected_signs and X is not None:
-        arr = trace.posterior["beta_raw"].values.reshape(-1, len(parents))
+        arr = trace.posterior["beta_raw"].values.reshape(-1, len(fitted_parents))
         sign_warnings = []
-        for i, p in enumerate(parents):
+        for i, p in enumerate(fitted_parents):
             expected = defn.expected_signs.get(p)
             if expected is None:
                 continue
@@ -2204,7 +2303,7 @@ def fit_metric(
     return FitResult(
         trace=trace,
         target=target,
-        parents=parents if X is not None else [],
+        parents=fitted_parents if X is not None else [],
         y_mean=y_mean,
         y_std=y_std,
         x_stds=x_stds,
@@ -2214,4 +2313,5 @@ def fit_metric(
         grain=grain,
         diagnostics=diagnostics,
         ppc_band=ppc_band,
+        dropped_parents=dropped_parents,
     )

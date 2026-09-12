@@ -99,6 +99,27 @@ def test_series_endpoint_per_metric_grain():
         assert rev["dates"][0] == "2024-01-01"
 
 
+def test_fit_routes_name_the_parent_axis_and_the_dropped_parents():
+    """Issue #113. `summary`'s `beta_raw[i]` rows follow the fit's own parent
+    list, which is the definition's minus any parent dropped for zero
+    variance — so both fit routes say which list that is, and which parents
+    were left out, rather than leaving the client to index the summary by
+    `definition.parents` and hand a sibling's coefficient to the wrong one."""
+    with TestClient(app) as client:
+        resp = client.post("/analyze/order_count?inference_method=advi&draws=100")
+        assert resp.status_code == 200
+        assert resp.json()["fitted_parents"] == ["daily_sessions"]
+        assert resp.json()["dropped_parents"] == []
+
+        body = client.get("/metrics/order_count").json()
+        assert body["fitted_parents"] == ["daily_sessions"]
+        assert body["dropped_parents"] == []
+        # And on a metric nothing has fitted, both are null — "not fitted",
+        # never an empty list that reads as "fitted, nothing dropped".
+        unfitted = client.get("/metrics/revenue").json()
+        assert unfitted["fitted_parents"] is None and unfitted["dropped_parents"] is None
+
+
 def test_metrics_summary_json_safe_after_advi():
     """ADVI traces have NaN r_hat (single chain); /metrics must still serialize."""
     with TestClient(app) as client:

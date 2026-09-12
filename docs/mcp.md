@@ -37,7 +37,12 @@ reproduces the numbers.
 Warnings survive compaction. A fit whose learned direction contradicts the
 tree's declared `expected_signs` arrives with its `sign_warnings`, a
 mostly-zero series with its `likelihood_warnings`, a withheld interval with
-its `ci_status`, and a node whose parents move together with its
+its `ci_status`, a node whose fit left a constant parent out with its
+`dropped_parents` (and `how_to_read` gains one line per such node — "attribution
+for X excludes Y because Y did not vary over the fit window" — because a
+parent missing from `contributions` otherwise reads as one that scored zero;
+`explain_metric` reports the same `fitted_parents` / `dropped_parents` on the
+fit it describes), and a node whose parents move together with its
 `collinearity_status` and `collinearity_warnings`. That last one is the
 warning most specific to how an assistant reads a tree: it says the node's
 per-parent `contributions` are a split the data does not determine, so the

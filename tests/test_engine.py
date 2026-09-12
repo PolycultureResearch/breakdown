@@ -2090,3 +2090,124 @@ def test_ppc_band_says_when_the_series_it_plots_is_a_residual():
     # And the numbers are the residual's, not revenue's: revenue runs in the
     # thousands, its identity residual around zero.
     assert abs(float(np.mean(band["observed"]))) < float(data["revenue"].mean()) / 10
+
+
+# ---------------------------------------------------------------------------
+# Issue #113: a constant parent is dropped from the fit, not fatal to it.
+
+CONSTANT_PARENT_YAML = """
+metrics:
+  - name: flat
+    source: dbt.metric.flat
+  - name: x1
+    source: dbt.metric.x1
+  - name: y
+    source: dbt.metric.y
+    parents: [flat, x1]
+"""
+
+ONE_PARENT_YAML = """
+metrics:
+  - name: x1
+    source: dbt.metric.x1
+  - name: y
+    source: dbt.metric.y
+    parents: [x1]
+"""
+
+ALL_CONSTANT_YAML = """
+metrics:
+  - name: flat
+    source: dbt.metric.flat
+  - name: flat2
+    source: dbt.metric.flat2
+  - name: y
+    source: dbt.metric.y
+    parents: [flat, flat2]
+"""
+
+
+def _constant_parent_frame(n: int = 90, seed: int = 5) -> pd.DataFrame:
+    """One drifting parent and one that never moves — the issue's own shape:
+    an expected-share curve that is legitimately 0.0 on every day of the
+    window. `flat` is listed *first* in the tree so that a consumer still
+    indexing `beta_raw` by the DAG's parent list would read x1's coefficient
+    off the wrong column (or off the end of the array)."""
+    rng = np.random.default_rng(seed)
+    x1 = 100 + np.cumsum(rng.normal(0, 3, n))
+    y = 1.0 * x1 + rng.normal(0, 1.0, n)
+    return pd.DataFrame(
+        {
+            "date": pd.date_range("2024-01-01", periods=n),
+            "flat": np.zeros(n),
+            "flat2": np.full(n, 7.5),
+            "x1": x1,
+            "y": y,
+        }
+    )
+
+
+def test_a_constant_parent_is_dropped_and_the_fit_proceeds(caplog):
+    """The fit used to raise `_normalize`'s "zero variance" on the constant
+    column and the node lost its attribution — and every downstream question
+    with it — for a parent that by construction had nothing to say. Now the
+    column is dropped, the drop is named on the result and in the log, and
+    the coefficient axis is the parents actually fitted."""
+    parser = Parser(CONSTANT_PARENT_YAML)
+    with caplog.at_level("WARNING", logger="breakdown.engine.model"):
+        fit = fit_metric(
+            parser.dag, _constant_parent_frame(), "y", draws=200, tune=300, random_seed=0
+        )
+
+    # The axis is the fitted parents, in DAG order minus the dropped one.
+    assert fit.parents == ["x1"]
+    assert fit.trace.posterior["beta_raw"].shape[-1] == 1
+    assert fit.x_stds.shape == (1,)
+    # The drop is recorded with a reason that names the window and the value.
+    (dropped,) = fit.dropped_parents
+    assert dropped["parent"] == "flat"
+    assert "zero variance over fit window 2024-01-01..2024-03-30" in dropped["reason"]
+    assert "held at 0" in dropped["reason"]
+    # ...and logged, naming the node and the parent.
+    assert any("'flat' of 'y' dropped from the fit" in r.getMessage() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]
+    # One fitted parent: no split to be unstable, so no collinearity check ran
+    # — an absent status, not an `unavailable` one, because the constant
+    # column never reached the design matrix.
+    assert "collinearity_status" not in fit.diagnostics
+    # And the coefficient on the parent that was fitted is the true one.
+    beta = float(fit.trace.posterior["beta_raw"].values.reshape(-1, 1)[:, 0].mean())
+    assert 0.8 < beta < 1.2
+
+
+def test_dropping_the_constant_parent_leaves_the_other_coefficient_untouched():
+    """The issue's statistical claim, checked rather than asserted: a constant
+    regressor carries no information about the gap, so dropping it cannot
+    change the posterior on the remaining parents. The same data fitted under
+    a tree that never listed the constant parent gives the same posterior —
+    the design matrix is identical, and so is the seeded sampler run."""
+    frame = _constant_parent_frame()
+    with_flat = fit_metric(
+        Parser(CONSTANT_PARENT_YAML).dag, frame, "y", draws=200, tune=300, random_seed=0
+    )
+    without = fit_metric(
+        Parser(ONE_PARENT_YAML).dag, frame, "y", draws=200, tune=300, random_seed=0
+    )
+    a = with_flat.trace.posterior["beta_raw"].values.reshape(-1)
+    b = without.trace.posterior["beta_raw"].values.reshape(-1)
+    assert with_flat.parents == without.parents == ["x1"]
+    assert without.dropped_parents == []
+    np.testing.assert_allclose(a, b, rtol=1e-6)
+
+
+def test_a_node_whose_parents_are_all_constant_still_refuses_with_a_reason():
+    """Dropping everything would leave a root fitted under a parents-having
+    definition — a different model from the declared one. The node stays
+    unfittable, and the reason says why in the author's terms rather than
+    `_normalize`'s."""
+    parser = Parser(ALL_CONSTANT_YAML)
+    with pytest.raises(
+        ValueError, match=r"Every parent of 'y' \(\['flat', 'flat2'\]\) is constant"
+    ):
+        fit_metric(parser.dag, _constant_parent_frame(), "y", draws=100, tune=100)

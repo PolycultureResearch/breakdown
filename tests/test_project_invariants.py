@@ -400,6 +400,8 @@ def test_every_window_scaled_field_on_a_fit_is_metered_or_named():
     bounded_by_the_tree = {
         "target",
         "parents",
+        # Issue #113: at most one `{parent, reason}` record per parent.
+        "dropped_parents",
         "y_mean",
         "y_std",
         "x_stds",

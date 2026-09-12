@@ -206,6 +206,35 @@ def whatif_how_to_read(mode: str) -> str:
     return WHATIF_HOW_TO_READ
 
 
+def rca_how_to_read(result: Dict[str, Any]) -> str:
+    """The RCA how_to_read block, plus one caveat per node that dropped a
+    parent from its fit (issue #113).
+
+    Appended only when it applies, the way `whatif_how_to_read` appends the
+    cold-start block: the static guide is already at its token ceiling, and
+    on the ordinary tree — where nothing was dropped — the sentence would be
+    a rule about a field that is not there. When it is there, the caveat
+    names the node and the parent, because "attribution for X excludes Y" is
+    the sentence the narrator must say and the one it is least likely to
+    reconstruct from a bare list.
+    """
+    lines = []
+    for name, node in result.get("nodes", {}).items():
+        for d in node.get("dropped_parents") or []:
+            lines.append(
+                f"- Attribution for `{name}` excludes `{d['parent']}` because "
+                f"`{d['parent']}` did not vary over the fit window ({d['reason']}). "
+                "A constant regressor is not identified and carries no information "
+                "about the gap, so the other parents' contributions are unchanged "
+                f"by the exclusion — but say the exclusion; do not narrate "
+                f"`{d['parent']}` as having had no effect, and if it moved between "
+                "the windows that movement is in `unexplained`."
+            )
+    if not lines:
+        return RCA_HOW_TO_READ
+    return RCA_HOW_TO_READ + "\n" + "\n".join(lines)
+
+
 def round_floats(obj: Any, sig: int = _SIG_FIGS) -> Any:
     """Recursively round floats to `sig` significant figures; non-finite -> None."""
     if isinstance(obj, float):
@@ -387,6 +416,14 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
             # components as approximate"), so the guidance travels exactly on
             # the nodes it applies to and costs nothing on the ones it doesn't.
             "likelihood_warnings": node.get("likelihood_warnings"),
+            # Issue #113: the parents this node's fit left out, with reasons.
+            # Never dropped when present, for the same reason `unexplained_
+            # status` is not: a parent missing from `contributions` reads as
+            # "contributed nothing" unless something says "was not fitted",
+            # and those are different facts about the world. The
+            # `how_to_read` addendum (`rca_how_to_read`) fires on the same
+            # field.
+            "dropped_parents": node.get("dropped_parents"),
             "ci_status": node["ci_status"],
             "unexplained": node["unexplained"],
             # Never dropped for token economy: `unexplained: 0` means two

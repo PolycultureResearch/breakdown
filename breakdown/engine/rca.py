@@ -48,8 +48,12 @@ lets the rest of the tree through, with the reason in `status_reason`:
   **target** itself has no whole period there is nothing to attribute anywhere,
   so that case raises *before any fitting*, naming the grain and the most
   recent whole period that would work;
-- `"fit_failed"` — the node's own BSTS fit raised (a parent held flat for the
-  whole fit window has zero variance and cannot be normalized);
+- `"fit_failed"` — the node's own BSTS fit raised (the node's own series, or
+  every one of its parents, held flat for the whole fit window and cannot be
+  normalized; an undefined period inside the fit window). A single constant
+  parent no longer fails the node: since issue #113 it is dropped from the
+  fit and named on the node's `dropped_parents`, and the attribution runs
+  on the parents that varied;
 - `"attribution_failed"` — the node's formula does not produce a finite value
   over these windows (a zero denominator, or an undefined rate parent). The
   exception is the RCA *target*: the whole response is about that node, so its
@@ -436,6 +440,16 @@ def _node_out(**fields) -> Dict[str, Any]:
         "fit_window": None,
         "seasonality_warnings": None,
         "likelihood_warnings": None,
+        # Issue #113: parents this node's fit left out because their column
+        # was constant over the fit window, each `{"parent", "reason"}`, or
+        # null when nothing was dropped (or nothing was fitted). A constant
+        # regressor is not identified and carries no information about the
+        # gap, so the remaining parents' contributions are the same numbers
+        # they would be with it present — but the row for it is *absent* from
+        # `contributions`, not zero, and any movement it made between the
+        # windows sits in `unexplained`. The field is what lets a reader tell
+        # "excluded" from "found nothing".
+        "dropped_parents": None,
         "ci_status": None,
         "unexplained": None,
         # What the number in `unexplained` *is*. Never omit it while
@@ -986,11 +1000,14 @@ def run_rca(
         to_fit.append(node)
 
     # A node whose own fit raises is recorded and skipped, not propagated: one
-    # unfittable node (a parent held flat all fit window has zero variance and
+    # unfittable node (a series held flat all fit window has zero variance and
     # cannot be normalized — the seasonal business whose default state is zero)
     # used to abort the whole tree analysis and return nothing. The `try` wraps
     # the single `fit_metric` call and nothing else, so unrelated failures
-    # elsewhere in the loop still surface.
+    # elsewhere in the loop still surface. (A single constant *parent* no
+    # longer reaches here at all: `fit_metric` drops it and fits on the rest,
+    # issue #113. What still raises is the node's own series held flat, every
+    # parent held flat, or an undefined period inside the window.)
     #
     # `inference_method` reaches `fit_metric` unchanged — this path never
     # substitutes a sampler for the one it was asked for, in either direction.
@@ -1169,6 +1186,7 @@ def run_rca(
         fit_window = None
         seasonality_warnings = None
         likelihood_warnings = None
+        dropped_parents = None
         interaction = None
         unexplained_status = None
         if not parents:
@@ -1491,17 +1509,26 @@ def run_rca(
             }
             seasonality_warnings = fit.diagnostics.get("seasonality_warnings")
             likelihood_warnings = fit.diagnostics.get("likelihood_warnings")
-            arr = fit.trace.posterior["beta_raw"].values.reshape(-1, len(parents))
+            # The coefficient axis is the fit's own parent list, not the
+            # DAG's: a parent constant over the fit window was dropped from
+            # the design matrix (issue #113), and reading `beta_raw` against
+            # `list(dag.predecessors(node))` would then hand a sibling's
+            # coefficient to the wrong parent. The same order, minus the
+            # dropped ones — `fit_metric` guarantees that.
+            fitted = fit.parents
+            dropped_parents = fit.dropped_parents or None
+            arr = fit.trace.posterior["beta_raw"].values.reshape(-1, len(fitted))
             n_post = arr.shape[0]
 
             # Refuse-by-name before any attribution math (roadmap C29): the
             # same degrade the formula branch has had since C17, so one bad
-            # node still does not end the analysis.
+            # node still does not end the analysis. Over the fitted parents
+            # only: a dropped one is not multiplied by anything.
             try:
                 _refuse_nonfinite_parent_windows(
                     frame,
                     node,
-                    parents,
+                    fitted,
                     defn.lags,
                     grain,
                     [("reference", ref_start, ref_end), ("analysis", an_start, an_end)],
@@ -1578,7 +1605,7 @@ def run_rca(
             # coefficient posterior is real uncertainty, but it is being
             # multiplied by a number the resampling cannot move.
             degenerate_inputs = False
-            for i, p in enumerate(parents):
+            for i, p in enumerate(fitted):
                 lag = defn.lags.get(p, 0)
                 # The parent values that influenced the analysis window are
                 # those `lag` grain steps earlier, so shift both windows back
@@ -1685,6 +1712,7 @@ def run_rca(
             fit_window=fit_window,
             seasonality_warnings=seasonality_warnings,
             likelihood_warnings=likelihood_warnings,
+            dropped_parents=dropped_parents,
             ci_status=ci_status,
             unexplained=unexplained,
             unexplained_status=unexplained_status,

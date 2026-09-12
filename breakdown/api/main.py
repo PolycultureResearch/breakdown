@@ -1422,6 +1422,8 @@ async def get_metric(name: str, request: Request):
     diagnostics = None
     inference_method = None
     fit_end = None
+    fitted_parents = None
+    dropped_parents = None
     fit = _pick_fit(traces, name)
     if fit is not None:
         summary = await asyncio.to_thread(_fit_summary, fit)
@@ -1432,11 +1434,21 @@ async def get_metric(name: str, request: Request):
         # ADVI from the presence of a k̂. Same names the RCA node payload uses.
         inference_method = fit.inference_method
         fit_end = fit.fit_end
+        # The parent axis of `summary`'s `beta_raw[i]` rows (issue #113). It
+        # is `definition.parents` minus any parent the fit dropped for zero
+        # variance, so a reader who indexes the summary by the definition's
+        # list would hand a sibling's coefficient to the wrong parent; the
+        # dropped ones are named with their reason so the absence of a row
+        # reads as "excluded", not "zero".
+        fitted_parents = list(fit.parents)
+        dropped_parents = list(fit.dropped_parents)
 
     return {
         "definition": metric.model_dump(),
         "inference_method": inference_method,
         "fit_end": fit_end,
+        "fitted_parents": fitted_parents,
+        "dropped_parents": dropped_parents,
         "time_series": time_series,
         "summary": summary,
         "diagnostics": diagnostics,
@@ -1568,6 +1580,11 @@ async def analyze_metric(
         "status": "success",
         "message": f"Analysis complete for '{name}'",
         "inference_method": inference_method,
+        # Same two fields `GET /metrics/{name}` carries, for the same reason:
+        # the caller who just ran this fit is the one who most needs to hear
+        # that a parent was left out of it (issue #113).
+        "fitted_parents": list(fit.parents),
+        "dropped_parents": list(fit.dropped_parents),
         "diagnostics": fit.diagnostics,
     }
 

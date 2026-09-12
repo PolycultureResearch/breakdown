@@ -27,7 +27,7 @@ about the whole process rather than one tree.
 | `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), per-metric `grains`/`kinds`/`data_through`, fitted models, per-metric `earliest_available` history discovery, and `grain_clipping` — which metric's short series bounded the shared window at its grain, if any (UI bootstrap) |
 | `GET` | `/dag` | Full metric DAG (nodes + edges), each node carrying its whole definition. `sql` and `bind` come back `null` to a caller that presents no token when one is configured. See [Authentication](deploying.md#authentication) |
 | `GET` | `/series` | Every metric's series at its native grain, `{name: {grain, dates, values}}`. One call hydrates the UI's node cards. Mixed-grain trees have no shared date axis, so dates are per metric |
-| `GET` | `/metrics/{name}` | Metric definition, time series, posterior summary and fit diagnostics — plus top-level `inference_method` and `fit_end` for the fit those describe (`null` when nothing is fitted), so a reader never infers the sampler from the presence of a k̂ (roadmap C35) |
+| `GET` | `/metrics/{name}` | Metric definition, time series, posterior summary and fit diagnostics — plus top-level `inference_method` and `fit_end` for the fit those describe (`null` when nothing is fitted), so a reader never infers the sampler from the presence of a k̂ (roadmap C35), and `fitted_parents` / `dropped_parents` — the parent axis the summary's `beta_raw[i]` rows follow, and the parents the fit left out for zero variance (#113; both `null` when nothing is fitted) |
 | `GET` | `/metrics/{name}/query` | The query behind a metric's numbers, when the provider knows it. Optional `dimension` for the sliced form |
 | `GET` | `/metrics/{name}/ppc` | The observed-vs-replicated series behind this node's posterior predictive verdict — the arrays the Metric tab plots |
 | `POST` | `/analyze/{name}` | Run Bayesian sampling for a metric |
@@ -267,6 +267,18 @@ unsure about the split. A node with fewer than two parents carries none of
 these fields, because there is no split to be unstable. See
 [`docs/model.md`](model.md#parents-that-move-together).
 
+The response also carries **`fitted_parents`** and **`dropped_parents`**, and
+so does `GET /metrics/{name}`. A parent whose series is constant over the fit
+window is left out of the regression rather than failing it (#113): a
+constant column is not identified and says nothing about how the metric moved,
+so the other parents' coefficients are unchanged by its absence. `fitted_parents`
+is the list the posterior summary's `beta_raw[i]` rows follow — the
+definition's parents, in order, minus any dropped — and `dropped_parents` is a
+list of `{"parent", "reason"}` (empty when nothing was dropped). Index the
+summary by `fitted_parents`, never by `definition.parents`. A node whose parents
+are *all* constant is refused (422) with a reason that says so. See
+[`docs/model.md`](model.md#a-parent-that-does-not-move).
+
 ## `GET /shapley/{name}`
 
 Returns how much of the target metric's gap between two time windows is attributable to each parent. Requires a `formula` on the metric definition.
@@ -402,6 +414,8 @@ Every fitted node also carries `ppc_status` / `ppc` / `ppc_warnings`, described 
 
 A fitted node with two or more parents also carries `collinearity_status` / `collinearity` / `collinearity_warnings`, described under [`POST /analyze/{name}`](#post-analyzename). On `moderate` or `high`, the node's per-parent `contributions` are a split the data does not fully determine: read the flagged parents as one cause and do not rank them against each other. The fields are absent (null) on nodes with fewer than two parents.
 
+A fitted node whose fit left a parent out carries **`dropped_parents`**, a list of `{"parent", "reason"}` (`null` when nothing was dropped). A parent constant over the fit window has no identified coefficient and no information about the gap, so it is dropped from the regression rather than failing the node (#113); the remaining parents' `contributions` are exactly what they would be with it present, but there is **no row for the dropped parent** — its absence means "not fitted", not "contributed zero" — and any movement it made between the windows is in `unexplained`. Read the node as "attribution excluding X". A node whose parents are *all* constant is still `fit_failed`. See [`docs/model.md`](model.md#a-parent-that-does-not-move).
+
 Grain support adds two per-node fields: `grain` (the grain the node was analyzed at) and `effective_windows` (the whole periods the requested windows snapped to at that grain). Gaps are mean-per-period at each node's own grain, so in mixed-grain trees compare nodes via `share_of_gap` and `ranked_causes` scores, not raw gaps.
 
 ### Per-node `status` — one bad node does not end the analysis
@@ -416,7 +430,7 @@ skipped node has the same shape as an attributed one.
 |---|---|
 | `ok` | Attributed normally. |
 | `window_shorter_than_grain` | Your windows hold no whole period at this node's grain, e.g. a 3-day window on a monthly node. `status_reason` names the grain and the windows. Nothing is wrong with the data; widen the window, or accept that this node can't speak to a change this short. When the **target** itself has no whole period, the request is a 422 before any fitting, because with no measured movement on the target there is nothing to attribute anywhere. The error names the grain and the most recent whole period the data holds. Through a parser-built tree that is the only way this case can arise (the target is always the coarsest node in its own scope), so on a served tree you will meet the 422, not the status. |
-| `fit_failed` | The node's own model could not be fitted. Overwhelmingly this is a series with no variance across the fit window: a parent held at zero the whole time, which for a seasonal business is simply its off-season. A constant series cannot be normalized, so there is no coefficient to attribute with. |
+| `fit_failed` | The node's own model could not be fitted: its own series has no variance across the fit window, or *every* one of its parents is constant there (the reason names them), or a period inside the window is undefined. A single constant parent no longer causes this (#113) — it is dropped from the fit and named on the node's `dropped_parents`, and the attribution runs on the parents that varied. |
 | `attribution_failed` | A formula node whose exact decomposition is not a finite number over these windows, in practice a zero denominator somewhere in the window — or, since roadmap C29, a probabilistic node whose parent series holds a non-finite value inside a window (an undefined rate period the fit never saw). The node's own `baseline`, `actual` and `gap` are read off the data where readable, and the split across parents is withheld with the reason. |
 | `frame_unavailable` | The node's series and its parents' share no whole period at its grain over the loaded window (e.g. a monthly node whose daily parent covers no whole month), so nothing could be measured at all — `baseline`/`actual`/`gap` are `null`, not zero (roadmap C38; this was an unhandled 500). When the **target** itself has no aligned frame, the request is a 422 carrying the same diagnostic. |
 
@@ -591,6 +605,12 @@ is omitted from `nodes` and named in `warnings` as
 blocking the whole scenario (roadmap C39) — a disconnected monthly metric no
 longer makes every sub-month what-if unusable. A metric the scenario actually
 propagates through still refuses loudly, unchanged.
+
+One more refusal of the same kind (#113): a scenario that routes a change
+through the edge of a parent the fit **dropped** — constant over the fit
+window, so no coefficient exists for it — is a 422 naming the parent and the
+nodes that would have been simulated with that link missing. A dropped parent
+the scenario never touches does not block it.
 
 The response carries `mode` (`fitted` | `cold_start`), the resolved
 `baseline_window` (null in cold start), `n_draws`, `seed`, a `sources`

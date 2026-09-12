@@ -676,7 +676,12 @@ def run_scenario(
             # one of its parents' effects — a confident wrong number, which is
             # worse than no answer. So this refuses, but it refuses in terms of
             # the scenario the caller actually ran rather than leaking
-            # `_normalize`'s "Column 'x' has zero variance".
+            # `_normalize`'s "Column 'x' has zero variance". (Since issue #113
+            # a single constant parent no longer raises here — `fit_metric`
+            # drops it and fits on the rest; what still raises is the node's
+            # own series held flat, or every parent held flat. The dropped
+            # parent's edge is then refused below, and only if the scenario
+            # actually routes through it.)
             #
             # (The better answer is to mark this node *and its descendants*
             # un-simulated and simulate the rest, the way RCA degrades. That
@@ -703,6 +708,13 @@ def run_scenario(
     # point value.
     beta_draws: Dict[str, np.ndarray] = {}
     beta_means: Dict[str, np.ndarray] = {}
+    # The parent each column of `beta_draws[node]` belongs to. In fitted mode
+    # this is the fit's own parent list — `list(dag.predecessors(node))` minus
+    # any parent the fit dropped for zero variance (issue #113) — and the
+    # propagation below walks it rather than the DAG's list, so a dropped
+    # parent cannot shift a sibling's coefficient onto the wrong edge. In
+    # cold-start mode nothing is fitted and it is the DAG's list.
+    beta_axis: Dict[str, List[str]] = {}
     # Resolution floor for `prob_direction`. Coefficient draws are *resampled
     # with replacement* from a fitted posterior, so drawing 2,000 of them from
     # a 500-draw ADVI fit adds no information about the sign: if all 500 are
@@ -722,14 +734,34 @@ def run_scenario(
             priors = [defn.priors.get(p) or defn.priors.get("coefficient") for p in parents]
             beta_draws[node] = np.column_stack([_sample_prior(pr, n_draws, rng) for pr in priors])
             beta_means[node] = np.array([_prior_mean(pr) for pr in priors])
+            beta_axis[node] = parents
         else:
-            arr = (
-                traces[(node, fit_end_key)]
-                .trace.posterior["beta_raw"]
-                .values.reshape(-1, len(parents))
-            )
+            fit = traces[(node, fit_end_key)]
+            # A parent the fit dropped (constant over the fit window, issue
+            # #113) has no coefficient — and if a delta can reach this node
+            # through it, the scenario has no way to carry that delta across
+            # the edge. Propagating zero would be a confident wrong number on
+            # every node downstream, the same failure the `fit_metric` refusal
+            # above declines, so this refuses the same way and in the same
+            # terms. A dropped parent the scenario never touches is harmless:
+            # its edge carries nothing either way.
+            blocked = [d for d in fit.dropped_parents if d["parent"] in affected]
+            if blocked:
+                names = ", ".join(f"'{d['parent']}' ({d['reason']})" for d in blocked)
+                reached = sorted(nx.descendants(dag, node) & set(order) | {node})
+                raise ValueError(
+                    f"Cannot simulate this scenario: it reaches '{node}' through a "
+                    f"parent whose coefficient could not be estimated — {names}. A "
+                    "constant series carries no information about how it moves its "
+                    f"child, so every node from there on ({', '.join(reached)}) would "
+                    "be simulated with that link missing. Widen the window so the "
+                    "parent varies, or intervene somewhere that does not route "
+                    "through it."
+                )
+            arr = fit.trace.posterior["beta_raw"].values.reshape(-1, len(fit.parents))
             beta_draws[node] = arr[rng.choice(arr.shape[0], size=n_draws)]
             beta_means[node] = arr.mean(axis=0)
+            beta_axis[node] = list(fit.parents)
             n_effective = min(n_effective, int(arr.shape[0]))
 
     effect_draws: Dict[str, np.ndarray] = {}
@@ -791,7 +823,7 @@ def run_scenario(
                 )
             elif parents and any(p in deltas for p in parents):
                 betas = beta_draws[node] if use_draws else beta_means[node][None, :]
-                for i, p in enumerate(parents):
+                for i, p in enumerate(beta_axis[node]):
                     dp = deltas.get(p)
                     if dp is not None:
                         # beta_raw was fitted against the parent aggregated to

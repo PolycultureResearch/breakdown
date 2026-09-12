@@ -11,6 +11,7 @@ from breakdown.mcp.shaping import (
     compact_scenario,
     compact_slice,
     metric_link,
+    rca_how_to_read,
     rca_link,
     round_floats,
     whatif_how_to_read,
@@ -598,3 +599,27 @@ def test_compact_slice_carries_the_verdict_and_the_38_trio():
     # `unknown` additivity is background, not a finding, and is trimmed.
     plain = compact_slice({**result, "additivity": "unknown", "overlap": None})
     assert "additivity" not in plain and "overlap" not in plain
+
+
+def test_compact_rca_carries_dropped_parents_and_the_guide_names_them():
+    """Issue #113. A parent the fit left out is absent from `contributions`,
+    which on its own reads as "contributed nothing". The record that says
+    "was not fitted" has to survive compaction, and the guide has to say the
+    sentence the narrator is least likely to reconstruct from a bare list —
+    but only when there is such a node, because the static guide is at its
+    token ceiling and a rule about an absent field is noise."""
+    result = _rca_fixture()
+    assert compact_rca(result)["nodes"]["revenue"].get("dropped_parents") is None
+    assert rca_how_to_read(result) == RCA_HOW_TO_READ
+
+    dropped = [{"parent": "pacing_baseline", "reason": "zero variance over fit window (held at 0)"}]
+    result["nodes"]["revenue"]["dropped_parents"] = dropped
+    out = compact_rca(result)
+    assert out["nodes"]["revenue"]["dropped_parents"] == dropped
+
+    guide = rca_how_to_read(result)
+    assert guide.startswith(RCA_HOW_TO_READ)
+    addendum = guide[len(RCA_HOW_TO_READ) :]
+    assert "Attribution for `revenue` excludes `pacing_baseline`" in addendum
+    assert "did not vary over the fit window" in addendum
+    assert "`unexplained`" in addendum
