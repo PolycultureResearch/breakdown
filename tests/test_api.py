@@ -663,6 +663,28 @@ def test_warm_inference_imports_actually_loads_the_stack():
     assert result.stdout.strip() == "arviz,pymc,pytensor"
 
 
+def test_warm_inference_imports_preloads_pymc_into_the_forkserver():
+    """Python 3.14 made forkserver the Linux default, and PyMC runs each chain
+    in its own process, so without a preload every fit imports pymc once per
+    chain: CI measured 3.14 at 2-3x the 3.13 fit time (PR #111). The preload
+    list is read once, when the forkserver starts, so it must be set by the
+    warm-up that runs before any fit. Pinned in a fresh interpreter because
+    the setting is process-wide."""
+    import subprocess
+    import sys
+
+    probe = (
+        "from multiprocessing import forkserver; "
+        "from breakdown.engine.model import warm_inference_imports; "
+        "warm_inference_imports(); "
+        "print(','.join(forkserver._forkserver._preload_modules))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    assert result.stdout.strip() == "__main__,pymc"
+
+
 def test_lifespan_warms_the_inference_stack_in_the_background():
     """The deferral only helps if startup absorbs the cost it moved.
 

@@ -190,7 +190,7 @@ def get_salt(deid: Deident) -> bytes:
             f"${deid.salt_env} is not set. The archive is de-identified with an "
             "HMAC keyed on this value, so running without one would either write "
             "raw ids or write hashes nobody can reproduce.\n\n"
-            f"    export {deid.salt_env}=\"$(openssl rand -hex 32)\"\n\n"
+            f'    export {deid.salt_env}="$(openssl rand -hex 32)"\n\n'
             "Save it somewhere durable. Every later extract must use the same "
             "salt or its ids will not join to this one."
         )
@@ -317,9 +317,7 @@ def _scale_money(col: pa.ChunkedArray, factor: float) -> pa.Array:
         # the honest trade and it is why money_multiplier should stay at 1.0
         # unless the client requires otherwise: exactness at the cent is what
         # the identity checks depend on.
-        log.warning(
-            "scaling decimal column through float64; identity tolerances may need widening"
-        )
+        log.warning("scaling decimal column through float64; identity tolerances may need widening")
         col = col.cast(pa.float64())
     elif pa.types.is_integer(t):
         col = col.cast(pa.float64())
@@ -349,7 +347,10 @@ def transform(batch: pa.Table, deid: Deident, salt: bytes) -> pa.Table:
             col = _scale_money(col, deid.money_multiplier)
         names.append(name)
         cols.append(col)
-    return pa.Table.from_arrays([pa.chunked_array(c) if not isinstance(c, pa.ChunkedArray) else c for c in cols], names=names)
+    return pa.Table.from_arrays(
+        [pa.chunked_array(c) if not isinstance(c, pa.ChunkedArray) else c for c in cols],
+        names=names,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -486,9 +487,7 @@ class Source:
         where = f" WHERE {table.where}" if table.where else ""
         cur = self.cursor()
         try:
-            cur.execute(
-                f"SELECT {', '.join(pieces)} FROM {self.qualified(table.relation)}{where}"
-            )
+            cur.execute(f"SELECT {', '.join(pieces)} FROM {self.qualified(table.relation)}{where}")
             row = cur.fetchall_arrow().to_pylist()[0]
         finally:
             cur.close()
@@ -560,7 +559,9 @@ def select_tables(cfg: Config, tiers: list[str] | None, only: list[str] | None) 
         wanted = set(only)
         missing = wanted - {t.relation for t in tables}
         if missing:
-            sys.exit(f"--only names relations not in the config (or filtered out): {sorted(missing)}")
+            sys.exit(
+                f"--only names relations not in the config (or filtered out): {sorted(missing)}"
+            )
         tables = [t for t in tables if t.relation in wanted]
     if not tables:
         sys.exit("no tables selected")
@@ -626,8 +627,10 @@ def cmd_plan(cfg: Config, args) -> int:
         src.close()
 
     print("\n" + "=" * 72)
-    print(f"{len(tables)} relations   {total_rows:,} rows   "
-          f"{_human(total_bytes)}{' (+ some unsized)' if unknown_bytes else ''} on the warehouse side")
+    print(
+        f"{len(tables)} relations   {total_rows:,} rows   "
+        f"{_human(total_bytes)}{' (+ some unsized)' if unknown_bytes else ''} on the warehouse side"
+    )
     print("Parquet on disk is typically a small fraction of that; budget for the")
     print("wire time rather than the disk.")
     if cfg.deident.date_offset_days:
@@ -729,7 +732,9 @@ def cmd_extract(cfg: Config, args) -> int:
                 log.error(
                     "%s: wrote %s rows but the warehouse counted %s. The relation "
                     "changed under the extract, or the read was truncated.",
-                    t.relation, f"{written:,}", f"{stats['rows']:,}",
+                    t.relation,
+                    f"{written:,}",
+                    f"{stats['rows']:,}",
                 )
 
             manifest["tables"][t.relation] = {
@@ -759,7 +764,10 @@ def cmd_extract(cfg: Config, args) -> int:
             _write_manifest(out, manifest)
             log.info(
                 "%s: %s rows -> %s in %.0fs",
-                t.relation, f"{written:,}", _human(path.stat().st_size), time.time() - started,
+                t.relation,
+                f"{written:,}",
+                _human(path.stat().st_size),
+                time.time() - started,
             )
     finally:
         src.close()
@@ -789,8 +797,10 @@ def cmd_load(cfg: Config, args) -> int:
     # the re-parsed manifest points somewhere that does not exist.
     if db_path.stem != alias:
         log.warning(
-            "duckdb file stem '%s' != database_alias '%s'; dbt will resolve "
-            "relations under '%s'", db_path.stem, alias, db_path.stem,
+            "duckdb file stem '%s' != database_alias '%s'; dbt will resolve relations under '%s'",
+            db_path.stem,
+            alias,
+            db_path.stem,
         )
 
     con = duckdb.connect(str(db_path))
@@ -902,8 +912,7 @@ def cmd_verify(cfg: Config, args) -> int:
                 check(False, f"{ident.table}: identity table missing")
                 continue
             worst = con.execute(
-                f"SELECT COALESCE(MAX(ABS({ident.expression})), 0) "
-                f'FROM "{schema}"."{ident.table}"'
+                f'SELECT COALESCE(MAX(ABS({ident.expression})), 0) FROM "{schema}"."{ident.table}"'
             ).fetchone()[0]
             check(
                 float(worst) <= ident.tolerance,
