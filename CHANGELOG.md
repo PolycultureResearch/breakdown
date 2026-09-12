@@ -13,6 +13,21 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`POST /mcp` no longer redirects to `/mcp/`, and a 401 from the gate says
+  what went wrong.** Starlette's mount matched only the trailing-slash form, so
+  the bare URL — the one every quickstart shows — answered 307, and curl and
+  several HTTP stacks drop `Authorization` on a redirect by design. Behind
+  `BREAKDOWN_API_TOKEN` the redirected handshake therefore arrived with no
+  token and failed with a 401 that Claude Code rendered as "Needs
+  authentication", sending the next person to debug a token that was never
+  seen (#116). Both spellings now reach the transport directly. The 401 carries
+  `WWW-Authenticate: Bearer realm="breakdown"` (plus `error="invalid_token"`
+  only when a token was actually presented, per RFC 6750) and a `detail` that
+  distinguishes *no Authorization header reached the server* from *the token
+  does not match*.
+
 ### Changed
 
 - **Fits on Python 3.14 no longer import `pymc` once per chain.** 3.14 made

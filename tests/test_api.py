@@ -1087,7 +1087,7 @@ def test_non_ascii_bearer_token_is_401_not_500(monkeypatch):
         for header in ("Bearer sécret", "Bearer s3crét", "Bearer ünicode"):
             resp = client.post("/mcp/", json={}, headers={"Authorization": header.encode("utf-8")})
             assert resp.status_code == 401, header
-            assert resp.headers["WWW-Authenticate"] == "Bearer"
+            assert resp.headers["WWW-Authenticate"].startswith('Bearer realm="breakdown"')
 
 
 def test_non_ascii_configured_token_still_authenticates(monkeypatch):
@@ -1220,7 +1220,7 @@ def test_require_auth_gates_every_data_route(require_auth_env):
         for method, path in _DATA_ROUTES:
             resp = getattr(client, method)(path)
             assert resp.status_code == 401, f"{method.upper()} {path} was open"
-            assert resp.headers["WWW-Authenticate"] == "Bearer"
+            assert resp.headers["WWW-Authenticate"].startswith('Bearer realm="breakdown"')
 
         headers = {"Authorization": "Bearer s3cret"}
         assert client.get("/meta", headers=headers).status_code == 200
