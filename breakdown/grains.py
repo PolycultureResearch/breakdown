@@ -17,7 +17,7 @@ rather than approximated.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Optional, Union
+from typing import Any, Dict, Iterable, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -434,6 +434,15 @@ class GrainedData:
     # answered" — and every consumer of a fallback aggregate has to be able to
     # tell them apart. A name here is a finding, not a configuration gap.
     no_denominator_of: Dict[str, str] = field(default_factory=dict)
+    # Per grain, what the within-grain inner join threw away at either edge and
+    # which metric is responsible (GitHub #112): `{grain: {"trailing": {...},
+    # "leading": {...}}}`, each edge present only when it was clipped, and the
+    # whole dict empty when every series at every grain agreed on its range.
+    # Kept JSON-safe (ISO date strings, ints) rather than as Timestamps because
+    # it is a disclosure, not an input to any arithmetic — `/meta` and MCP
+    # `get_tree` hand it over verbatim, and two encoders formatting the same
+    # dates differently is how a payload drifts from its log line.
+    grain_clipping: Dict[str, Dict[str, Dict[str, Any]]] = field(default_factory=dict)
 
     def weights_for(self, metric: str, grain: Optional[str] = None) -> Optional[pd.Series]:
         """The per-period weights for a rate, indexed by period start, or None.
@@ -520,7 +529,7 @@ class GrainedData:
         )
 
 
-def _check_contiguous(frame: pd.DataFrame, grain: str, names: list, widest: int) -> None:
+def _check_contiguous(frame: pd.DataFrame, grain: str, names: list) -> None:
     """A grain frame must be a gap-free run of periods.
 
     Everything downstream indexes by position: the model's `t = arange(len(y))`
@@ -531,8 +540,11 @@ def _check_contiguous(frame: pd.DataFrame, grain: str, names: list, widest: int)
     off, which is the worst failure mode this engine has.
 
     The inner join is the usual culprit — a date present for only some metrics
-    is dropped from the shared frame — so a drop count is logged even when the
-    survivors happen to stay contiguous.
+    is dropped from the shared frame. Periods it drops at either *edge* leave
+    the survivors contiguous and so pass this check; `_report_clipping` names
+    them and the metric responsible, because a series that ends early is what a
+    stale feed looks like and a silent inner join is how it clipped a whole
+    grain to one period without a word (GitHub #112).
 
     **Contiguity is a property of the dates, not of the values** (roadmap
     1.11c). An undefined rate period is a row carrying `NaN`, so it is not a
@@ -544,18 +556,6 @@ def _check_contiguous(frame: pd.DataFrame, grain: str, names: list, widest: int)
     deleting the row would instead move every date after it.
     """
     dates = pd.DatetimeIndex(frame["date"])
-    dropped = widest - len(frame)
-    if dropped > 0:
-        logger.warning(
-            "Inner join at grain '%s' dropped %d period(s) present in only some "
-            "of %s; the shared frame runs [%s, %s].",
-            grain,
-            dropped,
-            names,
-            dates.min().date(),
-            dates.max().date(),
-        )
-
     expected = pd.date_range(dates.min(), dates.max(), freq=_FREQ[grain])
     missing = expected.difference(dates)
     if len(missing) == 0:
@@ -573,6 +573,97 @@ def _check_contiguous(frame: pd.DataFrame, grain: str, names: list, widest: int)
     )
 
 
+def _report_clipping(
+    grain: str, joined: pd.DatetimeIndex, spans: Dict[str, pd.DatetimeIndex]
+) -> Dict[str, Dict[str, Any]]:
+    """Name what the within-grain inner join cut off, and who cut it.
+
+    `spans` is each metric's own dates before the join; `joined` is what
+    survived. A series shorter than its siblings at either end — a frozen ad
+    feed that stopped a fortnight ago, an event table with one row, a channel
+    switched on in March — bounds the shared frame for *every* metric at the
+    grain, and until this existed nothing said so: the tree loaded, `/health`
+    was ok, and every RCA over the missing periods failed with "reference
+    window not fully covered" while the metric that caused it stayed anonymous
+    (GitHub #112). `_align_to_spine`'s docstring names the leading case as the
+    reason it fills rather than trims; the trailing case is the same shape and
+    the more common one, because trimming a trailing gap is the right policy
+    per series and this is what it costs at the join.
+
+    Returns the per-edge record (empty when nothing was clipped) and logs one
+    WARNING per grain, worded after the issue's own request. This is rule 1
+    (`AGENTS.md`): the join is not changed and no fill is invented — the
+    dropped periods are named, with a remedy.
+    """
+    union = spans[next(iter(spans))]
+    for idx in spans.values():
+        union = union.union(idx)
+    lo, hi = joined.min(), joined.max()
+    record: Dict[str, Dict[str, Any]] = {}
+    clauses = []
+
+    furthest_end = max(idx.max() for idx in spans.values())
+    if furthest_end > hi:
+        by = sorted(m for m, idx in spans.items() if idx.max() == hi)
+        dropped = int((union > hi).sum())
+        record["trailing"] = {
+            "by": by,
+            "clipped_to": str(hi.date()),
+            "others_reached": str(furthest_end.date()),
+            "periods_dropped": dropped,
+        }
+        clauses.append(
+            "clipped to %s by %s (other series ran to %s): %d trailing %s period(s) "
+            "dropped from every metric at this grain, so no analysis window may "
+            "end after %s"
+            % (
+                hi.date(),
+                ", ".join(f"`{m}`" for m in by),
+                furthest_end.date(),
+                dropped,
+                grain,
+                hi.date(),
+            )
+        )
+
+    earliest_start = min(idx.min() for idx in spans.values())
+    if earliest_start < lo:
+        by = sorted(m for m, idx in spans.items() if idx.min() == lo)
+        dropped = int((union < lo).sum())
+        record["leading"] = {
+            "by": by,
+            "clipped_to": str(lo.date()),
+            "others_reached": str(earliest_start.date()),
+            "periods_dropped": dropped,
+        }
+        clauses.append(
+            "clipped to start at %s by %s (other series began at %s): %d leading %s "
+            "period(s) dropped from every metric at this grain, so no analysis "
+            "window may start before %s"
+            % (
+                lo.date(),
+                ", ".join(f"`{m}`" for m in by),
+                earliest_start.date(),
+                dropped,
+                grain,
+                lo.date(),
+            )
+        )
+
+    if clauses:
+        logger.warning(
+            "%s grain %s. The shared %s frame now runs [%s, %s]. Widen or repair the "
+            "bounding metric's source, or drop it from the tree; breakdown does not "
+            "fill the gap because a filled period is a number the source never gave.",
+            grain,
+            "; and ".join(clauses),
+            grain,
+            lo.date(),
+            hi.date(),
+        )
+    return record
+
+
 def build_grained(
     per_metric: Dict[str, pd.DataFrame],
     grain_of: Dict[str, str],
@@ -583,7 +674,9 @@ def build_grained(
     """Assemble per-grain frames from per-metric `["date", name]` frames,
     inner-joining within each grain only. Each metric's `last_observed` is
     captured from its own frame BEFORE the join, so freshness survives even
-    when a less-fresh sibling trims the shared grain frame.
+    when a less-fresh sibling trims the shared grain frame — and when one
+    does, `grain_clipping` says which sibling and by how much
+    (`_report_clipping`, GitHub #112).
 
     **Undefined values keep their row.** A rate with no value for a period
     (roadmap 1.11) is `NaN` *in* the frame, never a missing date — which is
@@ -594,15 +687,20 @@ def build_grained(
     relabels the calendar."""
     last_observed = {m: pd.to_datetime(df["date"]).max() for m, df in per_metric.items() if len(df)}
     frames: Dict[str, pd.DataFrame] = {}
+    grain_clipping: Dict[str, Dict[str, Dict[str, Any]]] = {}
     for grain in GRAINS:
         names = [m for m, g in grain_of.items() if g == grain]
         if not names:
             continue
         cols = []
+        spans: Dict[str, pd.DatetimeIndex] = {}
         for m in names:
             df = per_metric[m].copy()
             df["date"] = pd.to_datetime(df["date"])
-            cols.append(df.set_index("date")[[m]])
+            col = df.set_index("date")[[m]]
+            cols.append(col)
+            if len(col):
+                spans[m] = pd.DatetimeIndex(col.index)
         joined = pd.concat(cols, axis=1, join="inner")
         if joined.empty:
             raise RuntimeError(
@@ -610,13 +708,17 @@ def build_grained(
                 f"{names}. Check each metric's date coverage."
             )
         frame = joined.rename_axis("date").reset_index().sort_values("date").reset_index(drop=True)
-        _check_contiguous(frame, grain, names, max(len(per_metric[m]) for m in names))
+        _check_contiguous(frame, grain, names)
+        clipped = _report_clipping(grain, pd.DatetimeIndex(frame["date"]), spans)
+        if clipped:
+            grain_clipping[grain] = clipped
         frames[grain] = frame
     return GrainedData(
         frames=frames,
         grain_of=dict(grain_of),
         kind_of=dict(kind_of),
         last_observed=last_observed,
+        grain_clipping=grain_clipping,
         denominator_of=dict(denominator_of or {}),
         no_denominator_of=dict(no_denominator_of or {}),
     )

@@ -1150,6 +1150,7 @@ async def get_meta(request: Request):
             "kinds": {m.name: m.kind for m in parser.config.metrics},
             "data_through": {},
             "earliest_available": {},
+            "grain_clipping": {},
             "fitted": [],
         }
     # A metric whose data edge is unknown is reported as `null`, not omitted.
@@ -1180,6 +1181,14 @@ async def get_meta(request: Request):
         # worker-thread reason as `fitted` below. Lets the UI say "history
         # exists before --start-date; widen it to train on more".
         "earliest_available": dict(tree.earliest),
+        # Per grain, which metric's short series bounded the within-grain inner
+        # join and how many periods that cost every sibling (GitHub #112):
+        # `{grain: {trailing?: {by, clipped_to, others_reached,
+        # periods_dropped}, leading?: {...}}}`, `{}` when nothing was clipped.
+        # The same fact the load log warns about, so a reader who sees
+        # "reference window not fully covered" can find the cause without the
+        # server log.
+        "grain_clipping": dict(data.grain_clipping),
         # `list(...)` snapshots the keys in one bytecode op rather than
         # iterating lazily: `run_rca` mutates this dict from a worker thread
         # (it is handed the cache directly and fits on demand), so a lazy

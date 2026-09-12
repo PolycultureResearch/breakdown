@@ -1342,7 +1342,7 @@ def test_an_undefined_period_is_never_filled_and_never_dropped():
     kept = grained.frame("day")
     assert len(kept) == 3, "an undefined value must not remove its period from the spine"
     # And the contiguity check agrees: a NaN is not a hole.
-    _check_contiguous(kept, "day", ["m"], widest=3)
+    _check_contiguous(kept, "day", ["m"])
     assert len(frame) == 2  # the source really did return two rows
 
 

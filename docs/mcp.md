@@ -53,6 +53,16 @@ error (`khat_se`), plus `khat_borderline` where the two together cannot say
 which band the fit is in — a compaction that dropped the error would leave an
 agent narrating an estimate as a fact.
 
+`get_tree` carries `grain_clipping` when, and only when, one metric's short
+series bounded the shared data window for every metric at its grain
+(`{grain: {trailing | leading: {by, clipped_to, others_reached,
+periods_dropped}}}`, the same shape as
+[`GET /meta`](api-reference.md#get-meta)). It is the answer to "why does
+`run_rca` refuse a window that ends last week when `date_end` says so" — the
+metric in `by` is a source to widen or repair, not a finding about the
+business, and the key is omitted rather than empty on an aligned tree so
+there is never an empty disclosure to interpret.
+
 A `run_whatif` node keeps **both** honesty flags, because they ask for
 different narration. `extrapolation: true` means the scenario leaves the range
 the fit was learned over — speculative, still worth pricing. `non_physical:

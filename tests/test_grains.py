@@ -244,7 +244,8 @@ def test_contiguous_weekly_and_monthly_spines_are_accepted():
 
 def test_inner_join_drop_is_logged(caplog):
     """A date present for only some metrics is dropped by the join; the
-    survivors here stay contiguous, so only the log records the loss."""
+    survivors here stay contiguous, so only the log records the loss — and
+    it names the metric that caused it (GitHub #112), not just a count."""
     full = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=20), "a": np.ones(20)})
     short = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=15), "b": np.ones(15)})
 
@@ -256,7 +257,119 @@ def test_inner_join_drop_is_logged(caplog):
         )
 
     assert len(gd.frame("day")) == 15
-    assert "dropped 5 period(s)" in caplog.text
+    assert "5 trailing day period(s) dropped" in caplog.text
+    assert "by `b`" in caplog.text
+
+
+# --- grain clipping (GitHub #112) ---
+
+
+def _days(name, start, end):
+    dates = pd.date_range(start, end)
+    return pd.DataFrame({"date": dates, name: np.ones(len(dates))})
+
+
+def test_trailing_clip_is_named_at_load(caplog):
+    """The issue's scenario: a frozen feed ends 2026-08-08, the rest run to
+    08-26, and the day-grain inner join cuts every sibling to the feed's
+    edge. Nothing used to say so; the tree loaded and RCA failed later with
+    "reference window not fully covered". Now one WARNING per grain names
+    the bounding metric, its edge, and the edge the others reached, and the
+    same facts travel on `grain_clipping`."""
+    per = {m: _days(m, "2026-06-01", "2026-08-26") for m in ["orders", "sessions"]}
+    per["paid_spend"] = _days("paid_spend", "2026-06-01", "2026-08-08")
+
+    with caplog.at_level(logging.WARNING, logger="breakdown.grains"):
+        gd = build_grained(per, {m: "day" for m in per}, {m: "flow" for m in per})
+
+    assert gd.frame("day")["date"].max() == pd.Timestamp("2026-08-08")
+    assert gd.grain_clipping == {
+        "day": {
+            "trailing": {
+                "by": ["paid_spend"],
+                "clipped_to": "2026-08-08",
+                "others_reached": "2026-08-26",
+                "periods_dropped": 18,
+            }
+        }
+    }
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1, "one warning per grain, not one per metric"
+    text = warnings[0].getMessage()
+    assert "day grain clipped to 2026-08-08 by `paid_spend`" in text
+    assert "other series ran to 2026-08-26" in text
+    # Actionable: it says what the clip costs and what to do about it.
+    assert "no analysis window may end after 2026-08-08" in text
+    assert "does not fill the gap" in text
+
+
+def test_leading_clip_is_named_at_load(caplog):
+    """The symmetric case — a channel switched on partway through the window
+    — is the one `_align_to_spine` already describes; the join treats both
+    edges the same way, so the disclosure does too."""
+    per = {m: _days(m, "2026-06-01", "2026-08-26") for m in ["orders", "sessions"]}
+    per["launched"] = _days("launched", "2026-06-15", "2026-08-26")
+
+    with caplog.at_level(logging.WARNING, logger="breakdown.grains"):
+        gd = build_grained(per, {m: "day" for m in per}, {m: "flow" for m in per})
+
+    assert gd.frame("day")["date"].min() == pd.Timestamp("2026-06-15")
+    assert gd.grain_clipping == {
+        "day": {
+            "leading": {
+                "by": ["launched"],
+                "clipped_to": "2026-06-15",
+                "others_reached": "2026-06-01",
+                "periods_dropped": 14,
+            }
+        }
+    }
+    text = caplog.text
+    assert "day grain clipped to start at 2026-06-15 by `launched`" in text
+    assert "other series began at 2026-06-01" in text
+    assert "no analysis window may start before 2026-06-15" in text
+
+
+def test_both_edges_clip_in_one_warning_and_ties_name_every_metric(caplog):
+    """Two metrics tied at the trailing edge are both named — there is no
+    single culprit to pick — and a grain clipped at both ends gets one line
+    carrying both clauses, not two lines. Grains that were not clipped stay
+    absent from the record entirely."""
+    per = {m: _days(m, "2026-06-01", "2026-08-26") for m in ["orders", "sessions"]}
+    per["feed_a"] = _days("feed_a", "2026-06-01", "2026-08-08")
+    per["feed_b"] = _days("feed_b", "2026-06-15", "2026-08-08")
+    per["mrr"] = pd.DataFrame(
+        {"date": pd.date_range("2026-06-01", periods=3, freq="MS"), "mrr": np.ones(3)}
+    )
+    grain_of = {m: "day" for m in per}
+    grain_of["mrr"] = "month"
+    kind_of = {m: "flow" for m in per}
+    kind_of["mrr"] = "stock"
+
+    with caplog.at_level(logging.WARNING, logger="breakdown.grains"):
+        gd = build_grained(per, grain_of, kind_of)
+
+    assert set(gd.grain_clipping) == {"day"}
+    assert gd.grain_clipping["day"]["trailing"]["by"] == ["feed_a", "feed_b"]
+    assert gd.grain_clipping["day"]["leading"]["by"] == ["feed_b"]
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    text = warnings[0].getMessage()
+    assert "by `feed_a`, `feed_b`" in text
+    assert "; and clipped to start at 2026-06-15" in text
+    assert "[2026-06-15, 2026-08-08]" in text
+
+
+def test_aligned_series_produce_no_clip_and_no_warning(caplog):
+    per = {m: _days(m, "2026-06-01", "2026-08-26") for m in ["orders", "sessions", "spend"]}
+
+    with caplog.at_level(logging.WARNING, logger="breakdown.grains"):
+        gd = build_grained(per, {m: "day" for m in per}, {m: "flow" for m in per})
+
+    assert gd.grain_clipping == {}
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+    # The back-compat shim has nothing to clip either.
+    assert ensure_grained(per["orders"]).grain_clipping == {}
 
 
 def test_series_resamples_up_by_kind():

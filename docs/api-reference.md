@@ -24,7 +24,7 @@ about the whole process rather than one tree.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), per-metric `grains`/`kinds`/`data_through`, fitted models, per-metric `earliest_available` history discovery (UI bootstrap) |
+| `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), per-metric `grains`/`kinds`/`data_through`, fitted models, per-metric `earliest_available` history discovery, and `grain_clipping` — which metric's short series bounded the shared window at its grain, if any (UI bootstrap) |
 | `GET` | `/dag` | Full metric DAG (nodes + edges), each node carrying its whole definition. `sql` and `bind` come back `null` to a caller that presents no token when one is configured. See [Authentication](deploying.md#authentication) |
 | `GET` | `/series` | Every metric's series at its native grain, `{name: {grain, dates, values}}`. One call hydrates the UI's node cards. Mixed-grain trees have no shared date axis, so dates are per metric |
 | `GET` | `/metrics/{name}` | Metric definition, time series, posterior summary and fit diagnostics — plus top-level `inference_method` and `fit_end` for the fit those describe (`null` when nothing is fitted), so a reader never infers the sampler from the presence of a k̂ (roadmap C35) |
@@ -48,6 +48,46 @@ about the whole process rather than one tree.
 | `GET` | `/progress/{run_id}` | Live stage of an in-flight RCA or simulation started with that `run_id` |
 | `GET` | `/ui` | Interactive DAG visualization |
 | — | `/mcp` | [MCP server](mcp.md) for AI assistants (streamable HTTP); `/mcp/` is the same endpoint, no redirect. Gated by `BREAKDOWN_API_TOKEN` whenever one is set; a refusal is `401` with `WWW-Authenticate: Bearer realm="breakdown"` |
+
+## `GET /meta`
+
+Bootstrap for the UI, and the one place the loaded window is described
+honestly. Most of it is flat maps (`grains`, `kinds`, `data_through`,
+`earliest_available`, keyed by metric); one field is nested.
+
+**`grain_clipping`** — metrics only ever join against series at their own
+grain, and that join is an *inner* one: a series shorter than its siblings at
+either end bounds the shared frame for every metric at the grain. A frozen ad
+feed that stopped a fortnight ago, an event table with one row, a channel
+switched on in March — each silently narrows every window the tree can
+analyze, and used to do so without a word (#112). Now the load log warns once
+per grain, and this field carries the same facts:
+
+```json
+{
+  "day": {
+    "trailing": {
+      "by": ["paid_spend"],
+      "clipped_to": "2026-08-08",
+      "others_reached": "2026-08-26",
+      "periods_dropped": 18
+    }
+  }
+}
+```
+
+Keyed by grain, then by edge (`trailing`, `leading`), each edge present only
+when it was clipped; `{}` when every series agreed on its range. `by` lists
+every metric whose series ends (or begins) exactly at the clipped edge — more
+than one when they tie, since there is no single culprit to pick.
+`clipped_to` is the shared frame's edge, `others_reached` the furthest edge
+any sibling had, both as period-start labels (a month grain reads
+`2026-08-01`, matching `date_start`/`date_end`), and `periods_dropped` counts
+the whole periods every metric at the grain lost. `data_through` is the
+complement: it still reports each metric's *own* edge, so the two together say
+"the tree can analyze through 08-08 and here is who is holding it there".
+Nothing is filled in — the remedy is to widen or repair the named source, or
+drop it from the tree.
 
 ## `GET /metrics/{name}/query`
 

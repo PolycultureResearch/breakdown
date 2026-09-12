@@ -1410,3 +1410,59 @@ def test_an_orphaned_engine_run_answers_409_not_a_second_sampler():
             "&analysis_start=2024-03-27&analysis_end=2024-04-09"
         )
         assert resp.status_code == 200
+
+
+# --- grain clipping on /meta (GitHub #112) ---
+
+
+def _truncate_mock(monkeypatch, metric: str, end: str):
+    """Make the mock provider return `metric` only through `end`, the way a
+    frozen feed or an event table with one row does — the shape that clipped
+    a whole day grain to one period in #112 without a word."""
+    from breakdown.data_fetch import MockDataFetcher
+
+    original = MockDataFetcher.fetch_metric
+
+    def short(self, metric_name, start_date, end_date, grain="day", kind="flow"):
+        df = original(self, metric_name, start_date, end_date, grain=grain, kind=kind)
+        if metric_name == metric:
+            df = df[df["date"] <= end].reset_index(drop=True)
+        return df
+
+    monkeypatch.setattr(MockDataFetcher, "fetch_metric", short)
+
+
+def test_meta_names_the_metric_that_clipped_a_grain(monkeypatch, caplog):
+    """One short-trailing series bounds the day-grain join for every metric;
+    `/meta` says which one and by how much, and the load log warned first."""
+    import logging
+
+    _truncate_mock(monkeypatch, "daily_sessions", "2024-03-20")
+
+    with caplog.at_level(logging.WARNING, logger="breakdown.grains"):
+        with TestClient(app) as client:
+            meta = client.get("/meta").json()
+
+    assert meta["date_end"] == "2024-03-20"
+    assert meta["grain_clipping"] == {
+        "day": {
+            "trailing": {
+                "by": ["daily_sessions"],
+                "clipped_to": "2024-03-20",
+                "others_reached": "2024-04-09",
+                "periods_dropped": 20,
+            }
+        }
+    }
+    # Per-metric freshness still tells the truth about the others.
+    assert meta["data_through"]["daily_sessions"] == "2024-03-20"
+    assert meta["data_through"]["revenue"] == "2024-04-09"
+    assert "day grain clipped to 2024-03-20 by `daily_sessions`" in caplog.text
+
+
+def test_meta_grain_clipping_is_empty_when_series_align():
+    """Present and `{}` on an aligned tree — a stable key for the UI, not an
+    absence that could mean either 'nothing clipped' or 'older server'."""
+    with TestClient(app) as client:
+        meta = client.get("/meta").json()
+    assert meta["grain_clipping"] == {}

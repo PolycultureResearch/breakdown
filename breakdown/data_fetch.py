@@ -239,6 +239,11 @@ def _align_to_spine(
     - **Trailing** gaps are trimmed, not filled: periods after the last row the
       source returned mean "not loaded yet" far more often than "genuinely
       zero", and filling them bakes a lying tail into every headline number.
+      The trim is per series; what it costs the *tree* is decided one step
+      later, where `build_grained` inner-joins the grain and the shortest
+      trim applies to every sibling. That step names the series responsible
+      (`_report_clipping`, GitHub #112) — this function cannot, since it sees
+      one metric at a time.
     - **Interior** gaps are filled by kind — flow → 0, stock → forward-fill
       (a leading gap is an error), rate → **left undefined**, because a rate
       cannot be invented. Filling one is a judgement call rather than a fact,

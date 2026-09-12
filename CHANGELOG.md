@@ -27,6 +27,23 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
   only when a token was actually presented, per RFC 6750) and a `detail` that
   distinguishes *no Authorization header reached the server* from *the token
   does not match*.
+- **A short series that clips a whole grain now says so at load, and names
+  itself.** Metrics join against their siblings at the same grain with an
+  *inner* join, so one series that ends early — a frozen ad-platform feed, an
+  event table with a single row — bounds the shared window for every metric at
+  that grain. In 0.2.0 this was silent: the tree loaded, `/health` was ok, and
+  every RCA over the missing periods failed later with "reference window …
+  not fully covered" while the metric responsible stayed anonymous (#112, first
+  suggestion). The load log now warns once per grain, at either edge — "day
+  grain clipped to 2026-08-08 by `paid_spend` (other series ran to
+  2026-08-26): 18 trailing day period(s) dropped …" — and the same facts travel
+  as `grain_clipping` on `GET /meta` (always present, `{}` when clean) and on
+  MCP `get_tree` (present only when it happened): per grain and edge, the
+  bounding metric(s), the clipped edge, the edge the others reached, and the
+  periods lost. The join is unchanged and nothing is filled; the anonymous
+  "inner join dropped N period(s)" line this replaces never said who. Per-metric
+  windows and a `sparse:` declaration, the issue's other two suggestions,
+  remain open.
 
 ### Changed
 
