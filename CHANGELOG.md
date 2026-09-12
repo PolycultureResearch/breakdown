@@ -13,6 +13,17 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **Fits on Python 3.14 no longer import `pymc` once per chain.** 3.14 made
+  `forkserver` the default start method on Linux, and PyMC samples each chain
+  in its own process, so every fit paid the inference-stack import four times
+  over: CI measured a 3.14 fit at 2-3x the 3.13 time on identical package
+  versions (#111). `pymc` is now preloaded into the forkserver before the first
+  fit, which brings it to ~1.45x. Both Dockerfiles run 3.14, so the demo and
+  every Docker deployment were paying this on every fit. No effect under `fork`
+  or `spawn`.
+
 ## [0.2.0] — 2026-08-31
 
 A third adversarial review of the whole repo

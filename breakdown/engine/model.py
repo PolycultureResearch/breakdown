@@ -269,6 +269,34 @@ def compute_shapley(
     return shapley
 
 
+def preload_forkserver_modules() -> None:
+    """Tell the forkserver to import `pymc` once, instead of once per chain.
+
+    Python 3.14 made `forkserver` the default start method on Linux. PyMC
+    samples each chain in its own process, so on 3.14 every `pm.sample` pays
+    for `import pymc` four times over — CI measured a 3.14 fit at 2-3x the 3.13
+    time on identical package versions (PR #111, 2026-09-02), and with this
+    preload at ~1.45x. Both Dockerfiles run 3.14, so without it the demo box
+    and every Docker user paid that on every fit.
+
+    `fork` would recover the rest, but Python moved away from it because fork
+    in a multi-threaded parent can deadlock, and the API fits under
+    `to_thread`. Preloading keeps forkserver and costs one call.
+
+    Process-wide, and only read when the forkserver first starts, so this is
+    called both from `warm_inference_imports` (the server's lifespan warm-up)
+    and immediately before sampling, whichever comes first. `__main__` is
+    CPython's own default preload and is kept. A no-op under `fork` (Linux
+    <= 3.13, macOS ARM) and `spawn` (Windows). Never raises.
+    """
+    import multiprocessing
+
+    try:
+        multiprocessing.set_forkserver_preload(["__main__", "pymc"])
+    except Exception:  # pragma: no cover - diagnostics only
+        logger.debug("forkserver preload could not be set", exc_info=True)
+
+
 def warm_inference_imports() -> None:
     """Import the inference stack now, so the first fit doesn't pay for it.
 
@@ -282,6 +310,7 @@ def warm_inference_imports() -> None:
     satisfied from `sys.modules`. Never raises — a failure here only means the
     first fit pays full price, and the fit itself will report the real error.
     """
+    preload_forkserver_modules()
     try:
         import arviz  # noqa: F401
         import pymc  # noqa: F401
@@ -2056,6 +2085,7 @@ def fit_metric(
                 approx, method=inference_method, target=target, random_seed=random_seed
             )
         else:
+            preload_forkserver_modules()
             trace = pm.sample(
                 draws=draws,
                 tune=tune,
