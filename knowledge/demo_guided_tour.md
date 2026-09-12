@@ -43,8 +43,8 @@ reason, and it is not a bug.
 
 `https://<demo-host>/ui`
 
-Say: *this picture is a YAML file* — **23 metrics** in **400 lines**, of which
-284 are actual configuration and the rest comments and blanks.
+Say: *this picture is a YAML file* — **23 metrics** in **426 lines**, of which
+303 are actual configuration and the rest comments and blanks.
 `net_new_mrr` at the top decomposes into new, expansion, contraction and churned
 MRR: an exact arithmetic identity, so attribution across it is exact Shapley
 rather than a regression. Solid edges are identities; dashed ones are learned,
