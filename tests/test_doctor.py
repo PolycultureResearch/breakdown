@@ -868,3 +868,95 @@ def test_doctor_reads_the_servers_window_from_the_environment(tmp_path, monkeypa
     by = by_name(results)
     assert by["fit readiness"].status == "pass"
     assert "2024-02-01" in by["snapshots"].detail
+
+
+# --- inference compiler (issue #115) -----------------------------------------
+
+
+def test_inference_compiler_probe_passes_on_this_machine(monkeypatch):
+    """The real probe: pytensor compiles and runs a gradient through its C
+    backend. Memoized per process, so reset it to make the test honest."""
+    import breakdown.doctor as doctor
+
+    monkeypatch.setattr(doctor, "_toolchain_memo", None)
+    result = doctor.check_inference_toolchain()
+    assert result.status == "pass", result
+    assert "compiled and ran a gradient" in result.detail
+    # Memoized: a second call is the same object, not a second compile.
+    assert doctor.check_inference_toolchain() is result
+
+
+def test_inference_compiler_failure_carries_the_macos_recipe(monkeypatch):
+    """#115's exact symptom: a broken Command Line Tools install fails inside
+    pytensor's compile while xcode-select insists the tools are present. The
+    remediation is the reinstall that fixed it, and the detail quotes the
+    compiler's own error line so it is searchable."""
+    import platform
+
+    import pytensor
+    from pytensor.link.c.exceptions import CompileError
+
+    import breakdown.doctor as doctor
+
+    def boom(*a, **k):
+        raise CompileError(
+            "Compilation failed (return status=1):\n"
+            "/Users/x/.pytensor/compiledir/mod.cpp:3:10: fatal error: 'vector' file not found\n"
+            "#include <vector>\n"
+            "Apply node that caused the error: Mul([2.], x)\n"
+            "Toposort index: 0"
+        )
+
+    monkeypatch.setattr(doctor, "_toolchain_memo", None)
+    monkeypatch.setattr(pytensor, "function", boom)
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    result = doctor.check_inference_toolchain()
+    assert result.status == "fail"
+    assert "every NUTS fit will fail" in result.detail
+    assert "'vector' file not found" in result.detail
+    assert "Toposort" not in result.detail
+    assert "sudo rm -rf /Library/Developer/CommandLineTools" in result.remediation
+    assert "xcode-select --install" in result.remediation
+
+
+def test_inference_compiler_failure_on_linux_says_install_a_compiler(monkeypatch):
+    import platform
+
+    import pytensor
+
+    import breakdown.doctor as doctor
+
+    monkeypatch.setattr(doctor, "_toolchain_memo", None)
+    monkeypatch.setattr(
+        pytensor, "function", lambda *a, **k: (_ for _ in ()).throw(OSError("g++: not found"))
+    )
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    result = doctor.check_inference_toolchain()
+    assert result.status == "fail"
+    assert "g++" in result.remediation
+    assert "CommandLineTools" not in result.remediation
+
+
+def test_inference_compiler_warns_when_no_cxx(monkeypatch):
+    """No compiler at all is not a failure — pytensor falls back to its Python
+    backend and fits are correct, just slow. Say so instead of passing green."""
+    import pytensor
+
+    import breakdown.doctor as doctor
+
+    monkeypatch.setattr(doctor, "_toolchain_memo", None)
+    monkeypatch.setattr(pytensor.config, "cxx", "")
+    result = doctor.check_inference_toolchain()
+    assert result.status == "warn"
+    assert "Python backend" in result.detail
+
+
+def test_doctor_runs_the_compiler_check_and_skips_it_for_cold_start(tmp_path):
+    tree = tmp_path / "tree.yml"
+    tree.write_text(MOCK_TREE)
+    results = by_name(run_doctor(str(tree)))
+    assert results["inference compiler"].status in ("pass", "warn")
+
+    tree.write_text(NONE_TREE)
+    results = by_name(run_doctor(str(tree)))
+    assert results["inference compiler"].status == "skip"

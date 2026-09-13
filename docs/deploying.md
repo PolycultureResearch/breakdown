@@ -233,6 +233,16 @@ It walks the provider's auth chain step by step (tree parses → env vars set �
 
 Two mode-specific checks ride along. A cold-start tree (`provider: none`) gets its declarations validated instead of a connection probe. And when you pass an explicit `--start-date`/`--end-date` window, the doctor adds two reports: fit readiness, each metric's whole-period count against the 10-period fit minimum, which is the graduation check for a tree [moving from cold start to fitted mode](yaml-reference.md#cold-start-mode-what-if-with-no-data); and history headroom, whether the provider has history before your `--start-date`. Breakdown trains on everything you load, so an earlier start date strengthens every fit (and the default RCA reference windows) at no cost beyond fetch time.
 
+A last check, `inference compiler`, is about the machine rather than the data: it compiles and runs a trivial gradient through pytensor's own C backend, the path every NUTS fit takes. It exists because of a macOS failure where a broken Command Line Tools install passes `xcode-select --install` ("already installed") and a plain `clang++` test compile, and then kills the first fit with `fatal error: 'vector' file not found`. Only pytensor's compile path reveals it, so that is what runs, about two seconds cold. On failure the remediation is the reinstall that fixes it:
+
+```
+[FAIL] inference compiler — pytensor could not compile and run a trivial gradient, so every NUTS fit will fail the same way: fatal error: 'vector' file not found
+       sudo rm -rf /Library/Developer/CommandLineTools
+       xcode-select --install
+```
+
+A machine with no C++ compiler at all gets a `[WARN]` instead: pytensor falls back to its Python backend, which is correct but many times slower.
+
 For the `dbt` provider, `doctor` walks manifest → profile → connection →
 bindings → dimensions → grain claims → filters, in the order a failure cascades.
 The last three are the ones that pay for themselves. A declared dimension that
