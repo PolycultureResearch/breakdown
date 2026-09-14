@@ -630,6 +630,59 @@ function componentRowsHtml(node, nCols, shareOf, ciCell) {
     .join("");
 }
 
+/* ---------- a parent the fit left out (issue #113) ----------
+   A parent whose series was constant over the fit window is dropped from the
+   node's regression: a constant column is not identified and carries no
+   information about the gap, so the other parents' numbers are exactly what
+   they would have been. The engine names it on the node as
+   `dropped_parents: [{parent, reason}]`. What the reader must not be left
+   with is a contributions table that is simply one row short — an absent row
+   reads as "this parent contributed nothing", which is a finding, when the
+   fact is "this parent was not fitted", which is the absence of one. So the
+   parent gets a row of its own, labelled, in the live table and the export,
+   and a chip in the header; and any movement it made between the windows is
+   in `unexplained`, which the wording says.
+
+   One vocabulary, used by every surface (metric tab, RCA table, export). */
+const DROPPED_PARENT_WHY =
+  "This parent held one value across the whole window the model was fitted on, " +
+  "so its coefficient is not identified — a constant column is a multiple of the " +
+  "intercept's — and it carries no information about how the metric moved. It was " +
+  "left out of the fit and the attribution excludes it. That does not change the " +
+  "other parents' contributions, which are the same numbers with or without it; " +
+  "but it is not a measured zero either. If this parent moved between the two " +
+  "windows, that movement is in the unexplained row.";
+
+/* The note for a node that dropped a parent, or null when nothing was dropped.
+   `names` and `reasons` are the engine's own words; `text` is the chip. */
+function droppedParentsNote(node) {
+  const dropped = node && node.dropped_parents;
+  if (!Array.isArray(dropped) || !dropped.length) return null;
+  const names = dropped.map((d) => d.parent);
+  return {
+    names,
+    text: `⚠ attribution excludes ${names.join(", ")} — did not vary over the fit window`,
+    cls: "sign-flag",
+    why: DROPPED_PARENT_WHY,
+    reasons: dropped.map((d) => `${d.parent}: ${d.reason}`).join("\n"),
+  };
+}
+
+/* One dim row per dropped parent, for the single-level contributions table
+   (`nCols` cells wide). Posterior nodes are the only ones that drop parents
+   and they are never two-level, so this is the only table shape it needs. */
+function droppedParentRowsHtml(node, nCols) {
+  const dropped = node && node.dropped_parents;
+  if (!Array.isArray(dropped) || !dropped.length) return "";
+  const dash = '<td class="num">—</td>';
+  return dropped
+    .map(
+      (d) =>
+        `<tr class="dim"><td title="${esc(`${d.reason}\n\n${DROPPED_PARENT_WHY}`)}"><code>${esc(d.parent)}</code> — not fitted: did not vary over the fit window</td>${dash.repeat(Math.max(nCols - 1, 0))}</tr>`,
+    )
+    .join("");
+}
+
 /* Always-on footer for the Root cause tab, the counterpart of the what-if
    tab's `res.caveats`. The exported report has carried a Methods footnote and
    the words "triage heuristic, not rigorous multi-hop attribution" since it

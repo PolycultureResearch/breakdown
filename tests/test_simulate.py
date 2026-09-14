@@ -60,9 +60,10 @@ def make_data(n: int = 60) -> pd.DataFrame:
     )
 
 
-def stub_fit(target: str, parents: list, beta_post) -> FitResult:
+def stub_fit(target: str, parents: list, beta_post, dropped_parents=None) -> FitResult:
     """FitResult whose beta_raw posterior is exactly `beta_post` (n_post,) or
-    (n_post, n_parents).
+    (n_post, n_parents). `parents` is the *fitted* axis; `dropped_parents`
+    the `{parent, reason}` records for any the fit left out (issue #113).
 
     `inference_method` is load-bearing rather than decorative: `run_scenario`
     defaults to NUTS and reuses a cached fit only when it is at least as good
@@ -85,6 +86,7 @@ def stub_fit(target: str, parents: list, beta_post) -> FitResult:
         inference_method="nuts",
         fit_end=None,
         diagnostics={"fit_quality": "good"},
+        dropped_parents=list(dropped_parents or []),
     )
 
 
@@ -122,6 +124,76 @@ def test_deterministic_chain_exact():
 
     assert result["nodes"]["daily_sessions"]["status"] == "baseline"
     assert result["nodes"]["average_order_value"]["status"] == "baseline"
+
+
+# ---------------------------------------------------------------------------
+# Issue #113: a fit that dropped a constant parent has a shorter beta axis
+# than the DAG's parent list, and the scenario must read it by name.
+
+DROPPED_PARENT_YAML = """
+metrics:
+  - name: flat
+    source: dbt.metric.flat
+  - name: x1
+    source: dbt.metric.x1
+  - name: y
+    source: dbt.metric.y
+    parents: [flat, x1]
+"""
+
+_DROPPED = [{"parent": "flat", "reason": "zero variance over fit window (held at 0)"}]
+
+
+def _dropped_parent_data(n: int = 60) -> pd.DataFrame:
+    dates = pd.date_range("2024-01-01", periods=n)
+    return pd.DataFrame(
+        {
+            "date": dates,
+            "flat": np.zeros(n),
+            "x1": np.full(n, 1000.0),
+            "y": np.full(n, 100.0),
+        }
+    )
+
+
+def test_a_scenario_reads_the_coefficient_of_a_fit_that_dropped_a_parent_by_name():
+    """`flat` is first in the DAG's parent list and absent from the fit's, so
+    indexing `beta_raw` by DAG position would put x1's slope on the wrong
+    edge (or off the end of a one-column array). A lever on x1 must land on
+    x1's coefficient, and a dropped parent the scenario never touches must
+    not block it."""
+    traces = {("y", None): stub_fit("y", ["x1"], np.full(50, 0.5), dropped_parents=_DROPPED)}
+    result = run_scenario(
+        Parser(DROPPED_PARENT_YAML).dag,
+        _dropped_parent_data(),
+        traces,
+        ScenarioRequest(
+            **BASELINE,
+            interventions=[Intervention(metric="x1", mode="delta", value=100.0)],
+        ),
+    )
+    y = result["nodes"]["y"]
+    assert y["status"] == "affected"
+    assert y["delta"]["estimate"] == pytest.approx(0.5 * 100.0)
+    assert result["nodes"]["flat"]["status"] == "baseline"
+
+
+def test_a_scenario_through_a_dropped_parent_refuses_by_name():
+    """The other half of the same policy: the edge from a dropped parent has
+    no coefficient, and propagating zero across it would be a confident wrong
+    number on every node downstream — the failure `run_scenario` already
+    refuses when a fit raises. Same refusal, same terms, naming the parent."""
+    traces = {("y", None): stub_fit("y", ["x1"], np.full(50, 0.5), dropped_parents=_DROPPED)}
+    with pytest.raises(ValueError, match=r"reaches 'y' through a parent .* 'flat' \(zero variance"):
+        run_scenario(
+            Parser(DROPPED_PARENT_YAML).dag,
+            _dropped_parent_data(),
+            traces,
+            ScenarioRequest(
+                **BASELINE,
+                interventions=[Intervention(metric="flat", mode="delta", value=1.0)],
+            ),
+        )
 
 
 def test_prob_edge_point_mass_beta():

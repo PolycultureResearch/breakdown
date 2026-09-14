@@ -19,12 +19,12 @@ from breakdown.data_fetch import SliceNotSupported
 from breakdown.engine.rca import run_rca as _engine_run_rca
 from breakdown.engine.simulate import Assumption, Intervention, ScenarioRequest, run_scenario
 from breakdown.mcp.shaping import (
-    RCA_HOW_TO_READ,
     SLICE_HOW_TO_READ,
     compact_rca,
     compact_scenario,
     compact_slice,
     metric_link,
+    rca_how_to_read,
     rca_link,
     round_floats,
     whatif_how_to_read,
@@ -349,6 +349,13 @@ async def explain_metric(name: str, tree: Optional[str] = None) -> Dict[str, Any
         fit_info["ppc_status"] = fit.diagnostics.get("ppc_status")
         fit_info["ppc"] = fit.diagnostics.get("ppc")
         fit_info["ppc_warnings"] = fit.diagnostics.get("ppc_warnings")
+        # Issue #113: which of the definition's parents the cached fit
+        # actually learned a coefficient for, and which it left out because
+        # they were constant over its window. An agent that reads
+        # `definition.parents` and assumes every one of them has a slope
+        # would narrate an edge the model never estimated.
+        fit_info["fitted_parents"] = list(fit.parents)
+        fit_info["dropped_parents"] = list(fit.dropped_parents)
 
     return round_floats(
         {
@@ -429,7 +436,7 @@ async def run_rca(
             reference_end=reference_end,
         )
     out = round_floats(compact_rca(result))
-    out["how_to_read"] = RCA_HOW_TO_READ
+    out["how_to_read"] = rca_how_to_read(result)
     # Deep link from the *resolved* windows, so a defaulted reference replays
     # identically even if the server later boots with a different data range.
     out["report_url"] = rca_link(

@@ -79,8 +79,12 @@ Consequences to keep in mind when reading results:
   further statuses say a node was *not analyzed*, and both carry a
   `status_reason` naming the cause. Read them as gaps in the analysis, never as
   "nothing happened here". `"fit_failed"` means the node's model could not be
-  fitted, in practice a series with no variance across the window: an
-  unlaunched feature, a stock held flat, a seasonal business's off-season.
+  fitted: the node's own series has no variance across the fit window, or
+  *every* one of its parents is constant there, or a period inside the window
+  is undefined. (A single constant parent — an unlaunched feature, a stock
+  held flat, a seasonal business's off-season — no longer fails the node; it
+  is [dropped from the fit](#a-parent-that-does-not-move) and named on the
+  node's `dropped_parents`.)
   `"attribution_failed"` means a formula node whose exact decomposition is not
   a finite number, in practice a zero denominator on some period in the window.
   An `attribution_failed` node still reports its own `baseline`, `actual` and
@@ -258,6 +262,46 @@ pair as one cause with one combined contribution, and do not rank its members
 against each other**, however different their `share_of_gap` look. The durable
 fix is in the tree rather than the fit — merge the two metrics, drop one, or
 redefine one so it is not a restatement of the other.
+
+## A parent that does not move
+
+A parent whose series holds one value across the whole fit window — an
+expected-share curve that is legitimately zero until the season starts, a
+feature that has not launched, a stock held flat — is **left out of the fit**
+rather than failing it. A constant column is a multiple of the intercept's,
+so its coefficient is not identified: the likelihood is flat along it, and the
+posterior would be the prior restated. And it carries no information about
+how the metric moved, because it did not move. Dropping it therefore cannot
+change the posterior on the parents that were fitted; the only thing lost is
+a claim the data could not have supported.
+
+The drop is never silent. The fit logs a warning naming the node, the parent
+and the window; the node carries `dropped_parents: [{parent, reason}]` on
+every surface — `GET /metrics/{name}` and `POST /analyze/{name}` (beside
+`fitted_parents`, the list the posterior summary's `beta_raw[i]` rows follow),
+every RCA node, `explain_metric` and `run_rca` over MCP — and the UI keeps a
+labelled row for it in the coefficient and contributions tables. Read the
+node's per-parent numbers as **the attribution excluding that parent**, not
+as a table in which the parent scored zero. If the parent moved between the
+reference and analysis windows (the season started inside the analysis
+window), that movement is real and no coefficient can carry it, so it lands
+in `unexplained` — which is the honest place for it.
+
+Two boundaries. A node whose parents are *all* constant is still
+`fit_failed`, with a reason that says so: a regression with no varying
+regressor has nothing to learn, and fitting it as a root would be a different
+model from the one the tree declares. And "constant" is judged on the column
+the model sees — lag-shifted, and cut at `fit_end` — so a parent that comes
+alive only inside the analysis window is constant for RCA's purposes even
+though the loaded series is not. What-if refuses a scenario that routes a
+change through a dropped parent's edge (there is no coefficient to carry it),
+and is unaffected by one the scenario never touches.
+
+This is a different thing from a parent that is constant *within a window*
+but varied over the fit, which is the bootstrap degeneracy under
+`ci_status: "degenerate_bootstrap_spread"` below: there the coefficient
+exists and the interval on its contribution is withheld; here there is no
+coefficient at all.
 
 ## Can the model generate its own data?
 
@@ -468,11 +512,13 @@ near-zero denominator, this time hit only by some resamples. Treat it the same w
 point estimate is exact, the interval around it is not something the engine is
 willing to claim.
 
-A **constant parent**, such as an unlaunched feature, a stock held flat, or a
-seasonal business's off-season, makes every replicate resample the same
-number, so the interval would come out exactly zero-width. That is not certainty, it is the
-absence of information, and it is withheld: `ci_95: null` and
-`prob_same_direction: null` with `ci_status: "degenerate_bootstrap_spread"`.
+A **parent constant within a window**, such as an unlaunched feature, a stock
+held flat, or a seasonal business's off-season, makes every replicate resample
+the same number, so the interval would come out exactly zero-width. That is not
+certainty, it is the absence of information, and it is withheld: `ci_95: null`
+and `prob_same_direction: null` with `ci_status: "degenerate_bootstrap_spread"`.
+(A parent constant over the whole *fit* window has no coefficient to begin
+with and is [dropped from the fit](#a-parent-that-does-not-move) instead.)
 The slice panel holds the same posture: a slice constant within each window
 collapses its excess replicates, so its `ci_95`, `prob_concentrated` and
 `noise_level` are withheld under the same `ci_status`, and the `localized`

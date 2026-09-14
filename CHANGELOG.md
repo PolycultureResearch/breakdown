@@ -44,6 +44,24 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
   "inner join dropped N period(s)" line this replaces never said who. Per-metric
   windows and a `sparse:` declaration, the issue's other two suggestions,
   remain open.
+- **A learned node with one constant parent fits on the others instead of
+  failing** (#113). A parent whose series held one value across the whole fit
+  window — an expected-share curve that is legitimately zero until the season
+  starts — used to raise `_normalize`'s "zero variance" and cost the node its
+  attribution, and every downstream question about it, until the parent
+  moved. A constant regressor is not identified and carries no information
+  about the gap, so it is now dropped from the design matrix with a WARNING
+  and the fit proceeds; the other parents' coefficients are exactly what they
+  would have been. The drop is recorded, never silent: `FitResult.parents` is
+  the fitted axis of `beta`/`beta_raw`, `dropped_parents: [{parent, reason}]`
+  rides on every RCA node, on `GET /metrics/{name}` and `POST /analyze/{name}`
+  (beside `fitted_parents`), on `explain_metric`, and MCP `run_rca`'s
+  `how_to_read` gains a line per such node; the UI keeps a labelled row for
+  the parent in the coefficient and contributions tables. RCA and what-if read
+  coefficients against the fitted axis rather than the DAG's parent list.
+  What-if refuses, by name, a scenario that routes through a dropped parent's
+  edge. A node whose parents are *all* constant is still `fit_failed`, with a
+  reason that says so.
 
 ### Changed
 
