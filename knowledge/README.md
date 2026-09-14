@@ -69,6 +69,13 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
   non-additive decomposition at entity grain; and the evaluations of Boring
   Semantic Layer (MIT, but zero dbt interop) and Sidemantic (technically
   strongest, AGPL-3.0 — incompatible with our Apache-2.0)
+- [`step_change_design.md`](step_change_design.md) — **designed, not built**
+  (roadmap S24): a declared step/pulse term for known, dated interventions
+  (price flips, on-sale days, campaigns). Separates a step in the fit history —
+  what the posterior predictive check flags and what the term fixes — from a
+  step in the analysis window, which RCA measures by construction; the
+  fit-window exception is an opt-in with its claim on the payload. Raised by
+  issue #114.
 - [`reference_window_design.md`](reference_window_design.md) — reference-window
   defaulting (the matched adjacent block) and provider history discovery
   (roadmap 1.10): why the reference is not the training window, and why "all
