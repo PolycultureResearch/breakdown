@@ -37,7 +37,8 @@ breakdown/
   mcp/
     server.py      # MCP server — 6 tools over the same engine/state (mounted at /mcp)
     shaping.py     # MCP response compaction, how_to_read caveats, UI deep links
-  cli.py           # Console entry point (`breakdown serve` / `breakdown doctor` / `--version`)
+  cli.py           # Console entry point (`breakdown serve` / `doctor` / `check` / `--version`)
+  check.py         # `breakdown check`: serve's pre-fetch refusals, offline (#117)
   doctor.py        # Provider connectivity checks — reuses the real fetchers
   snapshots.py     # Parquet read-through cache at the fetcher boundary (roadmap 2.4)
   static/          # UI files (inside the package so the wheel ships them)
@@ -800,7 +801,9 @@ Coefficients are read against **`beta_axis[node]`** — the fit's own `parents` 
 
 ## `cli.py` (+ `doctor.py`)
 
-`cli.py` is the console entry point (`[project.scripts] breakdown = "breakdown.cli:main"`; repo-root `main.py` is a shim to it). `serve` translates flags to the env vars below and calls `uvicorn.run` — host defaults to `127.0.0.1` and reload is **off** unless `--reload` (dev). It also exports `BREAKDOWN_PORT`/`BREAKDOWN_HOST` (MCP deep links + transport security). `doctor` runs `doctor.run_doctor(tree)` → `print_report` → exit code.
+`cli.py` is the console entry point (`[project.scripts] breakdown = "breakdown.cli:main"`; repo-root `main.py` is a shim to it). `serve` translates flags to the env vars below and calls `uvicorn.run` — host defaults to `127.0.0.1` and reload is **off** unless `--reload` (dev). It also exports `BREAKDOWN_PORT`/`BREAKDOWN_HOST` (MCP deep links + transport security). `doctor` runs `doctor.run_doctor(tree)` → `print_report` → exit code. `check` runs `check.run_check(path, default_tree)` → the same `print_report` → exit code.
+
+`check.py` (issue #117) answers *would `serve` accept this tree?* without serving: `discover_trees` → `parse_tree` (the failure-soft server parse, so the message is the server's) → `resolve_default` → `_pre_fetch_load_error`, which mirrors `load_tree` up to its first provider call (extra installed, warehouse `sql` present, `validate_cold_start`). A refusal added to `load_tree` before the fetch belongs there too. It is a separate command rather than `doctor --offline` because the two answer different questions with different exit contracts: `doctor` fails an unanswered rate denominator (trust gate), `serve` warns and starts, and `check` follows `serve` — it warns, and points at `doctor`. Nothing that needs data (window coverage, the per-grain join, identities, fit readiness) is in scope; the docstring says so.
 
 `doctor.py` walks the provider auth chain as `CheckResult`s (`pass`/`fail`/`skip` + copy-paste remediation): tree file → raw YAML → unset `${VAR}` scan (via `parser._ENV_REF`, before the full parse would abort on the first one) → `Parser` parse → per-provider chain (`warehouse`: auth mode / CLI / profile host / `_connect()` + `USE` / per-metric `fetch_metric` over a 7-day probe window; `cloud`: config fields, `client.metrics()` inside a session — one call that proves token + cell host + environment + SL credential mapping — then tree `source`s ⊆ SL metrics; `local`: `mf` on PATH, `dbt_project.yml`, `mf list metrics`; `none`: `validate_cold_start(dag)` — no connection to prove, readiness means every baseline/edge-prior belief is declared, same check the server runs at startup). A final **fit readiness** check (`check_fit_readiness`) runs when both dates are explicit (the default 7-day probe window would always fail it): per-metric whole-period counts over the window vs `model.MIN_FIT_PERIODS`, through the real fetcher path — the graduation report for a tree migrating from cold start to fitted. Skipped for `provider: none`, without an explicit window, or when provider checks failed. All checks run; failed prerequisites mark dependents `skip`. Connection logic is the real fetchers' — never a duplicate.
 
