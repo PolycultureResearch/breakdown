@@ -25,6 +25,25 @@ its notes never listed it at all.)
 
 ### Added
 
+- **`breakdown check` validates a tree without serving it** (#117, #125).
+  Runs every refusal `serve` makes before it contacts a provider — discovery,
+  parse (including the slice-weight grain rule 0.1.0 shipped and never
+  listed), `--default-tree`, and the pre-fetch load checks — through the same
+  functions, so a failure prints the sentence the server log would have
+  carried. One line per tree, non-zero exit if any would be refused, no
+  connection opened. A clean check means *parses and starts*, not *serves
+  every window*: coverage, the per-grain join and fit readiness need data,
+  and `doctor` remains the trust gate. A production tree found the grain rule
+  by restarting its server; this is the place to find it instead.
+- **`GET /health` reports the date the data runs through** (#117, #126).
+  `data_through` is the tree-wide as-of date — the *earliest* metric's last
+  covered date, because the per-grain join bounds every analysis by the
+  shortest series and a frozen feed is the case where the latest date would
+  keep looking fresh — with `state` (`loaded` / `loading` / `not_loaded`) and
+  the load-time `grain_clipping` record beside it, so a monitor can alert on
+  a serve that is up but whose data stopped advancing. `null` before a lazy
+  tree's first load and under `provider: none`; never a date taken from the
+  requested window, and nothing C43 keeps off this route.
 - **`breakdown doctor` proves the inference compiler works** (#115). A new
   last check compiles and runs a trivial gradient through pytensor's own C
   backend, the path every NUTS fit takes. On macOS a broken Command Line
@@ -35,6 +54,17 @@ its notes never listed it at all.)
   on pytensor's slow Python backend.
 ### Fixed
 
+- **The RCA card and the exported report put both windows in the headline**
+  (#114, #128). The dates were there since 0.1.0, as one clause of a muted
+  subtitle beside the provider and timestamp, and the export's `<title>`
+  named only the analysis window — a field user lost the reference window
+  of an analysis they later had to reproduce. *Analysis window* and
+  *Reference window* are now labelled lines under the gap on the live card
+  and under the title in the export, the reference marked as chosen by the
+  engine when it was, the whole periods actually compared shown when the
+  grain snapped the dates, and the export's title names both. The MCP
+  `how_to_read` guide tells a narrating agent to quote both windows beside
+  any figure.
 - **`POST /mcp` no longer redirects to `/mcp/`, and a 401 from the gate says
   what went wrong.** Starlette's mount matched only the trailing-slash form, so
   the bare URL — the one every quickstart shows — answered 307, and curl and
