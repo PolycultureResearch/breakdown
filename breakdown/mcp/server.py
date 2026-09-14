@@ -200,6 +200,12 @@ async def get_tree(tree: Optional[str] = None) -> Dict[str, Any]:
     exactly (Shapley); metrics with parents but no formula are learned
     probabilistic relationships (Bayesian time-series regression).
 
+    When present, `grain_clipping` says that one metric's short series cut
+    the shared data window for every metric at its grain (`by`, `clipped_to`,
+    `others_reached`, `periods_dropped`, per `trailing`/`leading` edge):
+    a window past that edge cannot be analyzed, and the metric named is the
+    source to widen or repair, not a finding about the business.
+
     `tree` names which metric tree to read when the server holds more than one
     (see list_trees); omit it for the default tree."""
     state = await _state(tree)
@@ -224,7 +230,7 @@ async def get_tree(tree: Optional[str] = None) -> Dict[str, Any]:
             if through is not None:
                 entry["data_through"] = str(through.date())
         metrics.append(entry)
-    return {
+    out: Dict[str, Any] = {
         "mode": "cold_start" if data is None else "fitted",
         "tree": state.id,
         "title": state.title,
@@ -234,6 +240,12 @@ async def get_tree(tree: Optional[str] = None) -> Dict[str, Any]:
         "metrics": metrics,
         "edges": [list(e) for e in parser.dag.edges()],
     }
+    # Only when it happened: the same shape `/meta` carries, omitted rather
+    # than `{}` on the compact surface so an assistant reading the tree never
+    # has to decide whether an empty disclosure is one (GitHub #112).
+    if data is not None and data.grain_clipping:
+        out["grain_clipping"] = dict(data.grain_clipping)
+    return out
 
 
 @mcp.tool()
