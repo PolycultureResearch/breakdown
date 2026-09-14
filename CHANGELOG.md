@@ -11,6 +11,16 @@ them land in a **minor** bump (`0.1 → 0.2`), with patch releases reserved for
 fixes. Callers who need stability should pin the minor series they tested
 against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
 
+**Breaking changes for tree authors** get their own list at the top of a
+release's notes: every rule that makes a tree which loaded on the previous
+release stop loading, in one place, whatever section explains the why. A
+change to the HTTP or MCP shape is called out where it lands; a change to
+what the YAML accepts is what a person restarting a production serve most
+needs to see first. (Convention added 2026-09-14 after a field report, #117,
+found the slice-weight grain rule under a heading that did not read as "your
+YAML may stop loading" — and, on checking, that the rule shipped in 0.1.0 and
+its notes never listed it at all.)
+
 ## [Unreleased]
 
 ### Added
@@ -92,6 +102,14 @@ this cycle's tip; every High and Medium finding was verified and fixed here
 (roadmap C29–C44), alongside the S2/S3/S4/S10/S22 statistical work below.
 This is a **minor** bump under the pre-1.0 contract: several HTTP surfaces
 changed shape or behavior, each called out in its section.
+
+### Breaking changes for tree authors
+
+None. No rule in this release refuses a tree that 0.1.1 loaded. A field
+report (#117) of a sliced rate refused on upgrade to 0.2.0 — its `weight` at
+a finer grain than the rate — was meeting a 0.1.0 rule that 0.1.0's notes
+omitted (listed there now); the tree had last loaded on a pre-release
+checkout from before it.
 
 ### Security
 
@@ -497,6 +515,30 @@ changed shape or behavior, each called out in its section.
 **Changed** and **Fixed** are relative to the `0.0.1` pre-release, which was
 tagged on GitHub (`c0.0.1`) but never published to an index — so for anyone
 installing from PyPI, all of this is new.
+
+### Breaking changes for tree authors
+
+Rules that refuse a tree at load rather than at analysis time. Each error
+names the metric and what would satisfy it. *(Section added 2026-09-14, #117;
+the slice-weight rule was not in these notes when 0.1.0 shipped.)*
+
+- **A rate's `dimensions[].weight` must share the rate's grain** (roadmap
+  C12). Slicing blends per-slice rates by the weight's value in each period,
+  so a day-grain `orders` cannot weight a week-grain `aov`. A finer
+  denominator is still fine for the *window aggregate*, which resamples; the
+  sliced blend does not. Provide the weight at the rate's grain, or drop the
+  dimension from that node.
+- **Duplicate metric names are refused** (roadmap C6), and with them duplicate
+  YAML mapping keys, a parent listed twice, and duplicate seasonality names.
+- **`seasonality.period` must be >= 3.**
+- **A formula node may have at most 10 parents**; group wider nodes under an
+  intermediate `formula` node.
+- **A derived node may not declare `bind`, `sql`, `dimensions` or `lags`.**
+- **`denominator_reason` is refused** beside a declared `denominator`, on a
+  non-rate, and when a `dimensions` block needs weights to blend.
+- **A hand-written `bind: {where: …}` is a parse error**; `where` is
+  import-only, and `bind.sql` already expresses any predicate an author could
+  write.
 
 ### Added
 
