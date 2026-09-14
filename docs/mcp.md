@@ -30,7 +30,11 @@ Analysis responses are compacted for token economy (rounded floats,
 decompositions dropped) and carry two extra fields. `how_to_read` holds the
 interpretation rules from [docs/model.md](model.md): what `unexplained` means,
 why `share_of_gap` can exceed 100%, ADVI vs NUTS. It exists so the narrating
-model states caveats instead of flattening them. `report_url` is a deep link
+model states caveats instead of flattening them. Its first rule after the
+causal-hypothesis one is to quote `reference_window` and `analysis_window`
+beside any figure, and to say when `reference_defaulted` is true — a result
+without both windows cannot be re-run, and the reference is the input the
+headline is most sensitive to. `report_url` is a deep link
 that replays the exact analysis in the UI; the engine is seeded, so the link
 reproduces the numbers.
 

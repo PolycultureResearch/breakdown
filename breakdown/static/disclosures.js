@@ -3,7 +3,8 @@
    Every table and helper that turns an engine verdict into words a reader
    sees: node/interval/fit statuses, the sampler axis, the k̂ / collinearity /
    PPC vocabularies, the unexplained-row and window-basis wording, the RCA
-   caveats, and the direction/goodness mapping (gapDir and friends). Split out
+   caveats, the windows headline, and the direction/goodness mapping (gapDir
+   and friends). Split out
    of app.js (roadmap grill 2026-08-29, "the single-file frontend question"):
    three render surfaces sat 2,300+ lines apart and no reviewer held all of
    them on screen, which is how `fit_quality` drifted into four wordings (C37)
@@ -681,6 +682,55 @@ function droppedParentRowsHtml(node, nCols) {
         `<tr class="dim"><td title="${esc(`${d.reason}\n\n${DROPPED_PARENT_WHY}`)}"><code>${esc(d.parent)}</code> — not fitted: did not vary over the fit window</td>${dash.repeat(Math.max(nCols - 1, 0))}</tr>`,
     )
     .join("");
+}
+
+/* ---------- the two windows every number is a contrast of ----------
+   Everything an RCA publishes — baseline, gap, every share, the ranking —
+   is the analysis window measured against the reference window, and the
+   reference is usually the engine's own choice (`reference_defaulted`). A
+   reader who loses the reference cannot reproduce the result: issue #114's
+   author matched a recorded actual against re-runs to recover theirs. Both
+   surfaces had carried the dates since 0.1.0, but as one clause of a muted
+   subtitle beside the provider and the timestamp, and the export's <title>
+   named only the analysis window. This is the headline form: the two
+   windows as labelled, first-class lines, with the engine's authorship of
+   the reference stated in words rather than a chip. The dates are the ones
+   the analysis was requested with; where the target's grain snapped them to
+   whole periods, `effective_windows` says what was actually compared, and
+   that goes beside them so a weekly report does not headline a Tuesday. */
+const REFERENCE_DEFAULTED_NOTE = "chosen by the engine, not by the person who ran this";
+
+function windowsHeadline(res) {
+  const target = (res.nodes || {})[res.target] || {};
+  const span = (w) => (w && w.start && w.end ? `${w.start} → ${w.end}` : "—");
+  const ew = target.effective_windows;
+  // Only when snapping changed something: a day-grain target's effective
+  // windows are the requested ones, and repeating them is noise.
+  const snapped = (w, e) =>
+    e && target.grain && target.grain !== "day" && (e.start !== w.start || e.end !== w.end)
+      ? ` (${e.n_periods} whole ${target.grain}${e.n_periods === 1 ? "" : "s"}: ${span(e)})`
+      : "";
+  return {
+    analysis: span(res.analysis_window) + snapped(res.analysis_window, ew && ew.analysis),
+    reference: span(res.reference_window) + snapped(res.reference_window, ew && ew.reference),
+    referenceNote: res.reference_defaulted ? REFERENCE_DEFAULTED_NOTE : "",
+  };
+}
+
+/* One line, for a <title> or a log: no markup, both windows, authorship. */
+function windowsHeadlineText(res) {
+  const w = windowsHeadline(res);
+  return `analysis ${w.analysis} vs reference ${w.reference}${w.referenceNote ? ` (${w.referenceNote})` : ""}`;
+}
+
+/* The labelled two-line form both renderers print. */
+function windowsHeadlineHtml(res) {
+  const w = windowsHeadline(res);
+  return (
+    `<div class="win-line"><span class="win-label">Analysis window</span> ${esc(w.analysis)}</div>` +
+    `<div class="win-line"><span class="win-label">Reference window</span> ${esc(w.reference)}` +
+    `${w.referenceNote ? ` <span class="win-note">— ${esc(w.referenceNote)}</span>` : ""}</div>`
+  );
 }
 
 /* Always-on footer for the Root cause tab, the counterpart of the what-if
