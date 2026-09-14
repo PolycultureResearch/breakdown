@@ -1071,6 +1071,101 @@ def check_fit_readiness(
     return [readiness, history]
 
 
+_toolchain_memo: Optional[CheckResult] = None
+
+_MACOS_TOOLCHAIN_FIX = (
+    "# xcode-select can insist the tools are installed while their C++ headers are\n"
+    "# missing (/Library/Developer/CommandLineTools/usr/include/c++/v1 absent).\n"
+    "# A plain clang++ test compile passes via the SDK path; pytensor's does not.\n"
+    "sudo rm -rf /Library/Developer/CommandLineTools\n"
+    "xcode-select --install"
+)
+
+
+def check_inference_toolchain() -> CheckResult:
+    """Compile and run a trivial gradient through pytensor's own C path.
+
+    Issue #115: on macOS a broken Command Line Tools install makes every NUTS
+    fit die inside pytensor's C compile with `fatal error: 'vector' file not
+    found`, while `xcode-select --install` insists the tools are present and a
+    plain `clang++` test compile succeeds through the SDK path. `doctor`
+    passed, `serve` started, and the failure surfaced on the first fit. Only
+    pytensor's own compile path reveals it, so that is what this runs:
+    `FAST_RUN` on a squared-sum gradient, the smallest graph that exercises
+    the C backend end to end. About two seconds cold, then cached by
+    pytensor's compiledir.
+
+    Memoized per process: the doctor runs once, and the test suite calls
+    `run_doctor` dozens of times.
+    """
+    global _toolchain_memo
+    if _toolchain_memo is None:
+        _toolchain_memo = _probe_inference_toolchain()
+    return _toolchain_memo
+
+
+def _probe_inference_toolchain() -> CheckResult:
+    import platform
+    import time
+
+    name = "inference compiler"
+    started = time.perf_counter()
+    try:
+        import numpy as np
+        import pytensor
+        import pytensor.tensor as pt
+    except Exception as e:  # the inference stack itself is broken
+        return CheckResult.fail(
+            name,
+            f"pytensor could not be imported, so no fit can run: {_first_lines(str(e))}",
+            "pip install --force-reinstall metric-breakdown",
+        )
+    cxx = pytensor.config.cxx
+    if not cxx:
+        # Nothing to compile through: pytensor already chose its Python
+        # backend. Correct, slow, and worth saying rather than passing green.
+        return CheckResult.warn(
+            name,
+            "no C++ compiler detected (pytensor `cxx` is empty); fits run on the "
+            "Python backend, which is correct but many times slower",
+            "# install g++ or clang++ so pytensor can compile its graphs\n"
+            "sudo apt-get install -y g++      # Debian/Ubuntu\n"
+            "xcode-select --install           # macOS",
+        )
+    try:
+        x = pt.dvector("x")
+        probe = pytensor.function([x], pytensor.grad((x**2).sum(), x), mode="FAST_RUN")
+        out = np.asarray(probe(np.array([1.0, 2.0])))
+        if not np.allclose(out, [2.0, 4.0]):
+            raise RuntimeError(f"probe returned {out.tolist()}, expected [2.0, 4.0]")
+    except Exception as e:  # pytensor raises CompileError, OSError, or its own wrappers
+        if platform.system() == "Darwin":
+            remedy = _MACOS_TOOLCHAIN_FIX
+        else:
+            remedy = (
+                "# install a C++ compiler pytensor can find, then re-run doctor\n"
+                "sudo apt-get install -y g++      # Debian/Ubuntu\n"
+                "conda install -c conda-forge gxx  # conda"
+            )
+        return CheckResult.fail(
+            name,
+            "pytensor could not compile and run a trivial gradient, so every NUTS fit "
+            f"will fail the same way: {_first_lines(str(e))}",
+            remedy,
+        )
+    elapsed = time.perf_counter() - started
+    return CheckResult.ok(name, f"pytensor compiled and ran a gradient via {cxx} in {elapsed:.1f}s")
+
+
+def _first_lines(text: str, limit: int = 3) -> str:
+    """The lines of a compiler error a reader can act on: the ones that say
+    `error`, else the first few. pytensor appends the whole Apply node dump."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    errors = [ln for ln in lines if "error" in ln.lower()]
+    picked = (errors or lines)[:limit]
+    return " | ".join(picked) if picked else "(no message)"
+
+
 # What each provider's own checks would have reported, had its SDK been there.
 # Listed so a missing extra reads as one fixable failure plus skips, instead of
 # a cascade of connectivity failures with misleading remediations.
@@ -1188,6 +1283,16 @@ def run_doctor(
         results.append(CheckResult.skip("fit readiness", "provider checks failed above"))
     else:
         results += check_fit_readiness(tree.parser, tree_path, start_date, end_date)
+
+    # The machine, not the data: can pytensor compile at all here? Last, and
+    # never downgraded by snapshot coverage — a snapshot-served deployment
+    # still has to fit. Issue #115 is a green doctor beside a dead sampler.
+    if provider == "none":
+        results.append(
+            CheckResult.skip("inference compiler", "cold-start tree — nothing is ever fitted")
+        )
+    else:
+        results.append(check_inference_toolchain())
     return results
 
 

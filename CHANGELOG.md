@@ -13,6 +13,16 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **`breakdown doctor` proves the inference compiler works** (#115). A new
+  last check compiles and runs a trivial gradient through pytensor's own C
+  backend, the path every NUTS fit takes. On macOS a broken Command Line
+  Tools install passes `xcode-select --install` and a plain `clang++` test
+  compile, then kills the first fit with `fatal error: 'vector' file not
+  found`; `doctor` was green beside a dead sampler. Failure now carries the
+  reinstall recipe; a machine with no C++ compiler warns that fits will run
+  on pytensor's slow Python backend.
 ### Fixed
 
 - **`POST /mcp` no longer redirects to `/mcp/`, and a 401 from the gate says
