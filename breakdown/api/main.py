@@ -481,6 +481,33 @@ class _McpMount:
 _mcp_mount = _McpMount()
 
 
+class _McpTrailingSlash:
+    """`POST /mcp` and `POST /mcp/` are the same endpoint, with no redirect
+    between them.
+
+    Starlette's `Mount("/mcp")` matches only `/mcp/...`, so a bare `/mcp` fell
+    through to the router's `redirect_slashes` fallback: a 307 to `/mcp/`.
+    Correct for a browser; a trap for an MCP client behind a bearer token,
+    because curl and several HTTP stacks drop `Authorization` on a redirect
+    by design, so the redirected request arrived with no token and the
+    handshake failed with a 401 that blamed the token rather than the URL
+    (#116). Rewriting the one exact path here, ahead of routing, reaches the
+    transport directly; `/mcphony` and `/mcp/anything` are left alone, and
+    the router's redirect stays on for every other route. Pure ASGI rather
+    than `@app.middleware("http")` so it costs a dict copy, not a
+    `BaseHTTPMiddleware` task."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["path"] == scope.get("root_path", "") + "/mcp":
+            scope = dict(scope, path=scope["path"] + "/")
+            if "raw_path" in scope:
+                scope["raw_path"] = scope["raw_path"] + b"/"
+        await self.app(scope, receive, send)
+
+
 def _window() -> Tuple[str, str]:
     """The loaded data window, validated. One `--start-date`/`--end-date` pair
     for the process, N trees over it."""
@@ -793,6 +820,33 @@ def _open_path(path: str) -> bool:
     return path in _OPEN_PATHS or any(_under(path, prefix) for prefix in _OPEN_PREFIXES)
 
 
+# The challenge every 401 from the gate carries (RFC 6750 §3). `error` is
+# added only when credentials were actually presented: the RFC reserves it
+# for that case, and the distinction is the diagnostic — a client whose
+# header was stripped in transit (a proxy, a redirect it followed) should be
+# told no token arrived, not sent off to rotate a token that was never seen.
+_WWW_AUTHENTICATE = 'Bearer realm="breakdown"'
+
+
+def _unauthorized(request: Request, path: str) -> JSONResponse:
+    presented = "authorization" in request.headers
+    challenge = _WWW_AUTHENTICATE + (', error="invalid_token"' if presented else "")
+    requires = (
+        "/mcp requires"
+        if _under(path, "/mcp")
+        else "This deployment sets BREAKDOWN_REQUIRE_AUTH, so every data route requires"
+    )
+    seen = (
+        "The bearer token presented does not match this deployment's BREAKDOWN_API_TOKEN."
+        if presented
+        else "No Authorization header reached the server."
+    )
+    detail = f"{seen} {requires} `Authorization: Bearer <BREAKDOWN_API_TOKEN>`."
+    return JSONResponse(
+        {"detail": detail}, status_code=401, headers={"WWW-Authenticate": challenge}
+    )
+
+
 def _require_auth() -> bool:
     """Whether BREAKDOWN_REQUIRE_AUTH asks for the whole API to be gated."""
     value = os.environ.get("BREAKDOWN_REQUIRE_AUTH")
@@ -842,18 +896,7 @@ async def bearer_token(request: Request, call_next):
     token = os.environ.get("BREAKDOWN_API_TOKEN")
     if token and (_require_auth() or _under(path, "/mcp")):
         if not _presents_token(request, token):
-            detail = (
-                "Missing or invalid bearer token for /mcp."
-                if _under(path, "/mcp")
-                else "Missing or invalid bearer token. This deployment sets "
-                "BREAKDOWN_REQUIRE_AUTH, so every data route needs "
-                "`Authorization: Bearer <BREAKDOWN_API_TOKEN>`."
-            )
-            return JSONResponse(
-                {"detail": detail},
-                status_code=401,
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            return _unauthorized(request, path)
     return await call_next(request)
 
 
@@ -876,8 +919,11 @@ app.mount("/ui", StaticFiles(directory=static_dir, html=True), name="ui")
 
 # MCP for AI assistants, at /mcp. The transport app is rebuilt by each
 # lifespan run (see _McpMount), so the mount is a shim that delegates to
-# the current one.
+# the current one. The slash rewrite is added last, so it is the outermost
+# middleware: `bearer_token` sees `/mcp/` either way, and `_under` gates
+# both spellings alike.
 app.mount("/mcp", _mcp_mount)
+app.add_middleware(_McpTrailingSlash)
 
 
 @app.get("/")

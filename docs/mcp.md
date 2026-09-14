@@ -261,6 +261,19 @@ this endpoint and nothing else, which is the case it was built for. See
 [Authentication](deploying.md#authentication) for gating the rest of the API
 too.
 
+**Connecting behind the token.** Register the server as `https://your-host/mcp`
+or `https://your-host/mcp/`; both reach the transport directly, with no
+redirect between them. (Through v0.2.0 the bare form answered `307` to `/mcp/`,
+and curl and several HTTP stacks drop `Authorization` on a redirect by design,
+so the handshake failed with a 401 that looked like a bad token — #116.) A
+request the gate refuses gets `401` with `WWW-Authenticate: Bearer
+realm="breakdown"` and a JSON `detail` that says which of two things happened:
+*no Authorization header reached the server* — the header was never sent, or
+something between the client and the server stripped it — or *the bearer token
+presented does not match*, in which case the challenge also carries
+`error="invalid_token"`. Claude Code renders any 401 on `/mcp` as "Needs
+authentication"; the body is where the distinction is.
+
 ## Notes
 
 The first `run_rca`/`run_whatif` on a tree fits models on demand with **NUTS**

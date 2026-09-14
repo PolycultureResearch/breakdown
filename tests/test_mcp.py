@@ -61,7 +61,7 @@ def test_mcp_requires_bearer_token_when_set(monkeypatch):
         for headers in ({}, {"Authorization": "Bearer wrong"}, {"Authorization": "s3cret"}):
             resp = client.post("/mcp/", json={}, headers={**HEADERS, **headers})
             assert resp.status_code == 401, headers
-            assert resp.headers["WWW-Authenticate"] == "Bearer"
+            assert resp.headers["WWW-Authenticate"].startswith('Bearer realm="breakdown"')
 
         # The right token gets through to the transport.
         resp = client.post(
@@ -71,6 +71,71 @@ def test_mcp_requires_bearer_token_when_set(monkeypatch):
         )
         assert resp.status_code == 200, resp.text
         assert resp.json()["result"]["tools"]
+
+
+INITIALIZE = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {"name": "test", "version": "0"},
+    },
+}
+
+
+@pytest.mark.parametrize("path", ["/mcp", "/mcp/"])
+@pytest.mark.parametrize("gated", [False, True])
+def test_mcp_handshake_reaches_the_transport_without_a_redirect(monkeypatch, path, gated):
+    """`POST /mcp` used to 307 to `/mcp/`, and curl and several HTTP stacks
+    drop `Authorization` on a redirect by design — so behind a token the
+    handshake failed with a 401 that blamed the token rather than the URL
+    (#116). Both spellings now reach the transport directly, gated or not."""
+    if gated:
+        monkeypatch.setenv("BREAKDOWN_API_TOKEN", "s3cret")
+        monkeypatch.setenv("BREAKDOWN_REQUIRE_AUTH", "1")
+        headers = {**HEADERS, "Authorization": "Bearer s3cret"}
+    else:
+        monkeypatch.delenv("BREAKDOWN_API_TOKEN", raising=False)
+        monkeypatch.delenv("BREAKDOWN_REQUIRE_AUTH", raising=False)
+        headers = HEADERS
+    with _client() as client:
+        resp = client.post(path, json=INITIALIZE, headers=headers, follow_redirects=False)
+        assert resp.status_code == 200, (resp.status_code, resp.text)
+        assert "location" not in resp.headers
+        result = resp.json()["result"]
+        assert result["serverInfo"]["name"]
+        assert result["protocolVersion"]
+
+        # The rewrite is for exactly `/mcp`: a sibling that merely shares the
+        # prefix, and a child the transport does not serve, are untouched.
+        assert client.post("/mcphony", json={}, headers=headers).status_code == 404
+        assert client.post("/mcp/x", json={}, headers=headers).status_code == 404
+
+
+def test_unauthenticated_mcp_is_401_with_a_bearer_challenge(monkeypatch):
+    """The 401 has to say which of two things went wrong. A stripped header
+    (a proxy, a redirect the client followed) and a wrong token are different
+    fixes, and RFC 6750 reserves `error` for the case where credentials were
+    actually presented."""
+    monkeypatch.setenv("BREAKDOWN_API_TOKEN", "s3cret")
+    with _client() as client:
+        for path in ("/mcp", "/mcp/"):
+            resp = client.post(path, json=INITIALIZE, headers=HEADERS, follow_redirects=False)
+            assert resp.status_code == 401, path
+            assert "location" not in resp.headers
+            assert resp.headers["WWW-Authenticate"] == 'Bearer realm="breakdown"'
+            detail = resp.json()["detail"]
+            assert "No Authorization header" in detail
+            assert "/mcp" in detail and "BREAKDOWN_API_TOKEN" in detail
+
+        resp = client.post(
+            "/mcp", json=INITIALIZE, headers={**HEADERS, "Authorization": "Bearer wrong"}
+        )
+        assert resp.status_code == 401
+        assert resp.headers["WWW-Authenticate"] == 'Bearer realm="breakdown", error="invalid_token"'
+        assert "does not match" in resp.json()["detail"]
 
 
 def test_token_gate_leaves_ui_and_health_open(monkeypatch):

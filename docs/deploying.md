@@ -98,6 +98,15 @@ breakdown serve --host 0.0.0.0
 curl -H "Authorization: Bearer $BREAKDOWN_API_TOKEN" http://your-host:9090/meta
 ```
 
+A request the gate refuses gets **401** with `WWW-Authenticate: Bearer
+realm="breakdown"` and a JSON `detail` naming which of two things went wrong:
+no `Authorization` header reached the server (never sent, or stripped by
+something in between), or a token was presented and does not match — in which
+case the challenge also carries `error="invalid_token"`. `/mcp` and `/mcp/` are
+one endpoint with no redirect between them, so an MCP client registered with
+either spelling keeps its header (see
+[Connecting behind the token](mcp.md#securing-it)).
+
 **`BREAKDOWN_REQUIRE_AUTH` is on unless it is explicitly off.** Anything other
 than `""`, `0`, `false`, `no` or `off` (case-insensitive, whitespace stripped)
 counts as on, so `BREAKDOWN_REQUIRE_AUTH=ture` closes the door rather than
@@ -110,6 +119,7 @@ With the flag on, these routes stay open, and nothing else:
 | `/health` | Liveness and readiness. `compose.yaml`'s healthcheck calls it with no credentials, and orchestrators can't present one. Gating it makes a correctly configured deployment look dead. |
 | `/ui` and everything under it | A JS bundle, not data. |
 | `/` | A one-line "the API is running" message that carries nothing. |
+| `/manifest` | Deployment identity (version, demo labels, snapshot freshness) — what a probe needs precisely when it cannot authenticate. |
 
 Everything else is gated, including `/openapi.json` and `/docs`. The
 allow-list is an allow-list precisely so a route added tomorrow is closed by
