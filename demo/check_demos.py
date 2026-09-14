@@ -52,10 +52,14 @@ def probe(demo: dict) -> tuple[bool, str]:
         return True, f"healthy (no /manifest yet: {e})"
     tree = manifest.get("default_tree") or {}
     demo_id = manifest.get("demo", {})
+    # `data_through` is the date the loaded data runs through (absent on a
+    # deploy older than the field); a demo that is up but whose data stopped
+    # advancing is the failure /health alone used to hide (GitHub #117).
+    through = health.get("data_through")
     return True, (
         f"healthy — breakdown {manifest.get('version')}, "
         f"tree '{tree.get('title')}' ({tree.get('metric_count')} metrics), "
-        f"demo={demo_id.get('slug', '?')}"
+        f"demo={demo_id.get('slug', '?')}" + (f", data through {through}" if through else "")
     )
 
 

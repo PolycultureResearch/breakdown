@@ -334,9 +334,32 @@ metrics:
 def test_health_ok():
     with TestClient(app) as client:
         body = client.get("/health").json()
+        meta = client.get("/meta").json()
         assert body["status"] == "ok"
         assert body["provider"] == "mock"
         assert body["metrics"] == len(app.state.parser.config.metrics)
+        # The data edge a monitor can alert on (GitHub #117): the tree-wide
+        # as-of date — the earliest metric's last covered date, the same
+        # anchor the node cards use — not the requested window's end.
+        assert body["state"] == "loaded"
+        assert body["data_through"] == min(
+            d for d in meta["data_through"].values() if d is not None
+        )
+        assert body["grain_clipping"] == {}
+
+
+def test_health_data_through_follows_the_shortest_series(monkeypatch):
+    """A frozen feed is what a stale serve looks like from outside, and the
+    inner join means nothing can be analyzed past it — so /health reports
+    the *min* edge, and names the metric that set it, rather than a max that
+    would still look fresh (the #112 shape, seen from a monitor)."""
+    _truncate_mock(monkeypatch, "daily_sessions", "2024-03-20")
+    with TestClient(app) as client:
+        body = client.get("/health").json()
+    assert body["status"] == "ok"
+    assert body["data_through"] == "2024-03-20"
+    assert body["grain_clipping"]["day"]["trailing"]["by"] == ["daily_sessions"]
+    assert body["grain_clipping"]["day"]["trailing"]["clipped_to"] == "2024-03-20"
 
 
 def test_manifest_reports_deployment_identity(monkeypatch):
@@ -439,10 +462,15 @@ def test_cold_start_boots_ok_not_degraded(cold_start_env):
     with TestClient(app) as client:
         assert app.state.startup_error is None
         assert app.state.data is None
+        # No data, so no data edge — `null`, not a date invented from the
+        # requested window (rule 1); `state` says why.
         assert client.get("/health").json() == {
             "status": "ok",
             "provider": "none",
             "metrics": 4,
+            "state": "loaded",
+            "data_through": None,
+            "grain_clipping": {},
         }
 
         meta = client.get("/meta").json()

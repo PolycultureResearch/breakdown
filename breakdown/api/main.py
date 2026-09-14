@@ -977,11 +977,30 @@ async def health(request: Request):
     # A parse failure sets `load_error`, which `startup_error` reads, so
     # reaching here means the default tree parsed — its provider and metric
     # count are known whether or not its data has been fetched yet.
-    parser = state.parser
+    tree = state.trees[state.default_tree]
+    parser = tree.parser
+    data = tree.data
+    # The data edge, so a monitor can see a stale serve (GitHub #117: a
+    # production serve was down five days with `/health` the only thing being
+    # polled, and it said ok). `data_through` is the tree-wide as-of date —
+    # the *earliest* of the metrics' last fully covered dates, the same anchor
+    # the node cards and the goal progress use — because the within-grain
+    # inner join means nothing can be analyzed past the shortest series, and
+    # a stale feed is exactly the case where the max would still look fresh.
+    # `null` when nothing has been fetched (a lazily loaded tree before its
+    # first request, or `provider: none`), never a date invented from the
+    # requested window (rule 1); `state` says which. `grain_clipping` is the
+    # load-time record of which metric bounded which grain (#112), verbatim
+    # from `/meta`: metric names, ISO dates and counts, none of which is the
+    # SQL, hostname or exception text this open route must not carry (C43).
+    through = _data_through(data) if data is not None else None
     return {
         "status": "ok",
         "provider": parser.config.provider.type,
         "metrics": len(parser.config.metrics),
+        "state": tree.state,
+        "data_through": str(through.date()) if through is not None else None,
+        "grain_clipping": dict(data.grain_clipping) if data is not None else {},
     }
 
 
@@ -1039,6 +1058,18 @@ def _snapshot_summary(directory: str) -> Optional[Dict[str, Any]]:
     return {"count": len(cards), "latest_fetched_at": fetched[-1] if fetched else None}
 
 
+def _data_through(data) -> Optional[pd.Timestamp]:
+    """The tree-wide as-of date: the earliest of the metrics' last fully
+    covered dates, or None when no metric's edge is known.
+
+    The *min*, not the max, because every analysis is bounded by the shortest
+    series at its grain — the anchor the node cards, the goal progress and
+    `/health` all share, so the three cannot drift apart.
+    """
+    edges = [e for e in (data.data_through(n) for n in data.grain_of) if e is not None]
+    return min(edges) if edges else None
+
+
 def _goal_progress(tree: TreeState) -> Optional[Dict[str, Any]]:
     """Current-vs-target for a loaded tree that declares a goal, else None.
 
@@ -1056,8 +1087,7 @@ def _goal_progress(tree: TreeState) -> Optional[Dict[str, Any]]:
     data = tree.data
     if goal is None or data is None or goal.metric not in data.grain_of:
         return None
-    edges = [e for e in (data.data_through(n) for n in data.grain_of) if e is not None]
-    anchor = min(edges) if edges else data.date_end
+    anchor = _data_through(data) or data.date_end
     grain = data.grain_of[goal.metric]
     series = data.series(goal.metric)
     day = pd.Timedelta(days=1)
