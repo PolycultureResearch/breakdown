@@ -204,6 +204,22 @@ resolved window and sets `reference_defaulted: true`. Override it when you
 have a deliberate baseline in mind, and if you pick a non-adjacent one on a
 growing metric, expect trend to absorb part of the gap.
 
+Whichever block is used, it is one choice among neighbours, and the credible
+intervals never see that choice: the bootstrap resamples periods *inside* the
+two windows, so `ci_95` is silent about what a different reference would have
+said. The response therefore carries `reference_sensitivity` (roadmap S23): the
+same attribution re-run, over the same fits, under a block one period earlier
+and one whole block earlier, with a verdict — `stable` when the top-ranked
+cause and the gap's direction survive both, `unstable` when either changes
+(the alternatives say which, and what it became), `unavailable` when no
+neighbouring block fits inside the loaded history. Read `unstable` as "the
+answer depends on which weeks you call normal", which is a property of the
+data around the incident, not a fault in the engine; read `unavailable` as
+unchecked, never as fine. The `gap_range` beside it is a sensitivity band
+across the blocks tried, not an interval — it is deliberately kept out of
+`ci_95`, because window choice is not sampling error and widening the interval
+would misstate both.
+
 ## Declared signs and scale confounding
 
 `expected_signs` on a probabilistic node declares the direction you believe an

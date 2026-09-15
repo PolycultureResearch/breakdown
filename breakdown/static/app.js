@@ -392,6 +392,7 @@ const PROGRESS_PHRASES = {
     "bridging window means",
     "bootstrapping the intervals",
     "walking the DAG",
+    "moving the reference window to see what survives",
   ],
   simulating: [
     "applying the do-operator",
@@ -1317,6 +1318,7 @@ function buildRcaReportHtml(res, treePng, stripPng) {
         .map(([n, node]) => `<code>${esc(n)}</code> (${esc(nodeStatus(node).short)})`)
         .join(", ")}. Each is detailed below.</p>`
     : ""}
+  ${referenceSensitivityHtml(res, { fmt, esc, warn: "warn", ok: "meta" })}
   <h3 style="margin-top:24px">Attribution detail</h3>
   ${blocks}
   <div class="footnote">
@@ -3944,6 +3946,7 @@ function renderRcaTab() {
     <section>
       <h3>Ranked causes <span class="section-note">triage order, not evidence</span></h3>
       ${causeRows || '<p class="placeholder">No upstream causes — target is a source metric.</p>'}
+      ${referenceSensitivityHtml(res, { fmt, esc, warn: "degraded-note", ok: "sens-note" })}
     </section>
 
     <section>

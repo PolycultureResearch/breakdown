@@ -681,6 +681,19 @@ details .data-table { margin-top: 8px; }
   cursor: help;
 }
 .degraded-why { color: var(--warn); }
+/* Roadmap S23's verdict under the ranked causes. A *stable* verdict shares
+   the ranking's muted register (it is information, not a caveat); the
+   unstable and unchecked ones use .degraded-note's amber channel. */
+.sens-note {
+  font-size: 12px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: 8px 0 0;
+  line-height: 1.45;
+}
+.sens-details { color: var(--faint, var(--muted)); }
 /* The engine's own sentence: it names the offending parent and the dates, so
    it is shown rather than hidden behind a tooltip. Its own line, because it is
    a machine-written sentence sitting inside human prose. */

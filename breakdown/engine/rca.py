@@ -69,7 +69,7 @@ the decomposition) or `"definitional"` (the node is **derived** — its series i
 the formula, so the zero means nothing was checked).
 """
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import networkx as nx
 import numpy as np
@@ -93,6 +93,7 @@ from breakdown.engine.stats import (
     block_bootstrap_indices,
     degenerate_means,
     direction_fields,
+    negligible_gap,
     node_scale,
     sample_summary,
     share_of_gap,
@@ -852,6 +853,228 @@ def shapley_attribution(
     return result
 
 
+# ---------- reference-window sensitivity (roadmap S23) ----------
+#
+# Every number `run_rca` publishes is a contrast of two window means, and the
+# block bootstrap quantifies sampling *inside* those windows only. The choice
+# of reference block is usually the engine's own (`default_reference_window`
+# applies four heuristics, none a property of the data), and nothing said what
+# that choice cost: whether "X is the top cause" survives moving the reference
+# by a week. So the attribution is re-run under a small, fixed set of
+# neighbouring reference blocks and the spread is published beside
+# `reference_defaulted` — a sensitivity band, deliberately *not* folded into
+# `ci_95`, because window choice is not sampling error and widening the
+# interval would misstate both.
+#
+# Two alternatives, and why these two: one period earlier keeps the block's
+# length and composition and asks whether a single week's drift changes the
+# answer; one whole block earlier is the same-length block that shares no
+# period with the published one — the coarsest neighbour that still means
+# "the regime before the departure". Both are re-attributions over cached
+# fits: no alternative ever fits a node (the fit window is all history before
+# `analysis_start`, independent of the reference), so the added cost is the
+# bootstrap and the Shapley games again, bounded by the count here — rule 4's
+# cap is on the games themselves, one level down.
+REFERENCE_SENSITIVITY_SHIFTS: Tuple[str, ...] = ("one_period_earlier", "one_block_earlier")
+
+# Every top-level status the field can carry, in one place for the renderers.
+REFERENCE_SENSITIVITY_STATUSES = ("stable", "unstable", "unavailable")
+
+
+def _reference_alternatives(
+    dag: nx.DiGraph,
+    data,
+    target: str,
+    reference_start: str,
+    reference_end: str,
+) -> List[Dict[str, Any]]:
+    """The neighbouring reference blocks S23 re-attributes under.
+
+    Each is shifted back from the published block, clamped to the earliest
+    date every node in scope can read (`_earliest_readable_reference`, the
+    same floor the default window respects), and dropped — with the reason —
+    when nothing readable is left. Per-node whole-period alignment is
+    `snap_window`'s job inside `run_rca`, exactly as for the published block.
+    """
+    ref_s = pd.Timestamp(reference_start).normalize()
+    ref_e = pd.Timestamp(reference_end).normalize()
+    length_days = (ref_e - ref_s).days + 1
+    floor = _earliest_readable_reference(dag, data, target)
+    _, coarsest_grain = _reference_alignment(dag, target)
+    if coarsest_grain == "month":
+        period = pd.DateOffset(months=1)
+        period_label = "one month earlier"
+    else:
+        period = pd.Timedelta(days=7)
+        period_label = "one week earlier"
+    candidates = [
+        ("one_period_earlier", period_label, ref_s - period, ref_e - period),
+        (
+            "one_block_earlier",
+            "one whole block earlier",
+            ref_s - pd.Timedelta(days=length_days),
+            ref_s - pd.Timedelta(days=1),
+        ),
+    ]
+    out: List[Dict[str, Any]] = []
+    seen = {(ref_s, ref_e)}
+    for shift, label, start, end in candidates:
+        alt: Dict[str, Any] = {"shift": shift, "label": label}
+        note = None
+        if start < floor:
+            if end < floor:
+                alt.update(
+                    reference_window=None,
+                    status="unavailable",
+                    reason=(
+                        f"no loaded history before {floor.date()} for a block "
+                        f"{label}; the published reference already starts at "
+                        f"the earliest date every node in scope can read"
+                    ),
+                    gap=None,
+                    top_cause=None,
+                    note=None,
+                )
+                out.append(alt)
+                continue
+            start = floor
+            note = (
+                f"shortened to the loaded history: {(end - start).days + 1} of {length_days} days"
+            )
+        if (start, end) in seen:
+            continue
+        seen.add((start, end))
+        alt.update(
+            reference_window={"start": str(start.date()), "end": str(end.date())},
+            status="ok",
+            reason=None,
+            gap=None,
+            top_cause=None,
+            note=note,
+        )
+        out.append(alt)
+    return out
+
+
+def _gap_sign(gap: Optional[float], baseline: Optional[float], actual: Optional[float]) -> int:
+    """-1 / 0 / +1, with "zero" judged at the node's own level (C5's epsilon),
+    so a float residue on a large node does not count as a direction."""
+    if gap is None or not np.isfinite(gap):
+        return 0
+    if negligible_gap(gap, node_scale(baseline, actual)):
+        return 0
+    return 1 if gap > 0 else -1
+
+
+def _reference_sensitivity(
+    dag: nx.DiGraph,
+    data,
+    traces: Dict[Tuple[str, Optional[str]], Any],
+    target: str,
+    result: Dict[str, Any],
+    *,
+    analysis_start: str,
+    analysis_end: str,
+    inference_method: str,
+    draws: int,
+) -> Dict[str, Any]:
+    """Re-attribute under each alternative block and say what moved.
+
+    `status` is `stable` when every alternative that could answer names the
+    same top cause and the same gap direction as the published windows,
+    `unstable` when any differs, `unavailable` when none could answer (with
+    the reasons). `gap_range` spans the published gap and every answered
+    alternative's. Rule 3: an alternative whose gap is not finite answers
+    nothing — its `gap` is null and its status names why — and the published
+    windows' own gap being undefined makes the whole field `unavailable`
+    rather than a comparison against nothing.
+    """
+    target_node = result["nodes"].get(target) or {}
+    pub_gap = target_node.get("gap")
+    pub_sign = _gap_sign(pub_gap, target_node.get("baseline"), target_node.get("actual"))
+    ranked = result.get("ranked_causes") or []
+    pub_top = ranked[0]["metric"] if ranked else None
+    base: Dict[str, Any] = {
+        "top_cause": pub_top,
+        "top_cause_stable": None,
+        "gap_sign_stable": None,
+        "gap_range": None,
+        "alternatives": [],
+        "reason": None,
+    }
+    if pub_gap is None or not np.isfinite(pub_gap):
+        return {
+            **base,
+            "status": "unavailable",
+            "reason": (
+                "the target has no gap under the published windows, so there is "
+                "nothing to compare an alternative against"
+            ),
+        }
+
+    ref = result["reference_window"]
+    alternatives = _reference_alternatives(dag, data, target, ref["start"], ref["end"])
+    gaps = [float(pub_gap)]
+    for alt in alternatives:
+        if alt["status"] != "ok":
+            continue
+        try:
+            alt_result = run_rca(
+                dag,
+                data,
+                traces,
+                target,
+                analysis_start=analysis_start,
+                analysis_end=analysis_end,
+                reference_start=alt["reference_window"]["start"],
+                reference_end=alt["reference_window"]["end"],
+                inference_method=inference_method,
+                draws=draws,
+                reference_sensitivity=False,
+            )
+        except ValueError as e:
+            # The engine's own refusal of that block (coverage, an undefined
+            # target, a window with no whole period) is the answer, verbatim.
+            alt.update(status="unavailable", reason=str(e))
+            continue
+        alt_target = alt_result["nodes"].get(target) or {}
+        alt_gap = alt_target.get("gap")
+        if alt_gap is None or not np.isfinite(alt_gap):
+            alt.update(
+                status="gap_unavailable",
+                reason=f"the target has no gap under the block {alt['label']}",
+            )
+            continue
+        alt_ranked = alt_result.get("ranked_causes") or []
+        alt.update(
+            gap=float(alt_gap),
+            gap_sign=_gap_sign(alt_gap, alt_target.get("baseline"), alt_target.get("actual")),
+            top_cause=alt_ranked[0]["metric"] if alt_ranked else None,
+        )
+        gaps.append(float(alt_gap))
+
+    answered = [a for a in alternatives if a["status"] == "ok"]
+    # `gap_sign` is working state for the verdict, not a published field.
+    signs = [a.pop("gap_sign") for a in answered]
+    base["alternatives"] = alternatives
+    if not answered:
+        reasons = "; ".join(a["reason"] for a in alternatives if a.get("reason"))
+        return {
+            **base,
+            "status": "unavailable",
+            "reason": reasons or "no alternative reference block fits inside the loaded history",
+        }
+    top_stable = None if pub_top is None else all(a["top_cause"] == pub_top for a in answered)
+    sign_stable = all(sign == pub_sign for sign in signs)
+    return {
+        **base,
+        "status": "stable" if (top_stable is not False and sign_stable) else "unstable",
+        "top_cause_stable": top_stable,
+        "gap_sign_stable": sign_stable,
+        "gap_range": [min(gaps), max(gaps)],
+    }
+
+
 def run_rca(
     dag: nx.DiGraph,
     data: pd.DataFrame,
@@ -865,6 +1088,7 @@ def run_rca(
     inference_method: str = "nuts",
     draws: int = NUTS_DRAWS,
     progress: Optional[ProgressFn] = None,
+    reference_sensitivity: bool = True,
 ) -> Dict[str, Any]:
     """Attribute `target`'s window-over-window change to its ancestors.
 
@@ -895,6 +1119,14 @@ def run_rca(
     the comparison baseline — the fit window is all loaded history before
     `analysis_start` either way. The response echoes the resolved windows and
     `reference_defaulted`.
+
+    `reference_sensitivity` (roadmap S23) re-attributes the same analysis
+    window under `REFERENCE_SENSITIVITY_SHIFTS` neighbouring reference blocks
+    — over the cached fits, never fitting — and publishes whether the top
+    cause and the gap's direction survive the move, as `reference_sensitivity`.
+    It runs whether the reference was defaulted or chosen: a chosen block is
+    no less one choice among neighbours, and the reader's question is the
+    same. The alternatives themselves run with it off.
     """
     if target not in dag:
         raise ValueError(f"Metric '{target}' not found in the metric tree.")
@@ -1722,7 +1954,7 @@ def run_rca(
             **rate_fields,
         )
 
-    return {
+    result = {
         "target": target,
         "reference_window": {"start": reference_start, "end": reference_end},
         "analysis_window": {"start": analysis_start, "end": analysis_end},
@@ -1730,6 +1962,21 @@ def run_rca(
         "nodes": nodes_out,
         "ranked_causes": _rank_causes(dag, target, nodes_in_scope, nodes_out),
     }
+    if reference_sensitivity:
+        # No new progress stage: the alternatives are the attribution again
+        # under other windows, so `attributing` stays literally true of them.
+        result["reference_sensitivity"] = _reference_sensitivity(
+            dag,
+            data,
+            traces,
+            target,
+            result,
+            analysis_start=analysis_start,
+            analysis_end=analysis_end,
+            inference_method=inference_method,
+            draws=draws,
+        )
+    return result
 
 
 def _hop_weights(contributions) -> Dict[str, float]:

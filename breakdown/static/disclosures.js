@@ -795,3 +795,92 @@ function gapLineParts(name, gap) {
   const d = gapDir(gap);
   return { cls: d ? goodDir(name, d) : "", sign: d === "up" ? "+" : "" };
 }
+
+/* ---------- reference-window sensitivity (roadmap S23) ----------
+   Every RCA number is a contrast of two window means, and the bootstrap only
+   resamples periods *inside* those windows. The engine re-runs the attribution
+   under neighbouring reference blocks (over the same fits) and publishes
+   whether the top cause and the gap's direction survived the move. One wording
+   here for the live card and the export; `RCA_HOW_TO_READ` carries the same
+   rule for an agent. `gap_range` is a sensitivity band, never an interval —
+   no surface may render it as one or add it to a `ci_95`. */
+const REFERENCE_SENSITIVITY_NOTE = {
+  stable: {
+    label: "Survives a moved reference window",
+    explains:
+      "The top cause and the gap's direction are the same under each neighbouring reference block the engine tried.",
+  },
+  unstable: {
+    label: "Depends on the reference window",
+    explains:
+      "Moving the reference block changes the answer — read the published ranking as one reading among several, not the finding.",
+  },
+  unavailable: {
+    label: "Reference sensitivity not checked",
+    explains:
+      "No neighbouring reference block could be attributed, so nothing here says whether the answer survives a moved reference.",
+  },
+};
+
+function fmtWindowRange(w) {
+  return w ? `${w.start} → ${w.end}` : "—";
+}
+
+/* One line per alternative block: where it was, and what it said. A block
+   that could not answer says so with the engine's reason — "not checked" is
+   never allowed to read as "checked and fine". */
+function referenceSensitivityDetails(rs, fmtNum) {
+  return (rs.alternatives || []).map((a) => {
+    const where = `${a.label}${a.reference_window ? ` (${fmtWindowRange(a.reference_window)})` : ""}`;
+    if (a.status !== "ok") return `${where}: not checked — ${a.reason || "no answer"}`;
+    const parts = [];
+    if (rs.top_cause != null) {
+      parts.push(
+        a.top_cause === rs.top_cause
+          ? `top cause still ${a.top_cause}`
+          : `top cause becomes ${a.top_cause == null ? "none" : a.top_cause}`,
+      );
+    }
+    parts.push(`gap ${fmtNum(a.gap)}`);
+    if (a.note) parts.push(a.note);
+    return `${where}: ${parts.join(", ")}`;
+  });
+}
+
+/* The reader-facing reading of `reference_sensitivity`, or null when the
+   payload has none (an older engine). `summary` names what changed on an
+   unstable verdict rather than only that something did. */
+function referenceSensitivityNote(res, fmtNum) {
+  const rs = res && res.reference_sensitivity;
+  if (!rs) return null;
+  const entry = REFERENCE_SENSITIVITY_NOTE[rs.status] || REFERENCE_SENSITIVITY_NOTE.unavailable;
+  let summary = entry.explains;
+  if (rs.status === "unstable") {
+    const what = [];
+    if (rs.top_cause_stable === false) what.push("the top cause changes");
+    if (rs.gap_sign_stable === false) what.push("the gap changes direction");
+    summary = `Moving the reference block: ${what.join(" and ") || "the answer changes"} — read the published ranking as one reading among several, not the finding.`;
+  } else if (rs.status === "unavailable" && rs.reason) {
+    summary = `${entry.explains} ${rs.reason}.`;
+  }
+  const range = rs.gap_range
+    ? `Gap across the blocks tried: ${fmtNum(rs.gap_range[0])} to ${fmtNum(rs.gap_range[1])} — a sensitivity band, not an interval.`
+    : "";
+  return { status: rs.status, label: entry.label, summary, range, details: referenceSensitivityDetails(rs, fmtNum) };
+}
+
+/* The block for the live Root cause tab and the export. `cls.warn` is the
+   caveat channel of the surface (amber), `cls.ok` its muted one: a stable
+   verdict is information, not a warning, and must not shout. The details
+   always print — a reader of a circulated report has nothing to hover. */
+function referenceSensitivityHtml(res, cls) {
+  const n = referenceSensitivityNote(res, cls.fmt);
+  if (!n) return "";
+  const esc = cls.esc;
+  const klass = n.status === "stable" ? cls.ok : cls.warn;
+  const mark = n.status === "stable" ? "✓" : n.status === "unstable" ? "⚠" : "◌";
+  const details = n.details.length
+    ? `<br><span class="sens-details">${n.details.map((d) => esc(d)).join("<br>")}</span>`
+    : "";
+  return `<p class="${klass} sens-${esc(n.status)}">${mark} <strong>${esc(n.label)}.</strong> ${esc(n.summary)}${n.range ? ` ${esc(n.range)}` : ""}${details}</p>`;
+}

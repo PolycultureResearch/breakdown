@@ -60,7 +60,12 @@ three fields on the fit it reports. A node fitted with the opt-in
 approximation arrives with its PSIS k̂ *and* k̂'s own Monte-Carlo standard
 error (`khat_se`), plus `khat_borderline` where the two together cannot say
 which band the fit is in — a compaction that dropped the error would leave an
-agent narrating an estimate as a fact.
+agent narrating an estimate as a fact. And every `run_rca` result carries
+`reference_sensitivity` (roadmap S23) — whether the top cause and the gap's
+direction survive moving the reference window to a neighbouring block — with
+its `alternatives` intact, because a verdict of `unstable` without the block
+that changed the answer leaves the agent nothing to say about *what* changed;
+`how_to_read` adds that `gap_range` is a sensitivity band, never an interval.
 
 `get_tree` carries `grain_clipping` when, and only when, one metric's short
 series bounded the shared data window for every metric at its grain
