@@ -398,10 +398,13 @@ def test_how_to_read_guides():
         #
         # Raised to 5800 for the windows rule (issue #114) — the one instruction
         # that decides whether anything the agent narrates can be re-run — and
-        # to 6000 for `reference_sensitivity` (roadmap S23): without it an
-        # agent reads `unstable` as a fault and `gap_range` as an interval,
-        # the second being the misreading the field exists to prevent.
-        assert 400 < len(guide) < 6000
+        # to 6500 once the C32 `rollup` clause and the S23
+        # `reference_sensitivity` entry landed the same day (6,225 together):
+        # without the S23 entry an agent reads `unstable` as a fault and
+        # `gap_range` as an interval, the second being the misreading the
+        # field exists to prevent. Each clause was checked against the others
+        # for overlap before the ceiling moved.
+        assert 400 < len(guide) < 6500
     assert "unexplained" in RCA_HOW_TO_READ
     # Issue #114: both windows travel in the payload, and the guide has to say
     # they are what every figure is a contrast of — and to quote them.
