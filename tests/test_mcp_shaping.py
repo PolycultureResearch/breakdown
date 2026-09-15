@@ -364,8 +364,19 @@ def test_how_to_read_guides():
         # reason — and an agent holding the bare bit would recommend the first,
         # confidently, forever. The entry also has to say what its absence
         # means, for the reason `khat_status` does.
-        assert 400 < len(guide) < 5400
+        #
+        # Raised to 5800 for the windows rule (issue #114) — not a new field,
+        # but the one instruction that decides whether anything the agent
+        # narrates can be re-run: a field report lost the reference window of
+        # an analysis it later had to reproduce, and recovered it by matching
+        # a recorded actual against re-runs. The payload has always carried
+        # both windows; the guide never said to quote them.
+        assert 400 < len(guide) < 5800
     assert "unexplained" in RCA_HOW_TO_READ
+    # Issue #114: both windows travel in the payload, and the guide has to say
+    # they are what every figure is a contrast of — and to quote them.
+    assert "`reference_window`" in RCA_HOW_TO_READ and "`analysis_window`" in RCA_HOW_TO_READ
+    assert "`reference_defaulted`" in RCA_HOW_TO_READ
     assert "window_aggregate" in RCA_HOW_TO_READ
     assert "collinearity_status" in RCA_HOW_TO_READ
     assert "ppc_status" in RCA_HOW_TO_READ and "ppc_status" in WHATIF_HOW_TO_READ

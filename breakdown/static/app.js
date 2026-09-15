@@ -1276,11 +1276,15 @@ function buildRcaReportHtml(res, treePng, stripPng) {
 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
-<title>RCA — ${esc(res.target)} · ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}</title>
+<title>RCA — ${esc(res.target)} · ${esc(windowsHeadlineText(res))}</title>
 <style>
   body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; color: ${COL.text}; max-width: 960px; margin: 32px auto; padding: 0 20px; line-height: 1.45; }
   h1 { font-size: 22px; margin-bottom: 2px; } h3 { font-size: 15px; margin: 22px 0 4px; } h4 { font-size: 12.5px; margin: 12px 0 4px; color: ${COL.text2}; text-transform: uppercase; letter-spacing: 0.4px; }
   .meta { color: ${COL.muted}; font-size: 12.5px; font-weight: 400; }
+  .windows { margin: 6px 0 4px; font-size: 14.5px; font-variant-numeric: tabular-nums; }
+  .win-line { margin: 1px 0; }
+  .win-label { display: inline-block; min-width: 9.5em; color: ${COL.text2}; font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+  .win-note { color: ${COL.muted}; font-size: 12.5px; }
   .gap { font-size: 26px; font-weight: 700; margin: 6px 0 14px; }
   .gap.up { color: ${COL.up}; } .gap.down { color: ${COL.down}; }
   table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin: 4px 0 10px; }
@@ -1295,7 +1299,8 @@ function buildRcaReportHtml(res, treePng, stripPng) {
   @media print { body { margin: 8px auto; } section { break-inside: avoid; } }
 </style></head><body>
   <h1>Root cause analysis — <code>${esc(res.target)}</code></h1>
-  <p class="meta">reference ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)}${res.reference_defaulted ? " (chosen by the engine, not by the person who ran this)" : ""} vs analysis ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}${dataThrough ? ` · data through ${esc(dataThrough)}` : ""}${state.meta ? ` · provider: ${esc(state.meta.provider)}` : ""} · generated ${now.toISOString().slice(0, 16).replace("T", " ")} UTC</p>
+  <div class="windows">${windowsHeadlineHtml(res)}</div>
+  <p class="meta">${dataThrough ? `data through ${esc(dataThrough)} · ` : ""}${state.meta ? `provider: ${esc(state.meta.provider)} · ` : ""}generated ${now.toISOString().slice(0, 16).replace("T", " ")} UTC</p>
   ${(state.winAdvisories || []).length
     ? `<p class="warn">⚠ About these windows: ${esc(state.winAdvisories.join(" · "))}</p>`
     : ""}
@@ -3927,8 +3932,9 @@ function renderRcaTab() {
 
   $("rca-results").innerHTML = `
     <div class="rca-card">
-      <div class="sub">${esc(res.target)} · ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)}${res.reference_defaulted ? " (auto)" : ""} vs ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}</div>
+      <div class="sub">${esc(res.target)}</div>
       <div class="gap-line ${targetGap.cls}">${targetGap.sign}${fmt(target.gap)} <span style="font-size:14px">(${signedPct(target.relative_change)})</span></div>
+      <div class="windows">${windowsHeadlineHtml(res)}</div>
       <div id="rca-strip"></div>
       <div class="sub">${fmt(target.baseline)} → ${fmt(target.actual)} (${windowBasisHtml(target)})</div>
       ${windowNote}
