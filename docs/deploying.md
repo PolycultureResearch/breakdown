@@ -217,6 +217,7 @@ Three things differ from a laptop run:
 
 - **Credentials must be headless.** The Databricks CLI OAuth `profile:` flow opens a browser, which a container can't. Use `token: ${DATABRICKS_TOKEN}` in the tree's provider block instead (see [`provider`](yaml-reference.md#provider) for `${VAR}` interpolation). If you must reuse a profile, mount both `~/.databrickscfg` and `~/.databricks/token-cache.json` read-only into the container.
 - **Startup failures degrade, not crash.** If the provider is unreachable (bad token, warehouse down), the server still starts: `GET /health` returns `{"status": "degraded", "error": …}`, data endpoints return 503, and the UI shows the error with a pointer to `breakdown doctor`. Fix the config and restart. There is no crash-loop to debug through.
+- **A healthy serve can still be stale.** `GET /health` also carries `data_through`, the date the loaded data runs through (the earliest metric's last covered date, so a frozen feed shows). A serve that has been up for a week on data that ends a week ago answers `ok` — point your monitor at `data_through` as well as `status` if that matters to you.
 - **The port is published, so the API is exposed.** The compose file passes the access-control variables through, but it cannot set them. If you export nothing, nothing is gated. See [Authentication](#authentication) above.
 
 ---

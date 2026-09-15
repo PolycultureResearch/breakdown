@@ -212,6 +212,29 @@ def test_a_directory_of_trees_fetches_nothing_at_boot(tree_dir):
         assert app.state.trees["business"].data is None
 
 
+def test_health_data_through_is_null_until_the_default_tree_loads(tree_dir, monkeypatch):
+    """A lazily loaded default tree has no data edge yet, and /health must
+    say so with `null` and `state: not_loaded` rather than a date taken from
+    the requested window — and it must not trigger the load to find out,
+    because it is the route a monitor polls every few seconds."""
+    monkeypatch.setenv("BREAKDOWN_DEFAULT_TREE", "business")
+    with TestClient(app) as client:
+        body = client.get("/health").json()
+        assert body["status"] == "ok"
+        assert body["state"] == "not_loaded"
+        assert body["data_through"] is None
+        assert body["grain_clipping"] == {}
+        assert app.state.trees[app.state.default_tree].data is None
+        # Once loaded, the edge appears — the same one /meta reports per metric.
+        client.post(f"/trees/{app.state.default_tree}/load")
+        body = client.get("/health").json()
+        meta = client.get("/meta").json()
+        assert body["state"] == "loaded"
+        assert body["data_through"] == min(
+            d for d in meta["data_through"].values() if d is not None
+        )
+
+
 def test_index_says_not_loaded_rather_than_zero(tree_dir):
     """§2.3: `progress: null` with `state: not_loaded` is *we haven't looked*.
     A blank that reads as zero would be a wrong number, not a missing one."""
