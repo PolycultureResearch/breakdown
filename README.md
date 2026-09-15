@@ -151,6 +151,14 @@ uv run breakdown serve --tree path/to/my_tree.yml --start-date 2025-01-01 --end-
 
 `serve` binds to `127.0.0.1` without hot reload by default; use `--host 0.0.0.0` to accept outside connections (containers) and `--reload` while developing breakdown itself.
 
+Before restarting a running server after an upgrade, check the tree against the new release without serving it:
+
+```bash
+uv run breakdown check --tree path/to/my_tree.yml
+```
+
+`check` runs every refusal `serve` would make before it contacts your provider — same message, non-zero exit — on a file or a directory of trees. It does not fetch data; `breakdown doctor` is the check that talks to the provider.
+
 Run a Bayesian analysis on a metric:
 
 ```bash
@@ -245,7 +253,7 @@ The full surface — the six tools, response shaping (`how_to_read`,
 - **[docs/first-tree-tutorial.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/first-tree-tutorial.md)** — from an empty file to a running RCA in half an hour; start here if you're new.
 - **[docs/model.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/model.md)** — statistical assumptions and how to read results. Read this before trusting any output.
 - **[docs/ui-guide.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/ui-guide.md)** — driving the UI: fitting a model, running an RCA, slicing, what-if.
-- **[docs/deploying.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/deploying.md)** — serving several trees, authentication, Docker, `breakdown doctor`, snapshots, environment variables.
+- **[docs/deploying.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/deploying.md)** — serving several trees, authentication, Docker, `breakdown check`, `breakdown doctor`, snapshots, environment variables.
 - **[docs/yaml-reference.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/yaml-reference.md)** — every field a tree may declare, and the rules on each.
 - **[docs/api-reference.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/api-reference.md)** — every route the server answers, its parameters, and its response shape.
 - **[docs/mcp.md](https://github.com/PolycultureResearch/breakdown/blob/main/docs/mcp.md)** — the MCP server: the six tools, response shaping, security, and a worked session against the live demo.
