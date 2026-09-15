@@ -3,7 +3,7 @@
 **A white paper on the models behind Bayesian metric trees, why each was chosen,
 and where each one stops being trustworthy.**
 
-> **Written:** 2026-08-04 · **Last updated:** 2026-08-31 ·
+> **Written:** 2026-08-04 · **Last updated:** 2026-09-14 ·
 > **Engine version:** 0.2.0
 >
 > **This is a living document.** The assessment in §3 and the improvements in §4
@@ -1247,6 +1247,7 @@ scheduled start.
 | S21 | Fit through undefined periods by masking the likelihood | ○ optional — build on demand |
 | S22 | k̂'s own Monte-Carlo error, and a seeded manual-fit path | ✅ closed 2026-08-27 |
 | S23 | Reference-window sensitivity — the uncertainty the bootstrap never sees | ○ open |
+| S24 | Known, dated interventions — a declared step/pulse term in the fit | ○ open — designed 2026-09-14 |
 | 3.4 | Counterfactual RCA (Horizon 3, not the S track) | ○ open |
 
 Below, the reasoning behind each — ordered by value per unit of effort.
@@ -1614,6 +1615,32 @@ probabilistic and gappy), and because two questions must be settled first:
 periods is not a fit on 100), and `MIN_FIT_PERIODS` must count *observed*
 periods, or the floor is not a floor.
 
+**Known, dated interventions** — `S24`, ○ open, designed 2026-09-14
+([`step_change_design.md`](step_change_design.md)). A local level with a
+tight step-size prior cannot take a step: a one-SD jump in one period needs
+`z[t] ≈ 20` at the default `σ_trend`, so the posterior smooths the level
+change over many periods and inflates `σ_obs` to cover the residuals around
+it — which is exactly what S3's `resid_max` and `resid_acf1` were built to
+catch, and did, on a field tree whose history is price flips and on-sale
+days (issue #114). The verdict is honest and the reader is left with nothing
+to declare. The design is a per-node `interventions:` list — name, date,
+`step` or `pulse`, an optional prior in business units — entering the fit as
+a known 0/1 regressor on its own coefficient axis, learned from the
+instances inside the fit window and dropped by name when there are none; the
+step's window delta times its coefficient is a named term in the gap, beside
+`components`, outside `ranked_causes`. Two distinctions carry the argument.
+First, a step inside the *analysis* window is not this defect at all: RCA
+fits strictly before that window, so the flip a user analyses was never in
+the training data, and its effect is in the parents that moved with it or
+in `unexplained`, which is the finding. Second, a declared step is a claim
+the author makes, like the DAG, and the check that then passes is evidence
+about the residual regime, not about the step — which is why automatic
+changepoint detection stays out (a model free to place steps reproduces
+anything) and why an opt-in `learn_from: window`, which lets the fit see the
+event's own periods to size a one-off, is Box and Tiao (1975) intervention
+analysis with its claim stated on the payload: the shift coincident with the
+date, whatever caused it.
+
 **Reference-window sensitivity** — `S23`, ○ open. Named by the 2026-08-29
 grill as the weakest load-bearing assumption in the engine, and it is not one
 of the disclosed ones. Every number this engine publishes is a contrast of two
@@ -1704,6 +1731,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-09-14 | **S24 filed — a declared step/pulse term for known, dated interventions, designed and not built.** A field user re-ran an RCA under 0.2.0 on a ticketed-event tree and got the honest verdict — `ppc_status: severe` — for a history made of price flips and on-sale days, with nowhere to go inside the tool (issue #114); a marketing team raised the analysis-window half of the same shape the same day (a campaign flag constant over the fit window is dropped, correctly). §4 gains the item and its rationale; no §3.2 weakness changes, because S3 already discloses the misspecification on every surface and §2.5 already states within-window stationarity as assumed. The design (`step_change_design.md`) separates a step in the *fit history*, which is what the PPC scores and what the term fixes, from a step in the *analysis window*, which RCA measures by construction; keeps the intervention coefficients off the parent-ordered `beta` axis; keeps automatic changepoint placement out; and makes the fit-window exception an explicit per-intervention opt-in with its claim on the payload. |
 | 2026-08-31 | **C29, C30 and C34 shipped — the shared statistics moved into `engine/stats.py`, and the grill's worst numbers are refusals now.** One change, because the three were one defect: `rca.py`, `slices.py` and `simulate.py` each carried a private copy of the degeneracy guard, the finite filter and the gap epsilon, and the copies had drifted (the posterior branch had neither guard — that was C29's NaN payload; `slices` had the pre-C4 zero-width interval and the pre-C5 absolute epsilon — that was C30). `engine/stats.py` now holds the single public implementation (`sample_summary`, `share_of_gap`, `direction_fields`, `block_bootstrap_indices`, the epsilons) and `engine/windows.py` the window→scalar rules; all three modules import them. The H1 shape — a rate parent undefined inside the analysis window, outside the fit window — is refused by name before any attribution math (`attribution_failed` off-target, a 422 naming parent and dates on-target), on the argument that filtering the NaN replicates away would publish a quietly-censored window as if it were the asked-for one. The slice panel gains the tree's `degenerate_bootstrap_spread` state, withholds interval/probability/verdict together on a collapsed resampling, and C34's gate now requires `noise_level is False` — measured, not merely unwithheld. §3.2 #2 returns to ✅ and #8's defect half stays closed with its correction resolved; both corrections' text records the round trip. The strict-encoding invariant test now drives a probabilistic node through a stub fit and was verified failing against the pre-fix engine. |
 | 2026-08-30 | **S10 shipped — the posterior predictive check is now something you can look at.** The Metric tab gains a *Posterior predictive check* panel: the series the node was fitted on, against the 50% and 95% quantile bands of the replicates S3 draws, the median replicate, and the periods the 95% band misses. Same check, answer left in its original shape — *"`min` failed at p = 0.016"* does not say **where**, and on the demo's `trials_started` the picture does: a count floored at 6 whose model's 95% band reaches −2.4, read against a zero line the chart draws deliberately. **The roadmap's "nearly free once S3 computes it" was wrong, and that was the item's real content.** S3 builds its `(500 × n_periods)` replicate array inside the `pm.Model()` context and *discards* it under rule 2 — 3.16 MB for the replicates and 3.16 MB for the mean function on `trials_started`'s 790-day window, on every fit, in a cache budgeted in gigabytes — so what persists is four p-values and no per-period series at all. S10 persists **five quantiles plus the observed series**, computed while the draws are still in scope: 31.6 kB as numpy, 160 kB as the lists that ride on the fit, 88 kB as JSON, **0.6% of the 24.6 MB trace beside it**, and `_trace_nbytes` now counts it (and `dates`, which it had never counted) rather than trusting that ratio to hold. Recomputing on demand was rejected outright: `sample_posterior_predictive` needs the model *graph*, so a route would refit the node — a minute of NUTS to redraw a chart, against a second posterior the published p-values did not come from. It lives on `FitResult` behind `GET /metrics/{name}/ppc`, not in `diagnostics`, because that dict is copied whole onto `GET /metrics/{name}` and its `ppc` block onto every RCA node and every MCP payload — 88 kB × 106 nodes of chart data handed to an agent that cannot see a chart; `test_no_per_node_payload_carries_a_series` makes that structural rather than remembered. **The rendering pass found two defects the payload could not have had.** Plotly's default SI exponent format labels a formula node's identity residual of 4.5e-13 as `400f`, which reads as four hundred of something rather than as machine epsilon; and a five-entry Plotly legend in a 360 px sidebar wraps to five rows drawn *inside* the plot, over the densest part of the series. Fixed with powers of ten on the axis, the UI's own `fmt()` on every hovered number, and an HTML key beneath the chart. A third was a sentence: the caption asserted that fewer than 5% of periods fall outside an in-sample band "here", which is false on the very node the feature was built for (5.6%). Nothing is tinted by verdict — the geometry is the evidence, and a band drawn red on a node already labelled `severe` would be an illustration of a label rather than the thing behind it. |
 | 2026-08-30 | **A third hostile review ([grill 2026-08-29](grill_2026_08_29.md), against `6531a02`), and two claims in this paper stopped being true before they were written.** §3.2 #2 said "no published `ci_95` is zero-width by any route" and #8 said the near-zero-gap guard "is relative" — both true of `rca.py`, both false in `slices.py`/`simulate.py`, where C4's degeneracy guard and C5's scale-relative epsilon never arrived; the grill executed both counter-cases (a `[-25.0, -25.0]` interval published as `ci_status: ok`; a share of 1.016 on a $1e9 node's float residue, on the exact case `_share_of_gap`'s docstring retires). Both sections now carry the correction; the defects are [C29–C44](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend), reopening Horizon 0 sixteen rows wide — seven of the grill's nine top findings are the same meta-defect the four rules were written for: a policy chosen carefully in one file and not propagated to its neighbour, twice a fix from a previous grill stopping one function short. No other §3.2 weakness changed status: the grill *confirmed* the provider boundary (rule 1) clean, both coalition caps intact, and the engine free of module-level state — the failures are one layer up, in propagation. §4 gains **S23** (reference-window sensitivity, the grill's "weakest load-bearing assumption"): the block bootstrap quantifies within-window sampling only, and nothing anywhere resamples the engine's own choice of reference window, which every published number moves with. Rationale in §4.2. |
