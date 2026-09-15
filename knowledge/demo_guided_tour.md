@@ -18,7 +18,9 @@ sits at week grain.
 the RCA tab's *Headline* view and the slice panel's verdict line — on a real run
 against the committed snapshots, and each one is pinned, to the decimal place
 printed here, in `tests/test_white_cube_demo.py`. If a figure here stops
-matching what the demo shows, that test is red.
+matching what the demo shows, that test is red. Re-measured in full on
+**2026-09-15**, after roadmap S23 put a reference-sensitivity verdict under
+every ranked list; the figures that verdict prints are pinned the same way.
 
 One thing is deliberately **not** pinned, and it is marked where it appears:
 the sentences an assistant writes in the
@@ -124,6 +126,58 @@ through `new_subscriptions` (−16.5%) and `trial_conversions` (−18.9%) to
   band contains the line throughout. Nothing in either chart is coloured by the
   verdict; the shape is the finding. Say that too — a tool that tints the bad
   one red is asking to be believed, and this one is asking to be checked.
+
+**Then read the amber note under the ranked list — and do not skip it.**
+Since 2026-09-14 (roadmap S23) every RCA re-runs its own attribution under two
+neighbouring reference blocks, over the same fits, and says whether the answer
+survived. Here it reads:
+
+> ⚠ **Depends on the reference window.** Moving the reference block: the top
+> cause changes — read the published ranking as one reading among several, not
+> the finding. Gap across the blocks tried: −324 to −50.63 — a sensitivity
+> band, not an interval.
+> one week earlier (2025-12-29 → 2026-01-25): top cause still
+> new_subscriptions, gap −272.2
+> one whole block earlier (2025-12-08 → 2026-01-04): top cause becomes
+> new_arpu, gap −50.63
+
+Read it line by line, because the two lines say different things. Against a
+reference shifted one week back, the answer holds: new MRR is down
+**−272.2**/week and the volume story is still first. Against the block one
+further back — the four weeks from 8 December — the gap all but vanishes
+(**−50.6**) and `new_arpu` tops the list. That block is the holiday trough:
+`new_mrr` averaged about **$1,666**/week through it, against **$1,940** in
+the January block this script uses, so measured against December, February
+looks nearly normal, and what little gap remains is price noise. The engine is
+not saying the finding is wrong. It is saying the finding is a statement about
+*which weeks you call normal*, and that one honest choice of normal makes it
+disappear.
+
+Two things to say out loud. First, this is the trend-absorption caveat
+[`docs/model.md`](../docs/model.md) states for a non-adjacent reference on a
+growing metric — the result card already carries a ⓘ *About these windows*
+line for the one-week gap between this script's own windows — and story D
+makes the same point the other way, with a reference pushed back eight weeks
+inflating a lift. The tool now runs that experiment for you, every time, and
+tells you when it mattered. Second, what to do with it: the robust part of the
+answer is the one-week-earlier line — against any January baseline the signup
+break stands — and the presenter's move is to choose the reference
+*deliberately* (January, and say why: the break began 2 February, and December
+is a known trough) rather than to hunt for the block that makes the number
+biggest. A tool that left you to run that comparison yourself would have
+shipped −324 with a credible interval and nothing else; this one puts the
+sensitivity band beside the interval and keeps it out of the interval, because
+window choice is not sampling error.
+
+*If someone asks what happens on **auto**:* leave the reference empty and the
+engine picks the matched adjacent block, **2025-10-20 → 2026-02-08** (112
+days). The headline becomes **−15.9%** (−$304.4/week), still
+`new_subscriptions` first — and the note now reads unstable by *direction*:
+the block one further back is June–October 2025, when the business was a
+third smaller, and against it February reads **+242.4**. Same lesson, larger:
+a long reference on a growth curve is a comparison against a younger company.
+The four-week January pair above is the deliberate choice, and the note is
+the reason it is deliberate.
 
 **Note the lag.** The analysis window starts a week *after* the break. The
 engine compares `trial_conversions` not over the calendar window but over
@@ -241,6 +295,12 @@ prospect's screen matches. (It did not always — this spot carried a ⚠ note
 while `churn_arpu` declared no direction and rendered uncoloured; see Known
 gaps at the end.)
 
+**The note under the ranked list is the muted one here** — ✓ *Survives a
+moved reference window* — because both neighbouring blocks agree: **−544.3**
+one week earlier, **−423.4** one whole block earlier, `churned_mrr` first every
+time. A stable verdict renders as information rather than a warning; point at
+it once, so the contrast with story A's amber version has been seen.
+
 **Then slice** `churned_mrr` by **plan**:
 
 > professional carries **100.6%** of the gap on a **44.0%** baseline share.
@@ -278,8 +338,22 @@ converted unusually well in Brazil, 2025-03-03 → 2025-05-25.*
 `signups = sessions × visit_signup_rate`: `sessions` carries **60.0%** (the spend
 bought traffic) and `visit_signup_rate` carries **42.8%** (the traffic converted
 better than usual). Sessions themselves are only **+5.0%**, so this is not just
-volume — nearly half the win is conversion quality, which is the part a spend
-dashboard cannot see.
+volume — conversion quality carries a real share, which is the part a spend
+dashboard cannot see. How *large* a share is the next paragraph.
+
+**Then read the note, because it changes how you say the second half.** It is
+amber again — *the top cause changes*. Under either neighbouring reference
+block, one week earlier (gap **+4.0**) or one whole block earlier (**+2.1**),
+`visit_signup_rate` outranks `sessions`. The win itself is not in doubt: the
+gap is positive under every block tried, and BR carries it (below) whichever
+you pick. What moves is the *split* — 60/43 is a near-even division of a
+small gap, and which half is bigger depends on the weeks you call normal. The
+attribution table says the same thing in its own way: `sessions`' interval is
+clear of zero, `visit_signup_rate`'s straddles it. So say "both halves
+contributed, and traffic is the half the data is sure of", not "nearly half
+the win was conversion quality". The engine will not let you oversell the
+quality half, and that restraint is worth more on a good-news story than on a
+bad one, because good news is what gets spent against.
 
 **Then slice** `signups` by **country**:
 
@@ -287,7 +361,8 @@ dashboard cannot see.
 
 **The line:** run this one to show RCA is not a bad-news tool. The same
 decomposition tells you which half of a win was volume and which was quality —
-which is what you need in order to decide whether to spend more.
+and how sure it is of that split — which is what you need in order to decide
+whether to spend more.
 
 ---
 
@@ -303,7 +378,9 @@ exactly what the tree should discover.*
 **What it says, pass one.** New MRR up **+26.0%**, and on `trial_conversions`
 the split runs the opposite way to story A: `trial_conversion_rate` carries
 **69.3%** against `trials_started`'s **29.8%**. More trials started too — the
-business is growing — but the win is conversion.
+business is growing — but the win is conversion. The note under the ranked
+list is muted here too: ✓ stable, **+200.0** one week earlier and **+163.5**
+one whole block earlier, `new_subscriptions` first each time.
 
 **What it says, pass two — the beat this story exists for.** The conversion
 lift itself has a cause the tree can name. `trial_conversion_rate` has two
@@ -347,7 +424,9 @@ Choosing comparable windows is a real part of using this well, and the tool will
 faithfully attribute trend if you hand it a trendy comparison. (Adjacency is now
 the default: leave the reference on **auto** and it is exactly the matched
 adjacent block described here — this paragraph is the *why* behind that
-default.)
+default. And since 2026-09-14 the engine runs this experiment itself on every
+RCA: the note under the ranked list is exactly this comparison, made for the
+two nearest blocks, which is why it is amber on story A and muted here.)
 
 ---
 
@@ -402,7 +481,11 @@ Then, in order:
    the assistant is reading a real DAG, grains and all.
 2. *"Why did new MRR fall in February 2026?"* — calls `run_rca`. The answer
    should name the signup drop, cite the credible interval, and mention the
-   unexplained remainder rather than hiding it.
+   unexplained remainder rather than hiding it — and, since S23, say that the
+   result is `unstable` under a moved reference. For the February question it
+   is (story A's December block), and the tool's `how_to_read` tells the
+   assistant to present the ranking as one reading among several; a good
+   answer names the block rather than hiding it.
 3. *"Which segment?"* — calls `slice_metric`, and should come back with mobile.
    Watch which windows it slices over: for `signups` the correct ones are the
    windows `run_rca` resolved for that node, because `signups` is not itself a
@@ -477,6 +560,10 @@ prints them in full.)*
   scheduled call, run `python demo/prewarm.py --rcas --url https://<host>`.
 - **A node reports `window_shorter_than_grain`** — the chosen window holds no
   whole week. Use the four-week pairs above.
+- **The note under the ranked list is amber — *Depends on the reference
+  window*** — a real answer, not a failure, and on stories A and C it is amber
+  on purpose; read those sections before the call. Only ◌ *Reference
+  sensitivity not checked* means the engine could not run the comparison.
 - **A slice says "not localized"** — that is a real answer, not a failure. Say
   so; it is the behaviour that makes the localized ones worth believing.
 - **A slice says "concentrated in the long tail"** — the third verdict, and the
