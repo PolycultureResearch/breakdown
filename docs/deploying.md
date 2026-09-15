@@ -2,7 +2,7 @@
 
 This page covers running breakdown as a shared service: serving more than one
 metric tree from a process, authentication, a Dockerized deployment, checking
-provider connectivity, the snapshot cache, and every environment variable
+a tree before a restart, checking provider connectivity, the snapshot cache, and every environment variable
 `breakdown serve` accepts. For installing and running it on your own laptop,
 see the [README](../README.md); for authoring a tree, see the
 [YAML reference](yaml-reference.md).
@@ -266,6 +266,42 @@ either it is genuinely vacuous over the probe window (widen it and re-run) or
 it evaluates constant-true, the silently-dropped filter this check exists to
 prevent. As with the grain claim, this is a question about your data, not your
 metadata, and no semantic layer answers it.
+
+---
+
+## Checking a tree before a restart: `breakdown check`
+
+A version upgrade can change what the parser accepts. 0.2.0 began refusing a
+sliced rate whose `weight` is at a different grain (roadmap C12), and the first
+production tree to meet that rule found out by restarting its server. Run this
+before the restart instead:
+
+```bash
+uv run breakdown check --tree path/to/my_tree.yml        # one tree
+uv run breakdown check --tree path/to/trees/ --default-tree revenue   # a directory, as serve would see it
+```
+
+It runs every refusal `serve` makes before it contacts a provider, through
+the same functions, so a failure here prints the sentence the server log would
+have carried: the path resolves (a directory holds at least one `*.yml`), each
+tree parses (schema, DAG rules, `${VAR}` references), `--default-tree` names a
+discovered tree, and the pre-fetch load checks pass (the provider's extra is
+installed, a `warehouse` tree has `sql` on every fetched metric, a cold-start
+tree declares every belief it needs). One `[PASS]` or `[FAIL]` line per tree,
+non-zero exit if any tree would be refused, and no connection is opened, so it
+runs anywhere the YAML does, credentials or not.
+
+```
+[PASS] tree 'orders' — 12 metrics, grain day/week, provider 'local'
+[FAIL] tree 'aov' — ValueError: Rate 'aov' (grain 'week') declares dimension 'addon_presence' with weight 'orders' at grain 'day'. …
+```
+
+What it cannot see is anything that needs data: window coverage, a short
+series clipping a grain, identity checks on fetched formula nodes, fit
+readiness. A clean `check` means the tree will parse and start; `doctor` with
+an explicit window is the tool that proves it will serve. An unanswered rate
+denominator is reported as a `[WARN]` here because `serve` starts on it, while
+`doctor` fails it, since that is the trust gate.
 
 ---
 

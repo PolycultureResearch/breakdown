@@ -78,6 +78,13 @@ def doctor(tree: str, start_date: str | None = None, end_date: str | None = None
     return print_report(run_doctor(tree, start_date=start_date, end_date=end_date))
 
 
+def check(tree: str, default_tree: str | None = None) -> int:
+    from breakdown.check import run_check
+    from breakdown.doctor import print_report
+
+    return print_report(run_check(tree, default_tree=default_tree))
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="breakdown", description="breakdown: Open-Source Bayesian Metric Trees"
@@ -173,6 +180,25 @@ def main(argv: list[str] | None = None) -> None:
         help="End of the probe window, YYYY-MM-DD (default: today)",
     )
 
+    check_parser = subparsers.add_parser(
+        "check",
+        help="Validate a tree (or a directory of them) against the current "
+        "contract without serving — every refusal `serve` makes before it "
+        "contacts the provider, with the same message",
+    )
+    check_parser.add_argument(
+        "--tree",
+        type=str,
+        required=True,
+        help="Path to a metric tree YAML, or a directory of them (same as serve --tree)",
+    )
+    check_parser.add_argument(
+        "--default-tree",
+        type=str,
+        default=None,
+        help="The --default-tree you will pass to serve, to check it names a discovered tree",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "serve":
@@ -191,6 +217,8 @@ def main(argv: list[str] | None = None) -> None:
         )
     elif args.command == "doctor":
         raise SystemExit(doctor(args.tree, start_date=args.start_date, end_date=args.end_date))
+    elif args.command == "check":
+        raise SystemExit(check(args.tree, default_tree=args.default_tree))
     else:
         parser.print_help()
 
