@@ -295,6 +295,9 @@ def _validate_coverage(
     snapped_ref,
     snapped_an,
     lags: Optional[Dict[str, int]] = None,
+    *,
+    grained=None,
+    parents: Optional[List[str]] = None,
 ) -> None:
     """Every window a node reads must lie inside that node's own data.
 
@@ -307,11 +310,34 @@ def _validate_coverage(
     Lagged parents are checked against their *shifted* windows and reported
     with the parent, its lag, and the shifted dates, so the message names a
     window the caller can act on rather than one they never typed.
+
+    `frame` is the node's fit frame — the periods the node and its parents
+    all cover — so when `grained` and `parents` are given the refusal also
+    names *which* of those series stops short of the window and where it
+    runs (GitHub #112): the reader learns that `paid_spend` ended on the 8th,
+    not that "the data" did. Every other metric in the tree kept its range.
     """
     if frame.empty:
         raise ValueError(f"No data at all for '{node}' at grain '{grain}'.")
     data_start = pd.Timestamp(frame["date"].min())
     data_end = pd.Timestamp(frame["date"].max())
+
+    def bounded_by(first_start, last_start, owner: str, shifted_by: int) -> str:
+        if grained is None:
+            return ""
+        cols = [owner] if shifted_by else [node, *(parents or [])]
+        short = [
+            (c, s, e)
+            for c, (s, e) in grained.spans_at(cols, grain).items()
+            if first_start < s or last_start > e
+        ]
+        if not short:
+            return ""
+        return (
+            " The series that stop short of it: "
+            + "; ".join(f"`{c}` runs [{s.date()}, {e.date()}]" for c, s, e in short)
+            + ("." if shifted_by else f" — every other series '{node}' reads covers the window.")
+        )
 
     def check(first_start, last_start, label: str, owner: str, shifted_by: int) -> None:
         if first_start >= data_start and last_start <= data_end:
@@ -329,7 +355,7 @@ def _validate_coverage(
             f"The {label} window {window} for '{owner}' is not fully covered by "
             f"its data, which runs [{data_start.date()}, {data_end.date()}]{via}. "
             "Attribution over a partly-covered window would average only the "
-            "periods that happen to exist."
+            "periods that happen to exist." + bounded_by(first_start, last_start, owner, shifted_by)
         )
 
     for label, snapped in (("reference", snapped_ref), ("analysis", snapped_an)):
@@ -717,7 +743,9 @@ def shapley_attribution(
         raise ValueError(
             f"The {which} window [{s}, {e}] contains no whole '{grain}' period for '{target}'."
         )
-    _validate_coverage(frame, target, grain, snapped_ref, snapped_an, defn.lags)
+    _validate_coverage(
+        frame, target, grain, snapped_ref, snapped_an, defn.lags, grained=data, parents=parents
+    )
     ref_start, ref_end = snapped_ref.first_start, snapped_ref.last_start
     an_start, an_end = snapped_an.first_start, snapped_an.last_start
 
@@ -1205,7 +1233,16 @@ def run_rca(
                 )
             scoped[node] = (grain, frame, None, None)
             continue
-        _validate_coverage(frame, node, grain, snapped_ref, snapped_an, defn.lags)
+        _validate_coverage(
+            frame,
+            node,
+            grain,
+            snapped_ref,
+            snapped_an,
+            defn.lags,
+            grained=data,
+            parents=list(dag.predecessors(node)),
+        )
         scoped[node] = (grain, frame, snapped_ref, snapped_an)
 
     # Fit any probabilistic (non-formula, non-root) node in scope that lacks a
@@ -2068,5 +2105,11 @@ def _rank_causes(dag, target, nodes_in_scope, nodes_out):
         for n in nodes_in_scope
         if n != target and n in via
     ]
-    ranked.sort(key=lambda r: r["score"], reverse=True)
+    # Ties break on the name, not on `nodes_in_scope`'s iteration order: it
+    # is a set, so two siblings with the same score — both parents of one
+    # identity get exactly the same term — used to swap places between
+    # processes (Python salts string hashes per run). Found by diffing the
+    # same B2B MRR RCA across two servers, 2026-09-15: every node identical,
+    # `ranked_causes[41]` and `[42]` transposed.
+    ranked.sort(key=lambda r: (-r["score"], r["metric"]))
     return ranked

@@ -24,7 +24,7 @@ about the whole process rather than one tree.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), per-metric `grains`/`kinds`/`data_through`, fitted models, per-metric `earliest_available` history discovery, and `grain_clipping` — which metric's short series bounded the shared window at its grain, if any (UI bootstrap) |
+| `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), per-metric `grains`/`kinds`/`data_through`/`data_from`, fitted models, per-metric `earliest_available` history discovery, and `short_series` — which metrics stop before their grain's reach and by how much, if any (UI bootstrap) |
 | `GET` | `/dag` | Full metric DAG (nodes + edges), each node carrying its whole definition. `sql` and `bind` come back `null` to a caller that presents no token when one is configured. See [Authentication](deploying.md#authentication) |
 | `GET` | `/series` | Every metric's series at its native grain, `{name: {grain, dates, values}}`. One call hydrates the UI's node cards. Mixed-grain trees have no shared date axis, so dates are per metric |
 | `GET` | `/metrics/{name}` | Metric definition, time series, posterior summary and fit diagnostics — plus top-level `inference_method` and `fit_end` for the fit those describe (`null` when nothing is fitted), so a reader never infers the sampler from the presence of a k̂ (roadmap C35), and `fitted_parents` / `dropped_parents` — the parent axis the summary's `beta_raw[i]` rows follow, and the parents the fit left out for zero variance (#113; both `null` when nothing is fitted) |
@@ -41,7 +41,7 @@ about the whole process rather than one tree.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/` | A one-line "the API is running" banner carrying no tree data. Open even under `BREAKDOWN_REQUIRE_AUTH` |
-| `GET` | `/health` | Always 200. `{"status": "ok", provider, metrics, state, data_through, grain_clipping}`, or `{"status": "degraded", "error_kind": …, "error": …}` when the default tree can't serve. `data_through` is the date the loaded data runs through — the tree-wide as-of date, the *earliest* of the metrics' last fully covered dates (the anchor the node cards and the goal progress use), since the within-grain join means nothing can be analyzed past the shortest series and a max would keep a stale feed looking fresh — so a monitor can alert on a serve whose data has stopped advancing (GitHub #117). `null` when nothing has been fetched yet (`state` is `not_loaded` or `loading` for a lazily loaded directory tree, or the provider is `none`), never a date taken from the requested window. `grain_clipping` is `/meta`'s record of which metric bounded which grain, `{}` when clean. `error_kind` is a stable classification (`parse_error` \| `data_load_error` \| `auth_config_error` \| `discovery_error`) and `error` a generic sentence — never the exception text, which can carry the tree's SQL or a provider's hostnames and this route is deliberately open (roadmap C43). The full diagnostic is in the server log and on the auth-gated `GET /trees` card. Liveness for orchestrators; the body, not the status code, says whether the tree is degraded. Open even under `BREAKDOWN_REQUIRE_AUTH` |
+| `GET` | `/health` | Always 200. `{"status": "ok", provider, metrics, state, data_through, data_through_bounded_by, short_series}`, or `{"status": "degraded", "error_kind": …, "error": …}` when the default tree can't serve. `data_through` is the date the loaded data runs through — the tree-wide as-of date, the *earliest* of the metrics' last fully covered dates (the anchor the node cards and the goal progress use), kept at the earliest edge even though per-metric windows let analyses that do not read the shortest series run past it, because a max would keep a stale feed looking fresh — so a monitor can alert on a serve whose data has stopped advancing (GitHub #117). `null` when nothing has been fetched yet (`state` is `not_loaded` or `loading` for a lazily loaded directory tree, or the provider is `none`), never a date taken from the requested window. `data_through_bounded_by` names the metric(s) whose edge it is — the feed to widen or repair — and `short_series` is `/meta`'s record of every metric that stops before its grain's reach, `{}` when clean. `error_kind` is a stable classification (`parse_error` \| `data_load_error` \| `auth_config_error` \| `discovery_error`) and `error` a generic sentence — never the exception text, which can carry the tree's SQL or a provider's hostnames and this route is deliberately open (roadmap C43). The full diagnostic is in the server log and on the auth-gated `GET /trees` card. Liveness for orchestrators; the body, not the status code, says whether the tree is degraded. Open even under `BREAKDOWN_REQUIRE_AUTH` |
 | `GET` | `/manifest` | Which deployment answered: `{app, version, status, demo?, default_tree, snapshots?}`. `demo` echoes the `BREAKDOWN_DEMO_*` env vars the deploy stamped (slug, vertical, dataset); `default_tree` is `{id, title, provider, metric_count, state}` — deliberately not the full index card, whose `load_error` this open route must not carry (the same C43 rule `/health` follows); `snapshots` reports count and latest `fetched_at` from the snapshot store. Metadata only. Open even under `BREAKDOWN_REQUIRE_AUTH` |
 | `GET` | `/trees` | Every tree: title, owner, metric count, `state` (`loaded` \| `not_loaded` \| `loading` \| `error`), plus `period`/`goal` where declared and `progress` for a loaded tree that has a goal. Reads parsed YAML only and never triggers a data load |
 | `POST` | `/trees/{id}/load` | Fetch one tree's data now, and return its updated index card |
@@ -53,41 +53,41 @@ about the whole process rather than one tree.
 
 Bootstrap for the UI, and the one place the loaded window is described
 honestly. Most of it is flat maps (`grains`, `kinds`, `data_through`,
-`earliest_available`, keyed by metric); one field is nested.
+`data_from`, `earliest_available`, keyed by metric); one field is nested.
 
-**`grain_clipping`** — metrics only ever join against series at their own
-grain, and that join is an *inner* one: a series shorter than its siblings at
-either end bounds the shared frame for every metric at the grain. A frozen ad
-feed that stopped a fortnight ago, an event table with one row, a channel
-switched on in March — each silently narrows every window the tree can
-analyze, and used to do so without a word (#112). Now the load log warns once
-per grain, and this field carries the same facts:
+**`short_series`** — metrics only ever join against series at their own
+grain, and since per-metric windows (#112) that join is an *outer* one: each
+metric keeps its own range, and a series shorter than its siblings at either
+end bounds only the analyses that read it — a fit of it or of a child, a
+window aggregate of it — never the grain. A frozen ad feed that stopped a
+fortnight ago, an event table with one row, a channel switched on in March:
+each used to narrow every window the tree could analyze, silently. Now the
+other metrics keep their range, the load log warns once per grain, and this
+field carries the same facts:
 
 ```json
 {
   "day": {
     "trailing": {
-      "by": ["paid_spend"],
-      "clipped_to": "2026-08-08",
-      "others_reached": "2026-08-26",
-      "periods_dropped": 18
+      "reach": "2026-08-26",
+      "short": {"paid_spend": {"ends": "2026-08-08", "periods": 18}}
     }
   }
 }
 ```
 
 Keyed by grain, then by edge (`trailing`, `leading`), each edge present only
-when it was clipped; `{}` when every series agreed on its range. `by` lists
-every metric whose series ends (or begins) exactly at the clipped edge — more
-than one when they tie, since there is no single culprit to pick.
-`clipped_to` is the shared frame's edge, `others_reached` the furthest edge
-any sibling had, both as period-start labels (a month grain reads
-`2026-08-01`, matching `date_start`/`date_end`), and `periods_dropped` counts
-the whole periods every metric at the grain lost. `data_through` is the
-complement: it still reports each metric's *own* edge, so the two together say
-"the tree can analyze through 08-08 and here is who is holding it there".
-Nothing is filled in — the remedy is to widen or repair the named source, or
-drop it from the tree.
+when some metric falls short there; `{}` when every series agreed on its
+range. `reach` is the furthest edge any series at the grain has, and `short`
+maps each metric that stops before it to its own edge (`ends` for trailing,
+`starts` for leading) and the count of whole periods it is short — all as
+period-start labels (a month grain reads `2026-08-01`, matching
+`date_start`/`date_end`). `data_through` and `data_from` are the per-metric
+complement: each metric's own last and first covered date, so a reader can
+see that `paid_spend` runs to 08-08 while the tree runs to 08-26. Nothing is
+filled in — an analysis that reads a short metric stops at its edge and the
+refusal names the metric, and the remedy is to widen or repair the named
+source, or drop it from the tree.
 
 ## `GET /metrics/{name}/query`
 

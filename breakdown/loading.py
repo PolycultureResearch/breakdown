@@ -109,8 +109,8 @@ def wrap_snapshots(fetcher, provider_type: str, tree_path: str, slice_span=None)
 
 def fetch_all_metrics(parser, fetcher, provider_type, start_date, end_date) -> GrainedData:
     """Fetch every *sourced* metric at its native grain, derive the rest, and
-    assemble per-grain frames (metrics inner-join on date only against series
-    at the same grain).
+    assemble per-grain frames (metrics outer-join on date against series at
+    the same grain, each keeping its own range — GitHub #112).
 
     **`source` is the switch** (roadmap 1.11a). A formula node with a source is
     fetched exactly as before, and `check_identities` then compares the

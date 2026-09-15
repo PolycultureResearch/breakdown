@@ -180,10 +180,14 @@ Two consequences worth knowing:
 A natural misreading of RCA's four dates is that the model is fitted on the
 reference window, and that a longer reference therefore buys a better model.
 Neither is true. The fit window is **all loaded history before
-`analysis_start`**, regardless of the reference dates; the reference window
-only defines the **comparison baseline** the gap is measured against
-(`gap = mean(analysis) − mean(reference)`). Widening the reference does
-nothing for fit quality; widening `--start-date` does.
+`analysis_start`** that the node *and its parents* cover, regardless of the
+reference dates; the reference window only defines the **comparison
+baseline** the gap is measured against (`gap = mean(analysis) −
+mean(reference)`). Widening the reference does nothing for fit quality;
+widening `--start-date` does. The fit window is per node: a short series
+elsewhere in the tree does not shorten it, and a short parent shortens only
+the fits that read that parent (the RCA node payload's `fit_window` and
+`GET /metrics/{name}` report the periods actually trained on).
 
 That baseline role is why "as long as possible" is the wrong instinct for the
 reference. On a metric with any underlying trend, a very long reference turns

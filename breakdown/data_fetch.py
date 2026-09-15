@@ -241,10 +241,11 @@ def _align_to_spine(
       source returned mean "not loaded yet" far more often than "genuinely
       zero", and filling them bakes a lying tail into every headline number.
       The trim is per series; what it costs the *tree* is decided one step
-      later, where `build_grained` inner-joins the grain and the shortest
-      trim applies to every sibling. That step names the series responsible
-      (`_report_clipping`, GitHub #112) — this function cannot, since it sees
-      one metric at a time.
+      later, where `build_grained` outer-joins the grain: since per-metric
+      windows (GitHub #112) the trim costs only the analyses that read this
+      series, and that step names every series that falls short
+      (`_report_short_series`) — this function cannot, since it sees one
+      metric at a time.
     - **Interior** gaps are filled by kind — flow → 0, stock → forward-fill
       (a leading gap is an error), rate → **left undefined**, because a rate
       cannot be invented. Filling one is a judgement call rather than a fact,
@@ -278,15 +279,14 @@ def _align_to_spine(
       downstream. Trailing trim shortens a series by an ETL lag — days — and a
       flow that genuinely was all-quiet before it started is a legitimate
       series that trimming would silently discard, the same case the empty
-      result below protects. More decisively, per-grain frames are assembled by
-      **inner** join (`build_grained`), so trimming one node's leading run
-      would delete those periods for *every* metric at that grain and narrow
-      the windows `_validate_coverage` accepts tree-wide — a whole tree losing
-      January because one node launched in March is a larger and stranger
-      failure than the one being fixed. Narrowing only the late node's own
-      window is the honest version and needs a per-metric window the frames do
-      not carry yet; until then the warning names exactly which periods are
-      invented.
+      result below protects. (Until per-metric windows shipped — GitHub #112,
+      2026-09-15 — there was a second, decisive reason: per-grain frames were
+      assembled by inner join, so trimming one node's leading run would have
+      deleted those periods for *every* metric at that grain. The join no
+      longer clips anyone, so the leading fill is now a per-series policy
+      standing on the first argument alone, and trimming the late node's own
+      range instead is a decision that can be taken on its merits. Until it
+      is, the warning names exactly which periods are invented.)
     - A source returning *no rows at all* keeps the full fill for flows — an
       all-quiet window is a legitimate flow series, so it is *not* a leading
       gap and does not draw the leading warning (the provider that knows the

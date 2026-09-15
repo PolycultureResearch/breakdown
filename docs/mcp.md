@@ -67,15 +67,16 @@ its `alternatives` intact, because a verdict of `unstable` without the block
 that changed the answer leaves the agent nothing to say about *what* changed;
 `how_to_read` adds that `gap_range` is a sensitivity band, never an interval.
 
-`get_tree` carries `grain_clipping` when, and only when, one metric's short
-series bounded the shared data window for every metric at its grain
-(`{grain: {trailing | leading: {by, clipped_to, others_reached,
-periods_dropped}}}`, the same shape as
-[`GET /meta`](api-reference.md#get-meta)). It is the answer to "why does
-`run_rca` refuse a window that ends last week when `date_end` says so" — the
-metric in `by` is a source to widen or repair, not a finding about the
-business, and the key is omitted rather than empty on an aligned tree so
-there is never an empty disclosure to interpret.
+`get_tree` carries `short_series` when, and only when, some metric falls
+short of its grain's reach at either end (`{grain: {trailing | leading:
+{reach, short: {metric: {ends | starts, periods}}}}}`, the same shape as
+[`GET /meta`](api-reference.md#get-meta)). Since per-metric windows (#112) a
+short series bounds only the analyses that read it, so this is the answer to
+"why does `run_rca` on *this* target refuse a window that ends last week
+when `date_end` says so" — the metric named is a source to widen or repair,
+not a finding about the business, and the key is omitted rather than empty
+on an aligned tree so there is never an empty disclosure to interpret. Each
+metric's own `data_through` sits beside it in `metrics`.
 
 A `run_whatif` node keeps **both** honesty flags, because they ask for
 different narration. `extrapolation: true` means the scenario leaves the range
