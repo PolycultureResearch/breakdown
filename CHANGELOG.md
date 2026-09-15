@@ -44,6 +44,18 @@ its notes never listed it at all.)
   a serve that is up but whose data stopped advancing. `null` before a lazy
   tree's first load and under `provider: none`; never a date taken from the
   requested window, and nothing C43 keeps off this route.
+- **The RCA payload says whether the answer survives moving the reference
+  window** (roadmap S23, #130). Every published number is a contrast of two
+  window means, and the reference block was usually the engine's own pick
+  with nothing saying whether the top cause would hold one block over.
+  `run_rca` now re-attributes the same analysis window under two
+  neighbouring reference blocks over the same cached fits — nothing refits,
+  no existing number changes — and publishes `reference_sensitivity`:
+  `stable` / `unstable` / `unavailable`, the blocks tried with what each
+  said, and a `gap_range` that is a sensitivity band by name and stays out
+  of `ci_95`. Two blocks are a probe, not a distribution over references.
+  Rendered under the ranked causes and in the export; kept whole by
+  `compact_rca` with a `how_to_read` rule.
 - **`breakdown doctor` proves the inference compiler works** (#115). A new
   last check compiles and runs a trivial gradient through pytensor's own C
   backend, the path every NUTS fit takes. On macOS a broken Command Line
@@ -54,6 +66,19 @@ its notes never listed it at all.)
   on pytensor's slow Python backend.
 ### Fixed
 
+- **The slice `top_k` roll-up happens in the warehouse** (roadmap C32, #131).
+  The `dbt` provider's sliced query now folds every value outside
+  `top_k`/`values:` into `__other__` before the frame leaves the warehouse —
+  ranked over exactly the two analysis windows, ties returned raw for the
+  engine to break, a rate's `__other__` as Σnumerator / Σdenominator when
+  its weight is provably that denominator — so a 5,000-value dimension over
+  830 days costs 9,960 rows rather than 4.15 million (0.3 MB against
+  133 MB). Both paths are held to the same frame on the same data; where the
+  SQL cannot fold exactly (other providers, stocks, rates with another
+  weight, a whole-frame snapshot) the frame is fetched whole and the
+  response's new `rollup` field says which side folded and why.
+  `BREAKDOWN_SLICE_ROLLUP=client` restores whole fetches for deployments
+  that rely on sliced snapshots offline.
 - **The RCA card and the exported report put both windows in the headline**
   (#114, #128). The dates were there since 0.1.0, as one clause of a muted
   subtitle beside the provider and timestamp, and the export's `<title>`
