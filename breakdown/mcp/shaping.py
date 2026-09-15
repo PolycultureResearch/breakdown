@@ -548,6 +548,11 @@ def compact_slice(result: Dict[str, Any]) -> Dict[str, Any]:
         },
         "ci_status": result["ci_status"],
         "caveats": result["caveats"] or None,
+        # Where the top_k fold happened (roadmap C32). Kept because an agent
+        # reading `n_values` on `__other__` should know whether the frame it
+        # was computed from ever held those values, and because "the
+        # warehouse folded them" is the answer to "why is this fast".
+        "rollup": result.get("rollup"),
     }
     # `localized: False` is a verdict, not a null — the trim below drops only
     # absent facts, never negative ones.

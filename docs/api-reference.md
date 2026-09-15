@@ -530,7 +530,8 @@ curl -X POST "http://localhost:9090/rca/signups/slices?dimension=region&referenc
   "reconciliation": {"mean_residual": 0.0, "max_abs_residual": 0.0,
                      "residual_share_of_baseline": 0.0, "status": "ok"},
   "localization": "localized", "localized": true, "localization_threshold": 0.25,
-  "ci_status": "ok", "caveats": []
+  "ci_status": "ok", "caveats": [],
+  "rollup": {"where": "sql", "n_distinct": 41, "n_folded": 33}
 }
 ```
 
@@ -548,7 +549,9 @@ curl -X POST "http://localhost:9090/rca/signups/slices?dimension=region&referenc
 - **`entity_flows`** (when the provider can classify entities; otherwise `null`) sits beside the attribution, never inside it: `totals` of new / churned / retained / migrated entities across the two windows, the top `migrations` with `migrations_total`/`migrations_truncated`, and `reconciles_to_gap: false`, because window-level sets do not reconcile to a window-mean gap. A migration nets to zero across slices; naive slicing reads the same event as two large offsetting causes.
 - When slicing a lagged parent surfaced by an RCA, pass the parent's lag-shifted windows. Its RCA contribution carries them as `parent_windows`; those are the periods that influenced the child.
 
-Sliced series are fetched from the provider on demand for just these windows and cached per (metric, dimension, window); nothing about slicing touches the startup data or the fits.
+Sliced series are fetched from the provider on demand for just these windows and cached per (metric, dimension, window, selection); nothing about slicing touches the startup data or the fits.
+
+- **`rollup`** says which side folded the values outside `top_k` (or the `values:` pin-list) into `__other__`. `{"where": "sql", "n_distinct", "n_folded"}` means the provider's query returned only the kept slices plus one `__other__` row per period, ranked over exactly the two windows above, so the frame that crossed the wire was bounded by `top_k` rather than by the dimension's cardinality (the `dbt` provider, for flows and for rates whose `weight` is provably the ratio's denominator). `{"where": "client", "reason": …}` means the frame was fetched whole and the engine folded it — the reason names why (the provider cannot fold, a stock's forward fill, a whole-frame snapshot served from disk, `BREAKDOWN_SLICE_ROLLUP=client`). The numbers are the same either way, to float tolerance; the difference is what the process held in memory to get them. The 100-distinct-value cap applies to `n_distinct`, so a dimension too wide to localize is refused off a frame of a few hundred rows instead of after materializing it.
 
 **Both windows must lie inside the loaded data window.** Because slicing reads
 from the provider for whatever window you ask for, an out-of-range request is a

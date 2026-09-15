@@ -742,6 +742,17 @@ sum back to the metric are reported in a `reconciliation` block, never
 silently rescaled. See `knowledge/dimensional_slicing_design.md` for the full
 design.
 
+`top_k` and `values` are also the bound on what a sliced fetch brings back.
+On the `dbt` provider the generated query keeps the selected slices and folds
+every other value into one `__other__` row per period *in the warehouse*
+(ranked over the two analysis windows, with ties returned raw for the engine
+to break by name, and a rate's `__other__` as Σnumerator / Σdenominator when
+its `weight` is provably that denominator), so a 5,000-value dimension costs
+a few thousand rows rather than a few million. Where the provider cannot fold
+exactly — the other providers, a `stock`, a rate whose weight is another
+metric — the frame is fetched whole and the response's `rollup` field says
+so. Either way the numbers are the engine's; only the transient changes.
+
 ## Display format
 
 `format` controls how the UI displays a metric's **big number** on its node card. It is presentation only and never affects modeling, attribution, or the API's numeric values. Use the string shorthand for the common case, or a mapping for finer control:

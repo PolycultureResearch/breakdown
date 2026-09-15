@@ -23,15 +23,20 @@ import pandas as pd
 import yaml
 
 from breakdown.data_fetch import (
+    SLICE_ROLLUP,
     BaseDataFetcher,
     MissingProviderExtra,
     SliceNotSupported,
+    SliceSelection,
     _align_to_spine,
     _floor_labels,
     _to_naive_dates,
 )
 from breakdown.dbt_bridge import bridge_project
 from breakdown.dbt_sql import (
+    ROLLUP_N_DISTINCT_COL,
+    ROLLUP_N_FOLDED_COL,
+    ROLLUP_OTHER_COL,
     build_entity_flow_query,
     build_filter_probe,
     build_grain_assertion,
@@ -318,6 +323,31 @@ def _frame(cursor: Any) -> pd.DataFrame:
     return pd.DataFrame([tuple(r) for r in rows], columns=cols)
 
 
+def _weight_is_denominator(rate: "BindingSpec", weight: "BindingSpec", dimension: str) -> bool:
+    """Whether `weight`'s sliced series is, row for row, the rate's Σden.
+
+    Structural, not empirical: the same relation (or inline SQL), the same
+    time column, the same filter list, the same dimension column and join,
+    no entity-grain resolution on either side, and the weight summing exactly
+    the rate's denominator column. Anything looser and Σnum / Σden in SQL
+    could be a different number from the engine's Σ(r·w) / Σw.
+    """
+    if rate.agg != "ratio" or weight.agg != "sum":
+        return False
+    if weight.measure != rate.denominator:
+        return False
+    if (rate.relation, rate.sql) != (weight.relation, weight.sql):
+        return False
+    if rate.time_column != weight.time_column or list(rate.where) != list(weight.where):
+        return False
+    if rate.entity_grain is not None or weight.entity_grain is not None:
+        return False
+    rd, wd = rate.dimensions.get(dimension), weight.dimensions.get(dimension)
+    if rd is None or wd is None:
+        return False
+    return rd.model_dump() == wd.model_dump()
+
+
 class DbtDataFetcher(BaseDataFetcher):
     """Fetches bound nodes by generating SQL and running it on the project's
     own warehouse connection.
@@ -412,6 +442,63 @@ class DbtDataFetcher(BaseDataFetcher):
             df, metric_name, grain, kind, start_date, end_date, value_col="value"
         )
 
+    def slice_rollup_refusal(
+        self,
+        metric_name: str,
+        dimension_source: str,
+        kind: str,
+        weight_metric: Optional[str] = None,
+    ) -> Optional[str]:
+        """Whether the `top_k`/`values` roll-up can happen in the generated SQL.
+
+        The generated fold must be *the* fold — the number the engine would
+        have produced from the whole frame — or it must not happen (roadmap
+        C32, and the four rules' first). Three cases the SQL cannot reproduce:
+
+        * a **stock**: the engine forward-fills an absent period before it
+          ranks, and a sum in SQL cannot see the fill;
+        * a **rate whose weight is not its denominator**: the engine folds
+          rates weighted by the declared `weight` metric, and Σnum / Σden is
+          that number only when the weight *is* the denominator, binding for
+          binding (same relation, filter, time column and dimension column);
+        * a rate bound with anything but `agg: ratio`, or a weight bound with
+          anything but `agg: sum` over the denominator column.
+
+        The sentence returned is what the payload carries as the reason the
+        roll-up ran client-side; None means the SQL may fold.
+        """
+        bind = self.bindings.get(metric_name)
+        if bind is None or dimension_source not in bind.dimensions:
+            return None  # the fetch itself will refuse, by name
+        if kind == "stock":
+            return (
+                "stocks are forward-filled across absent periods before ranking, "
+                "which a warehouse sum cannot reproduce; the roll-up ran after the fetch."
+            )
+        if kind == "rate":
+            if bind.agg != "ratio":
+                return (
+                    f"'{metric_name}' is a rate bound with `agg: {bind.agg}`, so its "
+                    "slices cannot be folded as Σnumerator / Σdenominator in SQL; "
+                    "the roll-up ran after the fetch."
+                )
+            weight = self.bindings.get(weight_metric) if weight_metric else None
+            if weight is None:
+                return (
+                    f"the weight metric '{weight_metric}' for rate '{metric_name}' has "
+                    "no binding of its own to compare with the rate's denominator; "
+                    "the roll-up ran after the fetch."
+                )
+            if not _weight_is_denominator(bind, weight, dimension_source):
+                return (
+                    f"the weight '{weight_metric}' is not provably '{metric_name}''s "
+                    "denominator (same relation, filter, time column and dimension "
+                    "column, `agg: sum` over the denominator), so a SQL fold could "
+                    "differ from the engine's weighted merge; the roll-up ran after "
+                    "the fetch."
+                )
+        return None
+
     def fetch_metric_sliced(
         self,
         metric_name: str,
@@ -420,6 +507,7 @@ class DbtDataFetcher(BaseDataFetcher):
         end_date: str,
         grain: str = "day",
         kind: str = "flow",
+        selection: Optional[SliceSelection] = None,
     ) -> pd.DataFrame:
         bind = self.binding(metric_name)
         if dimension_source not in bind.dimensions:
@@ -453,6 +541,7 @@ class DbtDataFetcher(BaseDataFetcher):
                 start_date=start_date,
                 end_date=end_date,
                 dialect=self.dialect,
+                selection=selection,
             )
         else:
             sql = build_query(
@@ -462,25 +551,53 @@ class DbtDataFetcher(BaseDataFetcher):
                 end_date=end_date,
                 dialect=self.dialect,
                 dimension=dimension_source,
+                selection=selection,
             )
         self.last_sql[f"{metric_name}::{dimension_source}"] = sql
         df = self._query(sql)
         missing = {"date", "slice", "value"} - set(df.columns)
+        if selection is not None:
+            missing |= {ROLLUP_OTHER_COL, ROLLUP_N_DISTINCT_COL, ROLLUP_N_FOLDED_COL} - set(
+                df.columns
+            )
         if missing:
             raise RuntimeError(
                 f"Sliced query for '{metric_name}' is missing {sorted(missing)}; "
                 f"got {list(df.columns)}."
             )
-        # Built directly rather than through `_sliced_long`, which finds its
-        # date column by looking for `metric_time` — a MetricFlow name this
-        # provider never produces, because it names the column itself.
-        df = df[["date", "slice", "value"]].copy()
+        rollup = None
+        if selection is not None:
+            # The fold rows come back with a NULL slice and `bd_other = 1`,
+            # distinct from a kept NULL dimension value (`bd_other = 0`), so
+            # `__null__` stays a real slice and `__other__` the roll-up.
+            other = df[ROLLUP_OTHER_COL].fillna(0).astype(int) == 1
+            n_distinct = int(df[ROLLUP_N_DISTINCT_COL].iloc[0]) if len(df) else 0
+            n_folded = int(df[ROLLUP_N_FOLDED_COL].iloc[0]) if len(df) else 0
+            rollup = {"where": "sql", "n_distinct": n_distinct, "n_folded": n_folded}
+            df = df[["date", "slice", "value"]].copy()
+            df.loc[other.to_numpy(), "slice"] = "__other__"
+        else:
+            # Built directly rather than through `_sliced_long`, which finds its
+            # date column by looking for `metric_time` — a MetricFlow name this
+            # provider never produces, because it names the column itself.
+            df = df[["date", "slice", "value"]].copy()
         df["date"] = pd.to_datetime(df["date"])
         df = _to_naive_dates(df, metric_name)
         df = _floor_labels(df, metric_name, grain)
         df["slice"] = df["slice"].map(lambda v: "__null__" if pd.isna(v) else str(v))
         df["value"] = df["value"].astype(float)
-        return df.sort_values(["date", "slice"]).reset_index(drop=True)
+        df = df.sort_values(["date", "slice"]).reset_index(drop=True)
+        if rollup is not None:
+            logger.info(
+                "Sliced '%s' by '%s' rolled up in SQL: %d distinct value(s), %d folded "
+                "into __other__.",
+                metric_name,
+                dimension_source,
+                rollup["n_distinct"],
+                rollup["n_folded"],
+            )
+            df.attrs[SLICE_ROLLUP] = rollup
+        return df
 
     def slice_additivity(self, metric_name: str, dimension_source: str) -> str:
         """`overlapping` for a non-additive aggregation, else `exact`.
