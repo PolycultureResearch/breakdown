@@ -11,10 +11,51 @@ them land in a **minor** bump (`0.1 → 0.2`), with patch releases reserved for
 fixes. Callers who need stability should pin the minor series they tested
 against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
 
+**Breaking changes for tree authors** get their own list at the top of a
+release's notes: every rule that makes a tree which loaded on the previous
+release stop loading, in one place, whatever section explains the why. A
+change to the HTTP or MCP shape is called out where it lands; a change to
+what the YAML accepts is what a person restarting a production serve most
+needs to see first. (Convention added 2026-09-14 after a field report, #117,
+found the slice-weight grain rule under a heading that did not read as "your
+YAML may stop loading" — and, on checking, that the rule shipped in 0.1.0 and
+its notes never listed it at all.)
+
 ## [Unreleased]
 
 ### Added
 
+- **`breakdown check` validates a tree without serving it** (#117, #125).
+  Runs every refusal `serve` makes before it contacts a provider — discovery,
+  parse (including the slice-weight grain rule 0.1.0 shipped and never
+  listed), `--default-tree`, and the pre-fetch load checks — through the same
+  functions, so a failure prints the sentence the server log would have
+  carried. One line per tree, non-zero exit if any would be refused, no
+  connection opened. A clean check means *parses and starts*, not *serves
+  every window*: coverage, the per-grain join and fit readiness need data,
+  and `doctor` remains the trust gate. A production tree found the grain rule
+  by restarting its server; this is the place to find it instead.
+- **`GET /health` reports the date the data runs through** (#117, #126).
+  `data_through` is the tree-wide as-of date — the *earliest* metric's last
+  covered date, because the per-grain join bounds every analysis by the
+  shortest series and a frozen feed is the case where the latest date would
+  keep looking fresh — with `state` (`loaded` / `loading` / `not_loaded`) and
+  the load-time `grain_clipping` record beside it, so a monitor can alert on
+  a serve that is up but whose data stopped advancing. `null` before a lazy
+  tree's first load and under `provider: none`; never a date taken from the
+  requested window, and nothing C43 keeps off this route.
+- **The RCA payload says whether the answer survives moving the reference
+  window** (roadmap S23, #130). Every published number is a contrast of two
+  window means, and the reference block was usually the engine's own pick
+  with nothing saying whether the top cause would hold one block over.
+  `run_rca` now re-attributes the same analysis window under two
+  neighbouring reference blocks over the same cached fits — nothing refits,
+  no existing number changes — and publishes `reference_sensitivity`:
+  `stable` / `unstable` / `unavailable`, the blocks tried with what each
+  said, and a `gap_range` that is a sensitivity band by name and stays out
+  of `ci_95`. Two blocks are a probe, not a distribution over references.
+  Rendered under the ranked causes and in the export; kept whole by
+  `compact_rca` with a `how_to_read` rule.
 - **`breakdown doctor` proves the inference compiler works** (#115). A new
   last check compiles and runs a trivial gradient through pytensor's own C
   backend, the path every NUTS fit takes. On macOS a broken Command Line
@@ -25,6 +66,30 @@ against (e.g. `metric-breakdown~=0.1.0`) until 1.0.
   on pytensor's slow Python backend.
 ### Fixed
 
+- **The slice `top_k` roll-up happens in the warehouse** (roadmap C32, #131).
+  The `dbt` provider's sliced query now folds every value outside
+  `top_k`/`values:` into `__other__` before the frame leaves the warehouse —
+  ranked over exactly the two analysis windows, ties returned raw for the
+  engine to break, a rate's `__other__` as Σnumerator / Σdenominator when
+  its weight is provably that denominator — so a 5,000-value dimension over
+  830 days costs 9,960 rows rather than 4.15 million (0.3 MB against
+  133 MB). Both paths are held to the same frame on the same data; where the
+  SQL cannot fold exactly (other providers, stocks, rates with another
+  weight, a whole-frame snapshot) the frame is fetched whole and the
+  response's new `rollup` field says which side folded and why.
+  `BREAKDOWN_SLICE_ROLLUP=client` restores whole fetches for deployments
+  that rely on sliced snapshots offline.
+- **The RCA card and the exported report put both windows in the headline**
+  (#114, #128). The dates were there since 0.1.0, as one clause of a muted
+  subtitle beside the provider and timestamp, and the export's `<title>`
+  named only the analysis window — a field user lost the reference window
+  of an analysis they later had to reproduce. *Analysis window* and
+  *Reference window* are now labelled lines under the gap on the live card
+  and under the title in the export, the reference marked as chosen by the
+  engine when it was, the whole periods actually compared shown when the
+  grain snapped the dates, and the export's title names both. The MCP
+  `how_to_read` guide tells a narrating agent to quote both windows beside
+  any figure.
 - **`POST /mcp` no longer redirects to `/mcp/`, and a 401 from the gate says
   what went wrong.** Starlette's mount matched only the trailing-slash form, so
   the bare URL — the one every quickstart shows — answered 307, and curl and
@@ -92,6 +157,14 @@ this cycle's tip; every High and Medium finding was verified and fixed here
 (roadmap C29–C44), alongside the S2/S3/S4/S10/S22 statistical work below.
 This is a **minor** bump under the pre-1.0 contract: several HTTP surfaces
 changed shape or behavior, each called out in its section.
+
+### Breaking changes for tree authors
+
+None. No rule in this release refuses a tree that 0.1.1 loaded. A field
+report (#117) of a sliced rate refused on upgrade to 0.2.0 — its `weight` at
+a finer grain than the rate — was meeting a 0.1.0 rule that 0.1.0's notes
+omitted (listed there now); the tree had last loaded on a pre-release
+checkout from before it.
 
 ### Security
 
@@ -497,6 +570,30 @@ changed shape or behavior, each called out in its section.
 **Changed** and **Fixed** are relative to the `0.0.1` pre-release, which was
 tagged on GitHub (`c0.0.1`) but never published to an index — so for anyone
 installing from PyPI, all of this is new.
+
+### Breaking changes for tree authors
+
+Rules that refuse a tree at load rather than at analysis time. Each error
+names the metric and what would satisfy it. *(Section added 2026-09-14, #117;
+the slice-weight rule was not in these notes when 0.1.0 shipped.)*
+
+- **A rate's `dimensions[].weight` must share the rate's grain** (roadmap
+  C12). Slicing blends per-slice rates by the weight's value in each period,
+  so a day-grain `orders` cannot weight a week-grain `aov`. A finer
+  denominator is still fine for the *window aggregate*, which resamples; the
+  sliced blend does not. Provide the weight at the rate's grain, or drop the
+  dimension from that node.
+- **Duplicate metric names are refused** (roadmap C6), and with them duplicate
+  YAML mapping keys, a parent listed twice, and duplicate seasonality names.
+- **`seasonality.period` must be >= 3.**
+- **A formula node may have at most 10 parents**; group wider nodes under an
+  intermediate `formula` node.
+- **A derived node may not declare `bind`, `sql`, `dimensions` or `lags`.**
+- **`denominator_reason` is refused** beside a declared `denominator`, on a
+  non-rate, and when a `dimensions` block needs weights to blend.
+- **A hand-written `bind: {where: …}` is a parse error**; `where` is
+  import-only, and `bind.sql` already expresses any predicate an author could
+  write.
 
 ### Added
 
