@@ -415,6 +415,7 @@ class DbtDataFetcher(BaseDataFetcher):
         end_date: str,
         grain: str = "day",
         kind: str = "flow",
+        sparse: bool = False,
     ) -> pd.DataFrame:
         bind = self.binding(metric_name)
         sql = build_query(
@@ -439,7 +440,7 @@ class DbtDataFetcher(BaseDataFetcher):
         df = _floor_labels(df, metric_name, grain)
         df = df.sort_values("date")
         return _align_to_spine(
-            df, metric_name, grain, kind, start_date, end_date, value_col="value"
+            df, metric_name, grain, kind, start_date, end_date, value_col="value", sparse=sparse
         )
 
     def slice_rollup_refusal(

@@ -459,6 +459,14 @@ class GrainedData:
     # `get_tree` hand it over verbatim, and two encoders formatting the same
     # dates differently is how a payload drifts from its log line.
     short_series: Dict[str, Dict[str, Dict[str, Any]]] = field(default_factory=dict)
+    # Per `sparse: true` metric, what the alignment contract filled with zero
+    # by the tree's own declaration (GitHub #112): `{metric: {first_row,
+    # last_row, leading, interior, trailing, whole_window, filled}}`, present
+    # only for metrics where something was filled. JSON-safe for the same
+    # reason as `short_series`: it is a disclosure `/meta`, `/health` and
+    # MCP `get_tree` hand over verbatim. Set by `loading.fetch_all_metrics`,
+    # which is the one caller that sees both the frame and the declaration.
+    sparse_fills: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     def weights_for(self, metric: str, grain: Optional[str] = None) -> Optional[pd.Series]:
         """The per-period weights for a rate, indexed by period start, or None.

@@ -236,7 +236,7 @@ def check_provider_extra(provider: str) -> Optional[CheckResult]:
 
 
 def check_warehouse(config: MetricTreeConfig, start_date: str, end_date: str) -> List[CheckResult]:
-    from breakdown.data_fetch import WarehouseDataFetcher
+    from breakdown.data_fetch import WarehouseDataFetcher, sparse_kw
 
     cfg = config.provider
     results: List[CheckResult] = []
@@ -340,7 +340,9 @@ def check_warehouse(config: MetricTreeConfig, start_date: str, end_date: str) ->
         try:
             # The full fetch path: validates (date, value) columns, period
             # alignment, and gap rules — not just that the SQL executes.
-            fetcher.fetch_metric(m.name, start_date, end_date, grain=m.grain, kind=m.kind)
+            fetcher.fetch_metric(
+                m.name, start_date, end_date, grain=m.grain, kind=m.kind, **sparse_kw(m.sparse)
+            )
         except Exception as e:
             failed += 1
             results.append(CheckResult.fail(f"metric sql: {m.name}", str(e)))
@@ -1007,7 +1009,7 @@ def check_fit_readiness(
     result reports **history headroom**: whether the provider has history
     before --start-date (RCA trains on everything loaded, so an earlier start
     strengthens fits and default reference windows)."""
-    from breakdown.data_fetch import provider_query_name
+    from breakdown.data_fetch import provider_query_name, sparse_kw
     from breakdown.engine.model import MIN_FIT_PERIODS
     from breakdown.loading import build_fetcher, wrap_snapshots
 
@@ -1029,7 +1031,9 @@ def check_fit_readiness(
         if earliest is not None and earliest < start_date:
             headroom.append((m.name, earliest))
         try:
-            df = fetcher.fetch_metric(query_name, start_date, end_date, grain=m.grain, kind=m.kind)
+            df = fetcher.fetch_metric(
+                query_name, start_date, end_date, grain=m.grain, kind=m.kind, **sparse_kw(m.sparse)
+            )
             n = len(df)
         except Exception as e:
             lines.append(f"{m.name}: fetch failed ({e})")

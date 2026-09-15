@@ -208,6 +208,14 @@ async def get_tree(tree: Optional[str] = None) -> Dict[str, Any]:
     metric named is a source to widen or repair, not a finding about the
     business.
 
+    When present, `sparse_fills` says that a metric declared `sparse: true`
+    had periods with no source row filled with zero by that declaration
+    (`first_row`, `last_row`, and counts per `leading`/`interior`/`trailing`
+    edge, `whole_window` when the source returned nothing, `filled` in
+    total): those zeros are the tree's own statement that nothing happened,
+    not observations, and a run of them at the tail is what a stale feed on
+    such a metric would also look like.
+
     `tree` names which metric tree to read when the server holds more than one
     (see list_trees); omit it for the default tree."""
     state = await _state(tree)
@@ -247,6 +255,8 @@ async def get_tree(tree: Optional[str] = None) -> Dict[str, Any]:
     # has to decide whether an empty disclosure is one (GitHub #112).
     if data is not None and data.short_series:
         out["short_series"] = dict(data.short_series)
+    if data is not None and data.sparse_fills:
+        out["sparse_fills"] = dict(data.sparse_fills)
     return out
 
 

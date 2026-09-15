@@ -77,7 +77,14 @@ def _pre_fetch_load_error(tree: TreeState) -> Optional[str]:
 def _summary(tree: TreeState) -> str:
     cfg = tree.parser.config
     grains = sorted({m.grain for m in cfg.metrics}, key=("day", "week", "month").index)
-    return f"{len(cfg.metrics)} metrics, grain {'/'.join(grains)}, provider '{cfg.provider.type}'"
+    line = f"{len(cfg.metrics)} metrics, grain {'/'.join(grains)}, provider '{cfg.provider.type}'"
+    # A declaration this command can see without data: which metrics will
+    # have absent periods filled by their own statement at load (#112). The
+    # count of periods actually filled needs the fetch and is on `/meta`.
+    sparse = [m.name for m in cfg.metrics if m.sparse]
+    if sparse:
+        line += f", {len(sparse)} sparse ({', '.join(sparse)})"
+    return line
 
 
 def run_check(path: str, default_tree: Optional[str] = None) -> List[CheckResult]:

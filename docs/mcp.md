@@ -76,7 +76,12 @@ short series bounds only the analyses that read it, so this is the answer to
 when `date_end` says so" — the metric named is a source to widen or repair,
 not a finding about the business, and the key is omitted rather than empty
 on an aligned tree so there is never an empty disclosure to interpret. Each
-metric's own `data_through` sits beside it in `metrics`.
+metric's own `data_through` sits beside it in `metrics`. `sparse_fills` follows the
+same rule: present only when a `sparse: true` metric had periods with no
+source row filled with zero by that declaration (`{metric: {first_row,
+last_row, leading, interior, trailing, whole_window, filled}}`), so an
+assistant narrating a quiet tail knows those zeros are the tree's statement
+that nothing happened, not observations.
 
 A `run_whatif` node keeps **both** honesty flags, because they ask for
 different narration. `extrapolation: true` means the scenario leaves the range

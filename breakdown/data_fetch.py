@@ -221,9 +221,22 @@ def _align_to_spine(
     start_date: str,
     end_date: str,
     value_col: str,
+    sparse: bool = False,
 ) -> pd.DataFrame:
     """Reindex a `[date, <value_col>]` frame onto the spine of whole `grain`
     periods inside the window, and fill what is missing by `kind`.
+
+    `sparse` (a `kind: flow` declaration, GitHub #112) reverses one rule
+    below and re-words two others: the source emits a row only when something
+    happened, so a period with no row is a zero *by the tree's own statement*
+    — the trailing run is filled rather than trimmed, and the leading and
+    interior fills are recorded as declared zeros instead of warned about as
+    invented ones. Every filled period is counted on the returned frame's
+    `attrs["sparse_fill"]` (`first_row`, `last_row`, `leading`, `interior`,
+    `trailing`, `whole_window`, `filled`) and logged once, so the fill is
+    never silent (rule 1); `loading.fetch_all_metrics` carries the record to
+    `GrainedData.sparse_fills`. The flag is refused on any other kind by the
+    parser and, defensively, here.
 
     Every provider goes through here, which is the point: this contract used to
     live inside the warehouse fetcher, so `cloud` and `local` floored their
@@ -307,16 +320,34 @@ def _align_to_spine(
         )
     s = s[kept].reindex(spine)
 
-    if s.notna().any():
-        s = s.loc[: s.last_valid_index()]
+    if sparse and kind != "flow":
+        raise ValueError(
+            f"Metric '{metric_name}': `sparse` applies to `kind: flow` only, got "
+            f"'{kind}'. The parser refuses this combination; reaching it here is "
+            "a caller bug."
+        )
+
+    empty = s.index[:0]
+    last_row = s.last_valid_index()
+    trailing = empty
+    if last_row is not None:
+        if sparse:
+            # Declared: the periods after the last event are quiet, not
+            # unloaded. Counted below and filled with the rest.
+            trailing = s.index[s.isna() & (s.index > last_row)]
+        else:
+            s = s.loc[:last_row]
 
     first = s.first_valid_index()
-    empty = s.index[:0]
     # A source with no rows at all has no "before its first row" — that case is
     # the legitimate all-quiet window, and stays outside both runs.
-    interior = s.index[s.isna() & (s.index > first)] if first is not None else empty
+    # Bounded above by `last_row` as well: under `sparse` the trailing run is
+    # still in `s` here, and it is counted on its own edge, not as interior.
+    interior = (
+        s.index[s.isna() & (s.index > first) & (s.index < last_row)] if first is not None else empty
+    )
     leading = s.index[s.isna() & (s.index < first)] if first is not None else empty
-    if len(interior) and kind in ("flow", "stock"):
+    if len(interior) and kind in ("flow", "stock") and not sparse:
         shown = [str(d.date()) for d in interior[:5]]
         logger.warning(
             "Metric '%s': %d interior %s period(s) had no row and were filled "
@@ -365,7 +396,7 @@ def _align_to_spine(
             first.date(),
         )
 
-    if len(leading) and kind == "flow":
+    if len(leading) and kind == "flow" and not sparse:
         shown = [str(d.date()) for d in leading[:5]]
         logger.warning(
             "Metric '%s': %d leading %s period(s) had no row and were filled "
@@ -385,6 +416,48 @@ def _align_to_spine(
             first.date(),
         )
 
+    record = None
+    if sparse:
+        # No rows at all is the all-quiet window, which for a declared-sparse
+        # source is the expected shape of a season with no events; it is
+        # counted under its own key so a reader can tell "one event, then
+        # quiet" from "nothing ever".
+        whole_window = len(spine) if first is None else 0
+        record = {
+            "first_row": None if first is None else str(first.date()),
+            "last_row": None if last_row is None else str(last_row.date()),
+            "leading": int(len(leading)),
+            "interior": int(len(interior)),
+            "trailing": int(len(trailing)),
+            "whole_window": int(whole_window),
+        }
+        record["filled"] = int(
+            record["leading"] + record["interior"] + record["trailing"] + record["whole_window"]
+        )
+        if record["filled"]:
+            logger.info(
+                "Metric '%s' (`sparse: true`): %d %s period(s) with no row were "
+                "filled with 0.0 by declaration — %d leading (before the first "
+                "row on %s), %d interior, %d trailing (after the last row on %s, "
+                "through %s)%s. An absent period on a sparse source is a zero by "
+                "the tree's own statement; a stale feed would look identical, "
+                "and the declaration is what says this is not one.",
+                metric_name,
+                record["filled"],
+                grain,
+                record["leading"],
+                record["first_row"],
+                record["interior"],
+                record["trailing"],
+                record["last_row"],
+                spine[-1].date() if len(spine) else end_date,
+                (
+                    "; the source returned no rows, so the whole window is filled"
+                    if whole_window
+                    else ""
+                ),
+            )
+
     if kind == "flow":
         s = s.fillna(0.0)
     elif kind == "stock":
@@ -396,7 +469,21 @@ def _align_to_spine(
             )
     # else: rate — the NaNs stay. Nothing is filled and nothing is refused;
     # the periods are undefined and travel that way (warned above).
-    return s.rename(metric_name).rename_axis("date").reset_index()
+    out = s.rename(metric_name).rename_axis("date").reset_index()
+    if record is not None:
+        out.attrs["sparse_fill"] = record
+    return out
+
+
+def sparse_kw(sparse: bool) -> Dict[str, bool]:
+    """The `sparse` keyword for a `fetch_metric` call, present only when set.
+
+    The fetch contract predates the flag and so does every stub of it in the
+    test suite and any third-party fetcher; a default-False keyword never
+    needs to be sent, so it is not — an unset flag reaches every
+    implementation as the signature it already had.
+    """
+    return {"sparse": True} if sparse else {}
 
 
 def undefined_periods(series: pd.Series) -> pd.DatetimeIndex:
@@ -489,6 +576,7 @@ class BaseDataFetcher(ABC):
         end_date: str,
         grain: str = "day",
         kind: str = "flow",
+        sparse: bool = False,
     ) -> pd.DataFrame:
         pass
 
@@ -660,6 +748,7 @@ class CloudDataFetcher(BaseDataFetcher):
         end_date: str,
         grain: str = "day",
         kind: str = "flow",
+        sparse: bool = False,
     ) -> pd.DataFrame:
         grain_dim = f"metric_time__{grain}"
         with self.client.session():
@@ -678,7 +767,7 @@ class CloudDataFetcher(BaseDataFetcher):
         df = _floor_labels(df, metric_name, grain)
         df = df.sort_values("date")
         return _align_to_spine(
-            df, metric_name, grain, kind, start_date, end_date, value_col=metric_name
+            df, metric_name, grain, kind, start_date, end_date, value_col=metric_name, sparse=sparse
         )
 
     def earliest_date(self, metric_name: str, grain: str = "day") -> Optional[str]:
@@ -809,6 +898,7 @@ class LocalDataFetcher(BaseDataFetcher):
         end_date: str,
         grain: str = "day",
         kind: str = "flow",
+        sparse: bool = False,
     ) -> pd.DataFrame:
         df = self._run_mf_query(metric_name, f"metric_time__{grain}", start_date, end_date)
         date_col = next((c for c in df.columns if "metric_time" in c.lower()), None)
@@ -821,7 +911,7 @@ class LocalDataFetcher(BaseDataFetcher):
         df = _floor_labels(df, metric_name, grain)
         df = df.sort_values("date")
         return _align_to_spine(
-            df, metric_name, grain, kind, start_date, end_date, value_col=metric_name
+            df, metric_name, grain, kind, start_date, end_date, value_col=metric_name, sparse=sparse
         )
 
     def fetch_metric_sliced(
@@ -1005,6 +1095,7 @@ class WarehouseDataFetcher(BaseDataFetcher):
         end_date: str,
         grain: str = "day",
         kind: str = "flow",
+        sparse: bool = False,
     ) -> pd.DataFrame:
         sql = self.metric_sql.get(metric_name)
         if sql is None:
@@ -1046,7 +1137,7 @@ class WarehouseDataFetcher(BaseDataFetcher):
             )
 
         return _align_to_spine(
-            df, metric_name, grain, kind, start_date, end_date, value_col="value"
+            df, metric_name, grain, kind, start_date, end_date, value_col="value", sparse=sparse
         )
 
     def earliest_date(self, metric_name: str, grain: str = "day") -> Optional[str]:
@@ -1378,6 +1469,7 @@ class MockDataFetcher(BaseDataFetcher):
         end_date: str,
         grain: str = "day",
         kind: str = "flow",
+        sparse: bool = False,
     ) -> pd.DataFrame:
         start = pd.to_datetime(start_date)
         end = pd.to_datetime(end_date)

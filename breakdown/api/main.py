@@ -1005,6 +1005,10 @@ async def health(request: Request):
         "data_through": str(through.date()) if through is not None else None,
         "data_through_bounded_by": _data_through_bounded_by(data) if data is not None else [],
         "short_series": dict(data.short_series) if data is not None else {},
+        # Same standing as `short_series`: which sparse metrics had periods
+        # filled by declaration, and how many (#112). Metric names, dates and
+        # counts only.
+        "sparse_fills": dict(data.sparse_fills) if data is not None else {},
     }
 
 
@@ -1205,6 +1209,7 @@ async def get_meta(request: Request):
             "data_from": {},
             "earliest_available": {},
             "short_series": {},
+            "sparse_fills": {},
             "fitted": [],
         }
     # A metric whose data edge is unknown is reported as `null`, not omitted.
@@ -1253,6 +1258,13 @@ async def get_meta(request: Request):
         # covered … `paid_spend` runs […]" can find the feed without the
         # server log.
         "short_series": dict(data.short_series),
+        # Per `sparse: true` metric, the periods the load filled with zero by
+        # the tree's own declaration (GitHub #112): `{metric: {first_row,
+        # last_row, leading, interior, trailing, whole_window, filled}}`,
+        # present only where something was filled. The complement of
+        # `short_series`: that says what a short series *cost* the tree,
+        # this says what a declared-sparse one was *given* instead.
+        "sparse_fills": dict(data.sparse_fills),
         # `list(...)` snapshots the keys in one bytecode op rather than
         # iterating lazily: `run_rca` mutates this dict from a worker thread
         # (it is handed the cache directly and fits on demand), so a lazy

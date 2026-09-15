@@ -41,7 +41,7 @@ about the whole process rather than one tree.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/` | A one-line "the API is running" banner carrying no tree data. Open even under `BREAKDOWN_REQUIRE_AUTH` |
-| `GET` | `/health` | Always 200. `{"status": "ok", provider, metrics, state, data_through, data_through_bounded_by, short_series}`, or `{"status": "degraded", "error_kind": …, "error": …}` when the default tree can't serve. `data_through` is the date the loaded data runs through — the tree-wide as-of date, the *earliest* of the metrics' last fully covered dates (the anchor the node cards and the goal progress use), kept at the earliest edge even though per-metric windows let analyses that do not read the shortest series run past it, because a max would keep a stale feed looking fresh — so a monitor can alert on a serve whose data has stopped advancing (GitHub #117). `null` when nothing has been fetched yet (`state` is `not_loaded` or `loading` for a lazily loaded directory tree, or the provider is `none`), never a date taken from the requested window. `data_through_bounded_by` names the metric(s) whose edge it is — the feed to widen or repair — and `short_series` is `/meta`'s record of every metric that stops before its grain's reach, `{}` when clean. `error_kind` is a stable classification (`parse_error` \| `data_load_error` \| `auth_config_error` \| `discovery_error`) and `error` a generic sentence — never the exception text, which can carry the tree's SQL or a provider's hostnames and this route is deliberately open (roadmap C43). The full diagnostic is in the server log and on the auth-gated `GET /trees` card. Liveness for orchestrators; the body, not the status code, says whether the tree is degraded. Open even under `BREAKDOWN_REQUIRE_AUTH` |
+| `GET` | `/health` | Always 200. `{"status": "ok", provider, metrics, state, data_through, data_through_bounded_by, short_series, sparse_fills}`, or `{"status": "degraded", "error_kind": …, "error": …}` when the default tree can't serve. `data_through` is the date the loaded data runs through — the tree-wide as-of date, the *earliest* of the metrics' last fully covered dates (the anchor the node cards and the goal progress use), kept at the earliest edge even though per-metric windows let analyses that do not read the shortest series run past it, because a max would keep a stale feed looking fresh — so a monitor can alert on a serve whose data has stopped advancing (GitHub #117). `null` when nothing has been fetched yet (`state` is `not_loaded` or `loading` for a lazily loaded directory tree, or the provider is `none`), never a date taken from the requested window. `data_through_bounded_by` names the metric(s) whose edge it is — the feed to widen or repair — and `short_series` is `/meta`'s record of every metric that stops before its grain's reach, `{}` when clean. `error_kind` is a stable classification (`parse_error` \| `data_load_error` \| `auth_config_error` \| `discovery_error`) and `error` a generic sentence — never the exception text, which can carry the tree's SQL or a provider's hostnames and this route is deliberately open (roadmap C43). The full diagnostic is in the server log and on the auth-gated `GET /trees` card. Liveness for orchestrators; the body, not the status code, says whether the tree is degraded. Open even under `BREAKDOWN_REQUIRE_AUTH` |
 | `GET` | `/manifest` | Which deployment answered: `{app, version, status, demo?, default_tree, snapshots?}`. `demo` echoes the `BREAKDOWN_DEMO_*` env vars the deploy stamped (slug, vertical, dataset); `default_tree` is `{id, title, provider, metric_count, state}` — deliberately not the full index card, whose `load_error` this open route must not carry (the same C43 rule `/health` follows); `snapshots` reports count and latest `fetched_at` from the snapshot store. Metadata only. Open even under `BREAKDOWN_REQUIRE_AUTH` |
 | `GET` | `/trees` | Every tree: title, owner, metric count, `state` (`loaded` \| `not_loaded` \| `loading` \| `error`), plus `period`/`goal` where declared and `progress` for a loaded tree that has a goal. Reads parsed YAML only and never triggers a data load |
 | `POST` | `/trees/{id}/load` | Fetch one tree's data now, and return its updated index card |
@@ -88,6 +88,38 @@ see that `paid_spend` runs to 08-08 while the tree runs to 08-26. Nothing is
 filled in — an analysis that reads a short metric stops at its edge and the
 refusal names the metric, and the remedy is to widen or repair the named
 source, or drop it from the tree.
+
+**`sparse_fills`** — the complement, for the one case where filling *is* the
+declared answer: a `kind: flow` metric with [`sparse: true`](yaml-reference.md#sparse-sources-an-absent-period-is-a-zero)
+says its source emits a row only when something happened, so the load fills
+every period with no row — the trailing run included, which is otherwise
+trimmed — with `0` by the tree's own statement, and records what it did:
+
+```json
+{
+  "flip_comms": {
+    "first_row": "2026-07-30",
+    "last_row": "2026-07-30",
+    "leading": 0,
+    "interior": 0,
+    "trailing": 35,
+    "whole_window": 0,
+    "filled": 35
+  }
+}
+```
+
+Keyed by metric, present only for metrics where something was filled (a
+declared-sparse metric that arrived dense — a dbt metric with a timespine
+fill — records nothing); `{}` when none. `first_row`/`last_row` are the
+period-start labels of the first and last rows the source actually returned
+(`null` when it returned none, in which case `whole_window` counts the whole
+spine), the three edge counts say where the zeros went, and `filled` is their
+sum. A tail of declared zeros is exactly what a stale feed on such a metric
+would also look like; the record is what lets a reader check `last_row`
+against what they expect of the source. `data_through` for a sparse metric
+reports the window's end, since by declaration the source is complete
+through it.
 
 ## `GET /metrics/{name}/query`
 
