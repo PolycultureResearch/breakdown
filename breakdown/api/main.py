@@ -28,6 +28,7 @@ from breakdown.api.trees import (
 )
 from breakdown.data_fetch import (
     SliceNotSupported,
+    SliceSelection,
     provider_query_name,
 )
 from breakdown.engine.model import (
@@ -42,7 +43,7 @@ from breakdown.engine.model import (
 from breakdown.engine.rca import resolve_reference_window, run_rca, shapley_attribution
 from breakdown.engine.simulate import ScenarioRequest, run_scenario, validate_cold_start
 from breakdown.engine.slices import entity_flows, slice_attribution
-from breakdown.grains import next_start
+from breakdown.grains import next_start, snap_window
 from breakdown.loading import (
     build_fetcher,
     fetch_all_metrics,
@@ -1722,27 +1723,63 @@ async def root_cause_analysis(
     return result
 
 
-def _fetch_sliced_cached(tree, parser, metric, dimension_source, start, end) -> pd.DataFrame:
+def _fetch_sliced_cached(
+    tree, parser, metric, dimension_source, start, end, selection=None
+) -> pd.DataFrame:
     """Read-through slice cache: one provider query per
-    (metric, dimension, grain, window), reused across requests. The cache is
-    the tree's own — two trees naming the same metric are two independent
-    nodes, with independent fetches."""
-    key = (metric.name, dimension_source, metric.grain, start, end)
+    (metric, dimension, grain, window[, selection]), reused across requests.
+    The cache is the tree's own — two trees naming the same metric are two
+    independent nodes, with independent fetches.
+
+    A frame the provider rolled up answers one selection (top_k / values /
+    the two windows it ranked over) and no other, so the selection is part
+    of its key; a whole frame (`selection=None`) keeps the old key and still
+    serves every selection, folded by the engine."""
+    key = (metric.name, dimension_source, metric.grain, start, end, selection)
     cached = tree.slice_cache.get(key)
     if cached is not None:
         return cached
     provider_type = parser.config.provider.type
     query_name = provider_query_name(provider_type, metric)
-    df = tree.fetcher.fetch_metric_sliced(
-        query_name,
-        dimension_source,
-        start,
-        end,
-        grain=metric.grain,
-        kind=metric.kind,
-    )
+    kwargs = {"grain": metric.grain, "kind": metric.kind}
+    if selection is not None:
+        kwargs["selection"] = selection
+    df = tree.fetcher.fetch_metric_sliced(query_name, dimension_source, start, end, **kwargs)
     tree.slice_cache[key] = df
     return df
+
+
+def _slice_selection(defn, spec, reference_start, reference_end, analysis_start, analysis_end):
+    """The selection a provider may fold in its query (roadmap C32): the
+    dimension's `top_k` / `values`, and the two windows snapped to the
+    metric's grain — exactly the periods `slice_attribution` ranks over."""
+    snapped_ref = snap_window(reference_start, reference_end, defn.grain)
+    snapped_an = snap_window(analysis_start, analysis_end, defn.grain)
+    if snapped_ref is None or snapped_an is None:
+        return None  # slice_attribution refuses this by name; fetch whole
+    # Bare ISO dates, never `YYYY-MM-DD 00:00:00`: the bounds become string
+    # literals compared against a DATE_TRUNC result, and a DATE column beside
+    # a timestamp-shaped literal is a type error on BigQuery.
+    day = lambda d: str(pd.Timestamp(d).date())  # noqa: E731
+    return SliceSelection(
+        top_k=int(spec.top_k),
+        values=tuple(str(v) for v in spec.values) if spec.values is not None else None,
+        rank_windows=(
+            (day(snapped_ref.first_start), day(snapped_ref.last_end)),
+            (day(snapped_an.first_start), day(snapped_an.last_end)),
+        ),
+    )
+
+
+def _slice_rollup_mode() -> str:
+    """`sql` (default) lets a provider fold `top_k` in its query; `client`
+    fetches every sliced frame whole, which is what a deployment wants when
+    it relies on sliced snapshots for offline re-runs (docs/deploying.md)."""
+    mode = os.environ.get("BREAKDOWN_SLICE_ROLLUP", "sql").strip().lower()
+    if mode not in ("sql", "client"):
+        logger.warning("BREAKDOWN_SLICE_ROLLUP=%r is not 'sql' or 'client'; using 'sql'.", mode)
+        return "sql"
+    return mode
 
 
 def _fetch_flows_cached(
@@ -1839,8 +1876,7 @@ def _run_slice(
     span_start = min(reference_start, analysis_start)
     span_end = max(reference_end, analysis_end)
     _require_window_loaded(data, span_start, span_end)
-    sliced = _fetch_sliced_cached(tree, parser, defn, spec.source, span_start, span_end)
-    weight_sliced = None
+    weight_defn = None
     if defn.kind == "rate":
         weight_defn = parser.get_metric(spec.weight)
         # Backstop only: `Parser._validate_dimension_weights` refuses this at
@@ -1852,8 +1888,32 @@ def _run_slice(
                 f"'{spec.weight}' at grain '{weight_defn.grain}'; sliced weights "
                 "must share the rate's grain."
             )
+    # Fold outside top_k in the warehouse where the provider can do it
+    # exactly (roadmap C32); otherwise fetch whole and say why. Asked once,
+    # naming the weight, so a rate and its weight fold the same slices.
+    provider_type = parser.config.provider.type
+    selection = _slice_selection(
+        defn, spec, reference_start, reference_end, analysis_start, analysis_end
+    )
+    rollup_reason = None
+    if _slice_rollup_mode() == "client":
+        rollup_reason = "BREAKDOWN_SLICE_ROLLUP=client: sliced frames are fetched whole."
+    elif selection is None:
+        rollup_reason = "no whole period in a window; fetched whole."
+    else:
+        rollup_reason = tree.fetcher.slice_rollup_refusal(
+            provider_query_name(provider_type, defn),
+            spec.source,
+            defn.kind,
+            provider_query_name(provider_type, weight_defn) if weight_defn else None,
+        )
+    if rollup_reason is not None:
+        selection = None
+    sliced = _fetch_sliced_cached(tree, parser, defn, spec.source, span_start, span_end, selection)
+    weight_sliced = None
+    if weight_defn is not None:
         weight_sliced = _fetch_sliced_cached(
-            tree, parser, weight_defn, spec.source, span_start, span_end
+            tree, parser, weight_defn, spec.source, span_start, span_end, selection
         )
     # Whether these slices are expected to sum comes from the binding, not from
     # the residual they produce — see `BaseDataFetcher.slice_additivity`.
@@ -1873,6 +1933,14 @@ def _run_slice(
         additivity=additivity,
     )
     result["reference_defaulted"] = reference_defaulted
+    # The engine reports which side folded; the reason a whole fetch happened
+    # is known here, not there (rule 1: the substitute path is named).
+    rollup = dict(result.get("rollup") or {"where": "client"})
+    if rollup.get("where") != "sql" and "reason" not in rollup:
+        rollup["reason"] = rollup_reason or (
+            "the provider fetched the sliced frame whole; top_k was applied after the fetch."
+        )
+    result["rollup"] = rollup
 
     # Entity flows are a *diagnostic alongside* the attribution, never a second
     # decomposition of the same gap: they compare window-level sets, which do

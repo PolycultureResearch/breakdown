@@ -21,7 +21,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from breakdown.data_fetch import MissingProviderExtra, _extra_hint
+from breakdown.data_fetch import MissingProviderExtra, SliceSelection, _extra_hint
 from breakdown.grains import GRAINS
 from breakdown.parser import BindingDimension, BindingSpec
 
@@ -287,14 +287,22 @@ def build_query(
     end_date: str,
     dialect: str = "",
     dimension: Optional[str] = None,
+    selection: Optional[SliceSelection] = None,
 ) -> str:
     """Compile `bind` into dialect SQL returning `[date, value]`, or
     `[date, slice, value]` when `dimension` names one of its dimensions.
 
     `dialect` is a sqlglot dialect name (`duckdb`, `snowflake`, `bigquery`,
     `databricks`, `postgres`, …); the empty string emits generic SQL.
+
+    With a `selection` (sliced queries only), the slices outside `top_k` /
+    `values` are folded into `__other__` **in the warehouse** — see
+    `_rolled_up` for the contract that makes the result the frame the engine
+    would have built from the whole thing.
     """
     sqlglot = _require_sqlglot()
+    if selection is not None and dimension is None:
+        raise ValueError("a slice selection needs a dimension to select over")
 
     if bind.agg == "last":
         # A stock's period value is its last snapshot, which needs a window
@@ -331,6 +339,26 @@ def build_query(
         selects.append(f'{slice_expr} AS "{SLICE_COL}"')
         group_by.append("2")
 
+    read = _parse_dialect(dialect)
+    if selection is not None:
+        # The roll-up wraps an inner query with internal `bd_*` aliases (never
+        # the quoted public names — see `build_resolved_slice_query` for why),
+        # and a ratio hands its two sums up separately so `__other__` can be
+        # Σnum / Σden rather than a mean of ratios.
+        inner_selects = [f"{date_expr} AS bd_date", f"{slice_expr} AS bd_slice"]
+        if bind.agg == "ratio":
+            num = _qualified(bind.numerator, fact)
+            den = _qualified(bind.denominator, fact)
+            inner_selects += [f"SUM({num}) AS bd_num", f"SUM({den}) AS bd_den"]
+        else:
+            inner_selects.append(f"{_aggregate(bind, _qualified(bind.measure, fact))} AS bd_value")
+        inner = sqlglot.select(*inner_selects, dialect=read).from_(source, dialect=read)
+        for join in joins:
+            inner = inner.join(join, join_type="LEFT", dialect=read)
+        inner = _bounded(inner, bind, read, start_date, end_date, fact)
+        inner = inner.group_by("1", "2", dialect=read)
+        return _rolled_up(inner, selection, ratio=bind.agg == "ratio", read=read, dialect=dialect)
+
     if bind.agg == "ratio":
         num = _qualified(bind.numerator, fact)
         den = _qualified(bind.denominator, fact)
@@ -342,12 +370,140 @@ def build_query(
         value_expr = _aggregate(bind, _qualified(bind.measure, fact))
     selects.append(f'{value_expr} AS "{VALUE_COL}"')
 
-    read = _parse_dialect(dialect)
     query = sqlglot.select(*selects, dialect=read).from_(source, dialect=read)
     for join in joins:
         query = query.join(join, join_type="LEFT", dialect=read)
     query = _bounded(query, bind, read, start_date, end_date, fact)
     query = query.group_by(*group_by, dialect=read).order_by(*group_by, dialect=read)
+    return query.sql(dialect=dialect, pretty=True)
+
+
+# Internal column names the roll-up returns beside the public three. The
+# provider reads them off the frame and translates them into the
+# `SLICE_ROLLUP` attribute; they never reach the engine.
+ROLLUP_OTHER_COL = "bd_other"
+ROLLUP_N_DISTINCT_COL = "bd_n_distinct"
+ROLLUP_N_FOLDED_COL = "bd_n_folded"
+# `_select_slices` keeps the top_k by mean |value| with exact ties broken by
+# name. Two float sums of the same numbers in a different order can differ in
+# the last bit, and that must never decide which side folds a slice — so the
+# SQL keeps everything within this relative distance of the k-th volume and
+# the client, which has all of those raw, makes the final call with its own
+# arithmetic. Ties in real data are rare and near-ties rarer; the cost of the
+# margin is a handful of extra raw slices on a knife-edge, never a wrong fold.
+_RANK_TOLERANCE = 1e-9
+
+
+def _sql_literal(value: str, read) -> str:
+    """A string literal spelled the way the *read* dialect escapes it — a
+    doubled quote is two adjacent literals to a backslash-escaping parser."""
+    return _require_sqlglot().exp.Literal.string(str(value)).sql(dialect=read)
+
+
+def _rolled_up(inner, selection: SliceSelection, *, ratio: bool, read, dialect: str) -> str:
+    """Wrap a sliced query so the warehouse folds the unselected slices.
+
+    `inner` yields one row per (bd_date, bd_slice) with `bd_value`, or with
+    `bd_num`/`bd_den` for a ratio. The result is `[date, slice, value]` plus
+    `bd_other` (1 on the fold rows, whose `slice` is NULL), and the constant
+    columns `bd_n_distinct` / `bd_n_folded`.
+
+    What it reproduces, and how (roadmap C32):
+
+    * **Ranking** is by Σ|value| over the periods inside `rank_windows` —
+      the engine ranks by the mean over the union of the two snapped windows
+      after filling absent flow periods with 0, and the mean's denominator is
+      the same for every slice, so the order is the same. A ratio ranks by
+      its denominator, which is the weight the engine ranks a rate by.
+    * **The cut** is the k-th largest per-slice volume; every slice within
+      `_RANK_TOLERANCE` of it is returned raw (so ties, and near-ties that
+      float summation order could flip, are decided by the client's own
+      tie-break); fewer than k slices means nothing folds.
+    * **Pinned `values`** compare on the dimension value's text form
+      (`COALESCE(CAST(… AS VARCHAR), '__null__')`), which is what the engine
+      compares pins against too. For a text dimension that is identical; a
+      boolean or float dimension can render differently in SQL than in
+      Python, in which case the pinned slice folds and the engine's "pinned
+      values not present" caveat says so.
+    * **The fold** is SUM over the folded slices per period, exactly the
+      engine's `wide[folded].sum(axis=1)`; for a ratio it is Σnum / Σden, or
+      0 where Σden is 0 — the engine's weighted merge of per-slice rates by
+      their weights, which is the same number when the weight *is* the
+      denominator, and the provider only offers the roll-up when it is.
+    * **Kept rows are the dimension's raw value**, untouched, so labels are
+      whatever `str()` made of them before; the fold rows carry NULL and
+      `bd_other = 1`, which the provider relabels `__other__`.
+    """
+    sqlglot = _require_sqlglot()
+    in_windows = (
+        " OR ".join(
+            f"(bd_date >= {_sql_literal(a, read)} AND bd_date <= {_sql_literal(b, read)})"
+            for a, b in selection.rank_windows
+        )
+        or "1 = 0"
+    )
+    volume_of = "bd_den" if ratio else "bd_value"
+    rows = (
+        f"SELECT *, SUM(CASE WHEN {in_windows} THEN ABS({volume_of}) ELSE 0 END) "
+        "OVER (PARTITION BY bd_slice) AS bd_volume FROM bd_sliced"
+    )
+    volumes = "SELECT DISTINCT bd_slice, bd_volume FROM bd_rows"
+    if selection.values is not None:
+        pins = ", ".join(_sql_literal(v, read) for v in selection.values) or "NULL"
+        kept = f"COALESCE(CAST(bd_slice AS VARCHAR), {_sql_literal('__null__', read)}) IN ({pins})"
+        cut = "SELECT NULL AS bd_cut WHERE 1 = 0"
+    else:
+        k = max(int(selection.top_k), 1)
+        cut = (
+            "SELECT bd_volume AS bd_cut FROM bd_volumes "
+            f"ORDER BY bd_volume DESC LIMIT 1 OFFSET {k - 1}"
+        )
+        kept = (
+            "((SELECT MAX(bd_cut) FROM bd_cut) IS NULL OR "
+            f"bd_volume >= (SELECT MAX(bd_cut) FROM bd_cut) * (1 - {_RANK_TOLERANCE!r}))"
+        )
+    stats = (
+        f"SELECT COUNT(*) AS {ROLLUP_N_DISTINCT_COL}, "
+        f"COALESCE(SUM(CASE WHEN {kept} THEN 0 ELSE 1 END), 0) AS {ROLLUP_N_FOLDED_COL} "
+        "FROM bd_volumes"
+    )
+    carried = "bd_num, bd_den" if ratio else "bd_value"
+    labeled = (
+        "SELECT bd_date, "
+        f"CASE WHEN {kept} THEN bd_slice ELSE NULL END AS bd_kept_slice, "
+        f"CASE WHEN {kept} THEN 0 ELSE 1 END AS {ROLLUP_OTHER_COL}, "
+        f"{carried} FROM bd_rows"
+    )
+    if ratio:
+        value_expr = (
+            f"CASE WHEN {ROLLUP_OTHER_COL} = 1 THEN "
+            "(CASE WHEN SUM(bd_den) > 0 THEN SUM(bd_num) / SUM(bd_den) ELSE 0 END) "
+            "ELSE SUM(bd_num) / NULLIF(SUM(bd_den), 0) END"
+        )
+    else:
+        value_expr = "SUM(bd_value)"
+    final = (
+        sqlglot.select(
+            f'bd_date AS "{DATE_COL}"',
+            f'bd_kept_slice AS "{SLICE_COL}"',
+            ROLLUP_OTHER_COL,
+            f'{value_expr} AS "{VALUE_COL}"',
+            f"(SELECT MAX({ROLLUP_N_DISTINCT_COL}) FROM bd_stats) AS {ROLLUP_N_DISTINCT_COL}",
+            f"(SELECT MAX({ROLLUP_N_FOLDED_COL}) FROM bd_stats) AS {ROLLUP_N_FOLDED_COL}",
+            dialect=read,
+        )
+        .from_("bd_labeled", dialect=read)
+        .group_by("1", "2", "3", dialect=read)
+        .order_by("1", "2", "3", dialect=read)
+    )
+    query = (
+        final.with_("bd_sliced", as_=inner, dialect=read)
+        .with_("bd_rows", as_=rows, dialect=read)
+        .with_("bd_volumes", as_=volumes, dialect=read)
+        .with_("bd_cut", as_=cut, dialect=read)
+        .with_("bd_stats", as_=stats, dialect=read)
+        .with_("bd_labeled", as_=labeled, dialect=read)
+    )
     return query.sql(dialect=dialect, pretty=True)
 
 
@@ -359,6 +515,7 @@ def build_resolved_slice_query(
     start_date: str,
     end_date: str,
     dialect: str = "",
+    selection: Optional[SliceSelection] = None,
 ) -> str:
     """A sliced query that sums back to the metric exactly (roadmap 3.8 §4).
 
@@ -392,6 +549,7 @@ def build_resolved_slice_query(
             end_date=end_date,
             dialect=dialect,
             dimension=dimension,
+            selection=selection,
         )
 
     sqlglot = _require_sqlglot()
@@ -438,6 +596,22 @@ def build_resolved_slice_query(
         end_date,
         fact,
     )
+    if selection is not None:
+        # Per-slice distinct-entity counts, then the roll-up sums them — which
+        # is what the engine does with the folded columns, and the reason a
+        # count folded here reads the same as one folded there.
+        inner = (
+            sqlglot.select(
+                "bd_date",
+                "bd_slice",
+                "COUNT(*) AS bd_value",
+                dialect=read,
+            )
+            .from_(ranked.subquery("bd_resolved"), dialect=read)
+            .where("bd_rn = 1", dialect=read)
+            .group_by("1", "2", dialect=read)
+        )
+        return _rolled_up(inner, selection, ratio=False, read=read, dialect=dialect)
     return (
         sqlglot.select(
             f'bd_date AS "{DATE_COL}"',

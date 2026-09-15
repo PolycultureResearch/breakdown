@@ -46,6 +46,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from breakdown.data_fetch import rolled_in_sql, slice_rollup
 from breakdown.engine.stats import (
     GAP_REL_EPS,
     MIN_CI_REPLICATES,
@@ -268,16 +269,33 @@ def _select_slices(
     wide: pd.DataFrame, top_k: int, pinned: Optional[List[str]]
 ) -> Tuple[List[str], List[str]]:
     """(kept, folded) slice names. Pinned values win; otherwise the top_k by
-    mean |value| (name tiebreak, for determinism), rest folded to __other__."""
-    names = list(wide.columns)
+    mean |value| (name tiebreak, for determinism), rest folded to __other__.
+
+    A column already named `__other__` is a provider's own roll-up (roadmap
+    C32: the warehouse folded the slices outside the selection before the
+    frame left it) and is never a candidate — it always folds, into the same
+    `__other__` the client-side fold produces, so the two paths meet in one
+    column whichever side did the work."""
+    names = [n for n in wide.columns if n != _OTHER]
+    provider_other = [_OTHER] if _OTHER in wide.columns else []
     if pinned is not None:
-        kept = [str(v) for v in pinned if str(v) in wide.columns]
+        kept = [str(v) for v in pinned if str(v) in names]
         folded = [n for n in names if n not in set(kept)]
-        return kept, folded
+        return kept, folded + provider_other
     ranked = sorted(names, key=lambda n: (-float(np.abs(wide[n].to_numpy(float)).mean()), n))
     kept = ranked[:top_k]
     folded = ranked[top_k:]
-    return sorted(kept), sorted(folded)
+    return sorted(kept), sorted(folded) + provider_other
+
+
+def _n_values(folded: List[str], rollup: Optional[Dict[str, Any]]) -> int:
+    """How many distinct dimension values `__other__` holds: the ones folded
+    here plus the ones the provider had already folded into its own
+    `__other__` column, which counts as its `n_folded` rather than as one."""
+    own = [f for f in folded if f != _OTHER]
+    if rollup is not None and rollup.get("where") == "sql":
+        return len(own) + int(rollup.get("n_folded", 0))
+    return len(folded)
 
 
 def _reconciliation(residual: np.ndarray, baseline: float) -> Dict[str, Any]:
@@ -588,9 +606,25 @@ def slice_attribution(
     # behave silently as "unknown", which is a typo'd caller learning nothing.
     if additivity not in ADDITIVITY:
         raise ValueError(f"additivity must be one of {ADDITIVITY}, got '{additivity}'.")
-    if wide.shape[1] > MAX_DISTINCT:
+    # Where the top_k fold happened (roadmap C32). A frame the provider rolled
+    # up already carries `__other__` and says how many values it holds; the
+    # cardinality gate then reads the provider's count, so a dimension that
+    # would have been refused whole is refused off a frame of a dozen rows.
+    rollup = slice_rollup(sliced) or {"where": "client"}
+    if (
+        kind == "rate"
+        and weight_sliced is not None
+        and (rolled_in_sql(sliced) != rolled_in_sql(weight_sliced))
+    ):
         raise ValueError(
-            f"Dimension '{dimension}' on '{defn.name}' returned {wide.shape[1]} "
+            f"Rate '{defn.name}' and its weight '{spec.weight}' were not rolled up "
+            "on the same side (one in SQL, one not), so their `__other__` would "
+            "fold different slices. Fetch both with the same selection, or neither."
+        )
+    n_distinct = int(rollup["n_distinct"]) if rollup.get("where") == "sql" else int(wide.shape[1])
+    if n_distinct > MAX_DISTINCT:
+        raise ValueError(
+            f"Dimension '{dimension}' on '{defn.name}' returned {n_distinct} "
             f"distinct values (max {MAX_DISTINCT}). Declare a `values:` pin-list "
             "or slice by a coarser dimension."
         )
@@ -633,6 +667,7 @@ def slice_attribution(
             single_period,
             caveats,
             additivity,
+            rollup,
         )
     else:
         result = _sum_attribution(
@@ -648,6 +683,7 @@ def slice_attribution(
             single_period,
             caveats,
             additivity,
+            rollup,
         )
 
     # `degenerate_bootstrap_spread` is the tree's own third state (roadmap C4a),
@@ -674,6 +710,10 @@ def slice_attribution(
                 else "ok"
             ),
             "caveats": caveats,
+            # Which side folded the slices outside top_k, and — when it was
+            # the warehouse — how many values the frame never carried. The
+            # caller fills in `reason` when it was the client and knows why.
+            "rollup": rollup,
         }
     )
     return result
@@ -735,6 +775,7 @@ def _sum_attribution(
     single_period,
     caveats,
     additivity="unknown",
+    rollup=None,
 ) -> Dict[str, Any]:
     """Flows and stocks: the sum identity's closed-form attribution.
 
@@ -811,7 +852,7 @@ def _sum_attribution(
         degenerate_spread = fields.pop("degenerate") or degenerate_spread
         row.update(fields)
         if g == _OTHER:
-            row["n_values"] = len(wide.columns) - len(kept)
+            row["n_values"] = _n_values(folded, rollup)
         rows.append(row)
     _rank_by_excess(rows, gap)
 
@@ -920,6 +961,7 @@ def _rate_attribution(
     single_period,
     caveats,
     additivity="unknown",
+    rollup=None,
 ) -> Dict[str, Any]:
     """Rates: the weight-blended mix/within decomposition."""
     weights = weights.reindex(all_dates)
@@ -1069,7 +1111,7 @@ def _rate_attribution(
         degenerate_spread = fields.pop("degenerate") or degenerate_spread
         row.update(fields)
         if g == _OTHER:
-            row["n_values"] = len(folded)
+            row["n_values"] = _n_values(folded, rollup)
         rows.append(row)
     _rank_by_excess(rows, gap)
 

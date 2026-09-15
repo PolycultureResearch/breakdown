@@ -578,6 +578,10 @@ def test_slice_endpoint_flow(sliced_env):
         assert abs(sum(r["excess"] for r in body["slices"])) < 1e-6
         # the fetched frame landed in the slice cache
         assert len(app.state.slice_cache) == 1
+        # The mock cannot fold top_k in a query, and the payload says so
+        # rather than implying the frame was bounded upstream (roadmap C32).
+        assert body["rollup"]["where"] == "client"
+        assert "Mock" in body["rollup"]["reason"]
 
 
 def test_slice_endpoint_rate_blend(sliced_env):

@@ -293,6 +293,18 @@ basis rewrites history behind you. Keep the restating version in the tree if
 you report on it, but do not make it an RCA target mid-period. The model would
 train on values that are still changing.
 
+**Sliced snapshots and the SQL roll-up.** On the `dbt` provider a sliced
+fetch folds everything outside a dimension's `top_k` into `__other__` in the
+generated query (roadmap C32), and a frame folded for one pair of windows
+answers no other, so it is served and never written as a snapshot. A
+whole-frame sliced snapshot that already exists is still served, and the
+engine folds it. If you rely on sliced snapshots — committing them so slice
+panels re-run offline, or surviving a warehouse outage — set
+`BREAKDOWN_SLICE_ROLLUP=client`: every sliced frame is then fetched whole and
+stored, widened to the loaded window, exactly as before. The trade is memory
+for reproducibility; each slice response says which you got in its `rollup`
+field.
+
 ---
 
 ## Environment variables
@@ -315,6 +327,7 @@ container or a scheduled job uses. The flag wins where both are set.
 | `BREAKDOWN_REQUIRE_AUTH` | (none) | unset | Gate every route but `/`, `/health`, `/ui`. Needs `BREAKDOWN_API_TOKEN` |
 | `BREAKDOWN_PUBLIC_URL` | (none) | `http://127.0.0.1:$BREAKDOWN_PORT` | Base URL for MCP `report_url` deep links, when the server is reached at anything else |
 | `BREAKDOWN_MAX_TRACE_BYTES` | (none) | `536870912` (512 MiB) | Byte budget for the fitted-model cache; `0` disables the byte bound |
+| `BREAKDOWN_SLICE_ROLLUP` | (none) | `sql` | `sql` lets the `dbt` provider fold `top_k` in its query; `client` fetches every sliced frame whole (and snapshots it) — see [Snapshots](#snapshots-fetch-once-refit-forever) |
 
 **`BREAKDOWN_MAX_TRACE_BYTES` is the one worth understanding before you size a
 box.** Fitted models are cached so a second RCA is fast, and the cache is

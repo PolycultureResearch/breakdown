@@ -37,7 +37,12 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from breakdown.data_fetch import BaseDataFetcher, _align_to_spine
+from breakdown.data_fetch import (
+    SLICE_ROLLUP,
+    BaseDataFetcher,
+    SliceSelection,
+    _align_to_spine,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -515,6 +520,13 @@ class SnapshotFetcher(BaseDataFetcher):
         the series came from cache."""
         return self.inner.slice_additivity(metric_name, dimension_source)
 
+    def slice_rollup_refusal(self, metric_name, dimension_source, kind, weight_metric=None):
+        """Delegates: whether the fold can happen in SQL is the binding's
+        property. Whether it *did* is answered per fetch, on the frame — a
+        whole-frame snapshot hit is served as it was stored and the engine
+        folds it, and the frame says so (see `fetch_metric_sliced`)."""
+        return self.inner.slice_rollup_refusal(metric_name, dimension_source, kind, weight_metric)
+
     def query_provenance(self, metric_name, dimension_source=None, **kw):
         """Delegates to the wrapped provider.
 
@@ -610,6 +622,7 @@ class SnapshotFetcher(BaseDataFetcher):
         end_date: str,
         grain: str = "day",
         kind: str = "flow",
+        selection: Optional[SliceSelection] = None,
     ) -> pd.DataFrame:
         sha = self._definition_sha(metric_name)
         if not self.refresh:
@@ -625,7 +638,42 @@ class SnapshotFetcher(BaseDataFetcher):
                     end_date,
                     grain,
                 )
+                if selection is not None:
+                    # Stored whole, so the fold happens in the engine, and the
+                    # payload says which side did it rather than implying the
+                    # warehouse bounded a frame that came off disk.
+                    df.attrs[SLICE_ROLLUP] = {
+                        "where": "client",
+                        "reason": "served from a whole-frame sliced snapshot; "
+                        "top_k was applied after the read.",
+                    }
                 return df
+
+        if selection is not None:
+            # A rolled-up frame answers one (top_k, values, windows) and no
+            # other, so it is not a snapshot: snapshots are the whole frame,
+            # widened to the loaded span, serving every window anyone asks
+            # for later. Fetched rolled, served, never stored — a deployment
+            # that wants slice snapshots for offline re-runs sets
+            # BREAKDOWN_SLICE_ROLLUP=client and gets whole frames written as
+            # before (docs/deploying.md).
+            logger.info(
+                "sliced fetch rolled up in SQL, not snapshotted: %s by %s [%s, %s] %s",
+                metric_name,
+                dimension_source,
+                start_date,
+                end_date,
+                grain,
+            )
+            return self.inner.fetch_metric_sliced(
+                metric_name,
+                dimension_source,
+                start_date,
+                end_date,
+                grain=grain,
+                kind=kind,
+                selection=selection,
+            )
 
         span_start, span_end = self._span(start_date, end_date)
         df = self.inner.fetch_metric_sliced(

@@ -5,6 +5,7 @@ import logging
 import re
 import shutil
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from types import ModuleType
 from typing import Any, Dict, Optional, Tuple
 
@@ -412,6 +413,64 @@ class SliceNotSupported(RuntimeError):
     """The provider cannot fetch a metric grouped by a business dimension."""
 
 
+# The slice roll-up (roadmap C32). `engine.slices._select_slices` keeps the
+# `top_k` slices by mean |value| over the two analysis windows (or a `values:`
+# pin-list) and folds the rest into `__other__` — after the whole sliced frame
+# is resident, which on a high-cardinality dimension is the thing rule 2 says
+# to bound. A provider that can push that selection into its query returns a
+# frame that already carries `__other__`, and says so on the frame:
+#
+#   df.attrs[SLICE_ROLLUP] == {"where": "sql", "n_distinct": N, "n_folded": M}
+#
+# where N is the number of distinct dimension values the unrolled query held
+# and M how many of them `__other__` folds. A provider that cannot (or chose
+# not to) leaves the attribute absent, or sets `{"where": "client",
+# "reason": …}` when it has something to say about why; `_select_slices` then
+# does exactly what it always did. The frame contract is otherwise unchanged:
+# `[date, slice, value]`, one row per (period, slice).
+#
+# The SQL side must return *at least* the slices the client would have kept,
+# never fewer: it keeps every slice whose ranking volume is within 1e-9 of the
+# k-th largest, and the client re-ranks among the fetched slices with its own
+# arithmetic and name tie-break, folding any extras into the same
+# `__other__`. So the published frame is the one the client-side path would
+# have produced, whichever side did the work — that is the whole contract,
+# and `tests/test_dbt_provider.py` holds both paths to it on the same data.
+SLICE_ROLLUP = "slice_rollup"
+
+
+@dataclass(frozen=True)
+class SliceSelection:
+    """Which slices an analysis will keep, so a provider can fold the rest
+    before the frame leaves the warehouse.
+
+    `rank_windows` are the inclusive `[first_period_start, last_period_end]`
+    bounds of the reference and analysis windows, already snapped to the
+    metric's grain: the client ranks over exactly the union of those periods
+    (`engine.slices.slice_attribution`'s `all_dates`), never the whole fetched
+    span, so the provider must too. `values` pinned wins over `top_k`.
+    """
+
+    top_k: int
+    values: Optional[Tuple[str, ...]]
+    rank_windows: Tuple[Tuple[str, str], ...]
+
+    @property
+    def pinned(self) -> Optional[list]:
+        return list(self.values) if self.values is not None else None
+
+
+def slice_rollup(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    """The roll-up record a sliced frame carries, or None (see SLICE_ROLLUP)."""
+    info = df.attrs.get(SLICE_ROLLUP)
+    return dict(info) if isinstance(info, dict) else None
+
+
+def rolled_in_sql(df: pd.DataFrame) -> bool:
+    info = slice_rollup(df)
+    return bool(info) and info.get("where") == "sql"
+
+
 class BaseDataFetcher(ABC):
     """
     Abstract Base Class for metric data fetching.
@@ -471,6 +530,28 @@ class BaseDataFetcher(ABC):
         raise SliceNotSupported(
             f"The {type(self).__name__} provider cannot classify entity flows "
             f"for '{metric_name}' by '{dimension_source}'."
+        )
+
+    def slice_rollup_refusal(
+        self,
+        metric_name: str,
+        dimension_source: str,
+        kind: str,
+        weight_metric: Optional[str] = None,
+    ) -> Optional[str]:
+        """Why this provider will fetch the sliced frame whole rather than
+        folding `top_k`/`values` into its query — or None when it can fold.
+
+        The caller asks once per analysis (for a rate, naming the weight
+        metric too, since the rate and its weight must fold the *same*
+        slices) and passes a `SliceSelection` to `fetch_metric_sliced` only
+        when the answer is None. Rule 1: a provider that fetches whole says
+        so in a sentence the payload carries, rather than silently doing the
+        roll-up somewhere else than the caller assumed.
+        """
+        return (
+            f"the {type(self).__name__} provider fetches sliced frames whole; "
+            "top_k is applied after the fetch."
         )
 
     def slice_additivity(self, metric_name: str, dimension_source: str) -> str:
