@@ -93,7 +93,14 @@ RCA_HOW_TO_READ = (
     "remedy worth naming. k̂ is itself an estimate: `khat_se` is its Monte-Carlo standard "
     "error, and `khat_borderline: true` means k̂ is within one of those of a band edge, so "
     "the band beside it is the side it happened to land on rather than a settled verdict — "
-    "narrate the worse of the two adjacent bands, and say an exact re-fit is what resolves it."
+    "narrate the worse of the two adjacent bands, and say an exact re-fit is what resolves it.\n"
+    "- `reference_sensitivity` re-ran this attribution under neighbouring reference blocks "
+    "(same fits, same analysis window). `status: stable` = the top cause and the gap's "
+    "direction survive moving the reference; `unstable` = they do not — say which block "
+    "changed what (`alternatives[].top_cause`, `.gap`) and present the published ranking as "
+    "one reading among several; `unavailable` = could not be checked (`reason`), which is "
+    "not stability. `gap_range` is a sensitivity band across the blocks tried, not an "
+    "interval: never add it to `ci_95` or narrate it as one."
 )
 
 SLICE_HOW_TO_READ = (
@@ -491,7 +498,7 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
         # ci_95: null inside contributions is meaningful (withheld interval)
         # and stays; node-level nulls are just absent features.
         nodes[name] = {k: v for k, v in compact.items() if v is not None}
-    return {
+    out = {
         "target": result["target"],
         "reference_window": result["reference_window"],
         "analysis_window": result["analysis_window"],
@@ -499,6 +506,23 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
         "nodes": nodes,
         "ranked_causes": result["ranked_causes"][:_MAX_RANKED_CAUSES],
     }
+    # Roadmap S23: whether the ranking survives a moved reference window. The
+    # verdict and its evidence travel together — an agent handed `unstable`
+    # with no `alternatives` cannot say *what* changed, and handed the
+    # alternatives with no verdict would have to invent the rule. Nulls inside
+    # each alternative are absent facts (no gap on a block that could not
+    # answer) and are trimmed; a null `gap_range`/`reason` at the top is a
+    # state (not computed / nothing to say) and stays.
+    sensitivity = result.get("reference_sensitivity")
+    if sensitivity is not None:
+        out["reference_sensitivity"] = {
+            **{k: v for k, v in sensitivity.items() if k != "alternatives"},
+            "alternatives": [
+                {k: v for k, v in alt.items() if v is not None}
+                for alt in sensitivity.get("alternatives") or []
+            ],
+        }
+    return out
 
 
 def compact_slice(result: Dict[str, Any]) -> Dict[str, Any]:

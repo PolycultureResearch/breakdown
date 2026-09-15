@@ -115,6 +115,36 @@ def _rca_fixture():
         "reference_window": {"start": "2024-01-01", "end": "2024-02-15"},
         "analysis_window": {"start": "2024-02-16", "end": "2024-04-09"},
         "reference_defaulted": False,
+        "reference_sensitivity": {
+            "status": "stable",
+            "top_cause": "m0",
+            "top_cause_stable": True,
+            "gap_sign_stable": True,
+            "gap_range": [-8200.0, -8000.0],
+            "reason": None,
+            "alternatives": [
+                {
+                    "shift": "one_period_earlier",
+                    "label": "one week earlier",
+                    "reference_window": {"start": "2023-12-25", "end": "2024-02-08"},
+                    "status": "ok",
+                    "reason": None,
+                    "gap": -8200.0,
+                    "top_cause": "m0",
+                    "note": None,
+                },
+                {
+                    "shift": "one_block_earlier",
+                    "label": "one whole block earlier",
+                    "reference_window": None,
+                    "status": "unavailable",
+                    "reason": "no loaded history before 2024-01-01 for a block one whole block earlier",
+                    "gap": None,
+                    "top_cause": None,
+                    "note": None,
+                },
+            ],
+        },
         "nodes": {"revenue": ok_node, "monthly_costs": skipped_node},
         "ranked_causes": [
             {"metric": f"m{i}", "score": 1.0 - i / 20, "via": "revenue"} for i in range(15)
@@ -130,6 +160,7 @@ def test_compact_rca():
         "reference_window",
         "analysis_window",
         "reference_defaulted",
+        "reference_sensitivity",
         "nodes",
         "ranked_causes",
     }
@@ -365,13 +396,12 @@ def test_how_to_read_guides():
         # confidently, forever. The entry also has to say what its absence
         # means, for the reason `khat_status` does.
         #
-        # Raised to 5800 for the windows rule (issue #114) — not a new field,
-        # but the one instruction that decides whether anything the agent
-        # narrates can be re-run: a field report lost the reference window of
-        # an analysis it later had to reproduce, and recovered it by matching
-        # a recorded actual against re-runs. The payload has always carried
-        # both windows; the guide never said to quote them.
-        assert 400 < len(guide) < 5800
+        # Raised to 5800 for the windows rule (issue #114) — the one instruction
+        # that decides whether anything the agent narrates can be re-run — and
+        # to 6000 for `reference_sensitivity` (roadmap S23): without it an
+        # agent reads `unstable` as a fault and `gap_range` as an interval,
+        # the second being the misreading the field exists to prevent.
+        assert 400 < len(guide) < 6000
     assert "unexplained" in RCA_HOW_TO_READ
     # Issue #114: both windows travel in the payload, and the guide has to say
     # they are what every figure is a contrast of — and to quote them.

@@ -1246,7 +1246,7 @@ scheduled start.
 | S20 | Zero-inflated and count likelihoods | ○ open — disclosure half scheduled first |
 | S21 | Fit through undefined periods by masking the likelihood | ○ optional — build on demand |
 | S22 | k̂'s own Monte-Carlo error, and a seeded manual-fit path | ✅ closed 2026-08-27 |
-| S23 | Reference-window sensitivity — the uncertainty the bootstrap never sees | ○ open |
+| S23 | Reference-window sensitivity — the uncertainty the bootstrap never sees | ✅ closed 2026-09-14 |
 | S24 | Known, dated interventions — a declared step/pulse term in the fit | ○ open — designed 2026-09-14 |
 | 3.4 | Counterfactual RCA (Horizon 3, not the S track) | ○ open |
 
@@ -1641,28 +1641,40 @@ event's own periods to size a one-off, is Box and Tiao (1975) intervention
 analysis with its claim stated on the payload: the shift coincident with the
 date, whatever caused it.
 
-**Reference-window sensitivity** — `S23`, ○ open. Named by the 2026-08-29
-grill as the weakest load-bearing assumption in the engine, and it is not one
-of the disclosed ones. Every number this engine publishes is a contrast of two
-window means, and the only uncertainty ever quantified — §2.5's block
-bootstrap — resamples periods *inside* the two windows. Nothing anywhere
-resamples the choice of window itself, and that choice is usually the
-engine's: `default_reference_window` applies four heuristics in sequence
-(4× the analysis length with a 28-day floor, whole-week rounding under
+**Reference-window sensitivity** — `S23`, ✅ closed 2026-09-14. Named by the
+2026-08-29 grill as the weakest load-bearing assumption in the engine, and it
+was not one of the disclosed ones. Every number this engine publishes is a
+contrast of two window means, and the only uncertainty quantified — §2.5's
+block bootstrap — resamples periods *inside* the two windows. Nothing
+resampled the choice of window itself, and that choice is usually the
+engine's: `default_reference_window` applies four heuristics in sequence (4×
+the analysis length with a 28-day floor, whole-week rounding under
 seasonality, a readability clamp, a coarse-period extension), none of which is
 a property of the data. Everything downstream moves with it — `baseline`,
 `gap`, `relative_change`, `share_of_gap`, `excess`, `localized`, and the
 entire `ranked_causes` ordering, since `_hop_weights` is a function of
-`share_of_gap` — and the payload's only signal is `reference_defaulted: true`,
-which discloses *that* the engine chose without saying what the choice cost.
-"Fixed" means: recompute the target's gap and the top-ranked cause under two
-or three neighbouring reference blocks and publish the spread — a
-sensitivity band, not a wider interval, because window choice is not sampling
-error and folding it into `ci_95` would misstate both. The minimal honest
-version is a named caveat beside `reference_defaulted`, the same move
-`unexplained_status` and `window_aggregate_reason` made. The test of done is
-the sentence a reader can finally evaluate: whether "checkout_conversion is
-the top cause" survives moving the reference window by one week.
+`share_of_gap` — and the payload's only signal was `reference_defaulted:
+true`, which disclosed *that* the engine chose without saying what the choice
+cost.
+
+What shipped is the version this entry asked for and no more: a sensitivity
+band, not a wider interval. `run_rca` re-attributes the same analysis window
+over the same fits under two neighbouring blocks — the published one shifted
+back one period and back one whole block length, clamped to the readable
+history — and publishes `reference_sensitivity`: whether the first-ranked
+cause and the gap's direction survive both (`stable`), which changed and to
+what when they do not (`unstable`), or that no neighbouring block fits inside
+the loaded data (`unavailable`, rendered everywhere as *unchecked*, never as
+fine). `gap_range` is kept out of `ci_95` deliberately: window choice is not
+sampling error, and folding it into the interval would misstate both. Two
+blocks are a probe, not a distribution over references — the honest
+statement is "the answer did / did not survive these two moves", and the
+field is worded that way on every surface. The sentence a reader can finally
+evaluate: whether "checkout_conversion is the top cause" survives moving the
+reference window by one week. What remains open is the stronger question this
+does not answer — the *distribution* of the top cause over a family of
+plausible references — which is a research item rather than a disclosure, and
+is not scheduled.
 
 ### 4.3 Explainability
 
@@ -1731,6 +1743,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-09-14 | **S23 shipped — the reference window is no longer the one input nobody resampled.** `run_rca` re-attributes under two neighbouring reference blocks (one period earlier, one whole block earlier; same fits, no new sampling) and publishes `reference_sensitivity`: whether the top cause and the gap's direction survive the move, the blocks tried with what each said, and a `gap_range` that is a sensitivity band by name — kept out of `ci_95`, because window choice is not sampling error. §4's table and §4.2 record the closure and what it deliberately does not claim (two blocks are a probe, not a distribution over references). No §3.2 weakness changed status: S23 was never listed there, because the engine's *disclosed* position (§2.5) was always that the bootstrap is within-window only; what changed is that the payload now says what the window choice cost, on every surface. |
 | 2026-09-14 | **S24 filed — a declared step/pulse term for known, dated interventions, designed and not built.** A field user re-ran an RCA under 0.2.0 on a ticketed-event tree and got the honest verdict — `ppc_status: severe` — for a history made of price flips and on-sale days, with nowhere to go inside the tool (issue #114); a marketing team raised the analysis-window half of the same shape the same day (a campaign flag constant over the fit window is dropped, correctly). §4 gains the item and its rationale; no §3.2 weakness changes, because S3 already discloses the misspecification on every surface and §2.5 already states within-window stationarity as assumed. The design (`step_change_design.md`) separates a step in the *fit history*, which is what the PPC scores and what the term fixes, from a step in the *analysis window*, which RCA measures by construction; keeps the intervention coefficients off the parent-ordered `beta` axis; keeps automatic changepoint placement out; and makes the fit-window exception an explicit per-intervention opt-in with its claim on the payload. |
 | 2026-08-31 | **C29, C30 and C34 shipped — the shared statistics moved into `engine/stats.py`, and the grill's worst numbers are refusals now.** One change, because the three were one defect: `rca.py`, `slices.py` and `simulate.py` each carried a private copy of the degeneracy guard, the finite filter and the gap epsilon, and the copies had drifted (the posterior branch had neither guard — that was C29's NaN payload; `slices` had the pre-C4 zero-width interval and the pre-C5 absolute epsilon — that was C30). `engine/stats.py` now holds the single public implementation (`sample_summary`, `share_of_gap`, `direction_fields`, `block_bootstrap_indices`, the epsilons) and `engine/windows.py` the window→scalar rules; all three modules import them. The H1 shape — a rate parent undefined inside the analysis window, outside the fit window — is refused by name before any attribution math (`attribution_failed` off-target, a 422 naming parent and dates on-target), on the argument that filtering the NaN replicates away would publish a quietly-censored window as if it were the asked-for one. The slice panel gains the tree's `degenerate_bootstrap_spread` state, withholds interval/probability/verdict together on a collapsed resampling, and C34's gate now requires `noise_level is False` — measured, not merely unwithheld. §3.2 #2 returns to ✅ and #8's defect half stays closed with its correction resolved; both corrections' text records the round trip. The strict-encoding invariant test now drives a probabilistic node through a stub fit and was verified failing against the pre-fix engine. |
 | 2026-08-30 | **S10 shipped — the posterior predictive check is now something you can look at.** The Metric tab gains a *Posterior predictive check* panel: the series the node was fitted on, against the 50% and 95% quantile bands of the replicates S3 draws, the median replicate, and the periods the 95% band misses. Same check, answer left in its original shape — *"`min` failed at p = 0.016"* does not say **where**, and on the demo's `trials_started` the picture does: a count floored at 6 whose model's 95% band reaches −2.4, read against a zero line the chart draws deliberately. **The roadmap's "nearly free once S3 computes it" was wrong, and that was the item's real content.** S3 builds its `(500 × n_periods)` replicate array inside the `pm.Model()` context and *discards* it under rule 2 — 3.16 MB for the replicates and 3.16 MB for the mean function on `trials_started`'s 790-day window, on every fit, in a cache budgeted in gigabytes — so what persists is four p-values and no per-period series at all. S10 persists **five quantiles plus the observed series**, computed while the draws are still in scope: 31.6 kB as numpy, 160 kB as the lists that ride on the fit, 88 kB as JSON, **0.6% of the 24.6 MB trace beside it**, and `_trace_nbytes` now counts it (and `dates`, which it had never counted) rather than trusting that ratio to hold. Recomputing on demand was rejected outright: `sample_posterior_predictive` needs the model *graph*, so a route would refit the node — a minute of NUTS to redraw a chart, against a second posterior the published p-values did not come from. It lives on `FitResult` behind `GET /metrics/{name}/ppc`, not in `diagnostics`, because that dict is copied whole onto `GET /metrics/{name}` and its `ppc` block onto every RCA node and every MCP payload — 88 kB × 106 nodes of chart data handed to an agent that cannot see a chart; `test_no_per_node_payload_carries_a_series` makes that structural rather than remembered. **The rendering pass found two defects the payload could not have had.** Plotly's default SI exponent format labels a formula node's identity residual of 4.5e-13 as `400f`, which reads as four hundred of something rather than as machine epsilon; and a five-entry Plotly legend in a 360 px sidebar wraps to five rows drawn *inside* the plot, over the densest part of the series. Fixed with powers of ten on the axis, the UI's own `fmt()` on every hovered number, and an HTML key beneath the chart. A third was a sentence: the caption asserted that fewer than 5% of periods fall outside an in-sample band "here", which is false on the very node the feature was built for (5.6%). Nothing is tinted by verdict — the geometry is the evidence, and a band drawn red on a node already labelled `severe` would be an illustration of a label rather than the thing behind it. |

@@ -768,8 +768,47 @@ or two of account, the account goes in this file under the row's ID.
 
 ## S23
 
-**Status at compression:** ○
+**Status at compression:** ○ · **Closed:** ✅ 2026-09-14 (account below)
 
 **Reference-window sensitivity** — every number the engine publishes is a contrast of two window means, and the only uncertainty ever quantified is *within*-window sampling; nothing resamples the choice of window, and that choice is usually the engine's own (`default_reference_window` applies four heuristics in sequence, none a property of the data). Everything downstream moves with it — `baseline`, `gap`, `share_of_gap`, `localized`, and the entire `ranked_causes` ordering — and the payload's only signal is `reference_defaulted: true`. Recompute the target's gap and the top-ranked cause under two or three neighbouring reference blocks and publish the spread; minimally, a named caveat beside `reference_defaulted` the way `unexplained_status` and `window_aggregate_reason` are named. From the [2026-08-29 grill](grill_2026_08_29.md)'s "weakest load-bearing assumption"; rationale in whitepaper §4.2
 
 **Why:** The module scrupulous enough to censor a direction probability at 1 − 1/500 says nothing about the single input with the largest influence on its headline answer — a reader cannot tell whether "X is the top cause" survives moving the reference window by one week
+
+**Shipped 2026-09-14.** The MVP the row named, and no more: two neighbouring
+reference blocks, not a resampling scheme. `run_rca` ends by re-running its own
+attribution — same analysis window, same cached fits, no new sampling — under
+the published block shifted back one period (seven days; a calendar month when
+the scope's coarsest grain is month) and back one whole block length, each
+clamped to `_earliest_readable_reference` (the floor the default already
+respects) and reported as unavailable, with the reason, when no readable
+history remains. The verdict is `reference_sensitivity.status`: `stable` when
+every alternative that could answer names the same first-ranked cause and the
+same gap direction (direction judged at the node's scale, C5's epsilon);
+`unstable` when either differs, with `top_cause_stable` / `gap_sign_stable`
+saying which and each alternative carrying what it became; `unavailable` when
+none could answer — and every surface renders that third state as *unchecked*,
+never as fine. `gap_range` spans the published gap and the answered
+alternatives and is a sensitivity band by name on all three surfaces
+(`docs/model.md`, `RCA_HOW_TO_READ`, `REFERENCE_SENSITIVITY_NOTE`), kept out
+of `ci_95` because window choice is not sampling error.
+
+Three judgments the row did not settle. **It runs on a chosen reference too**,
+not only a defaulted one: a chosen block is one choice among neighbours just
+as the engine's is, and the reader's question is the same. **The rule-3 path
+catches the engine's own refusals**: an alternative block the engine would
+422 on — coverage, an undefined rate target over that block, no whole period —
+is caught as `ValueError` and becomes that alternative's `reason`, verbatim,
+rather than failing the analysis or being silently skipped; a non-finite gap
+is withheld as `gap_unavailable`. **No new progress stage**: the alternatives
+are the attribution again, so `attributing` stays literally true of them (one
+rotating phrase was added). Cost is bounded by the count of shifts, measured
+on the demo tree in the PR; the O(2ⁿ) Shapley games it re-runs are capped one
+level down (rule 4).
+
+Tests are formula-only worlds in `tests/test_reference_sensitivity.py`, in the
+fast loop: a planted step whose verdict is `stable`; a prior `aov` bump placed
+exactly over the block one earlier, so that reference flips both the gap's
+sign and the top cause to `aov`; an analysis at the data start where no
+alternative fits (`unavailable`, not `stable`); a block shortened to the
+loaded history saying so; a rate target undefined over one alternative,
+withheld and still encoding strictly.

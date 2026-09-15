@@ -481,6 +481,30 @@ Unfitted probabilistic nodes in scope are fitted on demand, on data strictly bef
 
 `ranked_causes` is a documented heuristic. It propagates an influence score from the target up the ancestor tree, weighting each hop by the parent's `|share_of_gap|` (capped at 1) divided by the child's total gross parent movement, meaning the sum of every parent's `|share_of_gap|`, floored at 1 so a decomposition that sums tidily is never penalized. That divisor is what stops a parent scoring full marks on a gap its siblings cancelled: two parents at +165% and −62% both rank *below* a lone parent cleanly explaining 80%. Each row carries `via`, the child it was reached through, so a score can be traced back to the hop that produced it. A node no hop ever reached is omitted rather than listed at zero; `nodes` remains the full inventory of what was in scope. Use it as a triage ordering, not as a probability.
 
+`reference_sensitivity` says whether that answer survives moving the reference window (roadmap S23). Every number above is a contrast of two window means, and `ci_95` resamples periods *inside* the windows only; the reference block itself — usually the engine's own choice, per `reference_defaulted` — is not sampling error, so it is checked separately. The engine re-runs the attribution over the same cached fits under two neighbouring blocks, one period earlier (a week, or a month on a month-grain scope) and one whole block earlier, each clamped to the loaded history and reported:
+
+```json
+"reference_sensitivity": {
+  "status": "stable",
+  "top_cause": "order_count",
+  "top_cause_stable": true,
+  "gap_sign_stable": true,
+  "gap_range": [-8400.0, -7900.0],
+  "reason": null,
+  "alternatives": [
+    {"shift": "one_period_earlier", "label": "one week earlier",
+     "reference_window": {"start": "2023-12-25", "end": "2024-02-08"},
+     "status": "ok", "reason": null, "gap": -8400.0, "top_cause": "order_count", "note": null},
+    {"shift": "one_block_earlier", "label": "one whole block earlier",
+     "reference_window": null, "status": "unavailable",
+     "reason": "no loaded history before 2024-01-01 for a block one whole block earlier; …",
+     "gap": null, "top_cause": null, "note": null}
+  ]
+}
+```
+
+`status` is `stable` when every alternative that could answer names the same first-ranked cause and the same gap direction as the published windows, `unstable` when any differs (`top_cause_stable` / `gap_sign_stable` say which), and `unavailable` when none could answer — `reason` says why, and *unchecked is not stable*. `gap_range` spans the target's gap under the published block and every answered alternative; it is a sensitivity band, not an interval, and is never folded into `ci_95`. An alternative the engine refused (coverage, an undefined target over that block, no whole period) carries the refusal in `reason` with `gap: null`; a block shortened to fit the loaded history says so in `note`. The check runs whether or not the reference was defaulted; pass `reference_sensitivity=False` to `run_rca` in library use to skip it.
+
 See [model.md](model.md) for how to read `components`, `unexplained`, and the bootstrap's assumptions.
 
 ## `GET /progress/{run_id}`
