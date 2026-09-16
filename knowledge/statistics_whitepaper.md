@@ -1134,9 +1134,12 @@ rank as a cause. What makes it worth reading twice is *where* it was: inside
 `_align_to_spine`, the single shared date-alignment contract that `C1`/`C2`
 created **in order to end this class of defect**, and which warns correctly about
 interior gaps in the very next branch. The fix is a warning naming the fabricated
-periods; trimming them was rejected because per-grain frames inner-join, so
-trimming one late-starting node would delete those periods for every metric at
-that grain.
+periods; trimming them was rejected because per-grain frames inner-joined, so
+trimming one late-starting node would have deleted those periods for every
+metric at that grain. (That join became an outer join with per-metric windows
+on 2026-09-15 — GitHub #112 — so the structural half of that argument no
+longer holds; the fill stands on the per-series argument alone and its policy
+is open.)
 
 That seam has now produced **five of the six** silent-wrong-number defects this
 project had found by mid-August, and no other part of the system had produced

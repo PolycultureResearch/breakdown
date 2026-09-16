@@ -345,21 +345,31 @@ def test_health_ok():
         assert body["data_through"] == min(
             d for d in meta["data_through"].values() if d is not None
         )
-        assert body["grain_clipping"] == {}
+        assert body["short_series"] == {}
+        # Every metric shares the edge, so nothing is holding it back.
+        assert body["data_through_bounded_by"] == []
 
 
 def test_health_data_through_follows_the_shortest_series(monkeypatch):
-    """A frozen feed is what a stale serve looks like from outside, and the
-    inner join means nothing can be analyzed past it — so /health reports
-    the *min* edge, and names the metric that set it, rather than a max that
-    would still look fresh (the #112 shape, seen from a monitor)."""
+    """A frozen feed is what a stale serve looks like from outside — so
+    /health reports the *min* edge, and names the metric that set it, rather
+    than a max that would still look fresh (the #112 shape, seen from a
+    monitor). Since per-metric windows the other metrics can still be
+    analyzed past it, and `short_series` says exactly which one cannot."""
     _truncate_mock(monkeypatch, "daily_sessions", "2024-03-20")
     with TestClient(app) as client:
         body = client.get("/health").json()
+        meta = client.get("/meta").json()
     assert body["status"] == "ok"
     assert body["data_through"] == "2024-03-20"
-    assert body["grain_clipping"]["day"]["trailing"]["by"] == ["daily_sessions"]
-    assert body["grain_clipping"]["day"]["trailing"]["clipped_to"] == "2024-03-20"
+    assert body["data_through_bounded_by"] == ["daily_sessions"]
+    assert body["short_series"]["day"]["trailing"] == {
+        "reach": "2024-04-09",
+        "short": {"daily_sessions": {"ends": "2024-03-20", "periods": 20}},
+    }
+    # The others kept their range: the tree's window is still the full one.
+    assert meta["date_end"] == "2024-04-09"
+    assert meta["data_through"]["revenue"] == "2024-04-09"
 
 
 def test_manifest_reports_deployment_identity(monkeypatch):
@@ -470,7 +480,8 @@ def test_cold_start_boots_ok_not_degraded(cold_start_env):
             "metrics": 4,
             "state": "loaded",
             "data_through": None,
-            "grain_clipping": {},
+            "data_through_bounded_by": [],
+            "short_series": {},
         }
 
         meta = client.get("/meta").json()
@@ -1485,9 +1496,11 @@ def _truncate_mock(monkeypatch, metric: str, end: str):
     monkeypatch.setattr(MockDataFetcher, "fetch_metric", short)
 
 
-def test_meta_names_the_metric_that_clipped_a_grain(monkeypatch, caplog):
-    """One short-trailing series bounds the day-grain join for every metric;
-    `/meta` says which one and by how much, and the load log warned first."""
+def test_meta_names_the_metric_that_falls_short(monkeypatch, caplog):
+    """One short-trailing series used to bound the day-grain join for every
+    metric; now it bounds only itself. `/meta` says which one and by how
+    much, keeps the tree's window at the full reach, and the load log warned
+    first."""
     import logging
 
     _truncate_mock(monkeypatch, "daily_sessions", "2024-03-20")
@@ -1495,27 +1508,33 @@ def test_meta_names_the_metric_that_clipped_a_grain(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="breakdown.grains"):
         with TestClient(app) as client:
             meta = client.get("/meta").json()
+            series = client.get("/series").json()["metrics"]
 
-    assert meta["date_end"] == "2024-03-20"
-    assert meta["grain_clipping"] == {
+    assert meta["date_end"] == "2024-04-09"
+    assert meta["short_series"] == {
         "day": {
             "trailing": {
-                "by": ["daily_sessions"],
-                "clipped_to": "2024-03-20",
-                "others_reached": "2024-04-09",
-                "periods_dropped": 20,
+                "reach": "2024-04-09",
+                "short": {"daily_sessions": {"ends": "2024-03-20", "periods": 20}},
             }
         }
     }
-    # Per-metric freshness still tells the truth about the others.
+    # Per-metric range tells the truth about each one.
     assert meta["data_through"]["daily_sessions"] == "2024-03-20"
     assert meta["data_through"]["revenue"] == "2024-04-09"
-    assert "day grain clipped to 2024-03-20 by `daily_sessions`" in caplog.text
+    assert meta["data_from"]["revenue"] == "2024-01-01"
+    assert series["daily_sessions"]["dates"][-1] == "2024-03-20"
+    assert series["revenue"]["dates"][-1] == "2024-04-09"
+    # Absent is absent: no series carries a null or a zero for the missing tail.
+    assert None not in series["daily_sessions"]["values"]
+    assert "`daily_sessions` at 2024-03-20, 20 day period(s) short" in caplog.text
+    assert "nothing was clipped" in caplog.text
 
 
-def test_meta_grain_clipping_is_empty_when_series_align():
+def test_meta_short_series_is_empty_when_series_align():
     """Present and `{}` on an aligned tree — a stable key for the UI, not an
-    absence that could mean either 'nothing clipped' or 'older server'."""
+    absence that could mean either 'nothing short' or 'older server'."""
     with TestClient(app) as client:
         meta = client.get("/meta").json()
-    assert meta["grain_clipping"] == {}
+    assert meta["short_series"] == {}
+    assert set(meta["data_from"]) == set(meta["data_through"])

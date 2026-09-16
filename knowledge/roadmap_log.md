@@ -812,3 +812,59 @@ sign and the top cause to `aov`; an analysis at the data start where no
 alternative fits (`unavailable`, not `stable`); a block shortened to the
 loaded history saying so; a rate target undefined over one alternative,
 withheld and still encoding strictly.
+
+
+## Per-metric windows
+
+**Status:** ✅ shipped 2026-09-15 (GitHub #112, second suggestion; PR follows
+#121, which named the clip at load, and #126, which put the data edge on
+`/health`).
+
+**What was wrong.** `_align_to_spine` trims each series to its own covered
+range — correctly — and `build_grained` then inner-joined every series at a
+grain, so the shortest series at the grain bounded every sibling. A frozen
+ad-spend feed ending 2026-08-08 cut a production tree's day grain to ten
+periods; an event count with one row had cut it to one the week before. The
+tree loaded, `/health` was ok, and every daily `run_rca` failed later with
+"reference window not fully covered" while the metric responsible stayed
+anonymous. #121 made the clip loud. This makes it unnecessary, which
+`_align_to_spine`'s own docstring had called "the honest version".
+
+**What shipped.** `build_grained` outer-joins within each grain over the
+union of the metrics' ranges, reindexed onto the full run of periods so the
+frame stays gap-free by construction (contiguity is now checked per metric on
+its own frame *before* the join, so a hole inside one range is still refused
+by name rather than vanishing into a `NaN`). Each metric's own first and last
+period is recorded on `GrainedData.span_of`, and `series(m)` slices to it, so
+no consumer of a series ever sees the `NaN` outside a metric's range and
+nothing renders it as zero. `fit_frame` keeps its inner join — the only one
+left — so a fit's window is the intersection of the node's range and its
+parents', `MIN_FIT_PERIODS` is counted on that, `FitResult.dates` records it,
+and `GET /metrics/{name}` gained `fit_window` in the shape the RCA node
+payload already used. `derive_series` already inner-joined its parents, so a
+derived formula node is undefined outside the range every input covers.
+`_validate_coverage` names the series that stop short of a window
+(`GrainedData.spans_at`): the refusal reads "`paid_spend` runs [2026-06-01,
+2026-08-08]" instead of citing the grain. A target that does not read the
+short metric is unaffected, and its RCA payload is byte-identical to the same
+tree with the feed intact (tested).
+
+`grain_clipping` (#121, unreleased) is replaced by `short_series` on
+`GrainedData`, `/meta`, `/health` and MCP `get_tree`, because the fact worth
+disclosing changed: not "the grain was cut to X" (nothing is cut) but "these
+metrics stop at X, and analyses reading them cannot reach past it". One
+WARNING per grain still names every short metric, its edge and the periods
+short, and says in so many words that nothing was clipped and nothing was
+filled (rule 1). `/health`'s `data_through` stays the *min* of the metrics'
+edges — a stale feed is what a monitor is there to catch — and
+`data_through_bounded_by` names the metric holding it there; `/meta` adds
+`data_from` per metric.
+
+**What it deliberately does not do.** Nothing fills. S21 (masking the
+likelihood over undefined periods) is a different item and stays open. The
+leading-gap *fill* in `_align_to_spine` (C18) rested partly on the inner join
+— trimming one node's leading run would have deleted those periods for every
+sibling — and now rests on its per-series argument alone; whether to trim
+instead is a policy decision recorded in that docstring, not taken here. The
+UI's tree-wide as-of anchor (the min `data_through`) is unchanged on purpose.
+

@@ -783,6 +783,31 @@ def test_rank_causes_ignores_a_non_finite_share():
     assert scores["average_order_value"] == pytest.approx(0.4)
 
 
+def test_rank_causes_breaks_ties_by_name_not_by_set_order():
+    """Two parents of one identity with equal shares get exactly the same
+    term, and `nodes_in_scope` is a set, so their order used to depend on
+    the process's string-hash salt: the same RCA on two servers returned
+    the same numbers with `ranked_causes[41]`/`[42]` transposed (read-the-
+    numbers, 2026-09-15). A tie now breaks on the name, in every process."""
+    parser = Parser(JAFFLE_YAML)
+    scope = {"revenue", "order_count", "average_order_value", "daily_sessions"}
+    nodes_out = {
+        "revenue": {
+            "contributions": [
+                {"parent": "order_count", "share_of_gap": 0.5},
+                {"parent": "average_order_value", "share_of_gap": 0.5},
+            ]
+        },
+        "order_count": {"contributions": [{"parent": "daily_sessions", "share_of_gap": 0.0}]},
+        "average_order_value": {"contributions": []},
+        "daily_sessions": {"contributions": []},
+    }
+    for _ in range(3):
+        ranked = _rank_causes(parser.dag, "revenue", set(scope), nodes_out)
+        assert [r["metric"] for r in ranked[:2]] == ["average_order_value", "order_count"]
+        assert ranked[0]["score"] == ranked[1]["score"]
+
+
 _ZERO_VARIANCE_YAML = """
 metrics:
   - name: leads

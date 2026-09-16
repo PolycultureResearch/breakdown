@@ -217,7 +217,7 @@ Three things differ from a laptop run:
 
 - **Credentials must be headless.** The Databricks CLI OAuth `profile:` flow opens a browser, which a container can't. Use `token: ${DATABRICKS_TOKEN}` in the tree's provider block instead (see [`provider`](yaml-reference.md#provider) for `${VAR}` interpolation). If you must reuse a profile, mount both `~/.databrickscfg` and `~/.databricks/token-cache.json` read-only into the container.
 - **Startup failures degrade, not crash.** If the provider is unreachable (bad token, warehouse down), the server still starts: `GET /health` returns `{"status": "degraded", "error": …}`, data endpoints return 503, and the UI shows the error with a pointer to `breakdown doctor`. Fix the config and restart. There is no crash-loop to debug through.
-- **A healthy serve can still be stale.** `GET /health` also carries `data_through`, the date the loaded data runs through (the earliest metric's last covered date, so a frozen feed shows). A serve that has been up for a week on data that ends a week ago answers `ok` — point your monitor at `data_through` as well as `status` if that matters to you.
+- **A healthy serve can still be stale.** `GET /health` also carries `data_through`, the date the loaded data runs through (the earliest metric's last covered date, so a frozen feed shows), `data_through_bounded_by` (which metric holds it there), and `short_series` (every metric that stops before its grain's reach, and by how much). A serve that has been up for a week on data that ends a week ago answers `ok` — point your monitor at `data_through` as well as `status` if that matters to you. Since per-metric windows a frozen feed bounds only the analyses that read it; the other metrics keep their range, and the as-of date stays at the earliest edge so the monitor still sees the feed stop.
 - **The port is published, so the API is exposed.** The compose file passes the access-control variables through, but it cannot set them. If you export nothing, nothing is gated. See [Authentication](#authentication) above.
 
 ---
@@ -298,8 +298,8 @@ runs anywhere the YAML does, credentials or not.
 ```
 
 What it cannot see is anything that needs data: window coverage, a short
-series clipping a grain, identity checks on fetched formula nodes, fit
-readiness. A clean `check` means the tree will parse and start; `doctor` with
+series bounding the analyses that read it, identity checks on fetched formula
+nodes, fit readiness. A clean `check` means the tree will parse and start; `doctor` with
 an explicit window is the tool that proves it will serve. An unanswered rate
 denominator is reported as a `[WARN]` here because `serve` starts on it, while
 `doctor` fails it, since that is the trust gate.

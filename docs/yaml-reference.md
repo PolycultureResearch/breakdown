@@ -489,12 +489,14 @@ fabricated periods**, so check your startup logs for it.
 
 The honest fix is a **later `--start-date` for that tree**. Start the window
 where the metric actually starts, and fit only observed periods. (Trimming the
-leading run automatically is unavailable on purpose. Per-grain frames are
-assembled by inner join, so dropping one node's leading periods would delete them
-for *every* metric at that grain, a whole tree losing January because one node
-launched in March.) If the late-starting metric matters less than the history the
-rest of the tree needs, the alternative is to split it into its own tree with its
-own window.
+leading run automatically is not done today. Until per-metric windows shipped
+the reason was structural — per-grain frames were assembled by inner join, so
+dropping one node's leading periods would have deleted them for *every* metric
+at that grain. Since then each metric keeps its own range and a short series
+bounds only the analyses that read it, so the leading fill is a per-series
+policy awaiting its own decision rather than a constraint of the join.) If the
+late-starting metric matters less than the history the rest of the tree needs,
+the alternative is to split it into its own tree with its own window.
 
 **Rates over true-zero periods.** A seasonal business has stretches where the
 denominator is genuinely zero: nothing on sale, no sessions, no sends, nobody

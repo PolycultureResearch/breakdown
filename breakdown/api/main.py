@@ -8,7 +8,7 @@ import os
 import threading
 from contextlib import asynccontextmanager
 from importlib.resources import files
-from typing import Annotated, Any, Dict, MutableMapping, Optional, Tuple
+from typing import Annotated, Any, Dict, List, MutableMapping, Optional, Tuple
 
 import pandas as pd
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
@@ -985,15 +985,17 @@ async def health(request: Request):
     # production serve was down five days with `/health` the only thing being
     # polled, and it said ok). `data_through` is the tree-wide as-of date —
     # the *earliest* of the metrics' last fully covered dates, the same anchor
-    # the node cards and the goal progress use — because the within-grain
-    # inner join means nothing can be analyzed past the shortest series, and
-    # a stale feed is exactly the case where the max would still look fresh.
-    # `null` when nothing has been fetched (a lazily loaded tree before its
-    # first request, or `provider: none`), never a date invented from the
-    # requested window (rule 1); `state` says which. `grain_clipping` is the
-    # load-time record of which metric bounded which grain (#112), verbatim
-    # from `/meta`: metric names, ISO dates and counts, none of which is the
-    # SQL, hostname or exception text this open route must not carry (C43).
+    # the node cards and the goal progress use — and `data_through_bounded_by`
+    # names the metric(s) that set it. Still the min after per-metric windows
+    # (#112): a short series no longer clips its siblings, but a stale feed is
+    # still the fact a monitor is here to catch, and the max would keep looking
+    # fresh while it sat frozen. `null` when nothing has been fetched (a lazily
+    # loaded tree before its first request, or `provider: none`), never a date
+    # invented from the requested window (rule 1); `state` says which.
+    # `short_series` is the load-time record of which metrics fall short of
+    # their grain's reach, verbatim from `/meta`: metric names, ISO dates and
+    # counts, none of which is the SQL, hostname or exception text this open
+    # route must not carry (C43).
     through = _data_through(data) if data is not None else None
     return {
         "status": "ok",
@@ -1001,7 +1003,8 @@ async def health(request: Request):
         "metrics": len(parser.config.metrics),
         "state": tree.state,
         "data_through": str(through.date()) if through is not None else None,
-        "grain_clipping": dict(data.grain_clipping) if data is not None else {},
+        "data_through_bounded_by": _data_through_bounded_by(data) if data is not None else [],
+        "short_series": dict(data.short_series) if data is not None else {},
     }
 
 
@@ -1063,12 +1066,31 @@ def _data_through(data) -> Optional[pd.Timestamp]:
     """The tree-wide as-of date: the earliest of the metrics' last fully
     covered dates, or None when no metric's edge is known.
 
-    The *min*, not the max, because every analysis is bounded by the shortest
-    series at its grain — the anchor the node cards, the goal progress and
-    `/health` all share, so the three cannot drift apart.
+    The *min*, not the max: it is the date every metric in the tree has data
+    through, the one anchor the node cards, the goal progress and `/health`
+    all share, so the three cannot drift apart. Since per-metric windows
+    (#112) an analysis that does not read the shortest series may run past
+    this date; the anchor stays conservative on purpose, and
+    `_data_through_bounded_by` says which metric holds it there.
     """
     edges = [e for e in (data.data_through(n) for n in data.grain_of) if e is not None]
     return min(edges) if edges else None
+
+
+def _data_through_bounded_by(data) -> List[str]:
+    """The metric(s) holding the tree-wide `_data_through` back — the feed to
+    widen or repair when a monitor sees the date stop advancing.
+
+    Empty when every metric shares the edge: then nothing is holding anything
+    back, and a list of all 106 metrics would read as 106 stale feeds.
+    """
+    through = _data_through(data)
+    if through is None:
+        return []
+    edges = {n: data.data_through(n) for n in data.grain_of}
+    if all(e is None or e == through for e in edges.values()):
+        return []
+    return sorted(n for n, e in edges.items() if e == through)
 
 
 def _goal_progress(tree: TreeState) -> Optional[Dict[str, Any]]:
@@ -1180,8 +1202,9 @@ async def get_meta(request: Request):
             "grains": {m.name: m.grain for m in parser.config.metrics},
             "kinds": {m.name: m.kind for m in parser.config.metrics},
             "data_through": {},
+            "data_from": {},
             "earliest_available": {},
-            "grain_clipping": {},
+            "short_series": {},
             "fitted": [],
         }
     # A metric whose data edge is unknown is reported as `null`, not omitted.
@@ -1191,9 +1214,12 @@ async def get_meta(request: Request):
     # freshness row at all — a metric with no data quietly excluded from the
     # freshness calculation it should have been the worst case in.
     data_through = {}
+    data_from = {}
     for name in data.grain_of:
         through = data.data_through(name)
         data_through[name] = str(through.date()) if through is not None else None
+        span = data.span_of.get(name)
+        data_from[name] = str(span[0].date()) if span is not None else None
     return {
         "mode": "fitted",
         "tree": tree.id,
@@ -1205,21 +1231,28 @@ async def get_meta(request: Request):
         "kinds": dict(data.kind_of),
         # Inclusive last covered date per metric (end of its last observed
         # period) — the honest data edge, which may lag the requested window
-        # when a source mart is behind.
+        # when a source mart is behind. `data_from` is the other end: the
+        # first period the metric has, which may start after `date_start`
+        # (a channel switched on in March). Together they are the metric's
+        # own range, which since per-metric windows (#112) is the only range
+        # that bounds analyses reading it.
         "data_through": data_through,
+        "data_from": data_from,
         # Earliest date the provider has per metric (null = can't say), from
         # the background discovery task — dict(...) snapshots it for the same
         # worker-thread reason as `fitted` below. Lets the UI say "history
         # exists before --start-date; widen it to train on more".
         "earliest_available": dict(tree.earliest),
-        # Per grain, which metric's short series bounded the within-grain inner
-        # join and how many periods that cost every sibling (GitHub #112):
-        # `{grain: {trailing?: {by, clipped_to, others_reached,
-        # periods_dropped}, leading?: {...}}}`, `{}` when nothing was clipped.
-        # The same fact the load log warns about, so a reader who sees
-        # "reference window not fully covered" can find the cause without the
+        # Per grain, which metrics fall short of the grain's reach and by how
+        # much (GitHub #112): `{grain: {trailing?: {reach, short: {metric:
+        # {ends, periods}}}, leading?: {reach, short: {metric: {starts,
+        # periods}}}}}`, `{}` when every series agrees. Nothing is clipped by
+        # it any more — each metric keeps its own range — but an analysis
+        # that reads a short metric stops at its edge, and this is the same
+        # fact the load log warns about, so a reader who sees "not fully
+        # covered … `paid_spend` runs […]" can find the feed without the
         # server log.
-        "grain_clipping": dict(data.grain_clipping),
+        "short_series": dict(data.short_series),
         # `list(...)` snapshots the keys in one bytecode op rather than
         # iterating lazily: `run_rca` mutates this dict from a worker thread
         # (it is handed the cache directly and fits on demand), so a lazy
@@ -1453,6 +1486,7 @@ async def get_metric(name: str, request: Request):
     diagnostics = None
     inference_method = None
     fit_end = None
+    fit_window = None
     fitted_parents = None
     dropped_parents = None
     fit = _pick_fit(traces, name)
@@ -1473,11 +1507,23 @@ async def get_metric(name: str, request: Request):
         # reads as "excluded", not "zero".
         fitted_parents = list(fit.parents)
         dropped_parents = list(fit.dropped_parents)
+        # The periods the fit actually trained on — the intersection of this
+        # node's range and its parents' (#112), after the `fit_end` cut and
+        # the lag trim — in the shape the RCA node payload already uses. A
+        # fit on 60 of the loaded 100 periods is not a fit on 100, and the
+        # Metric tab was left to infer the window from `time_series`, which
+        # covers the node's whole range.
+        fit_window = {
+            "start": str(fit.dates[0].date()),
+            "end": str(fit.dates[-1].date()),
+            "n_periods": int(len(fit.dates)),
+        }
 
     return {
         "definition": metric.model_dump(),
         "inference_method": inference_method,
         "fit_end": fit_end,
+        "fit_window": fit_window,
         "fitted_parents": fitted_parents,
         "dropped_parents": dropped_parents,
         "time_series": time_series,

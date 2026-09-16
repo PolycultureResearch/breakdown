@@ -482,15 +482,16 @@ def test_an_engine_refusal_reaches_the_caller_with_its_remedy():
         assert "2024-01-01" in text and "2024-04-09" in text
 
 
-def test_get_tree_carries_grain_clipping_only_when_it_happened(monkeypatch):
-    """An assistant reading the tree learns that one short series bounded
-    the shared window (GitHub #112) — and on an aligned tree the key is
-    absent, so an empty disclosure never has to be interpreted."""
+def test_get_tree_carries_short_series_only_when_it_happened(monkeypatch):
+    """An assistant reading the tree learns that one series falls short of
+    its grain's reach (GitHub #112) and so bounds the analyses that read it
+    — and on an aligned tree the key is absent, so an empty disclosure never
+    has to be interpreted."""
     from breakdown.data_fetch import MockDataFetcher
 
     with _client() as client:
         res = _call_tool(client, "get_tree", {})
-        assert "grain_clipping" not in res["structuredContent"]["result"]
+        assert "short_series" not in res["structuredContent"]["result"]
 
     original = MockDataFetcher.fetch_metric
 
@@ -504,9 +505,11 @@ def test_get_tree_carries_grain_clipping_only_when_it_happened(monkeypatch):
     with _client() as client:
         res = _call_tool(client, "get_tree", {})
         tree = res["structuredContent"]["result"]
-        assert tree["date_end"] == "2024-03-20"
-        clip = tree["grain_clipping"]["day"]["trailing"]
-        assert clip["by"] == ["daily_sessions"]
-        assert clip["clipped_to"] == "2024-03-20"
-        assert clip["others_reached"] == "2024-04-09"
-        assert clip["periods_dropped"] == 20
+        # The tree's window is the full reach; only the short metric stops early.
+        assert tree["date_end"] == "2024-04-09"
+        short = tree["short_series"]["day"]["trailing"]
+        assert short["reach"] == "2024-04-09"
+        assert short["short"] == {"daily_sessions": {"ends": "2024-03-20", "periods": 20}}
+        by_name = {m["name"]: m for m in tree["metrics"]}
+        assert by_name["daily_sessions"]["data_through"] == "2024-03-20"
+        assert by_name["revenue"]["data_through"] == "2024-04-09"

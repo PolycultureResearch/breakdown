@@ -200,11 +200,13 @@ async def get_tree(tree: Optional[str] = None) -> Dict[str, Any]:
     exactly (Shapley); metrics with parents but no formula are learned
     probabilistic relationships (Bayesian time-series regression).
 
-    When present, `grain_clipping` says that one metric's short series cut
-    the shared data window for every metric at its grain (`by`, `clipped_to`,
-    `others_reached`, `periods_dropped`, per `trailing`/`leading` edge):
-    a window past that edge cannot be analyzed, and the metric named is the
-    source to widen or repair, not a finding about the business.
+    When present, `short_series` says which metrics fall short of their
+    grain's reach and by how much (per `trailing`/`leading` edge: the grain's
+    `reach`, and per short metric its `ends`/`starts` date and `periods`
+    short). Every other metric keeps its own range; an analysis that reads a
+    short metric — it, or a child of it — cannot reach past its edge, and the
+    metric named is a source to widen or repair, not a finding about the
+    business.
 
     `tree` names which metric tree to read when the server holds more than one
     (see list_trees); omit it for the default tree."""
@@ -243,8 +245,8 @@ async def get_tree(tree: Optional[str] = None) -> Dict[str, Any]:
     # Only when it happened: the same shape `/meta` carries, omitted rather
     # than `{}` on the compact surface so an assistant reading the tree never
     # has to decide whether an empty disclosure is one (GitHub #112).
-    if data is not None and data.grain_clipping:
-        out["grain_clipping"] = dict(data.grain_clipping)
+    if data is not None and data.short_series:
+        out["short_series"] = dict(data.short_series)
     return out
 
 

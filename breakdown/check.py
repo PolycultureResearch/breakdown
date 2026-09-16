@@ -23,8 +23,8 @@ here is the message the server log would carry:
    needs.
 
 **What it cannot see**, and says so rather than implying otherwise: anything
-that needs data. Window coverage, the per-grain inner join that a short series
-clips (#112), identity checks on fetched formula nodes, fit readiness — all of
+that needs data. Window coverage, a short series bounding the analyses that
+read it (#112), identity checks on fetched formula nodes, fit readiness — all of
 that is the load itself, and `doctor --start-date … --end-date …` is the
 tool that runs it against the real provider. `check` exiting 0 means the tree
 will *parse and start*, not that it will serve every window.

@@ -223,7 +223,8 @@ def test_health_data_through_is_null_until_the_default_tree_loads(tree_dir, monk
         assert body["status"] == "ok"
         assert body["state"] == "not_loaded"
         assert body["data_through"] is None
-        assert body["grain_clipping"] == {}
+        assert body["short_series"] == {}
+        assert body["data_through_bounded_by"] == []
         assert app.state.trees[app.state.default_tree].data is None
         # Once loaded, the edge appears — the same one /meta reports per metric.
         client.post(f"/trees/{app.state.default_tree}/load")

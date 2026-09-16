@@ -242,10 +242,12 @@ def test_contiguous_weekly_and_monthly_spines_are_accepted():
     assert len(gd.frame("month")) == 6
 
 
-def test_inner_join_drop_is_logged(caplog):
-    """A date present for only some metrics is dropped by the join; the
-    survivors here stay contiguous, so only the log records the loss — and
-    it names the metric that caused it (GitHub #112), not just a count."""
+def test_a_short_series_narrows_only_itself(caplog):
+    """The join is outer (GitHub #112, second suggestion): a metric five days
+    shorter than its sibling keeps its own range and the sibling keeps its
+    own — the grain frame spans the union, the short metric is `NaN` outside
+    its range, and `series` never returns those periods. The log names the
+    short metric and says nothing was clipped, because nothing was."""
     full = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=20), "a": np.ones(20)})
     short = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=15), "b": np.ones(15)})
 
@@ -256,12 +258,18 @@ def test_inner_join_drop_is_logged(caplog):
             {"a": "flow", "b": "flow"},
         )
 
-    assert len(gd.frame("day")) == 15
-    assert "5 trailing day period(s) dropped" in caplog.text
-    assert "by `b`" in caplog.text
+    assert len(gd.frame("day")) == 20
+    assert gd.frame("day")["b"].isna().sum() == 5
+    assert len(gd.series("a")) == 20
+    assert len(gd.series("b")) == 15
+    assert not gd.series("b")["b"].isna().any()
+    assert gd.span_of["b"] == (pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-15"))
+    assert gd.date_end == pd.Timestamp("2024-01-20")
+    assert "`b` at 2024-01-15, 5 day period(s) short" in caplog.text
+    assert "nothing was clipped" in caplog.text
 
 
-# --- grain clipping (GitHub #112) ---
+# --- short series (GitHub #112) ---
 
 
 def _days(name, start, end):
@@ -269,75 +277,71 @@ def _days(name, start, end):
     return pd.DataFrame({"date": dates, name: np.ones(len(dates))})
 
 
-def test_trailing_clip_is_named_at_load(caplog):
+def test_trailing_short_series_is_named_at_load(caplog):
     """The issue's scenario: a frozen feed ends 2026-08-08, the rest run to
-    08-26, and the day-grain inner join cuts every sibling to the feed's
-    edge. Nothing used to say so; the tree loaded and RCA failed later with
-    "reference window not fully covered". Now one WARNING per grain names
-    the bounding metric, its edge, and the edge the others reached, and the
-    same facts travel on `grain_clipping`."""
+    08-26. The day-grain join used to cut every sibling to the feed's edge;
+    now the siblings keep their range and one WARNING per grain names the
+    short metric, its edge, the grain's reach, and what that costs — every
+    analysis that *reads* the feed stops at its edge. The same facts travel
+    on `short_series`."""
     per = {m: _days(m, "2026-06-01", "2026-08-26") for m in ["orders", "sessions"]}
     per["paid_spend"] = _days("paid_spend", "2026-06-01", "2026-08-08")
 
     with caplog.at_level(logging.WARNING, logger="breakdown.grains"):
         gd = build_grained(per, {m: "day" for m in per}, {m: "flow" for m in per})
 
-    assert gd.frame("day")["date"].max() == pd.Timestamp("2026-08-08")
-    assert gd.grain_clipping == {
+    assert gd.series("orders")["date"].max() == pd.Timestamp("2026-08-26")
+    assert gd.series("paid_spend")["date"].max() == pd.Timestamp("2026-08-08")
+    assert gd.short_series == {
         "day": {
             "trailing": {
-                "by": ["paid_spend"],
-                "clipped_to": "2026-08-08",
-                "others_reached": "2026-08-26",
-                "periods_dropped": 18,
+                "reach": "2026-08-26",
+                "short": {"paid_spend": {"ends": "2026-08-08", "periods": 18}},
             }
         }
     }
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1, "one warning per grain, not one per metric"
     text = warnings[0].getMessage()
-    assert "day grain clipped to 2026-08-08 by `paid_spend`" in text
-    assert "other series ran to 2026-08-26" in text
-    # Actionable: it says what the clip costs and what to do about it.
-    assert "no analysis window may end after 2026-08-08" in text
-    assert "does not fill the gap" in text
+    assert "day grain: `paid_spend` ends before the grain's reach of 2026-08-26" in text
+    assert "`paid_spend` at 2026-08-08, 18 day period(s) short" in text
+    # Actionable: it says what the short series costs and what to do about it.
+    assert "no analysis that reads it may end after 2026-08-08" in text
+    assert "nothing was clipped and nothing was filled" in text
 
 
-def test_leading_clip_is_named_at_load(caplog):
-    """The symmetric case — a channel switched on partway through the window
-    — is the one `_align_to_spine` already describes; the join treats both
-    edges the same way, so the disclosure does too."""
+def test_leading_short_series_is_named_at_load(caplog):
+    """The symmetric case — a channel switched on partway through the window.
+    The other metrics keep January; the late one starts when it starts."""
     per = {m: _days(m, "2026-06-01", "2026-08-26") for m in ["orders", "sessions"]}
     per["launched"] = _days("launched", "2026-06-15", "2026-08-26")
 
     with caplog.at_level(logging.WARNING, logger="breakdown.grains"):
         gd = build_grained(per, {m: "day" for m in per}, {m: "flow" for m in per})
 
-    assert gd.frame("day")["date"].min() == pd.Timestamp("2026-06-15")
-    assert gd.grain_clipping == {
+    assert gd.series("orders")["date"].min() == pd.Timestamp("2026-06-01")
+    assert gd.series("launched")["date"].min() == pd.Timestamp("2026-06-15")
+    assert gd.short_series == {
         "day": {
             "leading": {
-                "by": ["launched"],
-                "clipped_to": "2026-06-15",
-                "others_reached": "2026-06-01",
-                "periods_dropped": 14,
+                "reach": "2026-06-01",
+                "short": {"launched": {"starts": "2026-06-15", "periods": 14}},
             }
         }
     }
     text = caplog.text
-    assert "day grain clipped to start at 2026-06-15 by `launched`" in text
-    assert "other series began at 2026-06-01" in text
-    assert "no analysis window may start before 2026-06-15" in text
+    assert "`launched` starts after the grain's earliest series at 2026-06-01" in text
+    assert "no analysis that reads it may start before 2026-06-15" in text
 
 
-def test_both_edges_clip_in_one_warning_and_ties_name_every_metric(caplog):
-    """Two metrics tied at the trailing edge are both named — there is no
-    single culprit to pick — and a grain clipped at both ends gets one line
-    carrying both clauses, not two lines. Grains that were not clipped stay
-    absent from the record entirely."""
+def test_several_short_metrics_at_both_edges_in_one_warning(caplog):
+    """Every short metric is named with its own edge — there is no single
+    culprit now that none of them bounds the others — and a grain short at
+    both ends gets one line carrying both clauses. Grains where every series
+    agrees stay absent from the record entirely."""
     per = {m: _days(m, "2026-06-01", "2026-08-26") for m in ["orders", "sessions"]}
     per["feed_a"] = _days("feed_a", "2026-06-01", "2026-08-08")
-    per["feed_b"] = _days("feed_b", "2026-06-15", "2026-08-08")
+    per["feed_b"] = _days("feed_b", "2026-06-15", "2026-08-01")
     per["mrr"] = pd.DataFrame(
         {"date": pd.date_range("2026-06-01", periods=3, freq="MS"), "mrr": np.ones(3)}
     )
@@ -349,27 +353,78 @@ def test_both_edges_clip_in_one_warning_and_ties_name_every_metric(caplog):
     with caplog.at_level(logging.WARNING, logger="breakdown.grains"):
         gd = build_grained(per, grain_of, kind_of)
 
-    assert set(gd.grain_clipping) == {"day"}
-    assert gd.grain_clipping["day"]["trailing"]["by"] == ["feed_a", "feed_b"]
-    assert gd.grain_clipping["day"]["leading"]["by"] == ["feed_b"]
+    assert set(gd.short_series) == {"day"}
+    assert gd.short_series["day"]["trailing"]["short"] == {
+        "feed_a": {"ends": "2026-08-08", "periods": 18},
+        "feed_b": {"ends": "2026-08-01", "periods": 25},
+    }
+    assert gd.short_series["day"]["leading"]["short"] == {
+        "feed_b": {"starts": "2026-06-15", "periods": 14}
+    }
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
     text = warnings[0].getMessage()
-    assert "by `feed_a`, `feed_b`" in text
-    assert "; and clipped to start at 2026-06-15" in text
-    assert "[2026-06-15, 2026-08-08]" in text
+    assert "`feed_a`, `feed_b` end before" in text
+    assert "; and `feed_b` starts after" in text
+    # The other day-grain metrics are untouched.
+    assert len(gd.series("orders")) == 87
+    assert len(gd.frame("month")) == 3
 
 
-def test_aligned_series_produce_no_clip_and_no_warning(caplog):
+def test_aligned_series_produce_no_short_record_and_no_warning(caplog):
     per = {m: _days(m, "2026-06-01", "2026-08-26") for m in ["orders", "sessions", "spend"]}
 
     with caplog.at_level(logging.WARNING, logger="breakdown.grains"):
         gd = build_grained(per, {m: "day" for m in per}, {m: "flow" for m in per})
 
-    assert gd.grain_clipping == {}
+    assert gd.short_series == {}
     assert not [r for r in caplog.records if r.levelno == logging.WARNING]
-    # The back-compat shim has nothing to clip either.
-    assert ensure_grained(per["orders"]).grain_clipping == {}
+    assert not gd.frame("day").isna().any().any()
+    # The back-compat shim has nothing to report either.
+    assert ensure_grained(per["orders"]).short_series == {}
+
+
+def test_fit_frame_is_the_intersection_of_the_node_and_its_parents_only():
+    """A fit reads the periods the node and *its* parents share; a shorter
+    metric elsewhere at the grain is not in the frame and cannot narrow it."""
+    per = {
+        "a": _days("a", "2024-01-01", "2024-01-20"),
+        "b": _days("b", "2024-01-01", "2024-01-15"),
+        "c": _days("c", "2024-01-06", "2024-01-10"),
+    }
+    gd = build_grained(per, {m: "day" for m in per}, {m: "flow" for m in per})
+    assert len(gd.fit_frame("a", [], "day")) == 20
+    assert len(gd.fit_frame("a", ["b"], "day")) == 15
+    assert len(gd.fit_frame("a", ["c"], "day")) == 5
+    assert len(gd.fit_frame("b", ["c"], "day")) == 5
+    assert gd.spans_at(["a", "c"], "day") == {
+        "a": (pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-20")),
+        "c": (pd.Timestamp("2024-01-06"), pd.Timestamp("2024-01-10")),
+    }
+
+
+def test_disjoint_ranges_share_no_fit_frame_and_the_refusal_names_both():
+    """Two metrics with no period in common: the grain frame spans the union
+    (the gap between them belongs to neither, `NaN` for both), each `series`
+    is its own range, and a fit across them is refused naming both ranges."""
+    per = {"a": _days("a", "2024-01-01", "2024-01-10"), "b": _days("b", "2024-01-20", "2024-01-30")}
+    gd = build_grained(per, {m: "day" for m in per}, {m: "flow" for m in per})
+    assert len(gd.frame("day")) == 30
+    assert len(gd.series("a")) == 10
+    assert len(gd.series("b")) == 11
+    assert gd.frame("day").iloc[12][["a", "b"]].isna().all()
+    with pytest.raises(RuntimeError, match=r"'a' runs \[2024-01-01, 2024-01-10\]"):
+        gd.fit_frame("a", ["b"], "day")
+
+
+def test_a_hole_inside_one_metric_is_refused_before_the_join():
+    """The outer join would turn a missing date inside one metric's range into
+    a `NaN` indistinguishable from an undefined value, so contiguity is
+    checked per metric on its own frame, and the refusal names it."""
+    a = _days("a", "2024-01-01", "2024-01-10")
+    b = _days("b", "2024-01-01", "2024-01-10").drop(index=4)
+    with pytest.raises(RuntimeError, match=r"1 missing period\(s\).*\['b'\]"):
+        build_grained({"a": a, "b": b}, {"a": "day", "b": "day"}, {"a": "flow", "b": "flow"})
 
 
 def test_series_resamples_up_by_kind():
@@ -406,9 +461,9 @@ def test_grained_missing_grain_raises():
 # --- freshness (last_observed / data_through) ---
 
 
-def test_build_grained_captures_last_observed_before_join():
-    """Freshness is per-metric from each provider frame, surviving the
-    within-grain inner join that trims to the common tail."""
+def test_build_grained_captures_last_observed_per_metric():
+    """Freshness is per-metric from each provider frame; the join spans the
+    union and each metric's edge is its own."""
     fresh = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=10), "a": np.ones(10)})
     stale = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=7), "b": np.ones(7)})
     gd = build_grained(
@@ -416,9 +471,9 @@ def test_build_grained_captures_last_observed_before_join():
         {"a": "day", "b": "day"},
         {"a": "flow", "b": "flow"},
     )
-    # Joined day frame is trimmed to the stale metric's tail...
-    assert len(gd.frame("day")) == 7
-    # ...but per-metric freshness keeps the true edges.
+    assert len(gd.frame("day")) == 10
+    assert len(gd.series("b")) == 7
+    # Per-metric freshness keeps the true edges.
     assert gd.last_observed["a"] == pd.Timestamp("2024-01-10")
     assert gd.last_observed["b"] == pd.Timestamp("2024-01-07")
     assert gd.data_through("a") == pd.Timestamp("2024-01-10")
