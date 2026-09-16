@@ -84,6 +84,13 @@ sampler change that moves the values:
   excludes zero with `prob_same_direction` ≈ 1; `new_arpu`'s spans zero. Shares
   exceed 100% because the two parents offset — correct, not a defect.
 - `ranked_causes[0]` is `new_subscriptions`, reached via `new_mrr`.
+- `reference_sensitivity.status` is **`unstable` by top cause, not by sign**:
+  the block one earlier is the December trough and hands the top spot to
+  `new_arpu` on a gap that has all but closed. Expected, measured 2026-09-15,
+  narrated in the tour. Story C is unstable by top cause too (its volume/quality
+  split is near-even); B and D are stable. A *sign*-unstable verdict on the
+  tour's own windows would be a finding; on **auto** it is expected (the block
+  one earlier is June–October 2025, a younger business).
 
 If the top cause moves off `new_subscriptions`, that is a finding regardless of
 what the tests say — the planted cause is a volume story.

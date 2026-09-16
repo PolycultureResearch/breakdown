@@ -931,6 +931,142 @@ def test_story_d_a_non_adjacent_reference_would_credit_the_trend(client):
     assert s == pytest.approx(0.216, **TOUR)
 
 
+def _alternatives(d):
+    return {a["shift"]: a for a in d["reference_sensitivity"]["alternatives"]}
+
+
+def test_story_a_the_reference_note_is_amber_and_names_the_december_trough(client):
+    """Roadmap S23 (2026-09-14): every RCA re-attributes under two neighbouring
+    reference blocks. On story A's windows the tour now walks the presenter to
+    an *amber* note — the block one earlier is the December trough, the gap all
+    but closes against it, and `new_arpu` tops the list — and reads it as the
+    lesson. Pinned so the note the tour quotes is the note the screen shows."""
+    ref, ana = ("2026-01-05", "2026-02-01"), ("2026-02-09", "2026-03-08")
+    d = rca(client, "new_mrr", ref, ana)
+    rs = d["reference_sensitivity"]
+
+    assert rs["status"] == "unstable"
+    assert rs["top_cause_stable"] is False
+    assert rs["gap_sign_stable"] is True, "the drop survives every block; only the ranking moves"
+    assert rs["top_cause"] == "new_subscriptions"
+
+    alt = _alternatives(d)
+    week = alt["one_period_earlier"]
+    block = alt["one_block_earlier"]
+    assert (week["reference_window"]["start"], week["reference_window"]["end"]) == (
+        "2025-12-29",
+        "2026-01-25",
+    )
+    assert (block["reference_window"]["start"], block["reference_window"]["end"]) == (
+        "2025-12-08",
+        "2026-01-04",
+    )
+    assert week["status"] == block["status"] == "ok"
+    # "one week earlier: top cause still new_subscriptions, gap −272.2"
+    assert week["top_cause"] == "new_subscriptions"
+    assert week["gap"] == pytest.approx(-272.2, abs=0.05)
+    # "one whole block earlier: top cause becomes new_arpu, gap −50.6"
+    assert block["top_cause"] == "new_arpu"
+    assert block["gap"] == pytest.approx(-50.6, abs=0.05)
+    prints(week["gap"], spec="{:.1f}", scale=1.0)
+    prints(block["gap"], spec="{:.1f}", scale=1.0)
+    # The band spans the published gap and the answered alternatives, and stays
+    # out of ci_95 — the tour quotes the screen's "−324 to −50.63".
+    assert rs["gap_range"] == pytest.approx([-324.0, -50.625], abs=0.01)
+
+    # "new_mrr averaged about $1,666/week through it, against $1,940 in the
+    # January block": the December baseline is the analysis actual minus that
+    # block's gap, and the January one is the published baseline.
+    top = d["nodes"]["new_mrr"]
+    december = top["actual"] - block["gap"]
+    assert december == pytest.approx(1666.3, abs=0.1)
+    assert top["baseline"] == pytest.approx(1939.7, abs=0.1)
+    prints(december, spec="${:,.0f}", scale=1.0)
+    prints(top["baseline"], spec="${:,.0f}", scale=1.0)
+
+
+def test_story_a_on_auto_the_note_is_unstable_by_direction(client):
+    """The tour's aside: leave the reference on auto and the engine's 112-day
+    block makes the far alternative June–October 2025, a younger business —
+    against which February reads *up*. Direction-unstable, top cause kept."""
+    r = client.post(
+        "/rca/new_mrr", params={"analysis_start": "2026-02-09", "analysis_end": "2026-03-08"}
+    )
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["reference_defaulted"] is True
+    assert (d["reference_window"]["start"], d["reference_window"]["end"]) == (
+        "2025-10-20",
+        "2026-02-08",
+    )
+    top = d["nodes"]["new_mrr"]
+    # "The headline becomes −15.9% (−$304.4/week), still new_subscriptions first"
+    assert top["relative_change"] == pytest.approx(-0.159, **TOUR)
+    assert top["gap"] == pytest.approx(-304.4, abs=0.05)
+    assert d["ranked_causes"][0]["metric"] == "new_subscriptions"
+    prints(top["relative_change"])
+    prints(top["gap"], spec="{:.1f}", scale=-1.0)
+
+    rs = d["reference_sensitivity"]
+    assert rs["status"] == "unstable"
+    assert rs["gap_sign_stable"] is False
+    assert rs["top_cause_stable"] is True
+    block = _alternatives(d)["one_block_earlier"]
+    assert block["reference_window"]["start"] == "2025-06-30"
+    # "against it February reads +242.4"
+    assert block["gap"] == pytest.approx(242.4, abs=0.05)
+    prints(block["gap"], spec="{:+.1f}", scale=1.0)
+
+
+def test_story_b_and_d_the_note_is_stable(client):
+    """The muted ✓ on stories B and D, with the figures the tour prints, so the
+    contrast with A's amber note is a property of the data and not of the day."""
+    b = rca(client, "net_new_mrr", ("2026-03-16", "2026-04-12"), ("2026-05-11", "2026-06-07"))
+    rs = b["reference_sensitivity"]
+    assert rs["status"] == "stable" and rs["top_cause"] == "churned_mrr"
+    alt = _alternatives(b)
+    assert alt["one_period_earlier"]["gap"] == pytest.approx(-544.3, abs=0.05)
+    assert alt["one_block_earlier"]["gap"] == pytest.approx(-423.4, abs=0.05)
+    assert {a["top_cause"] for a in alt.values()} == {"churned_mrr"}
+    prints(alt["one_period_earlier"]["gap"], spec="{:.1f}", scale=1.0)
+    prints(alt["one_block_earlier"]["gap"], spec="{:.1f}", scale=1.0)
+
+    d = rca(client, "new_mrr", ("2025-07-07", "2025-08-03"), ("2025-08-11", "2025-09-07"))
+    rs = d["reference_sensitivity"]
+    assert rs["status"] == "stable" and rs["top_cause"] == "new_subscriptions"
+    alt = _alternatives(d)
+    assert alt["one_period_earlier"]["gap"] == pytest.approx(200.0, abs=0.05)
+    assert alt["one_block_earlier"]["gap"] == pytest.approx(163.5, abs=0.05)
+    assert {a["top_cause"] for a in alt.values()} == {"new_subscriptions"}
+    prints(alt["one_period_earlier"]["gap"], spec="{:+.1f}", scale=1.0)
+    prints(alt["one_block_earlier"]["gap"], spec="{:+.1f}", scale=1.0)
+
+
+def test_story_c_the_split_moves_with_the_reference_but_the_win_does_not(client):
+    """Story C's 60/43 volume-quality split is near-even, and under either
+    neighbouring block the rate half outranks the traffic half — while the gap
+    stays positive throughout. The tour tells the presenter to say "traffic is
+    the half the data is sure of" for exactly this reason."""
+    ref, ana = ("2025-02-03", "2025-03-02"), ("2025-03-10", "2025-04-06")
+    d = rca(client, "signups", ref, ana)
+    rs = d["reference_sensitivity"]
+    assert rs["status"] == "unstable"
+    assert rs["top_cause_stable"] is False
+    assert rs["gap_sign_stable"] is True
+    alt = _alternatives(d)
+    assert {a["top_cause"] for a in alt.values()} == {"visit_signup_rate"}
+    assert all(a["gap"] > 0 for a in alt.values())
+    # "one week earlier (gap +4.0) or one whole block earlier (+2.1)"
+    assert alt["one_period_earlier"]["gap"] == pytest.approx(4.0, abs=0.05)
+    assert alt["one_block_earlier"]["gap"] == pytest.approx(2.1, abs=0.05)
+    prints(alt["one_period_earlier"]["gap"], spec="{:+.1f}", scale=1.0)
+    prints(alt["one_block_earlier"]["gap"], spec="{:+.1f}", scale=1.0)
+    # "sessions' interval is clear of zero, visit_signup_rate's straddles it"
+    ci = {c["parent"]: c["ci_95"] for c in d["nodes"]["signups"]["contributions"]}
+    assert ci["sessions"][0] > 0
+    assert ci["visit_signup_rate"][0] < 0 < ci["visit_signup_rate"][1]
+
+
 def test_arbitrary_slice_window_is_served_without_a_provider(client):
     """A prospect picking their own dates must not fall through to a provider.
 
