@@ -42,6 +42,7 @@ from breakdown.data_fetch import (
     BaseDataFetcher,
     SliceSelection,
     _align_to_spine,
+    sparse_kw,
 )
 
 logger = logging.getLogger(__name__)
@@ -445,6 +446,7 @@ def _realign_snapshot(
     kind: str,
     start_date: str,
     end_date: str,
+    sparse: bool = False,
 ) -> pd.DataFrame:
     """Put a snapshot hit through the same date contract every provider obeys.
 
@@ -466,7 +468,9 @@ def _realign_snapshot(
     nothing and repairs stale-shaped ones.
     """
     try:
-        aligned = _align_to_spine(df, metric_name, grain, kind, start_date, end_date, metric_name)
+        aligned = _align_to_spine(
+            df, metric_name, grain, kind, start_date, end_date, metric_name, sparse=sparse
+        )
     except RuntimeError as e:
         # The contract can *refuse* as well as reshape — a `stock` with a
         # leading gap has nothing to carry backwards. (A `rate` no longer
@@ -577,6 +581,7 @@ class SnapshotFetcher(BaseDataFetcher):
         end_date: str,
         grain: str = "day",
         kind: str = "flow",
+        sparse: bool = False,
     ) -> pd.DataFrame:
         # Computed once per call, before the fetch, and used for both the
         # compare and the write, so a hit and the record it would be stored
@@ -588,9 +593,20 @@ class SnapshotFetcher(BaseDataFetcher):
                 logger.info(
                     "snapshot hit: %s [%s, %s] %s", metric_name, start_date, end_date, grain
                 )
-                return _realign_snapshot(df, metric_name, grain, kind, start_date, end_date)
+                # `sparse` is applied on read as well as on write: a snapshot
+                # taken before the flag was declared stores the trimmed series,
+                # and re-aligning fills its tail exactly as a fresh fetch would.
+                # (The reverse — a snapshot written *with* the fill, then the
+                # flag removed — stores those zeros as rows and needs
+                # `--refresh`; a stored zero and a returned zero are the same
+                # bytes.)
+                return _realign_snapshot(
+                    df, metric_name, grain, kind, start_date, end_date, sparse=sparse
+                )
 
-        df = self.inner.fetch_metric(metric_name, start_date, end_date, grain=grain, kind=kind)
+        df = self.inner.fetch_metric(
+            metric_name, start_date, end_date, grain=grain, kind=kind, **sparse_kw(sparse)
+        )
         try:
             self.store.write(
                 metric_name,

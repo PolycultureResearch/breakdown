@@ -260,6 +260,7 @@ Each metric entry supports the following fields:
 | `source` | string | dbt Semantic Layer metric path (e.g., `jaffle_shop.metrics.revenue`) |
 | `grain` | string | The metric's natural grain: `day` (default), `week`, or `month`. It is fetched, fitted, and attributed at this grain, never below it. See [Grains](#grains). |
 | `kind` | string | Temporal aggregation kind: `flow` (default, sums over time), `stock` (a point-in-time level, takes the last value), or `rate` (a ratio, never auto-aggregated). See [Grains](#grains). |
+| `sparse` | bool | `kind: flow` only. The source emits a row only when something happened (an event count, a comms log), so a period with no row inside the loaded window **is a zero**, at every edge — including the trailing run, which is otherwise trimmed as "not loaded yet". Refused on a stock, a rate, or a derived node. Every filled period is counted and named at load (`sparse_fills` on `/meta`, `/health` and MCP `get_tree`). See [Sparse sources](#sparse-sources-an-absent-period-is-a-zero). |
 | `sql` | string | For the `warehouse` provider: a SQL query returning columns `date` and `value`, with `:start_date` / `:end_date` named parameters, one row per period at the metric's `grain`. Ignored by other providers. |
 | `description` | string | Optional human-readable description |
 | `parents` | list | Names of metrics that causally influence this one |
@@ -466,7 +467,7 @@ labeled by period start.
 |---|---|---|---|
 | **Leading**, before the source's first row | filled with `0`, **with a warning naming the invented periods** | error (nothing to forward-fill from) | error |
 | **Interior**, a hole in the middle | filled with `0`, with a warning | forward-fill, with a warning | error |
-| **Trailing**, after the source's last row | **trimmed**, not filled | trimmed | trimmed |
+| **Trailing**, after the source's last row | **trimmed**, not filled — unless the metric declares [`sparse: true`](#sparse-sources-an-absent-period-is-a-zero), which fills every edge with `0` by declaration and records what it filled | trimmed | trimmed |
 
 - **Trailing gaps are trimmed rather than filled** because periods after the last
   row are *not yet loaded*, not zero. A lagging mart should end the series early
@@ -478,6 +479,60 @@ labeled by period start.
 - **A query returning no rows at all** keeps the full zero spine for flows and
   draws no leading warning. An all-quiet window is a legitimate flow series, and
   the provider that knows the result was empty says so itself.
+
+**Sparse sources: an absent period is a zero.** <a id="sparse-sources-an-absent-period-is-a-zero"></a>
+The trailing rule above is the right default and the wrong answer for one kind
+of series: a `kind: flow` whose source emits a row only when something
+happened. An event count with one event day since on-sale returns one row, the
+trailing trim ends the series there, and the day grain's inner join then clips
+every sibling to that day (GitHub #112 — the tree loaded, `/health` said ok,
+and every daily RCA failed with "reference window not fully covered"). Declare
+the metric `sparse: true` and the alignment contract takes the tree's word for
+it:
+
+```yaml
+  - name: flip_comms
+    source: sl.metrics.flip_comms   # rows only on event days
+    kind: flow
+    sparse: true                    # no row = nothing happened = 0
+```
+
+- **Every edge is filled**, not only the trailing one. The declaration is a
+  statement about the *source* — it emits nothing before the first event for
+  the same reason it emits nothing after the last — and believing it at one
+  edge but not the other would need a reason nobody has. If the metric
+  genuinely did not exist yet at `--start-date`, the remedy is the same as for
+  any late-starting metric: a later start date for that tree.
+- **What it costs.** A stale feed on a sparse metric reads as a run of zeros,
+  and nothing downstream can tell the two apart; the declaration is exactly
+  the assertion that it is not one. Declare it only for a source you know
+  emits on events. `data_through` for such a metric reports the window's end,
+  because by declaration the source is complete through it; the last row the
+  source actually returned is on the fill record (`last_row`).
+- **Nothing is silent.** The load logs one line per sparse metric naming how
+  many periods were filled at which edge, and the same facts travel as
+  `sparse_fills` on [`GET /meta`](api-reference.md#get-meta), `/health` and
+  MCP `get_tree` — present only for metrics where something was filled.
+  `breakdown check` lists which metrics declare it.
+- **A long run of declared zeros is a mostly-zero series**, and the fit says
+  so: the zero-inflation disclosure (`likelihood_warnings`, [model.md
+  limitation 7](model.md#assumptions-and-limitations-to-keep-in-mind)) keys on
+  exact zeros and fires on filled ones exactly as on observed ones. That is
+  correct — a Gaussian likelihood is as wrong for a declared off-season as for
+  an observed one — and the declaration does not change it.
+- **Prefer the upstream fill where the metric is governed in dbt.** MetricFlow's
+  `join_to_timespine: true` + `fill_nulls_with: 0` on the measure produces the
+  dense series at the source, under the governed metric's name, and the `dbt`
+  bridge accepts that combination as provably equivalent to breakdown's own
+  flow fill. A metric that arrives dense has nothing for `sparse` to fill; the
+  flag is then harmless and records nothing. `sparse` exists for the trees
+  with no upstream to fix — committed parquet, `warehouse`/`sql:` bindings —
+  and for a governed metric it is the second-best place to say it.
+- **Snapshots.** The flag is applied when a snapshot is *read* as well as when
+  it is written, so a snapshot taken before the declaration fills its tail on
+  the next load without a refetch. The reverse does not hold: a snapshot
+  written with the fill stores those zeros as rows, and removing the flag
+  needs `BREAKDOWN_REFRESH=1` for that metric.
 
 **A metric that started partway into the loaded window is zero-filled before its
 first row.** A product launched in March, a channel switched on in week 3, a

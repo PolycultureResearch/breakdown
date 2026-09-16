@@ -482,6 +482,7 @@ def test_cold_start_boots_ok_not_degraded(cold_start_env):
             "data_through": None,
             "data_through_bounded_by": [],
             "short_series": {},
+            "sparse_fills": {},
         }
 
         meta = client.get("/meta").json()

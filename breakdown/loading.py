@@ -15,7 +15,7 @@ argument as `engine/stats.py`).
 
 import logging
 import os
-from typing import Dict
+from typing import Any, Dict
 
 import numpy as np
 import pandas as pd
@@ -26,6 +26,7 @@ from breakdown.data_fetch import (
     MockDataFetcher,
     WarehouseDataFetcher,
     provider_query_name,
+    sparse_kw,
 )
 from breakdown.formula import eval_formula
 from breakdown.grains import GrainedData, build_grained, resample_up
@@ -133,13 +134,25 @@ def fetch_all_metrics(parser, fetcher, provider_type, start_date, end_date) -> G
         m.name: m.no_denominator for m in parser.config.metrics if m.no_denominator
     }
     series: Dict[str, pd.DataFrame] = {}
+    # Per sparse metric, what the alignment contract filled by declaration
+    # (GitHub #112): kept only where something was actually filled, so the
+    # payload never carries "declared, nothing to do" — the YAML says that.
+    sparse_fills: Dict[str, Dict[str, Any]] = {}
     for metric in parser.config.metrics:
         if metric.derived:
             continue
         query_name = provider_query_name(provider_type, metric)
         df = fetcher.fetch_metric(
-            query_name, start_date, end_date, grain=metric.grain, kind=metric.kind
+            query_name,
+            start_date,
+            end_date,
+            grain=metric.grain,
+            kind=metric.kind,
+            **sparse_kw(metric.sparse),
         )
+        record = df.attrs.get("sparse_fill")
+        if record and record.get("filled"):
+            sparse_fills[metric.name] = dict(record)
         df = df.rename(columns={query_name: metric.name})
         series[metric.name] = df[["date", metric.name]]
 
@@ -153,6 +166,7 @@ def fetch_all_metrics(parser, fetcher, provider_type, start_date, end_date) -> G
     # every caller reading `frame.columns` has always seen.
     per_metric = {m.name: series[m.name] for m in parser.config.metrics}
     data = build_grained(per_metric, grain_of, kind_of, denominator_of, no_denominator_of)
+    data.sparse_fills = sparse_fills
     report_undefined_periods(parser, data)
     check_identities(parser, data)
     check_declared_shares(parser, data)

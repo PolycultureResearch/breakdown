@@ -670,6 +670,26 @@ class MetricDefinition(BaseModel):
     # Temporal aggregation kind: flows sum over time, stocks take the last
     # value, rates can never be auto-aggregated (recompute from components).
     kind: str = "flow"
+    # The source emits a row only when something happened, so a period with no
+    # row inside the loaded window is a **zero**, not an unloaded period
+    # (GitHub #112: an event-count metric whose source had one event day
+    # returned one row, and the trailing trim then clipped the whole day grain
+    # to it). `kind: flow` only — a stock's absent period has a value nobody
+    # returned and a rate's is undefined, and zero is a claim about neither.
+    #
+    # The declaration is a statement about the *source*, so it covers every
+    # edge of the window: a source that emits nothing before its first event
+    # emits nothing after its last for the same reason, and believing the
+    # author at one edge and not the other would need a reason nobody has.
+    # What it costs is stated in `docs/yaml-reference.md`: a stale feed on a
+    # sparse metric reads as a run of zeros, and nothing downstream can tell
+    # the two apart — the declaration is exactly the assertion that it is not
+    # one. Every filled period is counted and named at load
+    # (`GrainedData.sparse_fills`, `/meta`, `/health`, MCP `get_tree`), never
+    # silently (rule 1). Where the metric is governed in dbt, prefer the
+    # upstream `join_to_timespine` + `fill_nulls_with: 0`; on such a metric
+    # this flag finds nothing to fill and records nothing.
+    sparse: bool = False
     # What a `kind: rate` node is a rate *of*: the tree metric whose per-period
     # values weight it (roadmap 1.11b). Load-bearing, not decoration — a
     # window's rate is `Σnumerator / Σdenominator`, so this is what makes the
@@ -818,6 +838,37 @@ class MetricDefinition(BaseModel):
         if v not in ("flow", "stock", "rate"):
             raise ValueError(f"kind must be one of ['flow', 'stock', 'rate'], got '{v}'")
         return v
+
+    @model_validator(mode="after")
+    def check_sparse_is_a_flow(self) -> "MetricDefinition":
+        """`sparse` is refused on anything but a fetched `kind: flow` node.
+
+        The flag says "an absent period is a zero". For a stock the absent
+        period has a level the source did not return (forward-filling is the
+        existing, warned policy; zero would assert the balance vanished); for
+        a rate it is undefined by roadmap 1.11, and zero would assert the
+        average was zero — the exact reading that rule exists to forbid. A
+        derived node is never fetched, so there is nothing for it to fill.
+        """
+        if not self.sparse:
+            return self
+        if self.kind != "flow":
+            raise ValueError(
+                f"Metric '{self.name}' declares `sparse: true` with `kind: "
+                f"{self.kind}`. `sparse` means an absent period is a zero, which "
+                "is a claim only a flow can make: a stock's absent period has a "
+                "level the source did not return, and a rate's is undefined. "
+                "Drop `sparse`, or declare the metric as the `kind: flow` count "
+                "it is."
+            )
+        if self.source is None:
+            raise ValueError(
+                f"Metric '{self.name}' declares `sparse: true` but no `source`. A "
+                "node with no `source` is derived from its parents and never "
+                "fetched, so there are no absent periods to fill; declare "
+                "`sparse` on the fetched parent whose source is sparse instead."
+            )
+        return self
 
     @field_validator("direction")
     @classmethod

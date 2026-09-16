@@ -887,7 +887,12 @@ ship in every cold-start response.
    with `likelihood_warnings` on the node, in the RCA table, the export and
    over MCP, and you should read its intervals and components as approximate. The
    real fix is a zero-inflated or count likelihood, tracked as roadmap S20;
-   until it lands, the warning is the disclosure.
+   until it lands, the warning is the disclosure. A metric declared
+   [`sparse: true`](yaml-reference.md#sparse-sources-an-absent-period-is-a-zero)
+   gets exact zeros for its absent periods by the tree's own statement, and
+   the disclosure fires on those exactly as on observed zeros — correctly,
+   since the likelihood is as wrong for a declared off-season as for a
+   measured one.
 8. **A what-if knows a value is impossible only where the tree says so.** Two
    flags ride on every simulated node. `extrapolation` is empirical — outside
    the loaded history, or outside the declared `plausible` band in cold start.
