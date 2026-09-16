@@ -25,6 +25,30 @@ its notes never listed it at all.)
 
 ### Added
 
+- **Per-metric windows: a short series bounds only the analyses that read
+  it** (#112, #135). The within-grain join is outer, each metric keeps its
+  own range, and a fit's window is the intersection of the node's range and
+  its parents' — so a frozen feed no longer clips its siblings' history, an
+  RCA on a target that does not read it runs (byte-identical to the same
+  tree with the feed intact), and one that does is refused naming the series
+  that stops short and where it runs. The load-time record is `short_series`
+  ("these metrics stop at X") on `/meta`, `/health` and `get_tree`, replacing
+  the unreleased `grain_clipping` ("the grain was cut to X"); `/health` adds
+  `data_through_bounded_by`, `/meta` adds `data_from`, `GET /metrics/{name}`
+  adds `fit_window`. Also: `ranked_causes` ties now break on the name rather
+  than on set order, which swapped equal-score siblings between processes.
+- **`sparse: true` — an absent period on an event-count flow is a zero, by
+  declaration** (#112, #133). A `kind: flow` metric whose source emits rows
+  only on event days no longer ends at its last event: with the flag, every
+  period with no row inside the loaded window — either edge included — is
+  filled with `0` by the tree's own statement, since a declaration about the
+  source cannot be believed at one edge and not the other. Refused on a
+  stock, a rate or a derived node. Never silent: per-edge counts and the
+  first/last row the source actually returned travel as `sparse_fills` on
+  `/meta`, `/health` and MCP `get_tree`, the load logs one line per metric,
+  and `breakdown check` names the metrics that declare it. Prefer
+  MetricFlow's `join_to_timespine` + `fill_nulls_with: 0` where the metric is
+  governed in dbt; the flag is for trees with no upstream to fix.
 - **`breakdown check` validates a tree without serving it** (#117, #125).
   Runs every refusal `serve` makes before it contacts a provider — discovery,
   parse (including the slice-weight grain rule 0.1.0 shipped and never
@@ -40,7 +64,7 @@ its notes never listed it at all.)
   covered date, because the per-grain join bounds every analysis by the
   shortest series and a frozen feed is the case where the latest date would
   keep looking fresh — with `state` (`loaded` / `loading` / `not_loaded`) and
-  the load-time `grain_clipping` record beside it, so a monitor can alert on
+  the load-time `short_series` record beside it, so a monitor can alert on
   a serve that is up but whose data stopped advancing. `null` before a lazy
   tree's first load and under `provider: none`; never a date taken from the
   requested window, and nothing C43 keeps off this route.
@@ -112,7 +136,7 @@ its notes never listed it at all.)
   suggestion). The load log now warns once per grain, at either edge — "day
   grain clipped to 2026-08-08 by `paid_spend` (other series ran to
   2026-08-26): 18 trailing day period(s) dropped …" — and the same facts travel
-  as `grain_clipping` on `GET /meta` (always present, `{}` when clean) and on
+  as `short_series` on `GET /meta` (always present, `{}` when clean) and on
   MCP `get_tree` (present only when it happened): per grain and edge, the
   bounding metric(s), the clipped edge, the edge the others reached, and the
   periods lost. The join is unchanged and nothing is filled; the anonymous
