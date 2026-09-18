@@ -115,7 +115,8 @@ those are **extras** you opt into:
 | `mock`, or cold-start `none` | `pip install metric-breakdown` | — |
 | `local` (MetricFlow CLI) or `cloud` (dbt Cloud Semantic Layer) | `pip install 'metric-breakdown[dbt]'` | `dbt-metricflow`, `dbt-sl-sdk` |
 | `warehouse` (direct SQL) | `pip install 'metric-breakdown[databricks]'` | `databricks-sdk`, `databricks-sql-connector` |
-| all of them | `pip install 'metric-breakdown[all]'` | both of the above |
+| `duckdb` (CSV/Parquet files) | `pip install 'metric-breakdown[duckdb]'` | `duckdb` |
+| all of them | `pip install 'metric-breakdown[all]'` | all of the above |
 
 This is not cosmetic: the extras are ~66 packages and ~120 MB that most installs
 never touch, and dbt-core in particular drags in a large tree of its own.
@@ -234,7 +235,7 @@ Controls how metric time-series data is fetched.
 
 ```yaml
 provider:
-  type: mock           # mock | local | cloud | warehouse | none
+  type: mock           # mock | local | cloud | warehouse | duckdb | none
   project_path: "..."  # required for type: local
   environment_id: "..."  # required for type: cloud
   host: "..."            # required for type: cloud; optional for warehouse (read from profile)
@@ -243,6 +244,7 @@ provider:
   profile: "..."         # warehouse: Databricks CLI OAuth profile (alternative to token)
   catalog: "..."         # optional for type: warehouse
   schema: "..."          # optional for type: warehouse
+  data_dir: "..."        # required for type: duckdb (relative to the tree file)
 ```
 
 | Type | Description |
@@ -251,9 +253,10 @@ provider:
 | `local` | Queries a dbt project on disk via the MetricFlow CLI (`mf query`). Requires `project_path`. |
 | `cloud` | Queries the dbt Semantic Layer API via the `dbt-sl-sdk`. Requires `environment_id`, `host`, and `token`. |
 | `warehouse` | Runs each metric's own `sql` directly against a warehouse (currently Databricks SQL). Use when the semantic layer isn't queryable — the analyst mirrors governed definitions in SQL. Requires `http_path` plus **one of**: a PAT `token` (with `host`), or a Databricks CLI OAuth `profile` created by `databricks auth login --profile <name>` (host is read from the profile). |
+| `duckdb` | Runs each metric's own `sql` against a folder of CSV/Parquet exports, with no server or credentials. Every `.csv` / `.parquet` file in `data_dir` is a table named by its file stem (`orders.csv` → `orders`). The fastest way to evaluate breakdown on real data: export, point, run. Same `sql` contract as `warehouse`, so a tree graduates to a live source by swapping the provider block. DuckDB's `DATE_TRUNC('week', …)` already starts weeks on Monday. |
 | `none` | No data is ever fetched — a **cold-start tree** of declared beliefs (`assumed` is an accepted alias). Only what-if simulation is available; every non-formula node needs a `baseline` and every probabilistic edge an explicit prior. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
 
-For `local` and `cloud`, the metric queried from the semantic layer is the last segment of `source` (e.g., `source: jaffle_shop.metrics.revenue` queries the metric `revenue`); the result is exposed in the tree under `name`. For `warehouse`, each metric carries its own `sql` (see the `metrics` table) and is keyed by `name`. The data window defaults to `2024-01-01`–`2024-04-09` and is set with `--start-date` / `--end-date` (or the `BREAKDOWN_START_DATE` / `BREAKDOWN_END_DATE` / `BREAKDOWN_TREE` environment variables).
+For `local` and `cloud`, the metric queried from the semantic layer is the last segment of `source` (e.g., `source: jaffle_shop.metrics.revenue` queries the metric `revenue`); the result is exposed in the tree under `name`. For `warehouse` and `duckdb`, each metric carries its own `sql` (see the `metrics` table) and is keyed by `name`. The data window defaults to `2024-01-01`–`2024-04-09` and is set with `--start-date` / `--end-date` (or the `BREAKDOWN_START_DATE` / `BREAKDOWN_END_DATE` / `BREAKDOWN_TREE` environment variables).
 
 **Secrets in config.** Any provider string field may reference an environment variable with `${VAR}` syntax (e.g. `token: ${DATABRICKS_TOKEN}`), so a tree can be committed without embedding credentials. A referenced variable that isn't set raises a clear error at load time. The `warehouse` provider's `profile` avoids secrets entirely — credentials come from the Databricks CLI's OAuth token cache, so nothing sensitive lives in the tree or the environment.
 
@@ -267,7 +270,7 @@ Each metric entry supports the following fields:
 | `source` | string | dbt Semantic Layer metric path (e.g., `jaffle_shop.metrics.revenue`) |
 | `grain` | string | The metric's natural grain: `day` (default), `week`, or `month`. It is fetched, fitted, and attributed at this grain, never below it. See [Grains](#grains). |
 | `kind` | string | Temporal aggregation kind: `flow` (default — sums over time), `stock` (point-in-time level — takes the last value), or `rate` (a ratio — can never be auto-aggregated). See [Grains](#grains). |
-| `sql` | string | For the `warehouse` provider: a SQL query returning columns `date` and `value`, with `:start_date` / `:end_date` named parameters — one row per period at the metric's `grain`. Ignored by other providers. |
+| `sql` | string | For the `warehouse` and `duckdb` providers: a SQL query returning columns `date` and `value`, with `:start_date` / `:end_date` named parameters — one row per period at the metric's `grain`. Ignored by other providers. |
 | `description` | string | Optional human-readable description |
 | `parents` | list | Names of metrics that causally influence this one |
 | `formula` | string | Arithmetic expression over parent names (e.g., `"order_count * average_order_value"`). Enables Shapley attribution. |

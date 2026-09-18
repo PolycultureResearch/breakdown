@@ -92,7 +92,7 @@ def _expand_env(value: Optional[str]) -> Optional[str]:
 
 
 class DataProviderConfig(BaseModel):
-    type: str = "mock" # "mock", "local", "cloud", "warehouse", "none" (alias "assumed")
+    type: str = "mock" # "mock", "local", "cloud", "warehouse", "duckdb", "none" (alias "assumed")
     project_path: Optional[str] = None
     environment_id: Optional[str] = None
     host: Optional[str] = None
@@ -107,6 +107,10 @@ class DataProviderConfig(BaseModel):
     catalog: Optional[str] = None
     # `schema` in YAML; renamed to avoid shadowing BaseModel.schema
     db_schema: Optional[str] = Field(default=None, alias="schema")
+    # duckdb provider: a folder of CSV/Parquet exports, each file queryable as
+    # a table named by its file stem. Relative paths resolve against the tree
+    # file's directory (see `resolve_relative_paths`).
+    data_dir: Optional[str] = None
 
     model_config = {"populate_by_name": True}
 
@@ -117,17 +121,36 @@ class DataProviderConfig(BaseModel):
         # `assumed` is the same thing said from the tree author's seat.
         if v == "assumed":
             return "none"
-        if v not in ["mock", "local", "cloud", "warehouse", "none"]:
-            raise ValueError("type must be one of: mock, local, cloud, warehouse, none")
+        if v not in ["mock", "local", "cloud", "warehouse", "duckdb", "none"]:
+            raise ValueError("type must be one of: mock, local, cloud, warehouse, duckdb, none")
         return v
 
     @field_validator(
         "project_path", "environment_id", "host", "token",
-        "http_path", "profile", "catalog", "db_schema", mode="after",
+        "http_path", "profile", "catalog", "db_schema", "data_dir", mode="after",
     )
     @classmethod
     def expand_env_vars(cls, v: Optional[str]) -> Optional[str]:
         return _expand_env(v)
+
+    @model_validator(mode="after")
+    def check_duckdb_data_dir(self) -> "DataProviderConfig":
+        if self.type == "duckdb" and not self.data_dir:
+            raise ValueError(
+                "duckdb provider requires `data_dir`: the folder of CSV/Parquet exports"
+            )
+        return self
+
+
+def resolve_relative_paths(config: "MetricTreeConfig", tree_path: str) -> None:
+    """Anchor a relative `data_dir` to the tree file's directory, so a tree
+    and its exports can move together and the server can be started from
+    anywhere. Mutates `config` in place."""
+    cfg = config.provider
+    if cfg.data_dir and not os.path.isabs(cfg.data_dir):
+        cfg.data_dir = os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(tree_path)), cfg.data_dir)
+        )
 
 class Seasonality(BaseModel):
     period: int

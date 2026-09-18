@@ -15,10 +15,12 @@ from fastapi.staticfiles import StaticFiles
 
 from breakdown.data_fetch import (
     CloudDataFetcher,
+    DuckDBDataFetcher,
     LocalDataFetcher,
     MockDataFetcher,
     SliceNotSupported,
     WarehouseDataFetcher,
+    query_name_for,
 )
 from breakdown.engine.model import fit_metric, summarize_trace
 from breakdown.engine.rca import run_rca, shapley_attribution
@@ -26,7 +28,7 @@ from breakdown.engine.simulate import ScenarioRequest, run_scenario, validate_co
 from breakdown.engine.slices import slice_attribution
 from breakdown.grains import GrainedData, build_grained
 from breakdown.mcp.server import mcp
-from breakdown.parser import Parser
+from breakdown.parser import Parser, resolve_relative_paths
 from breakdown.snapshots import SnapshotFetcher, SnapshotStore
 
 logger = logging.getLogger(__name__)
@@ -47,13 +49,16 @@ def _build_fetcher(provider_cfg, dag, metrics=None):
             host=provider_cfg.host,
             token=provider_cfg.token,
         )
-    if provider_cfg.type == "warehouse":
+    if provider_cfg.type in ("warehouse", "duckdb"):
         metric_sql = {m.name: m.sql for m in (metrics or []) if m.sql}
         missing = [m.name for m in (metrics or []) if not m.sql]
         if missing:
             raise RuntimeError(
-                f"warehouse provider requires `sql` on every metric; missing for: {missing}"
+                f"{provider_cfg.type} provider requires `sql` on every metric; "
+                f"missing for: {missing}"
             )
+        if provider_cfg.type == "duckdb":
+            return DuckDBDataFetcher(data_dir=provider_cfg.data_dir, metric_sql=metric_sql)
         return WarehouseDataFetcher(
             host=provider_cfg.host,
             http_path=provider_cfg.http_path,
@@ -100,13 +105,7 @@ def _fetch_all_metrics(parser, fetcher, provider_type, start_date, end_date) -> 
     grain_of: Dict[str, str] = {}
     kind_of: Dict[str, str] = {}
     for metric in parser.config.metrics:
-        # local/cloud providers query the semantic layer by the last segment
-        # of `source`; mock and warehouse providers key off the tree name
-        # directly (warehouse resolves it to per-metric SQL).
-        if provider_type in ("mock", "warehouse"):
-            query_name = metric.name
-        else:
-            query_name = metric.source.split(".")[-1]
+        query_name = query_name_for(metric, provider_type)
         df = fetcher.fetch_metric(
             query_name, start_date, end_date, grain=metric.grain, kind=metric.kind
         )
@@ -221,6 +220,7 @@ async def lifespan(app: FastAPI):
             yaml_config = f.read()
 
         parser = Parser(yaml_config)
+        resolve_relative_paths(parser.config, tree_path)
         provider_cfg = parser.config.provider
         if provider_cfg.type == "none":
             # Cold-start tree: nothing is fetched, app.state.data stays None
@@ -578,12 +578,7 @@ def _fetch_sliced_cached(state, parser, metric, dimension_source, start, end) ->
     cached = state.slice_cache.get(key)
     if cached is not None:
         return cached
-    provider_type = parser.config.provider.type
-    query_name = (
-        metric.name
-        if provider_type in ("mock", "warehouse")
-        else metric.source.split(".")[-1]
-    )
+    query_name = query_name_for(metric, parser.config.provider.type)
     df = state.fetcher.fetch_metric_sliced(
         query_name, dimension_source, start, end,
         grain=metric.grain, kind=metric.kind,
