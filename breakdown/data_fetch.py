@@ -292,27 +292,118 @@ class LocalDataFetcher(BaseDataFetcher):
         return _sliced_long(df, metric_name, grain)
 
 
-class WarehouseDataFetcher(BaseDataFetcher):
-    """Fetches data by running per-metric SQL directly against a warehouse.
+class SqlDataFetcher(BaseDataFetcher):
+    """Shared base for providers that run per-metric SQL.
 
-    Unlike the semantic-layer providers, each metric in the tree carries its own
-    `sql` — a SELECT that returns two columns, ``date`` and ``value``, with
-    ``:start_date`` / ``:end_date`` named parameters for the window. This is the
-    "warehouse-direct" path: the analyst mirrors governed metric definitions in
-    SQL, so it works even when the semantic layer isn't reachable (e.g. a dbt
-    Fusion project whose SL can't be queried offline).
+    Each metric in the tree carries its own `sql` — a SELECT that returns two
+    columns, ``date`` and ``value``, with ``:start_date`` / ``:end_date`` named
+    parameters for the window. This is the "direct SQL" path: the analyst
+    mirrors governed metric definitions in SQL, so it works without a semantic
+    layer.
 
-    Currently targets Databricks SQL warehouses. The SQL must return one row
-    per period at the metric's declared grain, with period-start dates (weeks
-    start Monday, months on the 1st). Returned series are reindexed onto the
-    spine of whole periods inside the window; **interior** gaps are filled by
-    `kind` — flow → 0, stock → forward-fill (a leading gap is an error),
-    rate → any missing period is an error (a rate cannot be invented) — while
-    **trailing** gaps are trimmed, not filled: periods after the last row the
-    SQL returned are treated as not-yet-loaded, so a lagging mart ends the
-    series early instead of manufacturing fake zeros at the tail. (A query
-    returning no rows at all keeps the old full-window fill for flows — an
-    all-quiet window is a legitimate flow series.)
+    Everything here is database-agnostic. A subclass supplies only `_execute`,
+    which runs one query against its engine and returns the column names and
+    rows; the base owns the lookup, the result contract, and the grain/kind
+    semantics, so every SQL engine agrees on them.
+
+    The SQL must return one row per period at the metric's declared grain,
+    with period-start dates (weeks start Monday, months on the 1st). Returned
+    series are reindexed onto the spine of whole periods inside the window;
+    **interior** gaps are filled by `kind` — flow → 0, stock → forward-fill (a
+    leading gap is an error), rate → any missing period is an error (a rate
+    cannot be invented) — while **trailing** gaps are trimmed, not filled:
+    periods after the last row the SQL returned are treated as not-yet-loaded,
+    so a lagging mart ends the series early instead of manufacturing fake
+    zeros at the tail. (A query returning no rows at all keeps the full-window
+    fill for flows — an all-quiet window is a legitimate flow series.)
+    """
+    def __init__(self, metric_sql: Dict[str, str]):
+        self.metric_sql = metric_sql
+
+    @abstractmethod
+    def _execute(self, sql: str, params: Dict[str, str]) -> Tuple[list, list]:
+        """Run one query; return (column names, rows)."""
+
+    def fetch_metric(
+        self, metric_name: str, start_date: str, end_date: str,
+        grain: str = "day", kind: str = "flow",
+    ) -> pd.DataFrame:
+        sql = self.metric_sql.get(metric_name)
+        if sql is None:
+            raise RuntimeError(
+                f"No `sql` defined for metric '{metric_name}'. SQL providers "
+                "require each metric to carry a SQL query returning (date, value)."
+            )
+
+        cols, rows = self._execute(sql, {"start_date": start_date, "end_date": end_date})
+        df = pd.DataFrame(rows, columns=[c.lower() for c in cols])
+        if "date" not in df.columns or "value" not in df.columns:
+            raise RuntimeError(
+                f"SQL for metric '{metric_name}' must return columns named 'date' and "
+                f"'value'; got {list(df.columns)}."
+            )
+        df["date"] = pd.to_datetime(df["date"])
+        df["value"] = df["value"].astype(float)
+        return align_to_spine(df, metric_name, start_date, end_date, grain, kind)
+
+
+def align_to_spine(
+    df: pd.DataFrame, metric_name: str, start_date: str, end_date: str,
+    grain: str, kind: str,
+) -> pd.DataFrame:
+    """Validate a provider's `[date, value]` frame and fit it to the window's
+    period spine, filling gaps by `kind` (see `SqlDataFetcher`).
+
+    The provider owns the aggregation to the declared grain; this only checks
+    the labels and makes missing periods explicit rather than dropping rows
+    from the tree-wide join.
+    """
+    idx = pd.DatetimeIndex(df["date"])
+    aligned = floor_period(idx, grain)
+    if (idx != aligned).any():
+        example = df["date"][(idx != aligned).argmax()]
+        raise RuntimeError(
+            f"SQL for metric '{metric_name}' at grain '{grain}' returned dates "
+            f"not aligned to period starts (e.g. {pd.Timestamp(example).date()}); "
+            "weekly periods start Monday, monthly on the 1st."
+        )
+
+    # Rows for partial edge periods are dropped. Trailing periods with no
+    # returned row are trimmed, not filled: they mean "not loaded yet" far
+    # more often than "genuinely zero", and filling them would bake a lying
+    # tail into every headline number downstream.
+    spine = period_spine(start_date, end_date, grain)
+    s = df.set_index("date")["value"]
+    s = s[s.index.isin(spine)].reindex(spine)
+    if s.notna().any():
+        s = s.loc[: s.last_valid_index()]
+    if kind == "flow":
+        s = s.fillna(0.0)
+    elif kind == "stock":
+        s = s.ffill()
+        if s.isna().any():
+            raise RuntimeError(
+                f"Stock metric '{metric_name}' has no value at or before the "
+                f"first {grain} period ({spine[0].date()}) of the window."
+            )
+    else:  # rate
+        if s.isna().any():
+            missing = [str(d.date()) for d in s.index[s.isna()][:5]]
+            raise RuntimeError(
+                f"Rate metric '{metric_name}' is missing {grain} periods "
+                f"{missing}; a rate cannot be gap-filled — fix the SQL or "
+                "narrow the window."
+            )
+    return s.rename(metric_name).rename_axis("date").reset_index()
+
+
+class WarehouseDataFetcher(SqlDataFetcher):
+    """Runs per-metric SQL against a Databricks SQL warehouse.
+
+    The SQL contract and gap-filling semantics are `SqlDataFetcher`'s; this
+    class only knows how to connect to Databricks and execute a query. It
+    works even when the semantic layer isn't reachable (e.g. a dbt Fusion
+    project whose SL can't be queried offline).
 
     Authentication is either a personal access token (`token`) or a Databricks
     CLI OAuth `profile` created by ``databricks auth login --profile <name>``.
@@ -337,10 +428,10 @@ class WarehouseDataFetcher(BaseDataFetcher):
                 "warehouse provider needs either a `token` (PAT) or a `profile` "
                 "(from `databricks auth login`) for authentication."
             )
+        super().__init__(metric_sql)
         self.host = host
         self.http_path = http_path
         self.token = token
-        self.metric_sql = metric_sql
         self.catalog = catalog
         self.schema = schema
         self.profile = profile
@@ -382,75 +473,15 @@ class WarehouseDataFetcher(BaseDataFetcher):
                 c.close()
         return self._con.cursor()
 
-    def fetch_metric(
-        self, metric_name: str, start_date: str, end_date: str,
-        grain: str = "day", kind: str = "flow",
-    ) -> pd.DataFrame:
-        sql = self.metric_sql.get(metric_name)
-        if sql is None:
-            raise RuntimeError(
-                f"No `sql` defined for metric '{metric_name}'. The warehouse provider "
-                "requires each metric to carry a SQL query returning (date, value)."
-            )
-
+    def _execute(self, sql: str, params: Dict[str, str]) -> Tuple[list, list]:
         cur = self._cursor()
         try:
-            cur.execute(sql, parameters={"start_date": start_date, "end_date": end_date})
-            cols = [d[0].lower() for d in cur.description]
+            cur.execute(sql, parameters=params)
+            cols = [d[0] for d in cur.description]
             rows = cur.fetchall()
         finally:
             cur.close()
-
-        df = pd.DataFrame(rows, columns=cols)
-        if "date" not in df.columns or "value" not in df.columns:
-            raise RuntimeError(
-                f"SQL for metric '{metric_name}' must return columns named 'date' and "
-                f"'value'; got {list(df.columns)}."
-            )
-        df["date"] = pd.to_datetime(df["date"])
-        df["value"] = df["value"].astype(float)
-
-        # The SQL author owns the aggregation to the declared grain; the
-        # engine only validates the labels and fills gaps by kind.
-        idx = pd.DatetimeIndex(df["date"])
-        aligned = floor_period(idx, grain)
-        if (idx != aligned).any():
-            example = df["date"][(idx != aligned).argmax()]
-            raise RuntimeError(
-                f"SQL for metric '{metric_name}' at grain '{grain}' returned dates "
-                f"not aligned to period starts (e.g. {pd.Timestamp(example).date()}); "
-                "weekly periods start Monday, monthly on the 1st."
-            )
-
-        # Reindex onto the spine of whole periods inside the window (rows for
-        # partial edge periods are dropped) so missing periods become explicit
-        # rather than dropping rows from the tree-wide join. Trailing periods
-        # with no returned row are trimmed, not filled: they mean "not loaded
-        # yet" far more often than "genuinely zero", and filling them would
-        # bake a lying tail into every headline number downstream.
-        spine = period_spine(start_date, end_date, grain)
-        s = df.set_index("date")["value"]
-        s = s[s.index.isin(spine)].reindex(spine)
-        if s.notna().any():
-            s = s.loc[: s.last_valid_index()]
-        if kind == "flow":
-            s = s.fillna(0.0)
-        elif kind == "stock":
-            s = s.ffill()
-            if s.isna().any():
-                raise RuntimeError(
-                    f"Stock metric '{metric_name}' has no value at or before the "
-                    f"first {grain} period ({spine[0].date()}) of the window."
-                )
-        else:  # rate
-            if s.isna().any():
-                missing = [str(d.date()) for d in s.index[s.isna()][:5]]
-                raise RuntimeError(
-                    f"Rate metric '{metric_name}' is missing {grain} periods "
-                    f"{missing}; a rate cannot be gap-filled — fix the SQL or "
-                    "narrow the window."
-                )
-        return s.rename(metric_name).rename_axis("date").reset_index()
+        return cols, rows
 
 
 class MockDataFetcher(BaseDataFetcher):

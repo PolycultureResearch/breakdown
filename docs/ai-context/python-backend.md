@@ -92,7 +92,9 @@ Constructed with an optional metric DAG (`MockDataFetcher(dag=parser.dag)`). Wit
 
 Mock slicing (`fetch_metric_sliced`): slice shares are smooth **date-anchored** seeded curves per `(dimension, slice)` — identical across metrics and fetch windows, which is what makes a mock rate's weighted blend reconcile *exactly* against its weight metric's slices (rate slices deviate around the blended rate, orthogonalized against the shares). A slice fetch first looks for a cached `_tree_data` window covering the request and splits *those* numbers (the covering-cache path), so sub-window slice fetches reconcile exactly against the served startup data.
 
-### `WarehouseDataFetcher`
+### `SqlDataFetcher` + `WarehouseDataFetcher`
+`SqlDataFetcher` is the shared base for every per-metric-SQL provider: it owns the `metric_sql` lookup, the `(date, value)` result contract, and `align_to_spine` (the grain/kind semantics below). A subclass implements only `_execute(sql, params) -> (columns, rows)` for its engine, so a new SQL engine (DuckDB, BigQuery) inherits identical gap-filling instead of re-implementing it. `WarehouseDataFetcher` is the Databricks subclass: connection, auth, and `_execute` over a cursor. It keeps its class name because snapshot manifests record the provider class.
+
 Runs each metric's own `sql` against Databricks SQL. The SQL owns the aggregation to the declared grain (one row per period, period-start labels — misaligned labels error); the engine reindexes onto the spine of whole periods inside the window, drops partial edge periods, fills **interior** gaps by kind, and **trims trailing** gaps (periods after the last returned row are not-yet-loaded data, not zeros — except when the query returns no rows at all, which keeps the full zero spine for flows).
 
 ### `LocalDataFetcher`
