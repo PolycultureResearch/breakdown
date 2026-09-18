@@ -1,6 +1,8 @@
 import importlib
 import importlib.util
 import logging
+import os
+import re
 import shutil
 from abc import ABC, abstractmethod
 from types import ModuleType
@@ -18,7 +20,20 @@ logger = logging.getLogger(__name__)
 # Which extra ships each provider's SDK. The base install deliberately carries
 # none of them, so every provider dependency is imported at the point of use
 # and a missing one is reported as a fixable install, not a traceback.
-PROVIDER_EXTRAS = {"cloud": "dbt", "local": "dbt", "warehouse": "databricks"}
+PROVIDER_EXTRAS = {
+    "cloud": "dbt", "local": "dbt", "warehouse": "databricks", "duckdb": "duckdb",
+}
+
+# Providers queried by the tree's metric name. The semantic-layer providers
+# (local/cloud) instead query by the last segment of the metric's `source`.
+NAME_KEYED_PROVIDERS = ("mock", "warehouse", "duckdb")
+
+
+def query_name_for(metric, provider_type: str) -> str:
+    """The name to pass to `fetch_metric` for `metric` under `provider_type`."""
+    if provider_type in NAME_KEYED_PROVIDERS:
+        return metric.name
+    return metric.source.split(".")[-1]
 
 
 class MissingProviderExtra(RuntimeError):
@@ -59,7 +74,11 @@ def provider_extra_missing(provider: str) -> Optional[str]:
         if shutil.which("mf") is None:
             return _extra_hint(provider, extra, "`mf` not found on PATH")
         return None
-    modules = {"cloud": ("dbtsl",), "warehouse": ("databricks.sql", "databricks.sdk")}[provider]
+    modules = {
+        "cloud": ("dbtsl",),
+        "warehouse": ("databricks.sql", "databricks.sdk"),
+        "duckdb": ("duckdb",),
+    }[provider]
     for module in modules:
         # `databricks` is a namespace package split across two distributions,
         # so only the dotted submodule proves the right one is installed.
@@ -482,6 +501,67 @@ class WarehouseDataFetcher(SqlDataFetcher):
         finally:
             cur.close()
         return cols, rows
+
+
+class DuckDBDataFetcher(SqlDataFetcher):
+    """Runs per-metric SQL against a folder of CSV/Parquet exports via DuckDB.
+
+    The zero-infrastructure path: no server, no credentials. Every `*.csv`
+    and `*.parquet` file directly inside `data_dir` becomes a view named by its
+    file stem (`orders.csv` → `orders`), so metric SQL reads like SQL against a
+    warehouse. The SQL contract and gap-filling are `SqlDataFetcher`'s.
+
+    Metric SQL uses the same `:start_date` / `:end_date` placeholders as the
+    warehouse provider; they are rewritten to DuckDB's `$name` form so one
+    tree's queries port between the two. DuckDB's `DATE_TRUNC('week', …)`
+    already lands on Monday, the period start Breakdown expects.
+    """
+
+    _EXTENSIONS = {".csv": "read_csv_auto", ".parquet": "read_parquet"}
+    # `:name` placeholders, but not `::type` casts.
+    _PLACEHOLDER = re.compile(r"(?<!:):(start_date|end_date)\b")
+
+    def __init__(self, data_dir: str, metric_sql: Dict[str, str]):
+        super().__init__(metric_sql)
+        self.data_dir = data_dir
+        self._con = None
+        self.tables: Dict[str, str] = {}  # view name -> source file
+
+    def _connect(self):
+        duckdb = _require_module("duckdb", "duckdb", "duckdb")
+        if not os.path.isdir(self.data_dir):
+            raise RuntimeError(f"duckdb `data_dir` not found: {self.data_dir}")
+
+        files = sorted(
+            f for f in os.listdir(self.data_dir)
+            if os.path.splitext(f)[1].lower() in self._EXTENSIONS
+        )
+        if not files:
+            raise RuntimeError(
+                f"No .csv or .parquet files in duckdb `data_dir` {self.data_dir}."
+            )
+
+        con = duckdb.connect()  # in-memory: the files are the source of truth
+        tables: Dict[str, str] = {}
+        for f in files:
+            stem, ext = os.path.splitext(f)
+            if stem in tables:
+                raise RuntimeError(
+                    f"Two files in {self.data_dir} map to table '{stem}' "
+                    f"({tables[stem]}, {f}); rename one."
+                )
+            path = os.path.join(self.data_dir, f).replace("'", "''")
+            reader = self._EXTENSIONS[ext.lower()]
+            con.execute(f"CREATE VIEW \"{stem}\" AS SELECT * FROM {reader}('{path}')")
+            tables[stem] = f
+        self.tables = tables
+        return con
+
+    def _execute(self, sql: str, params: Dict[str, str]) -> Tuple[list, list]:
+        if self._con is None:
+            self._con = self._connect()
+        result = self._con.execute(self._PLACEHOLDER.sub(r"$\1", sql), params)
+        return [d[0] for d in result.description], result.fetchall()
 
 
 class MockDataFetcher(BaseDataFetcher):

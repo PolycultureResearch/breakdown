@@ -17,7 +17,7 @@ from typing import List, Literal, Optional, Tuple
 import yaml
 
 from breakdown.engine.simulate import validate_cold_start
-from breakdown.parser import _ENV_REF, MetricTreeConfig, Parser
+from breakdown.parser import _ENV_REF, MetricTreeConfig, Parser, resolve_relative_paths
 
 
 @dataclass
@@ -91,6 +91,7 @@ def _check_tree(tree_path: str) -> _TreeCheck:
         with open(tree_path) as f:
             out.parser = Parser(f.read())
         out.config = out.parser.config
+        resolve_relative_paths(out.config, tree_path)
     except Exception as e:
         out.results.append(CheckResult.fail("tree parses", str(e)))
         return out
@@ -239,6 +240,58 @@ def check_warehouse(config: MetricTreeConfig, start_date: str, end_date: str) ->
     return results
 
 
+def check_duckdb(config: MetricTreeConfig, start_date: str, end_date: str) -> List[CheckResult]:
+    from breakdown.data_fetch import DuckDBDataFetcher
+
+    cfg = config.provider
+    results: List[CheckResult] = []
+
+    metric_sql = {m.name: m.sql for m in config.metrics if m.sql}
+    missing_sql = [m.name for m in config.metrics if not m.sql]
+    if missing_sql:
+        results.append(
+            CheckResult.fail(
+                "per-metric sql",
+                f"duckdb provider requires `sql` on every metric; missing for: {missing_sql}",
+                "Add a `sql` block returning (date, value) to each listed metric.",
+            )
+        )
+
+    fetcher = DuckDBDataFetcher(data_dir=cfg.data_dir, metric_sql=metric_sql)
+    try:
+        fetcher._con = fetcher._connect()
+    except Exception as e:
+        results.append(
+            CheckResult.fail(
+                "data files", str(e),
+                "Point `data_dir` at the folder holding your .csv/.parquet exports\n"
+                "(relative paths resolve against the tree file's directory).",
+            )
+        )
+        results.extend(_skip_rest(["metric sql runs"], "no data files"))
+        return results
+    tables = ", ".join(f"{t} ({f})" for t, f in fetcher.tables.items())
+    results.append(CheckResult.ok("data files", f"{cfg.data_dir}: {tables}"))
+
+    failed = 0
+    for m in config.metrics:
+        if not m.sql:
+            continue  # already reported under "per-metric sql"
+        try:
+            fetcher.fetch_metric(m.name, start_date, end_date, grain=m.grain, kind=m.kind)
+        except Exception as e:
+            failed += 1
+            results.append(CheckResult.fail(f"metric sql: {m.name}", str(e)))
+    if not failed and metric_sql:
+        results.append(
+            CheckResult.ok(
+                "metric sql runs",
+                f"{len(metric_sql)} metrics over [{start_date}, {end_date}]",
+            )
+        )
+    return results
+
+
 def check_cloud(config: MetricTreeConfig) -> List[CheckResult]:
     from breakdown.data_fetch import CloudDataFetcher
 
@@ -359,6 +412,7 @@ def check_fit_readiness(parser, start_date: str, end_date: str) -> CheckResult:
     Fetches through the real provider path (never a lookalike), so it also
     exercises every metric's query end to end."""
     from breakdown.api.main import _build_fetcher  # lazy: pulls FastAPI
+    from breakdown.data_fetch import query_name_for
     from breakdown.engine.model import MIN_FIT_PERIODS
 
     cfg = parser.config.provider
@@ -369,7 +423,7 @@ def check_fit_readiness(parser, start_date: str, end_date: str) -> CheckResult:
 
     lines, short = [], []
     for m in parser.config.metrics:
-        query_name = m.name if cfg.type in ("mock", "warehouse") else m.source.split(".")[-1]
+        query_name = query_name_for(m, cfg.type)
         try:
             df = fetcher.fetch_metric(query_name, start_date, end_date, grain=m.grain, kind=m.kind)
             n = len(df)
@@ -400,6 +454,7 @@ def check_fit_readiness(parser, start_date: str, end_date: str) -> CheckResult:
 # a cascade of connectivity failures with misleading remediations.
 _DOWNSTREAM_CHECKS = {
     "warehouse": ["auth configured", "warehouse connection", "metric sql runs"],
+    "duckdb": ["data files", "metric sql runs"],
     "cloud": ["cloud config", "semantic layer reachable", "tree metrics exist"],
     "local": ["dbt project", "metrics listable"],
 }
@@ -427,6 +482,8 @@ def run_doctor(
         results += _skip_rest(_DOWNSTREAM_CHECKS[provider], "provider extra not installed")
     elif provider == "warehouse":
         results += check_warehouse(tree.config, start_date, end_date)
+    elif provider == "duckdb":
+        results += check_duckdb(tree.config, start_date, end_date)
     elif provider == "cloud":
         results += check_cloud(tree.config)
     elif provider == "local":

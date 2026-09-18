@@ -84,7 +84,12 @@ databricks = [
     "databricks-sdk>=0.20.0",
     "databricks-sql-connector>=4.4.0",
 ]
-all = ["metric-breakdown[databricks,dbt]"]
+# Zero-infrastructure CSV/Parquet provider: DuckDB is a single wheel with no
+# system dependencies, but still an extra so the base install stays minimal.
+duckdb = [
+    "duckdb>=1.1.0",
+]
+all = ["metric-breakdown[databricks,dbt,duckdb]"]
 
 [project.urls]
 Homepage = "https://github.com/PolycultureResearch/breakdown"

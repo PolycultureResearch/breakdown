@@ -97,6 +97,9 @@ Mock slicing (`fetch_metric_sliced`): slice shares are smooth **date-anchored** 
 
 Runs each metric's own `sql` against Databricks SQL. The SQL owns the aggregation to the declared grain (one row per period, period-start labels — misaligned labels error); the engine reindexes onto the spine of whole periods inside the window, drops partial edge periods, fills **interior** gaps by kind, and **trims trailing** gaps (periods after the last returned row are not-yet-loaded data, not zeros — except when the query returns no rows at all, which keeps the full zero spine for flows).
 
+### `DuckDBDataFetcher`
+The zero-infrastructure `SqlDataFetcher`: `provider: {type: duckdb, data_dir: …}`. On first query it opens an in-memory DuckDB connection and creates one view per `*.csv` (`read_csv_auto`) / `*.parquet` (`read_parquet`) file in `data_dir`, named by file stem; two files sharing a stem are rejected. `_execute` rewrites the shared `:start_date` / `:end_date` placeholders to DuckDB's `$name` form (a lookbehind leaves `::TYPE` casts alone), so one tree's SQL ports between warehouse and duckdb. A relative `data_dir` is anchored to the tree file by `parser.resolve_relative_paths`, called wherever a tree is loaded from disk (API lifespan, doctor). `duckdb` ships as the `duckdb` extra, imported in `_connect`. Which providers key metrics by tree `name` versus `source` lives in one place: `data_fetch.query_name_for`.
+
 ### `LocalDataFetcher`
 Invokes `mf query --metrics <name> --group-by metric_time__<grain> --start-time ... --end-time ... --csv <tmpfile>` as a subprocess. `project_path` becomes the working directory. Raises `RuntimeError` on non-zero exit code or OS errors (e.g., path not found), and `MissingProviderExtra` when `mf` is not on `PATH` — a `PATH` check rather than an import check, because `uv tool install dbt-metricflow` satisfies this provider just as well as the `dbt` extra.
 

@@ -1,8 +1,8 @@
 # CSV on-ramp: the `SqlDataFetcher` refactor and a DuckDB provider
 
-**Status:** step 1 (refactor) done on branch `refactor/sql-fetcher-base`;
-step 2 (DuckDB provider) proposed, not built. The customer guide in §4
-describes the *target* experience once step 2 lands.
+**Status:** step 1 (refactor) in PR #137; step 2 (DuckDB provider) in the
+follow-up PR stacked on it. The customer guide in §4 works as written once
+both merge.
 
 Roadmap link: completes the CSV half of **2.2** ("send a CSV, get an RCA") and
 lays the groundwork for a BigQuery provider (raised by the Northern Nights
@@ -82,10 +82,10 @@ Honest limits:
   deciding the metric tree and writing each metric's query is where an
   assessment spends its time — and where fit (or misfit) shows up.
 
-## 4. Customer guide (proposed): from CSV to breakdown
+## 4. Customer guide: from CSV to breakdown
 
-*This is the target flow once the DuckDB provider ships. Config field names
-are proposals.*
+*Install with `pip install 'metric-breakdown[duckdb]'` — that pulls in DuckDB
+too; there is nothing else to set up.*
 
 ### Step 1 — Export your data
 
@@ -179,17 +179,18 @@ updates.
 
 1. ✅ **Refactor** — `SqlDataFetcher` base + `align_to_spine`;
    `WarehouseDataFetcher` implements only `_execute`. No behavior change.
-2. **`DuckDBDataFetcher`** — registers each `*.csv` / `*.parquet` in
+2. ✅ **`DuckDBDataFetcher`** — registers each `*.csv` / `*.parquet` in
    `data_dir` as a view named by file stem; `_execute` translates the
    `:start_date`/`:end_date` params and runs the query. Ships as an optional
    `duckdb` extra, imported at the point of use (base install stays lean).
-3. **Config** — `provider: {type: duckdb, data_dir: ...}` in
+3. ✅ **Config** — `provider: {type: duckdb, data_dir: ...}` in
    `DataProviderConfig`, relative paths resolved against the tree file.
-4. **Doctor** — checks `data_dir` exists, lists the tables found, runs each
+4. ✅ **Doctor** — checks `data_dir` exists, lists the tables found, runs each
    metric's SQL over the probe window.
-5. **Tests** — CSV fixtures covering flow/stock/rate gap-fill, weekly labels,
-   and a missing file.
-6. **Docs** — README provider section + this guide promoted out of "proposed."
+5. ✅ **Tests** — `tests/test_duckdb_provider.py`: gap-fill, Monday weeks,
+   Parquet, `::` casts, missing/empty folder, stem collisions, config
+   resolution, doctor end to end.
+6. ✅ **Docs** — README provider section; this guide.
 
 Open questions for review:
 - Should `data_dir` also accept a single DuckDB database file (`.duckdb`), for
