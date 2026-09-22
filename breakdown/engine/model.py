@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 
 from breakdown.formula import eval_formula
-from breakdown.grains import ensure_grained, fit_grain, next_start
+from breakdown.grains import ensure_grained, fit_grain, floor_period, next_start
 from breakdown.parser import MetricDefinition
 
 # `pymc`, `arviz` and `pytensor` are imported *inside* the five functions that
@@ -50,6 +50,7 @@ def _enforce_fit_length(
     n_windowed: int,
     max_lag: int,
     fit_end: Optional[str],
+    fit_start: Optional[str] = None,
 ) -> None:
     """Refuse a fit that would train on fewer than `MIN_FIT_PERIODS` periods.
 
@@ -78,8 +79,15 @@ def _enforce_fit_length(
     if n_fit >= MIN_FIT_PERIODS:
         return
     how = [f"{n_joined} whole {grain} periods cover '{target}' and its parents"]
-    if fit_end is not None:
+    if fit_end is not None and fit_start is not None:
+        how.append(
+            f"{n_windowed} of them start on or after the node's fit_start={fit_start} "
+            f"and end on or before fit_end={fit_end}"
+        )
+    elif fit_end is not None:
         how.append(f"{n_windowed} of them end on or before fit_end={fit_end}")
+    elif fit_start is not None:
+        how.append(f"{n_windowed} of them start on or after the node's fit_start={fit_start}")
     if max_lag:
         how.append(f"the {max_lag}-period max lag trims {max_lag} more")
     raise ValueError(
@@ -91,6 +99,12 @@ def _enforce_fit_length(
         "credible intervals would not mean anything. Widen the window, or wait "
         "for history to accumulate — `breakdown doctor --tree … --start-date … "
         "--end-date …` reports the same count per metric."
+        + (
+            " The node's own `fit_start` is what cut this window; move it earlier "
+            "or declare the regime change as an intervention instead."
+            if fit_start is not None
+            else ""
+        )
     )
 
 
@@ -147,6 +161,24 @@ class FitResult:
     # Empty on a fit that dropped nothing. At most one entry per parent, so
     # bounded by the tree rather than by the loaded window.
     dropped_parents: List[Dict[str, str]] = field(default_factory=list)
+    # Roadmap S24: the declared interventions the model was actually fitted
+    # on — YAML order minus any dropped — each as the record
+    # `intervention_record` builds (`name`, snapped `date`, `kind`, `until`,
+    # `learn_from`). This is the axis of `beta_intervention` /
+    # `beta_intervention_raw`, a *separate* axis from `parents`: the parent
+    # list is the axis of `beta`, every consumer walks it positionally, and
+    # appending to it would have shifted a coefficient onto the wrong parent
+    # in whichever consumer was not updated. `[]` on a node that declares none.
+    interventions: List[Dict[str, Any]] = field(default_factory=list)
+    # The interventions left out because their indicator was constant over
+    # the fit window (no instance inside it, or on for every period), each
+    # `{"intervention", "date", "kind", "reason"}` in the #113 shape. One
+    # entry per declared intervention at most — bounded by the tree.
+    dropped_interventions: List[Dict[str, str]] = field(default_factory=list)
+    # The node's declared `fit_start` (ISO date) when it cut the window, so a
+    # reader of `dates[0]` can tell "the data starts here" from "the author
+    # said to start here". None when the node declares none.
+    fit_start: Optional[str] = None
 
 
 def scale_prior_params(distribution: str, params: Dict[str, Any], scale: float) -> Dict[str, Any]:
@@ -1563,6 +1595,7 @@ def _posterior_predictive_draws(
     defn: MetricDefinition,
     t: np.ndarray,
     random_seed: Optional[int] = None,
+    X_iv: Optional[np.ndarray] = None,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[str]]:
     """Replicated series and the matching mean function, for S3.
 
@@ -1611,6 +1644,11 @@ def _posterior_predictive_draws(
             # `beta` is the Deterministic stack in `list(dag.predecessors)`
             # order — the same axis order every other component reads.
             mu += post["beta"].values.reshape(-1, X.shape[1]) @ X.T
+        if X_iv is not None:
+            # Roadmap S24: the declared steps are part of the mean function,
+            # so the check asks whether the model reproduces the series
+            # *given* them — `ppc.conditioned_on_interventions` says so.
+            mu += post["beta_intervention"].values.reshape(-1, X_iv.shape[1]) @ X_iv.T
         if mu.shape != y_rep.shape:
             return (
                 None,
@@ -1623,6 +1661,155 @@ def _posterior_predictive_draws(
         return y_rep, mu, None
     except Exception as exc:  # pragma: no cover - defensive; rule 3
         return None, None, f"{type(exc).__name__}: {exc}"
+
+
+def intervention_record(iv: Any, grain: str) -> Dict[str, Any]:
+    """The payload form of one declared intervention, dates snapped to `grain`.
+
+    One spelling for the fit axis (`FitResult.interventions`), the RCA node,
+    `GET /metrics/{name}` and the MCP tools, so a reader never sees the YAML
+    date on one surface and the period it snapped to on another. `until` is
+    the snapped last period of a pulse, or null.
+    """
+    start = floor_period(pd.Timestamp(iv.date), grain)
+    until = floor_period(pd.Timestamp(iv.until), grain) if iv.until is not None else None
+    if iv.kind == "pulse" and until is None:
+        until = start
+    return {
+        "name": iv.name,
+        "date": str(start.date()),
+        "kind": iv.kind,
+        "until": str(until.date()) if until is not None else None,
+        "learn_from": iv.learn_from,
+    }
+
+
+def intervention_indicator(record: Dict[str, Any], dates: pd.DatetimeIndex) -> np.ndarray:
+    """The 0/1 column a declared intervention contributes over `dates`
+    (period starts at the node's grain): `1[t >= date]` for a step,
+    `1[date <= t <= until]` for a pulse. Float, so it multiplies a coefficient
+    directly; the same function builds the fit's design column and RCA's
+    window means, which is what keeps `window_delta` on the payload equal to
+    the thing the fitted coefficient multiplies.
+    """
+    idx = pd.DatetimeIndex(dates)
+    start = pd.Timestamp(record["date"])
+    on = idx >= start
+    if record["kind"] == "pulse":
+        on = on & (idx <= pd.Timestamp(record["until"]))
+    return on.astype(float)
+
+
+def _intervention_columns(
+    defn: MetricDefinition,
+    dates: pd.DatetimeIndex,
+    grain: str,
+    target: str,
+) -> Tuple[Optional[np.ndarray], List[Any], List[Dict[str, Any]], List[Dict[str, str]]]:
+    """Build the known-regressor columns for the node's declared interventions
+    over the fitted dates (roadmap S24).
+
+    Returns `(X_iv, fitted_ivs, records, dropped)`: the `(n, k)` 0/1 design
+    block or None, the `Intervention` objects it was built from (for their
+    priors), their payload records (the `beta_intervention` axis), and the
+    `{"intervention", "date", "kind", "reason"}` records of the ones left out.
+
+    An intervention whose column is **constant over the fit window is
+    dropped**, under the same mechanism and for the same statistical reason
+    as a constant parent (issue #113): a column that is all zeros is a
+    multiple of nothing and one that is all ones is a multiple of the
+    intercept's, so neither coefficient is identified, and neither carries
+    information about how the target moved inside the window. The two cases
+    get different sentences because they have different remedies. No
+    instance inside the window is the case `step_change_design.md` §1.1
+    describes — a flip that falls only in the analysis window cannot be
+    learned from a fit that ends before it — and the payload says where its
+    effect went. On for every period means the author dated the regime
+    change *before* the fit window starts, which is what `fit_start` is for.
+    """
+    if not defn.interventions:
+        return None, [], [], []
+    window = f"{dates[0].date()} to {dates[-1].date()}"
+    cols, fitted, records, dropped = [], [], [], []
+    for iv in defn.interventions:
+        record = intervention_record(iv, grain)
+        col = intervention_indicator(record, dates)
+        label = (
+            f"declared intervention '{iv.name}' ({record['date']}"
+            + (f" to {record['until']}" if record["kind"] == "pulse" else "")
+            + ")"
+        )
+        if not col.any():
+            reason = (
+                f"{label} has no instance inside the fit window ({window}) and was not "
+                "fitted; if the analysis window contains it, its effect is in "
+                "`unexplained` or in the parents that moved with it. To size a "
+                "one-off from its own periods, declare `learn_from: window` on it."
+            )
+        elif col.all():
+            reason = (
+                f"{label} is on for every period of the fit window ({window}), so its "
+                "column is the intercept's and its coefficient is not identified; it "
+                "was not fitted. A regime that began before the fit window is what "
+                "`fit_start` declares, not an intervention."
+            )
+        else:
+            cols.append(col)
+            fitted.append(iv)
+            records.append(record)
+            continue
+        dropped.append(
+            {
+                "intervention": iv.name,
+                "date": record["date"],
+                "kind": record["kind"],
+                "reason": reason,
+            }
+        )
+    for d in dropped:
+        logger.warning(
+            "Intervention '%s' of '%s' dropped from the fit: %s",
+            d["intervention"],
+            target,
+            d["reason"],
+        )
+    if not cols:
+        return None, [], [], dropped
+    return np.column_stack(cols), fitted, records, dropped
+
+
+def _intervention_component(fitted_ivs: List[Any], X_iv: Optional[np.ndarray], y_std: float):
+    """One coefficient per fitted intervention on its own axis
+    (`beta_intervention`, `beta_intervention_raw`), never appended to `beta`.
+
+    The indicator column is 0/1 and is not z-scored, so `x_std := 1` and the
+    prior — stated in business units like a parent's — rescales by `1 / y_std`
+    alone; `beta_intervention_raw = beta_intervention * y_std` is then the
+    step's size in the node's units. Default prior Normal(0, 1) in normalized
+    space: a step of about one series SD. Must be called inside a pm.Model
+    context.
+    """
+    import pymc as pm
+
+    if X_iv is None:
+        return 0.0
+    betas = []
+    for iv in fitted_ivs:
+        if iv.prior is not None:
+            if iv.prior.distribution not in _PRIOR_DISTRIBUTIONS:
+                raise ValueError(
+                    f"Unsupported prior distribution: '{iv.prior.distribution}'. "
+                    f"Must be one of {sorted(_PRIOR_DISTRIBUTIONS)}"
+                )
+            scaled = scale_prior_params(iv.prior.distribution, iv.prior.params, 1.0 / y_std)
+            betas.append(
+                getattr(pm, iv.prior.distribution)(f"beta_intervention_{iv.name}", **scaled)
+            )
+        else:
+            betas.append(pm.Normal(f"beta_intervention_{iv.name}", mu=0.0, sigma=1.0))
+    beta = pm.Deterministic("beta_intervention", pm.math.stack(betas))
+    pm.Deterministic("beta_intervention_raw", beta * y_std)
+    return pm.math.dot(X_iv, beta)
 
 
 def _prepare_series(
@@ -1964,7 +2151,8 @@ def fit_metric(
 
     In normalized (z-scored) space the model is:
 
-        y[t] = alpha + trend[t] + seasonal[t] + (X @ beta)[t] + eps[t]
+        y[t] = alpha + trend[t] + seasonal[t] + (X @ beta)[t]
+               + (I @ beta_intervention)[t] + eps[t]
 
         trend[t]   =  cumsum(sigma_trend * z[t])         local level (non-centered)
         z[t]       ~  Normal(0, 1)
@@ -1972,6 +2160,11 @@ def fit_metric(
                       drifts slowly so parents and seasonality carry the movement
         seasonal   =  Fourier sin/cos pairs (2 harmonics per `seasonality` entry)
         beta[i]    ~  prior from YAML, stated in business units and rescaled
+        I[:, k]    =  the k-th declared intervention's 0/1 column (roadmap S24):
+                      1[t >= date] for a step, 1[date <= t <= until] for a pulse
+        beta_intervention[k] ~ its own prior in business units, rescaled by
+                      1 / y_std (the column is not z-scored); its own axis,
+                      never appended to `beta`
         alpha      ~  Normal(0, 1)   (data is z-scored; the mean is exactly 0)
         eps[t]     ~  Normal(0, sigma_obs)
 
@@ -2073,6 +2266,8 @@ def fit_metric(
     data = ensure_grained(data).fit_frame(target, parents, grain)
     n_joined = len(data)
 
+    defn: MetricDefinition = dag.nodes[target]["definition"]
+
     if fit_end is not None:
         dates = pd.to_datetime(data["date"])
         cutoff = pd.to_datetime(fit_end)
@@ -2083,8 +2278,17 @@ def fit_metric(
         ends = pd.DatetimeIndex([next_start(d, grain) for d in dates])
         data = data.loc[ends <= cutoff].reset_index(drop=True)
 
+    # Roadmap S24 (design §3.3): the node's own regime start. Whole periods
+    # *starting* on or after the date — the mirror of the `fit_end` rule, so
+    # a coarse period straddling the regime change cannot train the model
+    # either. Applied after the `fit_end` cut and before the floor, so a
+    # window this leaves too short is refused with the reason naming it.
+    fit_start = str(defn.fit_start) if defn.fit_start is not None else None
+    if fit_start is not None:
+        starts = pd.to_datetime(data["date"])
+        data = data.loc[starts >= pd.Timestamp(fit_start)].reset_index(drop=True)
+
     _validate_columns(data, [target] + parents)
-    defn: MetricDefinition = dag.nodes[target]["definition"]
 
     # The floor, enforced on every path — default, `fit_end`, and lagged alike
     # — against the periods the fit will really train on.
@@ -2095,6 +2299,7 @@ def fit_metric(
         n_windowed=len(data),
         max_lag=max(defn.lags.values(), default=0),
         fit_end=fit_end,
+        fit_start=fit_start,
     )
 
     y, X, scale, y_mean, y_std, x_stds, dates, fitted_parents, dropped_parents = _prepare_series(
@@ -2107,6 +2312,13 @@ def fit_metric(
     # dropped parent cannot shift a sibling's column index in one of them and
     # not another.
     t = np.arange(len(y))
+
+    # Roadmap S24: the declared interventions' 0/1 columns over the fitted
+    # dates. A separate block with a separate coefficient axis — see
+    # `FitResult.interventions` for why it is never appended to `X`.
+    X_iv, fitted_ivs, intervention_records, dropped_interventions = _intervention_columns(
+        defn, dates, grain, target
+    )
 
     # S20's disclosure half: the observation model is Gaussian, and a series
     # that is exactly zero for a large share of its fit window (a seasonal
@@ -2150,7 +2362,18 @@ def fit_metric(
     # property of the design matrix, not of the trace, and a reader watching
     # the log deserves to know the split is unstable *before* waiting out the
     # fit that will report it.
-    collinearity, collinearity_warnings = _collinearity_diagnostic(X, fitted_parents, target, grain)
+    #
+    # The interventions enter the same check beside the parents (roadmap
+    # S24): a declared `flip` step and a `flip_comms` parent that is zero
+    # except at flips are exactly the pair a reader must not read separately,
+    # and the check already knows how to say so. Correlation and VIF are
+    # scale-free, so the 0/1 columns join the z-scored ones as they are.
+    design_blocks = [b for b in (X, X_iv) if b is not None]
+    design = np.column_stack(design_blocks) if design_blocks else None
+    design_names = list(fitted_parents) + [r["name"] for r in intervention_records]
+    collinearity, collinearity_warnings = _collinearity_diagnostic(
+        design, design_names, target, grain
+    )
 
     with pm.Model():
         trend_sigma_prior = defn.trend.sigma if defn.trend else 0.05
@@ -2159,10 +2382,16 @@ def fit_metric(
         trend = pm.Deterministic("trend", pt.cumsum(sigma_trend * trend_z))
         seasonal = _seasonal_component(defn.seasonality, t)
         regression = _regression_component(defn, fitted_parents, X, scale)
+        intervention = _intervention_component(fitted_ivs, X_iv, y_std)
 
         alpha = pm.Normal("alpha", mu=0, sigma=1.0)
         sigma_obs = pm.HalfNormal("sigma_obs", 1.0)
-        pm.Normal("obs", mu=alpha + trend + seasonal + regression, sigma=sigma_obs, observed=y)
+        pm.Normal(
+            "obs",
+            mu=alpha + trend + seasonal + regression + intervention,
+            sigma=sigma_obs,
+            observed=y,
+        )
 
         logger.info(
             "Sampling metric '%s' method=%s draws=%d tune=%d fit_end=%s",
@@ -2199,7 +2428,7 @@ def fit_metric(
         # method, because misspecification is a property of the model, not of
         # how its posterior was approximated.
         y_rep, mu_draws, ppc_reason = _posterior_predictive_draws(
-            pm, trace, X, defn, t, random_seed=random_seed
+            pm, trace, X, defn, t, random_seed=random_seed, X_iv=X_iv
         )
 
     ppc, ppc_warnings = (
@@ -2258,6 +2487,12 @@ def fit_metric(
     # alone, and `unavailable` never moves it: an unchecked model is not a
     # failed one (the rule S22 applied to k-hat's borderline band).
     if ppc is not None:
+        # Roadmap S24: the replicates were drawn from a mean function that
+        # contains the declared steps, so a pass is evidence about the
+        # residual regime, not about the steps, whose size the model was told.
+        # Named on the block (an empty list on a node that declares none), so
+        # the verdict carries what it was conditioned on.
+        ppc["conditioned_on_interventions"] = [r["name"] for r in intervention_records]
         diagnostics["ppc_status"] = ppc["status"]
         diagnostics["ppc"] = ppc
         if ppc_warnings:
@@ -2275,25 +2510,43 @@ def fit_metric(
     # cause is a scale-confounded level-on-level edge (both series grow with
     # the business), where the learned sign answers a different question than
     # the author meant.
-    if defn.expected_signs and X is not None:
-        arr = trace.posterior["beta_raw"].values.reshape(-1, len(fitted_parents))
+    if defn.expected_signs and (X is not None or X_iv is not None):
         sign_warnings = []
-        for i, p in enumerate(fitted_parents):
-            expected = defn.expected_signs.get(p)
+        # Two axes, one rule (roadmap S24): the parents on `beta_raw`, the
+        # interventions on `beta_intervention_raw`, each read against its own
+        # fitted list so a dropped entry cannot shift a neighbour's column.
+        checks = []
+        if X is not None:
+            arr = trace.posterior["beta_raw"].values.reshape(-1, len(fitted_parents))
+            checks += [("Parent", p, "beta_raw", arr[:, i]) for i, p in enumerate(fitted_parents)]
+        if X_iv is not None:
+            arr_iv = trace.posterior["beta_intervention_raw"].values.reshape(
+                -1, len(intervention_records)
+            )
+            checks += [
+                ("Intervention", r["name"], "beta_intervention_raw", arr_iv[:, i])
+                for i, r in enumerate(intervention_records)
+            ]
+        for what, name, var, samples in checks:
+            expected = defn.expected_signs.get(name)
             if expected is None:
                 continue
-            samples = arr[:, i]
             p_expected = float(
                 (samples > 0).mean() if expected == "positive" else (samples < 0).mean()
             )
             if p_expected < 0.10:
                 msg = (
-                    f"Parent '{p}' on '{target}': declared {expected} effect, but "
-                    f"P(beta_raw {'>' if expected == 'positive' else '<'} 0) = "
+                    f"{what} '{name}' on '{target}': declared {expected} effect, but "
+                    f"P({var} {'>' if expected == 'positive' else '<'} 0) = "
                     f"{p_expected:.2f} (posterior mean {float(samples.mean()):.4g}) — "
-                    "the learned direction contradicts the declaration. Check for "
-                    "scale confounding (e.g. regress rates on rates instead of "
-                    "levels on levels; see docs/model.md)."
+                    "the learned direction contradicts the declaration. "
+                    + (
+                        "Check for scale confounding (e.g. regress rates on rates "
+                        "instead of levels on levels; see docs/model.md)."
+                        if what == "Parent"
+                        else "Check the date: a step dated a period late or early "
+                        "reads the wrong regime as the shift (see docs/model.md)."
+                    )
                 )
                 sign_warnings.append(msg)
                 logger.warning(msg)
@@ -2314,4 +2567,7 @@ def fit_metric(
         diagnostics=diagnostics,
         ppc_band=ppc_band,
         dropped_parents=dropped_parents,
+        interventions=intervention_records,
+        dropped_interventions=dropped_interventions,
+        fit_start=fit_start,
     )
