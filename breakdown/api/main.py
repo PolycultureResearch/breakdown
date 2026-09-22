@@ -554,7 +554,9 @@ def load_tree(tree: TreeState) -> None:
             )
         else:
             start_date, end_date = _window()
-            fetcher = build_fetcher(provider_cfg, tree.parser.dag, tree.parser.config.metrics)
+            fetcher = build_fetcher(
+                provider_cfg, tree.parser.dag, tree.parser.config.metrics, tree_path=tree.path
+            )
             fetcher = wrap_snapshots(
                 fetcher, provider_cfg.type, tree.path, slice_span=(start_date, end_date)
             )
@@ -1448,10 +1450,19 @@ async def get_metric_query(name: str, request: Request, dimension: Optional[str]
     if hasattr(inner, "executed"):
         payload["executed"] = bool(inner.executed(query_name, dimension_source))
         if not payload["executed"]:
+            # "Not executed" has two causes and the reader deserves the right
+            # one: a snapshot hit, or a series (a sliced form, typically) that
+            # nothing has asked for yet. A provider that is never wrapped —
+            # `duckdb`, whose files are the artifact — can only be the second,
+            # and blaming a snapshot store it does not have would be the
+            # fifth rule's defect in a sentence.
             payload["note"] = (
-                "This series was served from a snapshot, so no query ran. "
-                "Shown is the statement the binding produces for this window."
-            )
+                "No query has run for this series in this process: it was served "
+                "from a snapshot, or nothing has requested it yet. "
+                if provider != "duckdb"
+                else "No query has run for this series in this process yet "
+                "(this provider is never snapshot-cached). "
+            ) + "Shown is the statement the binding produces for this window."
     return payload
 
 

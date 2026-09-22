@@ -30,6 +30,7 @@ from breakdown.data_fetch import (
     SliceSelection,
     _align_to_spine,
     _floor_labels,
+    _require_module,
     _to_naive_dates,
 )
 from breakdown.dbt_bridge import bridge_project
@@ -790,3 +791,76 @@ def fetcher_from_project(
         connect=lambda: connect_from_profile(out),
         dialect=dialect,
     )
+
+
+# --- the `duckdb` provider: bindings over a folder of exports (roadmap 2.2) ---
+
+# File extension -> the DuckDB table function that reads it. Only files
+# directly inside `data_dir` count; a subfolder is not a relation.
+DATA_FILE_READERS = {".csv": "read_csv_auto", ".parquet": "read_parquet"}
+
+
+def list_data_files(data_dir: str) -> Dict[str, str]:
+    """`{relation name: file name}` for every export in `data_dir`.
+
+    The relation name is the file stem (`orders.csv` -> `orders`). Three things
+    are refused by name rather than smoothed over, since each would otherwise
+    surface as an empty series or a wrong one: a folder that is not there, a
+    folder with nothing readable in it, and two files claiming one stem
+    (`orders.csv` beside `orders.parquet` — which one the view read would be
+    an accident of listing order).
+    """
+    if not os.path.isdir(data_dir):
+        raise RuntimeError(
+            f"duckdb `data_dir` not found: {data_dir}. Point it at the folder holding "
+            "the .csv / .parquet exports (a relative path resolves against the tree file)."
+        )
+    tables: Dict[str, str] = {}
+    for name in sorted(os.listdir(data_dir)):
+        stem, ext = os.path.splitext(name)
+        if ext.lower() not in DATA_FILE_READERS or not os.path.isfile(os.path.join(data_dir, name)):
+            continue
+        if stem in tables:
+            raise RuntimeError(
+                f"Two files in {data_dir} map to the relation '{stem}' "
+                f"({tables[stem]}, {name}); rename one."
+            )
+        tables[stem] = name
+    if not tables:
+        raise RuntimeError(
+            f"No .csv or .parquet files directly inside duckdb `data_dir` {data_dir}."
+        )
+    return tables
+
+
+def open_data_dir(data_dir: str) -> Any:
+    """An in-memory DuckDB connection with one view per export in `data_dir`.
+
+    In memory on purpose: the files are the source of truth and nothing is
+    written beside them. The `duckdb` module is imported here, at the point of
+    use, so a base install can parse a `duckdb` tree and fail with the extra
+    to install rather than an ImportError.
+    """
+    duckdb = _require_module("duckdb", "duckdb", "duckdb")
+    tables = list_data_files(data_dir)
+    con = duckdb.connect()
+    for stem, name in tables.items():
+        reader = DATA_FILE_READERS[os.path.splitext(name)[1].lower()]
+        path = os.path.join(data_dir, name).replace("'", "''")
+        con.execute(f"CREATE VIEW \"{stem}\" AS SELECT * FROM {reader}('{path}')")
+    return con
+
+
+def fetcher_from_data_dir(data_dir: str, bindings: Dict[str, BindingSpec]) -> DbtDataFetcher:
+    """Build the `duckdb` provider's fetcher: the same `DbtDataFetcher` that
+    serves the `dbt` provider, with the tree's own `bind:` blocks as the whole
+    binding set and a connection over the exports in `data_dir`.
+
+    No new fetcher class, deliberately. Everything a binding buys — the grain
+    claim `doctor` asserts, declared dimensions, `agg: ratio` decomposition,
+    the SQL provenance surface — is `DbtDataFetcher`'s already, and a second
+    class would be the "same policy, different file" defect the four rules
+    exist to prevent. `connect` stays a zero-argument callable so the fetcher
+    constructs without touching the folder.
+    """
+    return DbtDataFetcher(bindings, connect=lambda: open_data_dir(data_dir), dialect="duckdb")
