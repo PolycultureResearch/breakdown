@@ -2702,7 +2702,7 @@ function renderPosterior(name, data) {
     const hi = summary["hdi_97.5%"]?.[key];
     const hdi = Number.isFinite(lo) && Number.isFinite(hi) ? `[${fmt(lo)}, ${fmt(hi)}]` : "—";
     rows += `<tr class="intervention-row">
-      <td title="${esc(INTERVENTION_WHY)}"><code>${esc(iv.name)}</code> <span class="dim">— ${esc(interventionLabel(iv).replace(`${iv.name} — `, ""))}</span></td>
+      <td title="${esc(INTERVENTION_WHY)}"><code>${esc(iv.name)}</code> <span class="dim">— ${esc(declaredInterventionLabel(iv).replace(`${iv.name} — `, ""))}</span></td>
       <td class="num">${fmt(mean)}</td>
       <td class="num">${hdi}</td>
     </tr>`;
@@ -3122,7 +3122,7 @@ async function renderPpcBand(name, data) {
      </div>`
     + ((data.interventions || []).length
       ? `Dashed rules mark the declared intervention${data.interventions.length === 1 ? "" : "s"} `
-        + `${data.interventions.map((iv) => `<code>${esc(iv.name)}</code> (${esc(interventionLabel(iv).replace(`${iv.name} — declared `, ""))})`).join(", ")}: `
+        + `${data.interventions.map((iv) => `<code>${esc(iv.name)}</code> (${esc(declaredInterventionLabel(iv).replace(`${iv.name} — declared `, ""))})`).join(", ")}: `
         + `the model was told the date and learned the size, so a band that takes the step is `
         + `reproducing a claim, not discovering one. `
       : "")

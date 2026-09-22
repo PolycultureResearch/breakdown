@@ -701,7 +701,7 @@ function droppedParentRowsHtml(node, nCols) {
 const INTERVENTION_KIND_LABEL = { step: "step", pulse: "pulse" };
 
 /* "flip — step from 2024-02-10" / "sale — pulse 2024-03-01 → 2024-03-02". */
-function interventionLabel(iv) {
+function declaredInterventionLabel(iv) {
   const kind = INTERVENTION_KIND_LABEL[iv.kind] || String(iv.kind);
   if (iv.kind === "pulse") {
     const span = iv.until && iv.until !== iv.date ? `${iv.date} → ${iv.until}` : iv.date;
@@ -758,7 +758,7 @@ function interventionRowsHtml(node, nCols, shareOf, ciCell) {
       const tag = claim ? " · fit saw this window" : note ? ` · ${note.text}` : "";
       const est = iv.estimate == null ? "—" : fmt(iv.estimate);
       const share = iv.estimate == null ? "—" : shareOf(iv.estimate, node.gap);
-      return `<tr class="intervention-row"><td title="${esc(title)}"><code>${esc(iv.name)}</code> <span class="dim">— ${esc(interventionLabel(iv).replace(`${iv.name} — `, ""))}${esc(tag)}</span></td>
+      return `<tr class="intervention-row"><td title="${esc(title)}"><code>${esc(iv.name)}</code> <span class="dim">— ${esc(declaredInterventionLabel(iv).replace(`${iv.name} — `, ""))}${esc(tag)}</span></td>
         <td class="num">${est}</td>
         <td class="num">${share}</td>
         <td class="num">${iv.ci_95 ? ciCell(iv.ci_95) : "—"}</td>
