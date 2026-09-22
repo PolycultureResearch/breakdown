@@ -404,7 +404,15 @@ def test_how_to_read_guides():
         # `gap_range` as an interval, the second being the misreading the
         # field exists to prevent. Each clause was checked against the others
         # for overlap before the ceiling moved.
-        assert 400 < len(guide) < 6500
+        #
+        # Raised to 6600 for the S24 `interventions` clause (6,544): a declared
+        # step is a term in the gap that is neither a parent nor model
+        # structure, and an agent without the clause files it under one or
+        # the other — as a cause to drill into, or as nobody's fault. The two
+        # readings that change what may be *said* about one (`claim`,
+        # `indicator_unchanged`) are per-node addenda in `rca_how_to_read`,
+        # not here.
+        assert 400 < len(guide) < 6600
     assert "unexplained" in RCA_HOW_TO_READ
     # Issue #114: both windows travel in the payload, and the guide has to say
     # they are what every figure is a contrast of — and to quote them.
