@@ -81,6 +81,7 @@ from breakdown.engine.model import (
     cached_fit_is_usable,
     compute_shapley,
     fit_metric,
+    intervention_indicator,
     seasonal_window_delta,
 )
 from breakdown.engine.progress import ProgressFn
@@ -113,6 +114,7 @@ from breakdown.grains import (
     default_reference_window,
     ensure_grained,
     fit_grain,
+    floor_period,
     next_start,
     shift_periods,
     snap_window,
@@ -174,9 +176,15 @@ def _earliest_readable_reference(dag: nx.DiGraph, data, target: str) -> pd.Times
             # A node whose frame cannot be built at all reports its own status
             # (or raises) downstream; it constrains no window here.
             continue
-        lags = dag.nodes[node]["definition"].lags or {}
+        defn = dag.nodes[node]["definition"]
+        lags = defn.lags or {}
         max_lag = max((lags.get(p, 0) for p in parents), default=0)
         floor = max(floor, shift_periods(pd.Timestamp(frame["date"].min()), max_lag, grain))
+        # Roadmap S24: a node's `fit_start` cuts its fit window, and the
+        # reference must lie inside the fitted period — so the default block
+        # may not start before it either.
+        if defn.fit_start is not None:
+            floor = max(floor, pd.Timestamp(defn.fit_start))
     return floor
 
 
@@ -477,6 +485,23 @@ def _node_out(**fields) -> Dict[str, Any]:
         # windows sits in `unexplained`. The field is what lets a reader tell
         # "excluded" from "found nothing".
         "dropped_parents": None,
+        # Roadmap S24: the declared interventions this node's fit sized, each
+        # with its window delta, `estimate`, `ci_95`, `ci_status` and
+        # `prob_same_direction` — a real term in the gap, entering
+        # `unexplained = gap − Σ contributions − Σ components − Σ interventions`.
+        # Under its own key rather than in `contributions` (it is not a metric:
+        # no subtree, no slices, not in `ranked_causes`) or in `components`
+        # (trend and seasonal are model structure nobody chose; a price flip is
+        # somebody's decision, declared by the author, and the reader should
+        # see it as such). Null when the node declares none or was not fitted.
+        "interventions": None,
+        # …and the ones the fit left out because their indicator was constant
+        # over the fit window — no instance inside it, or on throughout — each
+        # `{"intervention", "date", "kind", "reason"}` in the #113 shape. The
+        # reason says where the effect went, because a declared step that
+        # is absent from `interventions` reads as "no effect" unless something
+        # says "not fitted".
+        "dropped_interventions": None,
         "ci_status": None,
         "unexplained": None,
         # What the number in `unexplained` *is*. Never omit it while
@@ -1103,6 +1128,31 @@ def _reference_sensitivity(
     }
 
 
+def _node_fit_end(defn, grain: str, analysis_start: str, snapped_an) -> str:
+    """The `fit_end` this node's RCA fit uses (roadmap S24, design §3.2).
+
+    `analysis_start` for every node — the fit-before-analysis rule — except a
+    node declaring a `learn_from: window` intervention, whose fit is extended
+    *through* that intervention's own periods so its coefficient can be
+    identified from the event itself: through the analysis window's last
+    whole period for a `step`, through `until` for a `pulse`. Never earlier
+    than `analysis_start`, so an intervention already inside history changes
+    nothing. The trace cache is keyed by this value, which is what lets a
+    node fitted on a different window from its ancestors coexist with them —
+    and why the exception is per node, never tree-wide.
+    """
+    end = pd.Timestamp(analysis_start)
+    for iv in defn.interventions:
+        if iv.learn_from != "window":
+            continue
+        if iv.kind == "step":
+            through = snapped_an.last_start
+        else:
+            through = floor_period(pd.Timestamp(iv.until or iv.date), grain)
+        end = max(end, next_start(through, grain))
+    return str(end.date())
+
+
 def run_rca(
     dag: nx.DiGraph,
     data: pd.DataFrame,
@@ -1255,16 +1305,26 @@ def run_rca(
     # instead of counting up to an unknown total. `sorted` also makes the fit
     # order deterministic — `nodes_in_scope` is a set, so the previous order
     # varied between processes, which a progress display makes visible.
+    #
+    # A node declaring interventions is fitted even without parents (roadmap
+    # S24): a source node whose history steps has a term to learn, where a
+    # bare source node has only a level nobody attributes anything to.
+    # `fit_ends[node]` is the window each fit ends at — `analysis_start` for
+    # every node except one with a `learn_from: window` intervention, whose
+    # fit runs through the event (see `_node_fit_end`) — and it is the cache
+    # key here, at the fit and at the read, so the three cannot disagree.
     to_fit = []
+    fit_ends: Dict[str, str] = {}
     for node in sorted(nodes_in_scope):
         defn = dag.nodes[node]["definition"]
         parents = list(dag.predecessors(node))
-        if not parents or defn.formula:
-            continue
-        cached = traces.get((node, analysis_start))
-        if cached is not None and cached_fit_is_usable(cached, inference_method):
+        if (not parents and not defn.interventions) or defn.formula:
             continue
         if scoped[node][2] is None:
+            continue
+        fit_ends[node] = _node_fit_end(defn, scoped[node][0], analysis_start, scoped[node][3])
+        cached = traces.get((node, fit_ends[node]))
+        if cached is not None and cached_fit_is_usable(cached, inference_method):
             continue
         to_fit.append(node)
 
@@ -1301,7 +1361,7 @@ def run_rca(
                 node,
                 draws=draws,
                 inference_method=inference_method,
-                fit_end=analysis_start,
+                fit_end=fit_ends[node],
                 random_seed=FIT_RANDOM_SEED,
             )
         except (ValueError, RuntimeError) as e:
@@ -1311,7 +1371,7 @@ def run_rca(
             # node until it degraded here like every other unfittable one.
             fit_failures[node] = str(e)
             continue
-        traces[(node, analysis_start)] = fit
+        traces[(node, fit_ends[node])] = fit
 
     _report(progress, stage="attributing", total=len(to_fit))
 
@@ -1456,9 +1516,11 @@ def run_rca(
         seasonality_warnings = None
         likelihood_warnings = None
         dropped_parents = None
+        interventions_out = None
+        dropped_interventions = None
         interaction = None
         unexplained_status = None
-        if not parents:
+        if not parents and not defn.interventions:
             attribution_method = None
             unexplained = None
             ci_status = None
@@ -1752,7 +1814,7 @@ def run_rca(
                 unexplained_status = "measured"
         else:
             attribution_method = "posterior"
-            fit = traces[(node, analysis_start)]
+            fit = traces[(node, fit_ends[node])]
             inference_method = fit.inference_method
             fit_quality = fit.diagnostics.get("fit_quality")
             khat = fit.diagnostics.get("khat")
@@ -1771,10 +1833,20 @@ def run_rca(
             ppc_warnings = fit.diagnostics.get("ppc_warnings")
             # What the model actually trained on: all loaded whole periods
             # before analysis_start — not the reference window.
+            #
+            # Roadmap S24: `extended_for` names the `learn_from: window`
+            # interventions whose declaration pushed this node's fit past
+            # `analysis_start` — the fit saw the analysis window for this
+            # node, and the reader must know that when reading its β.
             fit_window = {
                 "start": str(fit.dates[0].date()),
                 "end": str(fit.dates[-1].date()),
                 "n_periods": int(len(fit.dates)),
+                "extended_for": [
+                    r["name"]
+                    for r in fit.interventions
+                    if r["learn_from"] == "window" and fit_ends[node] != analysis_start
+                ],
             }
             seasonality_warnings = fit.diagnostics.get("seasonality_warnings")
             likelihood_warnings = fit.diagnostics.get("likelihood_warnings")
@@ -1786,7 +1858,15 @@ def run_rca(
             # dropped ones — `fit_metric` guarantees that.
             fitted = fit.parents
             dropped_parents = fit.dropped_parents or None
-            arr = fit.trace.posterior["beta_raw"].values.reshape(-1, len(fitted))
+            dropped_interventions = fit.dropped_interventions or None
+            # A node fitted for its interventions alone has no `beta_raw`;
+            # the posterior draw count then comes from the level, which every
+            # fit carries.
+            arr = (
+                fit.trace.posterior["beta_raw"].values.reshape(-1, len(fitted))
+                if fitted
+                else np.zeros((fit.trace.posterior["alpha"].values.size, 0))
+            )
             n_post = arr.shape[0]
 
             # Refuse-by-name before any attribution math (roadmap C29): the
@@ -1843,7 +1923,16 @@ def run_rca(
             # level is flat at the last fitted state — so the analysis-window
             # trend is trend[-1], per posterior sample. Its CI reflects the
             # posterior of that last state, not forward simulation of new steps.
-            trend_delta = (trend_samples[:, -1] - trend_samples[:, t_ref].mean(axis=1)) * fit.y_std
+            #
+            # With one exception (roadmap S24): a `learn_from: window` node's
+            # fit was extended through the analysis window, so those periods
+            # have fitted states of their own and are read as such. Clipping
+            # to the last fitted index reproduces `trend[-1]` exactly for
+            # every period beyond the fit, so the default path is unchanged.
+            t_an_fitted = np.minimum(t_an, trend_samples.shape[1] - 1)
+            trend_delta = (
+                trend_samples[:, t_an_fitted].mean(axis=1) - trend_samples[:, t_ref].mean(axis=1)
+            ) * fit.y_std
             # The model always carries a local level, so `trend` is always a
             # term it estimated. Seasonality is declared per node, and a node
             # that declares none has no seasonal parameters at all — the key is
@@ -1940,7 +2029,77 @@ def run_rca(
                         snapped_ref, snapped_an, lag, grain
                     )
                 contributions.append(contribution)
-            unexplained = gap - estimate_sum - sum(c["estimate"] for c in components.values())
+
+            # Roadmap S24: each fitted intervention's share of the gap is its
+            # coefficient times the *window delta of its indicator* — the
+            # fraction of analysis-window periods it was on minus the fraction
+            # of reference-window periods. The dates are facts, not samples,
+            # so the delta is not bootstrapped: the interval is the
+            # coefficient's posterior alone. A delta of exactly zero (a step
+            # entirely before both windows, which fixed the fit and moves the
+            # gap by nothing) is reported as 0 with no interval and a named
+            # `ci_status`, never as a zero-width `ci_95` (roadmap C4); a
+            # non-finite posterior is withheld by name (rule 3).
+            intervention_sum = 0.0
+            if fit.interventions:
+                arr_iv = fit.trace.posterior["beta_intervention_raw"].values.reshape(
+                    -1, len(fit.interventions)
+                )
+                ref_dates = pd.DatetimeIndex(frame.loc[ref_mask, "date"])
+                an_dates = pd.DatetimeIndex(frame.loc[an_mask, "date"])
+                interventions_out = []
+                for j, record in enumerate(fit.interventions):
+                    window_delta = float(
+                        intervention_indicator(record, an_dates).mean()
+                        - intervention_indicator(record, ref_dates).mean()
+                    )
+                    entry: Dict[str, Any] = {**record, "window_delta": window_delta}
+                    iv_samples = arr_iv[:, j] * window_delta
+                    if not np.isfinite(iv_samples).all():
+                        entry.update(
+                            estimate=None,
+                            share_of_gap=None,
+                            ci_95=None,
+                            ci_status="nonfinite_posterior",
+                            **direction_fields(None),
+                        )
+                    elif window_delta == 0.0:
+                        entry.update(
+                            estimate=0.0,
+                            share_of_gap=share_of_gap(0.0, gap, ci_scale),
+                            ci_95=None,
+                            ci_status="indicator_unchanged",
+                            **direction_fields(None),
+                        )
+                    else:
+                        summary = sample_summary(iv_samples, ci_scale)
+                        entry.update(
+                            **summary,
+                            share_of_gap=share_of_gap(summary["estimate"], gap, ci_scale),
+                            ci_status="ok" if summary["ci_95"] is not None else "degenerate",
+                            **direction_fields(iv_samples),
+                        )
+                        intervention_sum += summary["estimate"]
+                    if record["learn_from"] == "window":
+                        # Design §3.2 (i), stated on the entry itself: with the
+                        # fit free to see the window, the indicator is the only
+                        # term that can take an abrupt change on that date, so
+                        # anything else dated the same is in it.
+                        entry["claim"] = (
+                            f"shift coincident with {record['date']}; not separable "
+                            "from anything else dated the same. The fit saw the "
+                            "analysis window for this node, and the interval does "
+                            "not include the forecast uncertainty of the regime it "
+                            "stepped from (roadmap 3.4/S16)."
+                        )
+                    interventions_out.append(entry)
+
+            unexplained = (
+                gap
+                - estimate_sum
+                - sum(c["estimate"] for c in components.values())
+                - intervention_sum
+            )
             # A probabilistic node is always fetched (there is no derived
             # regression), so its residual is always a measurement.
             unexplained_status = "measured"
@@ -1982,6 +2141,8 @@ def run_rca(
             seasonality_warnings=seasonality_warnings,
             likelihood_warnings=likelihood_warnings,
             dropped_parents=dropped_parents,
+            interventions=interventions_out,
+            dropped_interventions=dropped_interventions,
             ci_status=ci_status,
             unexplained=unexplained,
             unexplained_status=unexplained_status,
