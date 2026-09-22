@@ -33,6 +33,7 @@ jobs:
       (
         github.event_name == 'pull_request_target' &&
         github.event.pull_request.user.login != 'devonds' &&
+        github.event.pull_request.user.login != 'justincfung' &&
         !endsWith(github.event.pull_request.user.login, '[bot]')
       ) || (
         github.event_name == 'issue_comment' &&
@@ -49,6 +50,6 @@ jobs:
           path-to-signatures: "signatures/version1/cla.json"
           path-to-document: "https://github.com/PolycultureResearch/breakdown/blob/main/CLA.md"
           branch: "main"
-          allowlist: devonds,dependabot[bot],*[bot]
+          allowlist: devonds,justincfung,dependabot[bot],*[bot]
           remote-organization-name: PolycultureResearch
           remote-repository-name: cla_signatures
