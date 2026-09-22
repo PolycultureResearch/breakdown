@@ -18,7 +18,7 @@ designs, and one recommendation with its YAML shape, disclosure obligations and
 test plan.
 
 **Relation to `knowledge/marketing_campaign_lift_design.md`** (same day,
-uncommitted at the time of writing, raised by a marketing team). That
+raised by a marketing team). That
 document's §5.2 and §6 Tier 1 propose "an event-term fit-window exception":
 a declared event regressor whose fit window deliberately spans the campaign,
 so the term is identified from the event itself rather than dropped as a
@@ -31,8 +31,8 @@ that regressor; it adopts the marketing document's exception as a second,
 explicitly opted-in learning mode (§3.2, `learn_from: window`) rather than
 the default, and states why the default stays the other way. The roadmap row
 this document adds, [S24](roadmap.md#statistical-rigor-s--a-standing-workstream),
-is the row for both; the marketing document's Tier 1 item 1 should cite it
-rather than add a second one. Where the two disagree is narrow and is stated
+is the row for both; the marketing document's Tier 1 item 1 cites it
+rather than adding a second one. Where the two disagree is narrow and is stated
 in §1.1 and §3.2.
 
 ---

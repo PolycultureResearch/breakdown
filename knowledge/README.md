@@ -153,6 +153,18 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
   DuckDB harness that lets the `dbt` provider run offline unchanged, and what a
   third and fourth synthetic company would have to be *for*. Tooling:
   [`tools/archive/`](../tools/archive/)
+- [`marketing_campaign_lift_design.md`](marketing_campaign_lift_design.md) —
+  **analysis + a worked tree, no engine work yet.** A marketing team's two
+  questions — what a dollar in one channel buys, and what a dated multi-channel
+  push drove — separated, because breakdown answers the first today and cannot
+  answer the second. Carries the measured evidence (three channel coefficients
+  recovered with truth inside every interval, the full spend→MRR chain, the
+  slice verdicts) and the five gaps behind the second question, with a build
+  order over existing roadmap items: S24's `learn_from: window` mode first (the
+  event term the fit is allowed to see — one mechanism with
+  `step_change_design.md`, not a second row), then 3.4, S16, S9, S19. Worked
+  half:
+  [`white_cube_marketing_tree.yml`](white_cube_marketing_tree.yml)
 - [`rca_lag_assessment.md`](rca_lag_assessment.md) — how RCA handles time lags
   today (declared lags shift fit and attribution windows correctly), and the
   planned improvements: surfacing lag-shifted parent windows, a Bayesian lag
@@ -188,6 +200,16 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
 ## Example trees
 
 - [`b2b_mrr_tree.yml`](b2b_mrr_tree.yml) — a full B2B SaaS "Total MRR" metric tree (106 metrics, single apex), adapted from Metrics Labs' [B2B Metrics Canvas](https://miro.com/app/board/uXjVNq48sQI=/?share_link_id=353173494684) on Miro. A worked reference for mapping a real-world metric tree onto breakdown's `formula` (deterministic) and probabilistic (`priors`/`lags`) edges, and — since [C10](roadmap.md#horizon-0--correctness-numbers-the-engine-cant-defend) — for the rest of the schema too: `grain`/`kind` on every node (a deliberate day + month cut), `dimensions` on the sliceable ones, `expected_signs` on every learned edge. Its apex is monthly, so run it over years: `--start-date 2022-01-01 --end-date 2024-12-31`.
+- [`white_cube_marketing_tree.yml`](white_cube_marketing_tree.yml) — the
+  marketing peer of `demo/white_cube_tree.yml` (roadmap 2.16 — trees are
+  peers): 20 nodes, apex `new_mrr`, one learned edge per paid channel instead
+  of one blended spend node. A worked reference for three things the demo tree
+  does not show — per-channel `bind.sql` relations, `agg: ratio` bindings for
+  every funnel rate, and the one-parent-per-channel shape that avoids a
+  collinear ridge. Runs green under `doctor` against the fake_companies
+  b2c_saas project via the `dbt` bridge; see
+  [`marketing_campaign_lift_design.md`](marketing_campaign_lift_design.md) §3
+  for why each choice was made and §2 for what it returns.
 
 ---
 

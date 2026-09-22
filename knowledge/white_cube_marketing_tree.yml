@@ -1,0 +1,567 @@
+# White Cube — the marketing tree: channel spend to new MRR.
+#
+# A *peer* of `demo/white_cube_tree.yml`, not a replacement (roadmap 2.16 — a
+# process serves several trees and none of them is the main one). The demo tree
+# is the wide revenue tree: apex `net_new_mrr`, one blended `marketing_spend`
+# node, channel carried only as a slicing dimension. This one asks the question
+# that tree cannot answer — **what does a dollar in one specific channel buy** —
+# and stops at `new_mrr`, because marketing does not move churn and a tree
+# should not imply that it does.
+#
+# Companion to `knowledge/marketing_campaign_lift_design.md`, which is the
+# design note this file is the worked half of. Read §4 there before trusting
+# the spend coefficients; read §5 before asking it about a dated campaign,
+# which it cannot answer and says so.
+#
+# Provider: the `dbt` bridge (roadmap 2.15) against the fake_companies b2c_saas
+# project, so it runs with no MetricFlow CLI and on Python 3.14. Set
+# WHITE_CUBE_DBT_PROJECT to that project directory, e.g.
+#
+#   export WHITE_CUBE_DBT_PROJECT=~/code/fake_companies/dbt/b2c_saas
+#   uv run breakdown doctor --tree knowledge/white_cube_marketing_tree.yml \
+#     --start-date 2024-06-01 --end-date 2026-07-30
+#
+# The data spans 2024-06-01..2026-07-30. The planted multi-channel campaign
+# (generator story C) is a paid-social spend ramp over 2025-03-03..2025-04-13
+# with a Brazil-segmented signup-rate lift across paid_social, organic and
+# referral running to 2025-05-25.
+
+provider:
+  type: dbt
+  project_path: "${WHITE_CUBE_DBT_PROJECT}"
+
+tree:
+  title: "White Cube — marketing"
+  description: "What a dollar in each paid channel buys, through the funnel to new MRR"
+  owner: "Growth"
+
+metrics:
+  # ------------------------------------------------------------------- spend
+  #
+  # One node per paid channel, not one blended `marketing_spend`. The blend is
+  # what makes the demo tree unable to answer "spend more on paid social":
+  # a single coefficient on total spend is a weighted average of three very
+  # different prices, and it moves whenever the *mix* moves even if no channel
+  # got cheaper.
+  #
+  # Every spend node is a hand-written `bind.sql` relation. The dbt project's
+  # `ad_spend` semantic model declares one unfiltered `marketing_spend` measure
+  # with `channel` as a dimension, and a per-channel metric would have to be a
+  # filtered dbt metric. `bind.where` is import-only by design (roadmap 2.17),
+  # so the tree's own filter goes in `bind.sql` — which `breakdown doctor`
+  # still checks, because the grain assertion runs against the filtered
+  # relation. Declaring these in dbt instead would be the better long-term
+  # home; see the design note §3.
+  #
+  # `direction: neutral` throughout: spending more is a decision, not news.
+
+  - name: spend_paid_social
+    description: "Ad spend on paid social — the artist channel, image-led feeds"
+    source: white_cube.metrics.spend_paid_social
+    direction: neutral
+    format: currency
+    bind:
+      sql: "SELECT * FROM main_staging.stg_ad_spend WHERE channel = 'paid_social'"
+      grain_key: spend_id
+      time_column: spend_date
+      agg: sum
+      measure: spend
+      dimensions:
+        campaign: { column: campaign_id }
+
+  - name: spend_paid_search
+    description: "Ad spend on paid search"
+    source: white_cube.metrics.spend_paid_search
+    direction: neutral
+    format: currency
+    bind:
+      sql: "SELECT * FROM main_staging.stg_ad_spend WHERE channel = 'paid_search'"
+      grain_key: spend_id
+      time_column: spend_date
+      agg: sum
+      measure: spend
+      dimensions:
+        campaign: { column: campaign_id }
+
+  - name: spend_display
+    description: "Ad spend on display"
+    source: white_cube.metrics.spend_display
+    direction: neutral
+    format: currency
+    bind:
+      sql: "SELECT * FROM main_staging.stg_ad_spend WHERE channel = 'display'"
+      grain_key: spend_id
+      time_column: spend_date
+      agg: sum
+      measure: spend
+      dimensions:
+        campaign: { column: campaign_id }
+
+  # ---------------------------------------------------------------- traffic
+  #
+  # One learned edge per channel, each with exactly one parent. This is the
+  # load-bearing shape of the whole tree and the reason it is not
+  # `sessions <- [spend_paid_social, spend_paid_search, spend_display]`.
+  #
+  # Three spend series that all ride the same budget calendar are collinear,
+  # and collinear parents of one node split credit unstably — the fit sizes
+  # their *sum* far more surely than the split (roadmap S4, which now ships a
+  # ridge diagnostic that would fire here and tell you exactly this). Giving
+  # each channel its own child node removes the ridge instead of measuring it:
+  # every regression below has one regressor, the identity above re-assembles
+  # the total exactly, and no coefficient is ever asked to distinguish two
+  # things that moved together.
+  #
+  # The priors are the ad platform's own reported CPC inverted into sessions
+  # per dollar. That is the honest prior for a marketer to state: it is what
+  # the platform claims it sold you. The fit then answers a different question
+  # — whether *site* sessions actually track it — and a posterior far below the
+  # prior is the interesting finding, not a bad fit.
+
+  - name: paid_social_sessions
+    description: "Web sessions attributed to paid social"
+    source: white_cube.metrics.paid_social_sessions
+    direction: up_is_good
+    format:
+      style: number
+      unit: sessions / day
+      decimals: 0
+    parents: [spend_paid_social]
+    priors:
+      coefficient:
+        # Platform CPC ~$0.90 → ~1.1 sessions per dollar.
+        distribution: "Normal"
+        params: { mu: 1.1, sigma: 0.35 }
+    expected_signs: { spend_paid_social: positive }
+    trend: linear
+    seasonality:
+      - period: 7
+        name: weekly
+    bind:
+      sql: "SELECT * FROM main_marts.fct_sessions WHERE channel = 'paid_social'"
+      grain_key: session_id
+      time_column: session_date
+      agg: count
+      measure: session_id
+      dimensions:
+        country: { column: country }
+        device: { column: device }
+
+  - name: paid_search_sessions
+    description: "Web sessions attributed to paid search"
+    source: white_cube.metrics.paid_search_sessions
+    direction: up_is_good
+    format:
+      style: number
+      unit: sessions / day
+      decimals: 0
+    parents: [spend_paid_search]
+    priors:
+      coefficient:
+        # Platform CPC ~$1.40 → ~0.7 sessions per dollar. Search costs more per
+        # click than social and is expected to convert better downstream, which
+        # this tree does not yet model per channel — see the design note §5.
+        distribution: "Normal"
+        params: { mu: 0.7, sigma: 0.25 }
+    expected_signs: { spend_paid_search: positive }
+    trend: linear
+    seasonality:
+      - period: 7
+        name: weekly
+    bind:
+      sql: "SELECT * FROM main_marts.fct_sessions WHERE channel = 'paid_search'"
+      grain_key: session_id
+      time_column: session_date
+      agg: count
+      measure: session_id
+      dimensions:
+        country: { column: country }
+        device: { column: device }
+
+  - name: display_sessions
+    description: "Web sessions attributed to display"
+    source: white_cube.metrics.display_sessions
+    direction: up_is_good
+    format:
+      style: number
+      unit: sessions / day
+      decimals: 0
+    parents: [spend_display]
+    priors:
+      coefficient:
+        # Platform CPC ~$0.50 → ~2 sessions per dollar. The cheapest traffic on
+        # the page and the smallest budget, so its coefficient is the least
+        # well determined of the three: ~$26/day of spend is not much movement
+        # to learn from.
+        distribution: "Normal"
+        params: { mu: 2.0, sigma: 0.7 }
+    expected_signs: { spend_display: positive }
+    trend: linear
+    seasonality:
+      - period: 7
+        name: weekly
+    bind:
+      sql: "SELECT * FROM main_marts.fct_sessions WHERE channel = 'display'"
+      grain_key: session_id
+      time_column: session_date
+      agg: count
+      measure: session_id
+      dimensions:
+        country: { column: country }
+        device: { column: device }
+
+  - name: unpaid_sessions
+    description: "Web sessions nobody bought — organic, direct, referral and email"
+    source: white_cube.metrics.unpaid_sessions
+    direction: up_is_good
+    format:
+      style: number
+      unit: sessions / day
+      decimals: 0
+    # A root with no parents, deliberately. Unpaid traffic is not caused by
+    # anything in this tree, and it is here because the identity below needs
+    # every term — a `sessions` node that summed only the paid channels would
+    # be a different metric wearing the name. It is also the term a campaign's
+    # earned reach lands in: the planted story C lifts organic and referral
+    # signup rates, which this tree sees as unpaid volume the spend nodes
+    # cannot explain.
+    trend: linear
+    seasonality:
+      - period: 7
+        name: weekly
+    bind:
+      sql: >
+        SELECT * FROM main_marts.fct_sessions
+        WHERE channel NOT IN ('paid_social', 'paid_search', 'display')
+      grain_key: session_id
+      time_column: session_date
+      agg: count
+      measure: session_id
+      dimensions:
+        country: { column: country }
+        device: { column: device }
+        channel: { column: channel }
+
+  - name: sessions
+    description: "All web sessions"
+    source: white_cube.metrics.sessions
+    direction: up_is_good
+    format:
+      style: number
+      unit: sessions / day
+      decimals: 0
+    # A *measured* identity, not a derived one: the node keeps its own source,
+    # so the sum of the four channel groups is checked against the governed
+    # `sessions` metric at load and `unexplained` here means the two disagree
+    # rather than "noise". If a new channel appears in fct_sessions and nobody
+    # updates the four bindings, this is the node that says so.
+    formula: "paid_social_sessions + paid_search_sessions + display_sessions + unpaid_sessions"
+    parents:
+      [paid_social_sessions, paid_search_sessions, display_sessions, unpaid_sessions]
+    dimensions:
+      channel: channel
+      country: country
+      device: device
+
+  # ----------------------------------------------------------------- signups
+  - name: visit_signup_rate
+    description: "Share of sessions that become signups"
+    source: white_cube.metrics.visit_signup_rate
+    kind: rate
+    direction: up_is_good
+    # Σsignups / Σsessions over the window, not the mean of daily rates — the
+    # upstream dbt metric is a `ratio`, and this is the temporal weight that
+    # makes a window aggregate correctly.
+    denominator: sessions
+    share: true
+    format:
+      style: percent
+      decimals: 2
+    # A hand-written ratio binding, and the reason is worth reading once
+    # because it applies to all five rates in this tree. dbt declares this as a
+    # `type: ratio` metric, and the bridge does not produce a *binding* for a
+    # ratio or derived metric — it offers a **formula candidate** instead, here
+    # `visit_signup_rate = signups / sessions`.
+    #
+    # That candidate points the wrong way for a funnel tree, and the mismatch
+    # is structural rather than a gap. The semantic layer defines the rate as
+    # an *output* of two volumes; the causal tree needs it as an *input* to
+    # one of them (`signups = sessions * visit_signup_rate`). Taking the
+    # candidate would invert the edge and close a cycle. So every rate that
+    # acts as a driver needs its own binding, and `agg: ratio` is the right one
+    # because it keeps numerator and denominator as two separate measures —
+    # which is what lets a slice split into within-slice movement and mix shift
+    # instead of being attributed additively.
+    #
+    # The relation is one row per day with both measures on it, built off the
+    # time spine so a day with no sessions is a zero rather than a missing row.
+    bind:
+      sql: >
+        SELECT d.date_day AS rate_date,
+               COALESCE(sess.sessions, 0) AS sessions,
+               COALESCE(sig.signups, 0)   AS signups
+        FROM main_marts.metricflow_time_spine AS d
+        LEFT JOIN (SELECT session_date, COUNT(*) AS sessions
+                   FROM main_marts.fct_sessions GROUP BY 1) AS sess
+               ON sess.session_date = d.date_day
+        LEFT JOIN (SELECT signup_date, COUNT(*) AS signups
+                   FROM main_marts.fct_signups GROUP BY 1) AS sig
+               ON sig.signup_date = d.date_day
+      grain_key: rate_date
+      time_column: rate_date
+      agg: ratio
+      numerator: signups
+      denominator: sessions
+    # No dimensions, for the reason the demo tree gives: MetricFlow reaches
+    # this ratio's dimensions through `user`, and a session that never signed
+    # up has no user, so ~96% of the weight lands in __null__. Slice `signups`
+    # by channel instead — same question, answered on the side of the ratio
+    # that carries the attribute.
+
+  - name: signups
+    description: "New free accounts created"
+    source: white_cube.metrics.signups
+    direction: up_is_good
+    format:
+      style: number
+      unit: signups / day
+      decimals: 0
+    formula: "sessions * visit_signup_rate"
+    parents: [sessions, visit_signup_rate]
+    # `channel` here is the *signup*'s attributed channel, which is the
+    # marketing team's own attribution model arriving in the tree as a
+    # dimension. The tree never re-derives it and never audits it: breakdown
+    # slices by whatever the warehouse says the channel was.
+    dimensions:
+      channel: signup_channel
+      country: country
+      device: device
+
+  # ------------------------------------------------------------------- trial
+  - name: trials_started
+    description: "Signups that start a 7-day trial rather than staying free"
+    source: white_cube.metrics.trials_started
+    direction: up_is_good
+    format:
+      style: number
+      unit: trials / day
+      decimals: 0
+    parents: [signups]
+    priors:
+      coefficient:
+        distribution: "Normal"
+        params: { mu: 0.45, sigma: 0.12 }
+    expected_signs: { signups: positive }
+    dimensions:
+      channel: signup_channel
+      country: country
+      device: device
+
+  - name: trial_activation_rate
+    description: "Share of a trial cohort that uploads their first work during the trial, by cohort start week"
+    source: white_cube.metrics.trial_activation_rate
+    grain: week
+    kind: rate
+    direction: up_is_good
+    denominator: trials_started
+    share: true
+    format:
+      style: percent
+      decimals: 1
+    bind:
+      sql: >
+        SELECT *,
+               1                                        AS trial_row,
+               CASE WHEN activated THEN 1 ELSE 0 END    AS activated_trials,
+               CASE WHEN converted THEN 1 ELSE 0 END    AS trial_conversions
+        FROM main_marts.fct_trials
+      grain_key: subscription_id
+      time_column: trial_start_date
+      agg: ratio
+      numerator: activated_trials
+      denominator: trial_row
+      dimensions:
+        channel: { column: signup_channel }
+        country: { column: country }
+
+  - name: trial_days_active
+    description: "Mean distinct days a trial cohort used the product during its 7-day trial"
+    source: white_cube.metrics.trial_days_active
+    grain: week
+    kind: rate
+    direction: up_is_good
+    denominator: trials_started
+    # No `share`: a mean count of days (0–7), not a proportion.
+    format:
+      style: number
+      unit: days
+      decimals: 2
+    bind:
+      sql: >
+        SELECT *,
+               1                                        AS trial_row,
+               CASE WHEN activated THEN 1 ELSE 0 END    AS activated_trials,
+               CASE WHEN converted THEN 1 ELSE 0 END    AS trial_conversions
+        FROM main_marts.fct_trials
+      grain_key: subscription_id
+      time_column: trial_start_date
+      agg: ratio
+      numerator: days_active
+      denominator: trial_row
+      dimensions:
+        channel: { column: signup_channel }
+        country: { column: country }
+
+  - name: trial_conversion_rate
+    description: "Share of a trial cohort that converts to paid, by cohort start week"
+    source: white_cube.metrics.trial_conversion_rate
+    grain: week
+    kind: rate
+    direction: up_is_good
+    denominator: trials_started
+    share: true
+    bind:
+      sql: >
+        SELECT *,
+               1                                        AS trial_row,
+               CASE WHEN activated THEN 1 ELSE 0 END    AS activated_trials,
+               CASE WHEN converted THEN 1 ELSE 0 END    AS trial_conversions
+        FROM main_marts.fct_trials
+      grain_key: subscription_id
+      time_column: trial_start_date
+      agg: ratio
+      numerator: trial_conversions
+      denominator: trial_row
+      dimensions:
+        channel: { column: signup_channel }
+        country: { column: country }
+    # Cohort-contemporaneous, and deliberately collinear: both parents ride the
+    # same underlying engagement, so the fit sizes their sum more surely than
+    # the split. S4's ridge diagnostic is expected to fire on this node — it is
+    # the one place in this tree where two correlated parents share a child,
+    # and it is kept because the alternative is dropping a real mechanism.
+    parents: [trial_activation_rate, trial_days_active]
+    priors:
+      trial_activation_rate:
+        distribution: "Normal"
+        params: { mu: 0.25, sigma: 0.15 }
+      trial_days_active:
+        distribution: "Normal"
+        params: { mu: 0.05, sigma: 0.04 }
+    expected_signs:
+      trial_activation_rate: positive
+      trial_days_active: positive
+    format:
+      style: percent
+      decimals: 1
+
+  - name: trial_conversions
+    description: "Trials that converted, dated by the week the trial started"
+    source: white_cube.metrics.trial_conversions
+    grain: week
+    direction: up_is_good
+    formula: "trials_started * trial_conversion_rate"
+    parents: [trials_started, trial_conversion_rate]
+    format:
+      style: number
+      unit: conversions / week
+      decimals: 0
+    dimensions:
+      country: country
+      device: device
+      plan: plan
+
+  # --------------------------------------------------------------- new MRR
+  - name: reactivations
+    description: "Paid subscriptions restarted by returning users — churned members and lapsed trials"
+    source: white_cube.metrics.reactivations
+    grain: week
+    direction: up_is_good
+    format:
+      style: number
+      unit: subscriptions / week
+      decimals: 0
+    # `plan` only: the dbt bridge reads one relation per metric and does not
+    # follow the `user` foreign entity into dim_users, so MRR is not sliceable
+    # by country here the way it is under the `local` provider. See the design
+    # note §3 — it is a real difference between the two, not an oversight.
+    dimensions:
+      plan: plan
+
+  - name: direct_conversions
+    description: "Paid subscriptions started without a trial"
+    source: white_cube.metrics.direct_conversions
+    grain: week
+    direction: up_is_good
+    format:
+      style: number
+      unit: subscriptions / week
+      decimals: 0
+    # `plan` only: the dbt bridge reads one relation per metric and does not
+    # follow the `user` foreign entity into dim_users, so MRR is not sliceable
+    # by country here the way it is under the `local` provider. See the design
+    # note §3 — it is a real difference between the two, not an oversight.
+    dimensions:
+      plan: plan
+
+  - name: new_subscriptions
+    description: "Paid subscriptions booked, dated by the booking event"
+    source: white_cube.metrics.new_subscriptions
+    grain: week
+    direction: up_is_good
+    # The cohort-aligned lagged identity the demo tree introduced: one week of
+    # lag *is* the 7-day trial. It matters more here than there, because a
+    # campaign's signups and the subscriptions they become are a week apart —
+    # an RCA that compared the same fortnight on both would be comparing the
+    # wrong cohort. `parent_windows` in the RCA response carries the shifted
+    # window, which is what makes the traverse-then-slice follow-up correct.
+    formula: "trial_conversions + reactivations + direct_conversions"
+    parents: [trial_conversions, reactivations, direct_conversions]
+    lags: { trial_conversions: 1 }
+    format:
+      style: number
+      unit: subscriptions / week
+      decimals: 0
+    # `plan` only: the dbt bridge reads one relation per metric and does not
+    # follow the `user` foreign entity into dim_users, so MRR is not sliceable
+    # by country here the way it is under the `local` provider. See the design
+    # note §3 — it is a real difference between the two, not an oversight.
+    dimensions:
+      plan: plan
+
+  - name: new_arpu
+    description: "Average MRR booked per new subscription"
+    source: white_cube.metrics.new_arpu
+    grain: week
+    kind: rate
+    direction: up_is_good
+    format: currency
+    # dbt declares this as `type: derived` (new_mrr / nullif(new_subscriptions,
+    # 0)); the bridge refuses derived metrics, and both measures live on the
+    # same relation anyway, so the ratio binding is exact.
+    bind:
+      relation: main_marts.fct_mrr_movements
+      grain_key: event_id
+      time_column: event_date
+      agg: ratio
+      numerator: new_mrr_amount
+      denominator: is_new_subscription
+      dimensions:
+        plan: { column: plan }
+    dimensions:
+      plan: { source: plan, weight: new_subscriptions }
+
+  - name: new_mrr
+    description: "MRR added by new and reactivated subscriptions — the apex of the marketing tree"
+    source: white_cube.metrics.new_mrr
+    grain: week
+    direction: up_is_good
+    formula: "new_subscriptions * new_arpu"
+    parents: [new_subscriptions, new_arpu]
+    format: currency
+    # `plan` only: the dbt bridge reads one relation per metric and does not
+    # follow the `user` foreign entity into dim_users, so MRR is not sliceable
+    # by country here the way it is under the `local` provider. See the design
+    # note §3 — it is a real difference between the two, not an oversight.
+    dimensions:
+      plan: plan
