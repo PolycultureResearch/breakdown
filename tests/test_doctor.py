@@ -358,8 +358,11 @@ def _results(tree_yaml):
 def test_dbt_chain_passes_on_a_healthy_project(tmp_path):
     results = _results(_tree(_dbt_project(tmp_path)))
     # Two checks skip on this fixture: its one metric is a plain sum, so there
-    # is no non-additive slice to resolve, and it carries no filter.
-    assert [r.status for r in results.values()] == ["pass"] * 6 + ["skip", "skip"]
+    # is no non-additive slice to resolve, and it carries no filter. The last
+    # check runs every metric's generated query, which is what proves the
+    # `measure` column exists — the grain claim never selects it.
+    assert [r.status for r in results.values()] == ["pass"] * 6 + ["skip", "skip", "pass"]
+    assert "1 metric(s) over" in results["metric sql runs"].detail
     assert "no non-additive metrics" in results["entity grain resolves"].detail
     assert "no imported filters" in results["filters narrow"].detail
     assert "one row per grain" in results["grain claims hold"].detail

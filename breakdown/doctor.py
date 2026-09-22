@@ -180,16 +180,21 @@ def _check_rate_denominators(parser) -> CheckResult:
 # exist before it can be read, the profile has to resolve before a connection can
 # be opened, and nothing can be asserted about a metric that does not resolve to
 # a binding.
-_DBT_CHECKS = [
-    "semantic manifest",
-    "dbt profile",
-    "warehouse connection",
+#
+# Everything after the connection is about the *bindings*, not about dbt, and
+# is shared with the `duckdb` provider (`_check_bindings`): a tree's own
+# `bind:` blocks over a folder of exports earn exactly the same grain claim,
+# dimension check and filter probe as bindings imported from a manifest.
+_BINDING_CHECKS = [
     "tree metrics bind",
     "declared dimensions exist",
     "grain claims hold",
     "filters narrow",
     "entity grain resolves",
+    "metric sql runs",
 ]
+_DBT_CHECKS = ["semantic manifest", "dbt profile", "warehouse connection", *_BINDING_CHECKS]
+_DUCKDB_CHECKS = ["data files", *_BINDING_CHECKS]
 
 
 def _over(start_date: Optional[str], end_date: Optional[str]) -> str:
@@ -670,16 +675,98 @@ def check_dbt(
         )
     results.append(CheckResult.ok("warehouse connection", f"{out.get('type')} reachable"))
 
-    # 3. every tree metric resolves to a binding
-    from breakdown.data_fetch import provider_query_name
+    # 3–8. the bindings themselves — shared with the `duckdb` provider
+    results.extend(_check_bindings(config, bridged, "dbt", start_date, end_date))
+    bridged.close()
+    return results
 
-    wanted = {provider_query_name("dbt", m): m.name for m in config.metrics if not m.derived}
-    unbound = sorted(q for q in wanted if q not in bridged.bindings)
+
+def check_duckdb(parser, tree_path: str, start_date: str, end_date: str) -> List[CheckResult]:
+    """Walk the `duckdb` provider's chain: data files -> the binding checks.
+
+    Short by design. There is no manifest, profile or credential to prove, so
+    the only step of its own is the folder: does it exist, what relations does
+    it hold, and from which files. After that the tree's `bind:` blocks are
+    checked by exactly the code that checks a dbt project's — the grain claim
+    in particular, since a hand-exported CSV is at least as likely to carry a
+    duplicate `order_id` as a modelled fact table.
+
+    The fetcher comes from `build_fetcher` with the tree path, the same call
+    `load_tree` makes, so the folder this reports on is the one the server
+    would read (`resolve_data_dir` runs once, there).
+    """
+    from breakdown.dbt_provider import list_data_files
+    from breakdown.loading import build_fetcher, resolve_data_dir
+
+    config = parser.config
+    results: List[CheckResult] = []
+    data_dir = resolve_data_dir(config.provider.data_dir, tree_path)
+    try:
+        tables = list_data_files(data_dir)
+    except Exception as e:
+        results.append(
+            CheckResult.fail(
+                "data files",
+                str(e),
+                "Point `data_dir` at the folder holding your .csv / .parquet exports "
+                "(a relative path resolves against the tree file's directory), one "
+                "file per relation, named by the stem the bindings refer to.",
+            )
+        )
+        results.extend(_skip_rest(_BINDING_CHECKS, "no data files"))
+        return results
+    listed = ", ".join(f"{stem} ({name})" for stem, name in tables.items())
+    results.append(CheckResult.ok("data files", f"{data_dir}: {listed}"))
+
+    try:
+        fetcher = build_fetcher(config.provider, parser.dag, config.metrics, tree_path=tree_path)
+    except Exception as e:  # pragma: no cover - the parser already refused an unbound node
+        results.append(CheckResult.fail("tree metrics bind", f"could not build fetcher: {e}"))
+        results.extend(_skip_rest(_BINDING_CHECKS[1:], "no fetcher"))
+        return results
+    results.extend(_check_bindings(config, fetcher, "duckdb", start_date, end_date))
+    fetcher.close()
+    return results
+
+
+def _check_bindings(
+    config: MetricTreeConfig,
+    fetcher,
+    provider_type: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> List[CheckResult]:
+    """The checks a binding earns once there is a connection to run them on:
+    tree metrics bind -> declared dimensions exist -> grain claims hold ->
+    filters narrow -> entity grain resolves -> metric sql runs.
+
+    One function for both providers that serve `bind:` blocks (`dbt` and
+    `duckdb`). It was the back half of `check_dbt`, and copying it for the
+    on-ramp would have been the four rules' founding defect: the grain claim
+    asserted for a manifest binding and taken on trust for a hand-written one.
+    `fetcher` is any `DbtDataFetcher`; `provider_type` decides which name a
+    tree metric is looked up by (`provider_query_name`).
+    """
+    from breakdown.data_fetch import provider_query_name, sparse_kw
+
+    results: List[CheckResult] = []
+    remaining = list(_BINDING_CHECKS)
+
+    def stop(result: CheckResult, reason: str) -> List[CheckResult]:
+        results.append(result)
+        results.extend(_skip_rest(remaining[remaining.index(result.name) + 1 :], reason))
+        return results
+
+    # every tree metric resolves to a binding
+    wanted = {
+        provider_query_name(provider_type, m): m.name for m in config.metrics if not m.derived
+    }
+    unbound = sorted(q for q in wanted if q not in fetcher.bindings)
     if unbound:
         return stop(
             CheckResult.fail(
                 "tree metrics bind",
-                f"{len(unbound)} metric(s) not in the manifest: {unbound[:6]}"
+                f"{len(unbound)} metric(s) have no binding: {unbound[:6]}"
                 + (" …" if len(unbound) > 6 else ""),
                 "The queried name is the last segment of `source`. Either add the "
                 "metric to the dbt project, or give the node its own `bind:` block.",
@@ -689,7 +776,7 @@ def check_dbt(
     # A filtered node is deliberately smaller than the metric a reader may have
     # in a dashboard under the same name, so the count belongs where a reader
     # looks rather than only in the generated SQL.
-    filtered = sorted(q for q in wanted if bridged.bindings[q].where)
+    filtered = sorted(q for q in wanted if fetcher.bindings[q].where)
     results.append(
         CheckResult.ok(
             "tree metrics bind",
@@ -698,11 +785,11 @@ def check_dbt(
         )
     )
 
-    # 4. declared dimensions exist — otherwise the first slice click 500s
+    # declared dimensions exist — otherwise the first slice click 500s
     missing = []
     for query_name, tree_name in wanted.items():
         declared = next((m.dimensions for m in config.metrics if m.name == tree_name), {})
-        available = bridged.bindings[query_name].dimensions
+        available = fetcher.bindings[query_name].dimensions
         for dim_name, spec in declared.items():
             if spec.source not in available:
                 missing.append(f"{tree_name}.{dim_name} -> '{spec.source}'")
@@ -719,11 +806,11 @@ def check_dbt(
     else:
         results.append(CheckResult.ok("declared dimensions exist", "all declared slices resolve"))
 
-    # 5. the grain claim
+    # the grain claim
     fanned, errors = [], []
     for query_name in sorted(wanted):
         try:
-            rows, distinct = bridged.check_grain(
+            rows, distinct = fetcher.check_grain(
                 query_name, start_date=start_date, end_date=end_date
             )
         except Exception as e:
@@ -758,9 +845,45 @@ def check_dbt(
             )
         )
 
-    results.append(_check_filters(bridged, wanted, filtered, start_date, end_date))
-    results.append(_check_entity_grain(config, bridged, wanted, start_date, end_date))
-    bridged.close()
+    results.append(_check_filters(fetcher, wanted, filtered, start_date, end_date))
+    results.append(_check_entity_grain(config, fetcher, wanted, start_date, end_date))
+
+    # every metric's generated query runs, through the full fetch path — the
+    # grain claim selects only the key, so a misspelt `measure` or a
+    # `time_column` the dialect cannot cast survives every check above it.
+    probe_start, probe_end = _probe_window(start_date, end_date)
+    failed = []
+    for query_name, tree_name in sorted(wanted.items()):
+        m = next(m for m in config.metrics if m.name == tree_name)
+        try:
+            fetcher.fetch_metric(
+                query_name,
+                probe_start,
+                probe_end,
+                grain=m.grain,
+                kind=m.kind,
+                **sparse_kw(m.sparse),
+            )
+        except Exception as e:
+            failed.append(f"{tree_name}: {_first_lines(str(e), 2)}")
+    if failed:
+        results.append(
+            CheckResult.fail(
+                "metric sql runs",
+                f"{len(failed)} metric(s) failed over [{probe_start}, {probe_end}]: "
+                + "; ".join(failed[:4])
+                + (" …" if len(failed) > 4 else ""),
+                "`GET /metrics/{name}/query` shows the generated statement once the "
+                "server is up; until then the binding's `measure`, `time_column` and "
+                "`numerator`/`denominator` are the columns to check.",
+            )
+        )
+    else:
+        results.append(
+            CheckResult.ok(
+                "metric sql runs", f"{len(wanted)} metric(s) over [{probe_start}, {probe_end}]"
+            )
+        )
     return results
 
 
@@ -964,7 +1087,7 @@ def check_snapshots(
         # with a comment apologising for it.
         from breakdown.loading import build_fetcher
 
-        inner = build_fetcher(cfg, parser.dag, parser.config.metrics)
+        inner = build_fetcher(cfg, parser.dag, parser.config.metrics, tree_path=tree_path)
     except Exception:
         inner = None
 
@@ -1015,7 +1138,7 @@ def check_fit_readiness(
 
     cfg = parser.config.provider
     try:
-        fetcher = build_fetcher(cfg, parser.dag, parser.config.metrics)
+        fetcher = build_fetcher(cfg, parser.dag, parser.config.metrics, tree_path=tree_path)
         fetcher = wrap_snapshots(fetcher, cfg.type, tree_path, slice_span=(start_date, end_date))
     except Exception as e:
         return [CheckResult.fail("fit readiness", f"could not build fetcher: {e}")]
@@ -1178,6 +1301,7 @@ _DOWNSTREAM_CHECKS = {
     "cloud": ["cloud config", "semantic layer reachable", "tree metrics exist"],
     "local": ["dbt project", "metrics listable", "dbt provider migration"],
     "dbt": _DBT_CHECKS,
+    "duckdb": _DUCKDB_CHECKS,
 }
 
 
@@ -1219,6 +1343,8 @@ def run_doctor(
         results += check_local(tree.config)
     elif provider == "dbt":
         results += check_dbt(tree.config, start_date, end_date)
+    elif provider == "duckdb":
+        results += check_duckdb(tree.parser, tree_path, start_date, end_date)
     elif provider == "none":
         # Cold-start tree: no connection to prove — readiness means every
         # belief the what-if engine needs is declared. Same check the server
@@ -1249,7 +1375,10 @@ def run_doctor(
     # A snapshot-served deployment is a mode the docs recommend, and doctor
     # failing hard against a healthy one was 2.20's second half.
     covered = False
-    if provider not in ("mock", "none"):
+    # `duckdb` is never wrapped (`loading.wrap_snapshots` says why: the files
+    # are the artifact), so reporting a snapshot store for it would describe a
+    # cache the server does not read.
+    if provider not in ("mock", "none", "duckdb"):
         snap_result, covered = check_snapshots(
             tree.parser, tree_path, start_date, end_date, explicit_window
         )
