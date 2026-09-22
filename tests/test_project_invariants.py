@@ -402,6 +402,11 @@ def test_every_window_scaled_field_on_a_fit_is_metered_or_named():
         "parents",
         # Issue #113: at most one `{parent, reason}` record per parent.
         "dropped_parents",
+        # Roadmap S24: one record per declared intervention at most, and the
+        # node's own declared regime start — all three sized by the tree.
+        "interventions",
+        "dropped_interventions",
+        "fit_start",
         "y_mean",
         "y_std",
         "x_stds",
