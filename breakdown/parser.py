@@ -5,11 +5,12 @@ import re
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import networkx as nx
+import pandas as pd
 import yaml
 from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 from breakdown.formula import referenced_names, validate_formula
-from breakdown.grains import GRAINS, is_finer, nests_in
+from breakdown.grains import GRAINS, floor_period, is_finer, nests_in
 
 logger = logging.getLogger(__name__)
 
@@ -260,6 +261,98 @@ class TrendConfig(BaseModel):
         if v <= 0:
             raise ValueError("trend sigma must be > 0")
         return v
+
+
+INTERVENTION_KINDS = ("step", "pulse")
+INTERVENTION_LEARN_MODES = ("history", "window")
+
+
+class Intervention(BaseModel):
+    """A known, dated change to a node's own level, declared by the author
+    (roadmap S24, `knowledge/step_change_design.md` §3.2).
+
+    Each entry becomes a **known 0/1 regressor** in the node's fit —
+    `1[t >= date]` for a `step`, `1[date <= t <= until]` for a `pulse` — with
+    one coefficient, on its own `beta_intervention` axis (never appended to
+    `beta`, whose order is the parent list). The engine sizes the step; the
+    author dates it. That division is the whole design: a level the model is
+    free to move anywhere would reproduce anything, and a step the engine
+    placed itself would be a finding nobody asserted.
+
+    `prior` is stated in the node's business units — "about +150 orders a
+    day, give or take 100" — because the indicator column is 0/1 and is not
+    z-scored, so the coefficient *is* the step's size in those units.
+
+    `learn_from` says which periods the fit may see to size it. `history`
+    (the default) keeps RCA's fit-before-analysis rule: the coefficient is
+    learned from instances inside the fit window, and an intervention with
+    none there is dropped by name. `window` is the opt-in exception (Box &
+    Tiao's intervention analysis): the node's RCA fit runs *through* the
+    intervention's own periods so a one-off can be sized from the event
+    itself, at the cost the design states and the payload repeats — the
+    estimate is the shift coincident with the date, whatever caused it.
+    """
+
+    name: str
+    date: datetime.date
+    kind: str
+    # `pulse` only: the last period the pulse is on. Absent = one period.
+    until: Optional[datetime.date] = None
+    prior: Optional[Prior] = None
+    learn_from: str = "history"
+
+    @field_validator("name")
+    @classmethod
+    def check_name(cls, v: str) -> str:
+        # The name becomes a PyMC variable (`beta_intervention_<name>`), a
+        # payload key and an `expected_signs` key, so it follows the same
+        # identifier rule as a metric name in a formula.
+        if not _IDENTIFIER.match(v):
+            raise ValueError(
+                f"intervention name {v!r} must be an identifier (letters, digits, "
+                "underscores; not starting with a digit) — it names the fitted "
+                "coefficient in the model and on every payload."
+            )
+        return v
+
+    @field_validator("kind")
+    @classmethod
+    def check_kind(cls, v: str) -> str:
+        if v not in INTERVENTION_KINDS:
+            raise ValueError(
+                f"intervention kind must be one of {list(INTERVENTION_KINDS)}, got {v!r}. "
+                "`step` is 1 from `date` onward (a regime change: a price flip, a "
+                "policy); `pulse` is 1 from `date` through `until` only (a one-off: "
+                "an on-sale day, an outage)."
+            )
+        return v
+
+    @field_validator("learn_from")
+    @classmethod
+    def check_learn_from(cls, v: str) -> str:
+        if v not in INTERVENTION_LEARN_MODES:
+            raise ValueError(
+                f"intervention learn_from must be one of {list(INTERVENTION_LEARN_MODES)}, "
+                f"got {v!r}. `history` (default) sizes the step from instances before "
+                "the analysis window; `window` lets the fit see the intervention's own "
+                "periods (see docs/yaml-reference.md, Interventions)."
+            )
+        return v
+
+    @model_validator(mode="after")
+    def check_until(self) -> "Intervention":
+        if self.until is not None and self.kind != "pulse":
+            raise ValueError(
+                f"intervention '{self.name}' declares `until` with kind '{self.kind}'; "
+                "`until` is only meaningful on a `pulse` (a step has no end — it is "
+                "1 from `date` onward)."
+            )
+        if self.until is not None and self.until < self.date:
+            raise ValueError(
+                f"intervention '{self.name}' has until={self.until} before "
+                f"date={self.date}; a pulse runs from `date` through `until`."
+            )
+        return self
 
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -779,6 +872,18 @@ class MetricDefinition(BaseModel):
     expected_signs: Dict[str, str] = Field(default_factory=dict)
     seasonality: List[Seasonality] = Field(default_factory=list)
     trend: Optional[TrendConfig] = None
+    # Known, dated changes to this node's own level, each a known 0/1
+    # regressor with its own coefficient (roadmap S24; see `Intervention`).
+    # Probabilistic and source nodes only: a formula node's identity has no
+    # regressors, so the step happened to a parent and is declared there.
+    interventions: List[Intervention] = Field(default_factory=list)
+    # The date this node's current regime began (roadmap S24, design §3.3):
+    # the fit uses only whole periods starting on or after it, so a history
+    # with a regime change the author does not want to model (or declare as
+    # an intervention) can be cut per node instead of tree-wide with
+    # `--start-date`. `_enforce_fit_length` refuses a window this leaves too
+    # short, with the same message as every other short fit.
+    fit_start: Optional[datetime.date] = None
     # Cold-start declarations (trees with no data provider). `baseline` is the
     # asserted operating point of a source/probabilistic node (formula nodes
     # derive theirs from parents — declaring one is rejected); `plausible` is
@@ -1106,6 +1211,80 @@ class MetricDefinition(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def check_interventions(self) -> "MetricDefinition":
+        """Roadmap S24. The rules `step_change_design.md` §4.1 lists, checked
+        at parse time so a fit never fails naming a variable the author did
+        not write.
+
+        Refused on a formula node: the identity has no regressors, and a
+        term added to its residual fit would size a step in the *residual* —
+        a claim about the identity missing reality by a dated amount, which
+        is not what anyone declaring a price flip means. The step happened
+        to a parent; declare it there.
+
+        Names are unique among the node's parents *and* interventions, since
+        both are keys of `expected_signs` and both name a coefficient.
+
+        A date that is not aligned to the node's grain **warns and snaps** to
+        the containing period: a Wednesday step on a weekly node is a
+        partial-period effect the author should date to the period start
+        (the engine fits the whole week as on). Refusing would be the
+        stricter reading; warning is the one that lets a tree authored at day
+        grain and later coarsened still load, with the lint on the log and
+        the snapped date on every payload.
+        """
+        if not self.interventions:
+            return self
+        if self.formula is not None:
+            raise ValueError(
+                f"Metric '{self.name}' declares `interventions` on a formula node. "
+                "A formula is an exact identity with no regressors to add a step "
+                "to; the step happened to one of its parents "
+                f"{self.parents} — declare the intervention on that parent."
+            )
+        seen: Dict[str, int] = {}
+        for iv in self.interventions:
+            seen[iv.name] = seen.get(iv.name, 0) + 1
+        repeated = sorted(n for n, k in seen.items() if k > 1)
+        if repeated:
+            raise ValueError(
+                f"Metric '{self.name}' declares the intervention name "
+                f"{', '.join(repr(n) for n in repeated)} more than once. Each name "
+                "is its own coefficient (`beta_intervention_<name>`) and its own "
+                "`expected_signs` key; name each intervention distinctly."
+            )
+        clash = sorted(seen.keys() & set(self.parents))
+        if clash:
+            raise ValueError(
+                f"Metric '{self.name}' declares intervention(s) {clash} with the "
+                "same name as one of its parents. Parents and interventions share "
+                "the `expected_signs` namespace and both name a coefficient, so the "
+                "two would be indistinguishable on every payload; rename the "
+                "intervention (e.g. 'tier_2_flip' rather than 'price')."
+            )
+        for iv in self.interventions:
+            for label, value in (("date", iv.date), ("until", iv.until)):
+                if value is None:
+                    continue
+                ts = pd.Timestamp(value)
+                snapped = floor_period(ts, self.grain)
+                if snapped != ts:
+                    logger.warning(
+                        "Intervention '%s' on metric '%s': %s=%s is not aligned to the "
+                        "node's %s grain and snaps to the period starting %s. The fit "
+                        "treats that whole period as on; a step that began mid-period "
+                        "is a partial-period effect — date it to the period start if "
+                        "that is what you mean.",
+                        iv.name,
+                        self.name,
+                        label,
+                        value,
+                        self.grain,
+                        snapped.date(),
+                    )
+        return self
+
+    @model_validator(mode="after")
     def check_expected_signs(self) -> "MetricDefinition":
         if not self.expected_signs:
             return self
@@ -1115,12 +1294,20 @@ class MetricDefinition(BaseModel):
                 "node; a formula is an exact identity with no learned "
                 "coefficients to check."
             )
-        parent_set = set(self.parents)
+        # An intervention's coefficient is a learned direction too (roadmap
+        # S24): a declared price rise that the fit reads as a fall is the same
+        # class of finding as a contradicted parent sign.
+        allowed = set(self.parents) | {iv.name for iv in self.interventions}
         for key, value in self.expected_signs.items():
-            if key not in parent_set:
+            if key not in allowed:
                 raise ValueError(
                     f"expected_signs key '{key}' on metric '{self.name}' must be "
-                    f"one of the metric's parents {self.parents}."
+                    f"one of the metric's parents {self.parents}"
+                    + (
+                        f" or interventions {[iv.name for iv in self.interventions]}."
+                        if self.interventions
+                        else "."
+                    )
                 )
             if value not in ("positive", "negative"):
                 raise ValueError(
@@ -1398,6 +1585,28 @@ class MetricTreeConfig(BaseModel):
             "and one definition's data overwrites the other's. Rename one, or "
             "merge them into a single definition."
         )
+
+    @model_validator(mode="after")
+    def check_interventions_need_data(self) -> "MetricTreeConfig":
+        """Roadmap S24, design §5: no interventions under `provider: none`.
+
+        A cold-start tree has no series, so a declared step has nothing to be
+        sized against — the coefficient would be the prior restated, a belief
+        draw wearing a fitted coefficient's name. The mode is not earning
+        surface (roadmap, 2026-08-05), so this refuses rather than
+        half-supporting it.
+        """
+        if self.provider.type != "none":
+            return self
+        declared = [m.name for m in self.metrics if m.interventions]
+        if declared:
+            raise ValueError(
+                f"Metric(s) {declared} declare `interventions` under `provider: none`. "
+                "A cold-start tree has no series to size a step against, so the "
+                "coefficient could only restate its prior; interventions need a data "
+                "provider."
+            )
+        return self
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
