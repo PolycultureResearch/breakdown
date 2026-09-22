@@ -46,7 +46,16 @@ its `ci_status`, a node whose fit left a constant parent out with its
 for X excludes Y because Y did not vary over the fit window" — because a
 parent missing from `contributions` otherwise reads as one that scored zero;
 `explain_metric` reports the same `fitted_parents` / `dropped_parents` on the
-fit it describes), and a node whose parents move together with its
+fit it describes), a node with declared interventions with its `interventions`
+list — each entry's `estimate`, `ci_95`, `ci_status`, `window_delta` and, for a
+`learn_from: window` one, its `claim` — and `dropped_interventions` for any the
+fit could not size, with `fit_extended_for` naming the interventions that pushed
+the node's fit through the analysis window (roadmap S24; `how_to_read` carries a
+static clause on what an intervention is — a term in the gap that is neither a
+parent nor model structure, and not in `ranked_causes` — and one line per node
+where a `claim`, an `indicator_unchanged` zero or a dropped intervention changes
+what may be said; `get_tree` and `explain_metric` list the declarations), and a
+node whose parents move together with its
 `collinearity_status` and `collinearity_warnings`. That last one is the
 warning most specific to how an assistant reads a tree: it says the node's
 per-parent `contributions` are a split the data does not determine, so the

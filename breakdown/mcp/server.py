@@ -283,6 +283,21 @@ async def explain_metric(name: str, tree: Optional[str] = None) -> Dict[str, Any
         definition["parents"] = metric.parents
     if metric.lags:
         definition["lags"] = metric.lags
+    if metric.interventions:
+        # Roadmap S24: as declared (YAML dates, not yet snapped to the grain —
+        # `fit.interventions` below carries the snapped ones the model used).
+        definition["interventions"] = [
+            {
+                "name": iv.name,
+                "date": str(iv.date),
+                "kind": iv.kind,
+                **({"until": str(iv.until)} if iv.until is not None else {}),
+                **({"learn_from": iv.learn_from} if iv.learn_from != "history" else {}),
+            }
+            for iv in metric.interventions
+        ]
+    if metric.fit_start is not None:
+        definition["fit_start"] = str(metric.fit_start)
     if metric.dimensions:
         definition["dimensions"] = sorted(metric.dimensions)
     if metric.baseline is not None:
@@ -368,6 +383,11 @@ async def explain_metric(name: str, tree: Optional[str] = None) -> Dict[str, Any
         # would narrate an edge the model never estimated.
         fit_info["fitted_parents"] = list(fit.parents)
         fit_info["dropped_parents"] = list(fit.dropped_parents)
+        # Roadmap S24: the declared steps the cached fit sized, and the ones
+        # it could not — so an agent reading `definition.interventions` does
+        # not narrate a step the model never estimated.
+        fit_info["interventions"] = list(fit.interventions)
+        fit_info["dropped_interventions"] = list(fit.dropped_interventions)
 
     return round_floats(
         {

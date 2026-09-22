@@ -1114,6 +1114,12 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     // and that the absence is an exclusion rather than a zero.
     const dn2 = droppedParentsNote(node);
     if (dn2) bits.push(dn2.text);
+    // Roadmap S24: which declared interventions this node's fit sized (and
+    // whether it saw the analysis window to do so), and which it could not.
+    const ivn2 = interventionsNote(node);
+    if (ivn2) bits.push(ivn2.text);
+    const din2 = droppedInterventionsNote(node);
+    if (din2) bits.push(din2.text);
     return bits.length ? ` · ${esc(bits.join(" · "))}` : "";
   };
 
@@ -1149,6 +1155,20 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     const dnFull = droppedParentsNote(node);
     if (dnFull) {
       out.push(`<strong>${esc(dnFull.text.replace(/^⚠\s*/, ""))}.</strong> ${esc(dnFull.reasons)}. ${esc(dnFull.why)}`);
+    }
+    // Roadmap S24, in full for the same reason: the table below has labelled
+    // rows for the declared interventions, and these are the sentences that
+    // say what such a row is, which one the fit could not size, and — for a
+    // `learn_from: window` one — the claim its estimate carries.
+    const ivFull = interventionsNote(node);
+    if (ivFull) out.push(`<strong>${esc(ivFull.text.replace(/^⚠\s*/, ""))}.</strong> ${esc(ivFull.why)}`);
+    (node.interventions || []).forEach((iv) => {
+      const claim = interventionClaim(iv);
+      if (claim) out.push(`<strong><code>${esc(iv.name)}</code>:</strong> ${esc(claim)}`);
+    });
+    const dinFull = droppedInterventionsNote(node);
+    if (dinFull) {
+      out.push(`<strong>${esc(dinFull.text.replace(/^⚠\s*/, ""))}.</strong> ${esc(dinFull.reasons)} ${esc(dinFull.why)}`);
     }
     // Roadmap S4, in full for the same reason: the per-parent table below is
     // the thing this caveat is about, and a reader of a circulated report has
@@ -1246,10 +1266,15 @@ function buildRcaReportHtml(res, treePng, stripPng) {
         // And the same labelled row for a parent the fit left out (issue
         // #113), so the export's table is not one row short of the tree.
         const droppedRows = droppedParentRowsHtml(node, 5);
+        // Roadmap S24: the declared interventions the fit sized, and the ones
+        // it could not, as labelled rows — the engine subtracts the former
+        // from `unexplained`, so a table without them would not sum.
+        const ivRows = interventionRowsHtml(node, 5, shareOf, ciCell);
+        const droppedIvRows = droppedInterventionRowsHtml(node, 5);
         const unexpl5 = ux
           ? `<tr class="dim"><td>${esc(ux.label)}</td>${num(fmt(node.unexplained))}${num(uxShare)}<td class="num">—</td><td class="num">—</td></tr>`
           : "";
-        tables = `<table><tr><th>Parent</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>${rows}${droppedRows}${comps}${unexpl5}</table>`;
+        tables = `<table><tr><th>Parent</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>${rows}${droppedRows}${ivRows}${droppedIvRows}${comps}${unexpl5}</table>`;
       }
       const signWarn = (node.sign_warnings || []).map((w) => `<p class="warn">⚠ ${esc(w)}</p>`).join("");
       return `<section>
@@ -2665,13 +2690,37 @@ function renderPosterior(name, data) {
       </tr>`;
     });
   }
+  // Roadmap S24: the declared interventions' coefficients, on their own axis
+  // (`beta_intervention_raw[i]` follows `data.interventions`, never
+  // `fitted_parents`), in the node's units — the step's size. A source node
+  // with interventions has rows here and no parent rows.
+  (data.interventions || []).forEach((iv, i) => {
+    const key = `beta_intervention_raw[${i}]`;
+    const mean = summary.mean?.[key];
+    if (mean === undefined) return;
+    const lo = summary["hdi_2.5%"]?.[key];
+    const hi = summary["hdi_97.5%"]?.[key];
+    const hdi = Number.isFinite(lo) && Number.isFinite(hi) ? `[${fmt(lo)}, ${fmt(hi)}]` : "—";
+    rows += `<tr class="intervention-row">
+      <td title="${esc(INTERVENTION_WHY)}"><code>${esc(iv.name)}</code> <span class="dim">— ${esc(declaredInterventionLabel(iv).replace(`${iv.name} — `, ""))}</span></td>
+      <td class="num">${fmt(mean)}</td>
+      <td class="num">${hdi}</td>
+    </tr>`;
+  });
+  (data.dropped_interventions || []).forEach((d) => {
+    rows += `<tr class="dim">
+      <td title="${esc(`${d.reason}\n\n${DROPPED_INTERVENTION_WHY}`)}"><code>${esc(d.intervention)}</code> <span class="dim">— declared ${esc(d.kind)} ${esc(d.date)}</span></td>
+      <td colspan="2">not fitted — outside the fit window</td>
+    </tr>`;
+  });
 
+  const hasInterventions = (data.interventions || []).length > 0;
   const coefTable = rows
     ? `<p class="table-caption">Holding the other parents fixed, a one-unit rise
-         in the parent moves ${esc(name)} by about β. ${hintHTML("beta")}</p>
+         in the parent moves ${esc(name)} by about β.${hasInterventions ? ` A declared intervention's β is the size of that step in ${esc(name)}'s own units.` : ""} ${hintHTML("beta")}</p>
        ${hintSlot("beta")}
        <table class="data-table">
-         <tr><th>Parent</th><th class="num">β (raw units)</th>
+         <tr><th>${hasInterventions ? "Parent / intervention" : "Parent"}</th><th class="num">β (raw units)</th>
              <th class="num">95% HDI ${hintHTML("hdi")}</th></tr>
          ${rows}
        </table>
@@ -2707,6 +2756,12 @@ function renderPosterior(name, data) {
   const droppedNote = droppedParentsNote(data);
   const droppedWarningHtml = droppedNote
     ? `<p class="sign-warning">${esc(droppedNote.text)}. ${esc(droppedNote.reasons)}. ${esc(droppedNote.why)}</p>`
+    : "";
+  // Roadmap S24, the same treatment for a declared intervention the fit
+  // could not size: the dim row above says so; this says where its effect is.
+  const droppedIvNote = droppedInterventionsNote(data);
+  const droppedIvWarningHtml = droppedIvNote
+    ? `<p class="sign-warning">${esc(droppedIvNote.text)}. ${esc(droppedIvNote.reasons)} ${esc(droppedIvNote.why)}</p>`
     : "";
 
   // Diagnostics. These are MCMC-only, so an ADVI fit renders no numbers — but
@@ -2861,7 +2916,7 @@ function renderPosterior(name, data) {
     ${signWarningHtml}
     ${collinWarningHtml}
     ${ppcWarningHtml}
-    ${droppedWarningHtml}
+    ${droppedWarningHtml}${droppedIvWarningHtml}
     ${diag}
     <details>
       <summary>All parameters (${params.length})</summary>
@@ -3012,6 +3067,15 @@ async function renderPpcBand(name, data) {
       // a daily series, which is the part the reader opened this to see.
       showlegend: false,
       xaxis: { tickfont: { size: 10 }, gridcolor: COL.rule },
+      // Roadmap S24: the declared interventions as vertical rules (a pulse as
+      // a band from `date` through `until`), so the reader can see that the
+      // band takes the step *because the model was told to* — a pass here is
+      // evidence about the residual regime, not about the step.
+      shapes: (data.interventions || []).flatMap((iv) =>
+        iv.kind === "pulse"
+          ? [{ type: "rect", xref: "x", yref: "paper", x0: iv.date, x1: iv.until || iv.date, y0: 0, y1: 1, fillcolor: COL.text2, opacity: 0.12, line: { width: 0 } }]
+          : [{ type: "line", xref: "x", yref: "paper", x0: iv.date, x1: iv.date, y0: 0, y1: 1, line: { color: COL.text2, width: 1, dash: "dash" } }],
+      ),
       // The zero line is drawn deliberately, not inherited. On a count or a
       // rate the whole `min` finding is *whether the band crosses it* — the
       // demo's `trials_started` never goes below 6 and its 95% band reaches
@@ -3056,6 +3120,12 @@ async function renderPpcBand(name, data) {
        <span><i class="b95"></i>${qpct("lo95")}–${qpct("hi95")} of replicates</span>
        <span><i class="out"></i>outside the 95% band</span>
      </div>`
+    + ((data.interventions || []).length
+      ? `Dashed rules mark the declared intervention${data.interventions.length === 1 ? "" : "s"} `
+        + `${data.interventions.map((iv) => `<code>${esc(iv.name)}</code> (${esc(declaredInterventionLabel(iv).replace(`${iv.name} — declared `, ""))})`).join(", ")}: `
+        + `the model was told the date and learned the size, so a band that takes the step is `
+        + `reproducing a claim, not discovering one. `
+      : "")
     + `${band.n_draws.toLocaleString()} series simulated from this node's posterior, against the `
     + `${n.toLocaleString()} period${n === 1 ? "" : "s"} it was fitted on `
     + `(${esc(x[0])} → ${esc(x[x.length - 1])}). The line is ${what}. `
@@ -3824,6 +3894,18 @@ function renderRcaTab() {
       const droppedNote = dn
         ? ` · <span class="${dn.cls}" title="${esc(`${dn.reasons}\n\n${dn.why}`)}">${esc(dn.text)}</span>`
         : "";
+      // Roadmap S24: the declared interventions this fit sized — and, when
+      // one was `learn_from: window`, that the fit saw the analysis window —
+      // plus any it could not size. The table below keeps labelled rows for
+      // both, so neither can read as "no effect".
+      const ivn = interventionsNote(node);
+      const interventionNote = ivn
+        ? ` · <span class="${ivn.cls}" title="${esc(ivn.why)}">${esc(ivn.text)}</span>`
+        : "";
+      const din = droppedInterventionsNote(node);
+      const droppedIvNote = din
+        ? ` · <span class="${din.cls}" title="${esc(`${din.reasons}\n\n${din.why}`)}">${esc(din.text)}</span>`
+        : "";
       const twoLevel = node.contributions.some((c) => c.decomposition);
       let header, rows, nCols;
 
@@ -3884,7 +3966,7 @@ function renderRcaTab() {
       }
 
       // Trend and seasonal are part of the decomposition, not decoration: the
-      // engine computes `unexplained = gap − Σcontributions − trend − seasonal`
+      // engine computes `unexplained = gap − Σcontributions − trend − seasonal − Σinterventions`
       // (engine/rca.py). Omitting them here — while the exported report showed
       // them — left a table whose own shares summed to 108.5% of a gap with no
       // visible reason, and made `unexplained` look like the only residual when
@@ -3895,6 +3977,11 @@ function renderRcaTab() {
       // nothing to the sum either way).
       const componentRows = componentRowsHtml(node, nCols, shareOf, ciCell);
       const droppedRows = droppedParentRowsHtml(node, nCols);
+      // Roadmap S24: a fitted intervention is a term the engine subtracted
+      // from `unexplained`, so it has a row like trend and seasonal do — and
+      // one it could not fit has a labelled row rather than a missing one.
+      const interventionRows = interventionRowsHtml(node, nCols, shareOf, ciCell);
+      const droppedInterventionRows = droppedInterventionRowsHtml(node, nCols);
 
       let unexplained = "";
       const ux = unexplainedRow(node);
@@ -3913,11 +4000,13 @@ function renderRcaTab() {
       }
       return `
         <div class="attr-block">
-          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${fitNote2}${khatFlag}${signNote}${collinNote}${ppcNoteHtml}${seasNote}${zeroNote}${droppedNote}</span></h4>
+          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${fitNote2}${khatFlag}${signNote}${collinNote}${ppcNoteHtml}${seasNote}${zeroNote}${droppedNote}${interventionNote}${droppedIvNote}</span></h4>
           <table class="data-table">
             ${header}
             ${rows}
             ${droppedRows}
+            ${interventionRows}
+            ${droppedInterventionRows}
             ${componentRows}
             ${unexplained}
           </table>

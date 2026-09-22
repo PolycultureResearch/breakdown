@@ -15,7 +15,7 @@ Every metric in the tree can be fitted with a Bayesian structural time series
 business units are converted back afterward. In normalized space:
 
 ```
-y[t] = α + trend[t] + seasonal[t] + regression[t] + ε[t]
+y[t] = α + trend[t] + seasonal[t] + regression[t] + intervention[t] + ε[t]
 ```
 
 | Term | What it is | Prior |
@@ -24,6 +24,7 @@ y[t] = α + trend[t] + seasonal[t] + regression[t] + ε[t]
 | `trend[t]` | local level: a non-centered random walk (`cumsum(σ_trend · z)`) that absorbs slow drift | step size σ_trend ~ HalfNormal(0.05) by default, set by the YAML `trend.sigma` |
 | `seasonal[t]` | 2 sin/cos Fourier pairs per `seasonality` entry | coefficients ~ Normal(0, 1) |
 | `regression[t]` | `Σᵢ βᵢ · xᵢ[t]` over the metric's parents | from your YAML `priors`, else Normal(0, 1) in normalized space |
+| `intervention[t]` | `Σₖ δₖ · 1ₖ[t]` over the metric's declared `interventions` — a known 0/1 column per dated step or pulse, on its own coefficient axis | from each entry's `prior`, in the metric's own units (the column is not z-scored), else Normal(0, 1) in normalized space |
 | `ε[t]` | observation noise | sd ~ HalfNormal(1) |
 
 The trend uses a **non-centered** parameterization (unit normals scaled by
@@ -47,6 +48,77 @@ The three node types use this differently:
   drift). With `lags`, the identity is cohort-aligned, `A[t] = f(parents
   shifted back by their lags)`, and both the residual and the Shapley
   attribution read each lagged parent from correspondingly shifted windows.
+
+### Declared interventions: a step the author dates and the model sizes
+
+The local level above cannot take a step. Its increments are
+`σ_trend · z[t]` with `σ_trend ~ HalfNormal(0.05)` in z-scored space, so a
+level change of one series SD in one period would need `z[t] ≈ 20`. The
+posterior does not do that. It spreads the change over many periods by
+inflating `σ_trend`, inflates `σ_obs` to cover the residuals around the step,
+and — where a parent moved on the same date — pushes the level change onto
+that parent's β. Measured on a synthetic world (roadmap S24): an undeclared
+step of about two series SD inflated `σ_trend` some 40× and `σ_obs` by 1.26×
+(2.09× at twice the size), widened β's interval 2.5–4.5× and pulled its mean
+off the truth; with a parent that co-stepped on the same date, β came out at
+0.94 against a truth of 0.5.
+
+A metric whose history has such steps — price tiers, an on-sale day, a policy
+change — can **declare them** (`interventions:` in the YAML reference). Each
+becomes a known 0/1 regressor with one coefficient on its own axis,
+`beta_intervention_raw`, which is the step's size in the metric's units. The
+division of labour is the whole design: **the author dates the step; the
+engine sizes it.** A model free to place steps wherever the data suggested
+would reproduce anything, and every step it placed would be a finding the
+tree's author never asserted — the same reason the DAG is declared rather than
+discovered. Automatic changepoint detection is deliberately out.
+
+Three consequences to read the output by.
+
+- **A declared step is a claim the posterior predictive check does not test.**
+  The replicates are drawn from the mean function *with* the steps, so a node
+  whose only misspecification was a declared step now passes — and
+  `ppc.conditioned_on_interventions` names the steps it was conditioned on. A
+  pass is evidence about the residual regime, not about the steps, whose size
+  the model was told. `fit_quality` is not downgraded by their presence.
+- **In an RCA the step is its own term.** Each fitted intervention reports its
+  coefficient times its `window_delta` — the fraction of analysis-window
+  periods it was on minus the fraction of reference-window periods — with a
+  credible interval from the coefficient's posterior (the dates are facts, not
+  samples, so nothing is bootstrapped), and enters the identity
+  `unexplained = gap − Σ contributions − trend − seasonal − Σ interventions`.
+  It is not in `ranked_causes` (there is nothing to drill into) and not in
+  `components` (trend and seasonal are nobody's fault; a flip is somebody's
+  decision). A step entirely before both windows reports `estimate: 0` with no
+  interval and `ci_status: "indicator_unchanged"`: it moved the gap by nothing
+  while still being what fixed the fit.
+- **An intervention with no instance in the fit window is dropped, by name.**
+  RCA fits strictly before the analysis window, so a flip that happens only
+  inside the window you are analysing is a constant column, not identified,
+  and lands on `dropped_interventions` with a reason. Its effect is then in
+  `unexplained` or in the parents that moved with it — which is the finding
+  RCA exists to report, not a defect. The step-in-the-history problem above
+  and the step-in-the-analysis-window question are different things, and the
+  term addresses only the first.
+
+Two knobs beside it. **`fit_start`** cuts one node's fit to whole periods on
+or after a date — the per-node form of `--start-date` — for a regime change
+you would rather not model at all; the default reference window will not start
+before it. **`learn_from: window`** is the opt-in exception for sizing a
+one-off from the event itself: that node's RCA fit is extended *through* the
+intervention's periods with the indicator in the design, which is Box and
+Tiao's (1975) intervention analysis and a different estimator from RCA's, with
+a different claim attached. The payload states it: `interventions[].claim`
+says the estimate is the shift coincident with that date, not separable from
+anything else dated the same; `fit_window.extended_for` says the node's other
+coefficients were fitted on a window containing the anomaly; and the interval
+does not include forecast uncertainty about the regime it stepped from
+(roadmap 3.4/S16). It is per intervention and per node, never the default.
+
+A declared intervention enters the collinearity check beside the parents. A
+`flip` step and a `flip_comms` parent that is zero except at flips will be
+flagged `high`, correctly: which of them "caused" the step is not a
+determined quantity, and the payload says so rather than splitting it.
 
 ## Grain: what one observation is
 
@@ -367,7 +439,12 @@ cannot fail is worse than no statistic, because a reader scores it as a check
 that passed.
 
 `ppc.statistics` carries **every** statistic with its p-value, not only the
-failing ones, so an `ok` is a measurement rather than an assertion.
+failing ones, so an `ok` is a measurement rather than an assertion. On a node
+that declares `interventions`, `ppc.conditioned_on_interventions` names the
+steps the mean function contained when the replicates were drawn: the check
+asks whether the model reproduces the series *given* those claims, and a pass
+says nothing about the steps themselves (see
+[Declared interventions](#declared-interventions-a-step-the-author-dates-and-the-model-sizes)).
 
 Unlike the collinearity check above, a `severe` verdict does move
 `fit_quality` to `"suspect"` — and on a NUTS fit it is the only thing that can
@@ -620,7 +697,8 @@ Contributions generally do **not** sum to the node's observed gap; the
 remainder is reported as `unexplained`.
 
 - For **probabilistic** nodes,
-  `unexplained = gap − Σ parent contributions − trend − seasonal`. With the
+  `unexplained = gap − Σ parent contributions − trend − seasonal − Σ interventions`
+  (the last term only on a node that declares `interventions`). With the
   model's own components broken out, what remains is observation noise and
   genuine model misfit: an unmeasured driver, a wrong lag, a nonlinearity.
 - For **formula** nodes it is only the target's own measurement noise around
@@ -764,7 +842,12 @@ ship in every cold-start response.
    sharply identified in the common case. If a node genuinely has fast level
    changes its parents don't capture, loosen the prior for that node with
    `trend: {sigma: ...}` in the YAML, and watch for a β CI that straddles zero
-   as the sign that the trend is now competing with a parent.
+   as the sign that the trend is now competing with a parent. If the level
+   change is a **known, dated step** rather than a wander — a price flip, a
+   policy change — loosening the trend is the wrong knob: declare it as an
+   [intervention](#declared-interventions-a-step-the-author-dates-and-the-model-sizes)
+   and the model sizes it on its own coefficient instead of smearing it over
+   the level and the parents.
 4. **Seasonality needs data to be identified.** A `period: 365` component on
    100 days of data is unidentifiable and will soak up degrees of freedom.
    Only declare seasonality your window can actually see (≥2 full periods

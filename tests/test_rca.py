@@ -640,6 +640,9 @@ metrics:
         "start": "2024-01-01",
         "end": "2024-02-15",
         "n_periods": 46,
+        # Roadmap S24: which `learn_from: window` interventions pushed the
+        # fit past analysis_start — none here, and the empty list says so.
+        "extended_for": [],
     }
     # 46 fitted days < 2 x 60: the declared seasonality is unidentifiable
     # and the warning must reach the RCA response, not just the log.

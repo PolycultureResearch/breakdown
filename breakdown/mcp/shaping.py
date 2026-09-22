@@ -56,6 +56,10 @@ RCA_HOW_TO_READ = (
     "run_rca, slice_metric).\n"
     "- `components` (trend/seasonal) are model structure, not causes: a seasonal gap from an "
     "uneven weekday mix is nobody's fault.\n"
+    "- `interventions` are dated changes the tree's author declared, sized by the model: "
+    "`estimate` = the fitted step size × `window_delta` (how much more of the analysis window "
+    "than the reference it covered). A term in the gap beside `contributions` and "
+    "`components`; not a cause to drill into, and not in `ranked_causes`.\n"
     "- `sign_warnings` mean a fitted slope contradicts its declared sign, the classic mark of "
     "scale confounding — do not narrate that edge causally.\n"
     "- `collinearity_status` says whether that node's parents move together over the window it "
@@ -232,6 +236,33 @@ def rca_how_to_read(result: Dict[str, Any]) -> str:
     """
     lines = []
     for name, node in result.get("nodes", {}).items():
+        # Roadmap S24. The static clause above says what an intervention is;
+        # the two readings that change what an agent may *say* about one are
+        # appended only on the node they apply to, for the same token-ceiling
+        # reason as the dropped-parent line below.
+        for iv in node.get("interventions") or []:
+            if iv.get("claim"):
+                lines.append(
+                    f"- `{iv['name']}` on `{name}` was sized with the fit allowed to see its "
+                    f"own periods (`learn_from: window`): {iv['claim']} Quote that claim "
+                    "beside the estimate; do not narrate it as a measured effect of the "
+                    "event alone."
+                )
+            if iv.get("ci_status") == "indicator_unchanged":
+                lines.append(
+                    f"- `{iv['name']}` on `{name}` was on (or off) throughout both windows "
+                    "(`ci_status: indicator_unchanged`): it moved the gap by nothing while "
+                    "still shaping the fit every other row of that node rests on. Its 0 is "
+                    "by construction, not measured."
+                )
+        # A declared step absent from `interventions` reads as "no effect"
+        # unless the guide says "was not fitted" and where the effect went.
+        for d in node.get("dropped_interventions") or []:
+            lines.append(
+                f"- The declared intervention `{d['intervention']}` ({d['date']}) on "
+                f"`{name}` was **not fitted**: {d['reason']} Do not narrate it as having "
+                "had no effect."
+            )
         for d in node.get("dropped_parents") or []:
             lines.append(
                 f"- Attribution for `{name}` excludes `{d['parent']}` because "
@@ -436,6 +467,27 @@ def compact_rca(result: Dict[str, Any]) -> Dict[str, Any]:
             # `how_to_read` addendum (`rca_how_to_read`) fires on the same
             # field.
             "dropped_parents": node.get("dropped_parents"),
+            # Roadmap S24. Small and load-bearing, so carried whole apart from
+            # `learn_from` (implied by `claim`) and `until` on a step (null).
+            # `round_floats` sanitizes it below; a withheld estimate stays
+            # withheld with its `ci_status`, never zeroed (rule 3).
+            "interventions": (
+                [
+                    {
+                        k: v
+                        for k, v in iv.items()
+                        if k != "learn_from" and not (k == "until" and v is None)
+                    }
+                    for iv in node["interventions"]
+                ]
+                if node.get("interventions")
+                else None
+            ),
+            "dropped_interventions": node.get("dropped_interventions"),
+            # Which `learn_from: window` interventions pushed this node's fit
+            # through the analysis window — the one fact about `fit_window`
+            # that changes how its β should be read.
+            "fit_extended_for": (node.get("fit_window") or {}).get("extended_for") or None,
             "ci_status": node["ci_status"],
             "unexplained": node["unexplained"],
             # Never dropped for token economy: `unexplained: 0` means two

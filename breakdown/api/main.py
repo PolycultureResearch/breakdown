@@ -1501,6 +1501,8 @@ async def get_metric(name: str, request: Request):
     fit_window = None
     fitted_parents = None
     dropped_parents = None
+    interventions = None
+    dropped_interventions = None
     fit = _pick_fit(traces, name)
     if fit is not None:
         summary = await asyncio.to_thread(_fit_summary, fit)
@@ -1519,6 +1521,13 @@ async def get_metric(name: str, request: Request):
         # reads as "excluded", not "zero".
         fitted_parents = list(fit.parents)
         dropped_parents = list(fit.dropped_parents)
+        # Roadmap S24: the same two facts for the declared interventions —
+        # the axis the summary's `beta_intervention_raw[i]` rows follow (a
+        # separate axis from `fitted_parents`, never appended to it), and the
+        # ones the fit left out because their indicator was constant over
+        # its window, each with the reason.
+        interventions = list(fit.interventions)
+        dropped_interventions = list(fit.dropped_interventions)
         # The periods the fit actually trained on — the intersection of this
         # node's range and its parents' (#112), after the `fit_end` cut and
         # the lag trim — in the shape the RCA node payload already uses. A
@@ -1538,6 +1547,8 @@ async def get_metric(name: str, request: Request):
         "fit_window": fit_window,
         "fitted_parents": fitted_parents,
         "dropped_parents": dropped_parents,
+        "interventions": interventions,
+        "dropped_interventions": dropped_interventions,
         "time_series": time_series,
         "summary": summary,
         "diagnostics": diagnostics,
@@ -1674,6 +1685,11 @@ async def analyze_metric(
         # that a parent was left out of it (issue #113).
         "fitted_parents": list(fit.parents),
         "dropped_parents": list(fit.dropped_parents),
+        # Roadmap S24, for the same reason: the caller who declared a step
+        # is the one who most needs to hear it was sized — or that it fell
+        # outside the fit window and was not.
+        "interventions": list(fit.interventions),
+        "dropped_interventions": list(fit.dropped_interventions),
         "diagnostics": fit.diagnostics,
     }
 

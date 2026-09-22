@@ -402,6 +402,11 @@ def test_every_window_scaled_field_on_a_fit_is_metered_or_named():
         "parents",
         # Issue #113: at most one `{parent, reason}` record per parent.
         "dropped_parents",
+        # Roadmap S24: one record per declared intervention at most, and the
+        # node's own declared regime start — all three sized by the tree.
+        "interventions",
+        "dropped_interventions",
+        "fit_start",
         "y_mean",
         "y_std",
         "x_stds",
@@ -1508,6 +1513,42 @@ def test_no_local_binding_shadows_the_global_state_object():
     )
     assert sum(1 for line in app_js if re.match(r"const state\b", line)) == 1, (
         "the global `state` object should be declared exactly once at the top of app.js"
+    )
+
+
+# --- disclosures.js and app.js never declare the same top-level name ---------
+
+
+def test_the_two_ui_scripts_declare_disjoint_top_level_names():
+    """The fifth rule, third instance, and this one rendered a correct payload
+    as `undefined = —`.
+
+    The UI is two classic scripts sharing one global lexical environment
+    (AGENTS.md: the disclosure vocabulary in `disclosures.js`, loaded first;
+    everything else in `app.js`). A `function` declared in both is not an
+    error in that world — the later file silently wins. S24 added
+    `interventionLabel(iv)` to `disclosures.js` for a declared step or pulse
+    (`{name, kind, date, until}`), and `app.js` had carried a what-if
+    `interventionLabel(iv)` for `{metric, mode, value}` since 0.1.0. app.js
+    loads second, so every S24 row in the coefficient table, the RCA node
+    detail and the export read "tier_2_flip — undefined = —" while the
+    payload behind it was right. The renderers had been checked in Node
+    against `disclosures.js` alone, which is exactly how a collision with the
+    *other* file goes unseen.
+
+    So: the set of names each file declares at column zero must be disjoint.
+    Structural, not a pin — it fails on the next collision, whatever its name.
+    """
+    decl = re.compile(r"^(?:function|const|let|var|class)\s+([A-Za-z_$][\w$]*)", re.M)
+    declared = {
+        name: set(decl.findall(_js_code(PACKAGE / "static" / name)))
+        for name in ("disclosures.js", "app.js")
+    }
+    shared = declared["disclosures.js"] & declared["app.js"]
+    assert not shared, (
+        "declared at top level in both disclosures.js and app.js — classic "
+        "scripts share one global scope, so app.js's definition silently "
+        f"replaces the vocabulary's: {sorted(shared)}"
     )
 
 

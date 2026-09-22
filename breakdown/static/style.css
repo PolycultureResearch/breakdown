@@ -524,6 +524,10 @@ section:first-of-type h3 { border-top: none; padding-top: 0; }
 .data-table td { padding: 5px 6px; border-bottom: 1px solid var(--rule); }
 .data-table td.num, .data-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .data-table tr.dim td { color: var(--muted); }
+/* Roadmap S24: a declared intervention's row — a term in the gap the author
+   declared, neither a parent nor model structure. Full-weight number, muted
+   label detail, so it sits between a parent row and a `dim` component row. */
+tr.intervention-row td .dim { color: var(--muted); font-size: 11.5px; }
 
 .diag { font-size: 12px; color: var(--muted); margin-top: 8px; }
 .diag .ok { color: var(--up); font-weight: 600; }

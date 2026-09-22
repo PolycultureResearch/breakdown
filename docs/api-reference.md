@@ -27,7 +27,7 @@ about the whole process rather than one tree.
 | `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), per-metric `grains`/`kinds`/`data_through`/`data_from`, fitted models, per-metric `earliest_available` history discovery, and `short_series` — which metrics stop before their grain's reach and by how much, if any (UI bootstrap) |
 | `GET` | `/dag` | Full metric DAG (nodes + edges), each node carrying its whole definition. `sql` and `bind` come back `null` to a caller that presents no token when one is configured. See [Authentication](deploying.md#authentication) |
 | `GET` | `/series` | Every metric's series at its native grain, `{name: {grain, dates, values}}`. One call hydrates the UI's node cards. Mixed-grain trees have no shared date axis, so dates are per metric |
-| `GET` | `/metrics/{name}` | Metric definition, time series, posterior summary and fit diagnostics — plus top-level `inference_method` and `fit_end` for the fit those describe (`null` when nothing is fitted), so a reader never infers the sampler from the presence of a k̂ (roadmap C35), and `fitted_parents` / `dropped_parents` — the parent axis the summary's `beta_raw[i]` rows follow, and the parents the fit left out for zero variance (#113; both `null` when nothing is fitted) |
+| `GET` | `/metrics/{name}` | Metric definition, time series, posterior summary and fit diagnostics — plus top-level `inference_method` and `fit_end` for the fit those describe (`null` when nothing is fitted), so a reader never infers the sampler from the presence of a k̂ (roadmap C35), and `fitted_parents` / `dropped_parents` — the parent axis the summary's `beta_raw[i]` rows follow, and the parents the fit left out for zero variance (#113; both `null` when nothing is fitted) — and `interventions` / `dropped_interventions`, the declared interventions the fit sized (the axis of `beta_intervention_raw[i]`) and the ones it could not (roadmap S24) |
 | `GET` | `/metrics/{name}/query` | The query behind a metric's numbers, when the provider knows it. Optional `dimension` for the sliced form |
 | `GET` | `/metrics/{name}/ppc` | The observed-vs-replicated series behind this node's posterior predictive verdict — the arrays the Metric tab plots |
 | `POST` | `/analyze/{name}` | Run Bayesian sampling for a metric |
@@ -311,6 +311,21 @@ summary by `fitted_parents`, never by `definition.parents`. A node whose parents
 are *all* constant is refused (422) with a reason that says so. See
 [`docs/model.md`](model.md#a-parent-that-does-not-move).
 
+The same two facts for declared **interventions** (roadmap S24) travel as
+**`interventions`** and **`dropped_interventions`**, here and on
+`GET /metrics/{name}`. `interventions` is the axis of the summary's
+`beta_intervention_raw[i]` rows — the node's `interventions:` in YAML order,
+dates snapped to its grain, minus any dropped — as
+`{"name", "date", "kind", "until", "learn_from"}`; each coefficient is the
+step's size in the metric's own units. `dropped_interventions` lists the ones
+whose indicator was constant over the fit window, each
+`{"intervention", "date", "kind", "reason"}`, the reason saying whether it fell
+outside the window or covered all of it and where its effect is. A separate
+axis from `fitted_parents`, never appended to it. The fit's `ppc` block gains
+`conditioned_on_interventions`, the names the mean function contained when the
+replicates were drawn. See
+[`docs/model.md`](model.md#declared-interventions-a-step-the-author-dates-and-the-model-sizes).
+
 ## `GET /shapley/{name}`
 
 Returns how much of the target metric's gap between two time windows is attributable to each parent. Requires a `formula` on the metric definition.
@@ -447,6 +462,8 @@ Every fitted node also carries `ppc_status` / `ppc` / `ppc_warnings`, described 
 A fitted node with two or more parents also carries `collinearity_status` / `collinearity` / `collinearity_warnings`, described under [`POST /analyze/{name}`](#post-analyzename). On `moderate` or `high`, the node's per-parent `contributions` are a split the data does not fully determine: read the flagged parents as one cause and do not rank them against each other. The fields are absent (null) on nodes with fewer than two parents.
 
 A fitted node whose fit left a parent out carries **`dropped_parents`**, a list of `{"parent", "reason"}` (`null` when nothing was dropped). A parent constant over the fit window has no identified coefficient and no information about the gap, so it is dropped from the regression rather than failing the node (#113); the remaining parents' `contributions` are exactly what they would be with it present, but there is **no row for the dropped parent** — its absence means "not fitted", not "contributed zero" — and any movement it made between the windows is in `unexplained`. Read the node as "attribution excluding X". A node whose parents are *all* constant is still `fit_failed`. See [`docs/model.md`](model.md#a-parent-that-does-not-move).
+
+A fitted node that declares `interventions:` carries **`interventions`** (roadmap S24): one entry per intervention the fit sized, `{name, date, kind, until, learn_from, window_delta, estimate, share_of_gap, ci_95, ci_status, prob_same_direction}`. `window_delta` is the fraction of analysis-window periods the intervention was on minus the fraction of reference-window periods; `estimate` is the fitted step size times that, so a step entirely before both windows reports `estimate: 0` with `ci_95: null` and `ci_status: "indicator_unchanged"` — zero by construction, not measured, and still the thing that fixed the fit. `ci_status` is otherwise `ok`, or `nonfinite_posterior` with the estimate withheld. The term enters `unexplained = gap − Σ contributions − trend − seasonal − Σ interventions`; it is **not** in `ranked_causes` (an intervention has no subtree to drill into) and **not** in `components`. A `learn_from: window` entry additionally carries **`claim`** — the estimate is the shift coincident with its date, whatever caused it — and the node's `fit_window` carries **`extended_for`**, the interventions whose declaration pushed this node's fit through the analysis window (an empty list otherwise). **`dropped_interventions`** lists any the fit could not size, in the `dropped_parents` shape, with a reason naming the window and where the effect went; `null` when nothing was declared or dropped. A source node that declares an intervention is fitted for it and reports `attribution_method: "posterior"` with an empty `contributions` list.
 
 Grain support adds two per-node fields: `grain` (the grain the node was analyzed at) and `effective_windows` (the whole periods the requested windows snapped to at that grain). Gaps are mean-per-period at each node's own grain, so in mixed-grain trees compare nodes via `share_of_gap` and `ranked_causes` scores, not raw gaps.
 
