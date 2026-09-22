@@ -684,6 +684,155 @@ function droppedParentRowsHtml(node, nCols) {
     .join("");
 }
 
+/* ---------- a declared, dated intervention (roadmap S24) ----------
+   A node may declare `interventions:` — a price flip, an on-sale day — and each
+   becomes a known 0/1 regressor the fit sizes on its own coefficient axis. On
+   an RCA node the engine reports each as
+   `interventions: [{name, date, kind, until, window_delta, estimate, ci_95,
+   ci_status, prob_same_direction, claim?}]`: the step's fitted size times how
+   much more of the analysis window than the reference window it covered. It
+   is a real term in the gap (`unexplained` subtracts it), beside the parents
+   and the trend/seasonal components — but it is neither. It is not a parent
+   (no subtree, no slices, not in the ranking) and not model structure (trend
+   and seasonal are nobody's fault; a flip is somebody's decision, declared by
+   the author). So it gets rows of its own, labelled as declared, on every
+   table the parents appear in. The same vocabulary serves the metric tab's
+   coefficient table, the live RCA table and the export. */
+const INTERVENTION_KIND_LABEL = { step: "step", pulse: "pulse" };
+
+/* "flip — step from 2024-02-10" / "sale — pulse 2024-03-01 → 2024-03-02". */
+function interventionLabel(iv) {
+  const kind = INTERVENTION_KIND_LABEL[iv.kind] || String(iv.kind);
+  if (iv.kind === "pulse") {
+    const span = iv.until && iv.until !== iv.date ? `${iv.date} → ${iv.until}` : iv.date;
+    return `${iv.name} — declared ${kind} ${span}`;
+  }
+  return `${iv.name} — declared ${kind} from ${iv.date}`;
+}
+
+const INTERVENTION_WHY =
+  "A dated change the tree's author declared on this metric. The model was told " +
+  "the date and learned the size: this row is that fitted size times how much more " +
+  "of the analysis window than the reference window the change covered. It is a " +
+  "term in the gap like a parent's contribution, but it is not a cause to drill " +
+  "into — it has no subtree and is not in the ranking — and it is not model " +
+  "structure like trend or seasonal: it is the author's claim, sized.";
+
+/* Per-intervention `ci_status` — why a row has no interval. */
+const INTERVENTION_CI_NOTE = {
+  indicator_unchanged: {
+    text: "on (or off) throughout both windows",
+    why:
+      "The change covered the same share of the reference window as of the analysis " +
+      "window, so it moved the gap by exactly nothing — while still shaping the fit " +
+      "every other row rests on. Zero by construction, not a measured zero, so no " +
+      "interval is drawn.",
+  },
+  degenerate: {
+    text: "interval collapsed",
+    why: "The coefficient's posterior has no spread at the node's scale; the interval is withheld rather than drawn zero-width.",
+  },
+  nonfinite_posterior: {
+    text: "estimate withheld",
+    why: "The coefficient's posterior carried non-finite draws; the term is withheld rather than published as a number that is not one.",
+  },
+};
+
+/* The sentence for a `learn_from: window` intervention, from the engine's own
+   `claim` — printed verbatim wherever the row appears, because it is the one
+   thing about this number the reader must not lose. */
+function interventionClaim(iv) {
+  return iv && iv.claim ? iv.claim : "";
+}
+
+/* One row per fitted intervention, for the single-level (5-column) table. A
+   posterior node is the only kind that carries them and is never two-level. */
+function interventionRowsHtml(node, nCols, shareOf, ciCell) {
+  const ivs = node && node.interventions;
+  if (!Array.isArray(ivs) || !ivs.length || nCols !== 5) return "";
+  return ivs
+    .map((iv) => {
+      const note = INTERVENTION_CI_NOTE[iv.ci_status];
+      const claim = interventionClaim(iv);
+      const title = [INTERVENTION_WHY, note ? note.why : "", claim].filter(Boolean).join("\n\n");
+      const tag = claim ? " · fit saw this window" : note ? ` · ${note.text}` : "";
+      const est = iv.estimate == null ? "—" : fmt(iv.estimate);
+      const share = iv.estimate == null ? "—" : shareOf(iv.estimate, node.gap);
+      return `<tr class="intervention-row"><td title="${esc(title)}"><code>${esc(iv.name)}</code> <span class="dim">— ${esc(interventionLabel(iv).replace(`${iv.name} — `, ""))}${esc(tag)}</span></td>
+        <td class="num">${est}</td>
+        <td class="num">${share}</td>
+        <td class="num">${iv.ci_95 ? ciCell(iv.ci_95) : "—"}</td>
+        <td class="num">${pctDir(iv.prob_same_direction, iv.prob_same_direction_censored)}</td></tr>`;
+    })
+    .join("");
+}
+
+/* ---------- a declared intervention the fit left out ----------
+   Same shape as a dropped parent (#113), same reason for a row of its own: a
+   declared step missing from the table reads as "no effect", when the fact is
+   "not fitted" — no instance inside the fit window (the flip is in the
+   analysis window, which RCA's fit never sees), or on for every period of it. */
+const DROPPED_INTERVENTION_WHY =
+  "This declared change had no instance inside the window the model was fitted on, " +
+  "or was on for every period of it, so its size could not be learned and it was " +
+  "left out of the fit. If the analysis window contains it, its effect is in the " +
+  "unexplained row or in the parents that moved with it. That is not a measured " +
+  "zero: nothing was estimated.";
+
+function droppedInterventionsNote(node) {
+  const dropped = node && node.dropped_interventions;
+  if (!Array.isArray(dropped) || !dropped.length) return null;
+  const names = dropped.map((d) => d.intervention);
+  return {
+    names,
+    text: `⚠ declared intervention${names.length === 1 ? "" : "s"} ${names.join(", ")} not fitted — outside the fit window`,
+    cls: "sign-flag",
+    why: DROPPED_INTERVENTION_WHY,
+    reasons: dropped.map((d) => d.reason).join("\n"),
+  };
+}
+
+function droppedInterventionRowsHtml(node, nCols) {
+  const dropped = node && node.dropped_interventions;
+  if (!Array.isArray(dropped) || !dropped.length) return "";
+  const dash = '<td class="num">—</td>';
+  return dropped
+    .map(
+      (d) =>
+        `<tr class="dim"><td title="${esc(`${d.reason}\n\n${DROPPED_INTERVENTION_WHY}`)}"><code>${esc(d.intervention)}</code> — declared ${esc(d.kind)} ${esc(d.date)}, not fitted: outside the fit window</td>${dash.repeat(Math.max(nCols - 1, 0))}</tr>`,
+    )
+    .join("");
+}
+
+/* The chip for a node whose fit sized declared interventions, and — when one
+   of them was `learn_from: window` — the fact that the fit saw the analysis
+   window for this node (`fit_window.extended_for`). Null when none. */
+function interventionsNote(node) {
+  const ivs = node && node.interventions;
+  if (!Array.isArray(ivs) || !ivs.length) return null;
+  const extended = (node.fit_window && node.fit_window.extended_for) || [];
+  const names = ivs.map((iv) => iv.name);
+  if (extended.length) {
+    return {
+      names,
+      text: `⚠ fit saw the analysis window — sized ${extended.join(", ")} from its own periods`,
+      cls: "sign-flag",
+      why:
+        "One of this node's declared interventions is `learn_from: window`, so its fit " +
+        "was extended through the analysis window to size the change from the event " +
+        "itself. The other parents' coefficients were therefore fitted on a window that " +
+        "contains the anomaly, and the intervention's estimate is the shift coincident " +
+        "with its date — whatever caused it.",
+    };
+  }
+  return {
+    names,
+    text: `${names.length} declared intervention${names.length === 1 ? "" : "s"} sized (${names.join(", ")})`,
+    cls: "dim",
+    why: INTERVENTION_WHY,
+  };
+}
+
 /* ---------- the two windows every number is a contrast of ----------
    Everything an RCA publishes — baseline, gap, every share, the ranking —
    is the analysis window measured against the reference window, and the
