@@ -69,6 +69,14 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
   non-additive decomposition at entity grain; and the evaluations of Boring
   Semantic Layer (MIT, but zero dbt interop) and Sidemantic (technically
   strongest, AGPL-3.0 — incompatible with our Apache-2.0)
+- [`csv_onramp_design.md`](csv_onramp_design.md) — shipped (2026-09-21, the
+  CSV half of roadmap 2.2): `provider: duckdb`, a folder of CSV / Parquet
+  exports served through the per-node `bind:` contract by the `dbt` provider's
+  own fetcher — why the on-ramp is bindings rather than a second
+  `date, value` SQL provider (the grain claim, slicing and ratio decomposition
+  hold from day one, and the tree graduates to a warehouse unchanged), what
+  was carried over from the original PR, and a customer guide from export to
+  RCA. Original implementation by justincfung
 - [`step_change_design.md`](step_change_design.md) — **designed, not built**
   (roadmap S24): a declared step/pulse term for known, dated interventions
   (price flips, on-sale days, campaigns). Separates a step in the fit history —

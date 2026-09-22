@@ -25,6 +25,30 @@ its notes never listed it at all.)
 
 ### Added
 
+- **The CSV / Parquet on-ramp — `provider: duckdb` (roadmap 2.2, #138).** A
+  folder of exports is enough to run an RCA: `provider: {type: duckdb,
+  data_dir: ./exports}` makes every `.csv` / `.parquet` directly inside the
+  folder a relation named by its stem, read in-process by DuckDB, and each
+  fetched node declares the same `bind:` block it would declare over a
+  warehouse table under `dbt` — so the grain claim `doctor` asserts, declared
+  `dimensions` slicing and `agg: ratio` decomposition all hold on day one, and
+  the tree moves to a warehouse later by changing `provider:`. No new fetcher
+  class: it is the `dbt` provider's `DbtDataFetcher` with the tree's own
+  bindings and a connection over the files. A top-level `sql` is refused
+  under `duckdb` with the pointer at `bind.sql` (they are different
+  contracts), an unbound node is refused at parse, a relative `data_dir`
+  resolves against the tree file, and a missing folder, an empty one or a
+  stem collision is refused by name. The provider is never wrapped in the
+  snapshot cache — the files are the artifact, and a snapshot keyed without a
+  content hash would freeze an edited CSV silently. `breakdown doctor` walks
+  `data files` and then the binding checks the `dbt` provider runs, now
+  extracted into one shared function; that shared chain gained a final
+  `metric sql runs` step for both providers, which fetches every metric over
+  the probe window (the grain claim never selects the `measure` column, so a
+  misspelt one used to survive to the first `serve`). New extra:
+  `pip install 'metric-breakdown[duckdb]'`, included in `[all]`. Original
+  implementation by @justincfung, reworked from a `date, value` SQL provider
+  to the `bind:` route.
 - **Known, dated interventions — `interventions:` and `fit_start` on a
   node (roadmap S24, #114).** A metric whose history is made of steps —
   price flips, on-sale days — can declare them: each `{name, date, kind:

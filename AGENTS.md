@@ -23,7 +23,7 @@ between them. The stance is **probabilistic and causal**, never frequentist:
 - **Engine:** Python + [PyMC](https://www.pymc.io/) (BSTS), [ArviZ](https://python.arviz.org/) (posteriors), [NetworkX](https://networkx.org/) (DAG)
 - **API:** [FastAPI](https://fastapi.tiangolo.com/) + Uvicorn
 - **Frontend:** vanilla JS + [Cytoscape.js](https://js.cytoscape.org/)/dagre + Plotly, served static at `/ui` — **no build step**, in the spirit of `dbt docs serve`
-- **Data:** dbt Semantic Layer (local MetricFlow / dbt Cloud) or warehouse-direct SQL; a deterministic **mock** provider for development
+- **Data:** dbt Semantic Layer (local MetricFlow / dbt Cloud), a dbt project's own manifest with generated SQL, warehouse-direct SQL, or a folder of CSV/Parquet exports read by DuckDB; a deterministic **mock** provider for development
 - **Config/validation:** [Pydantic](https://docs.pydantic.dev/) v2 · **Packaging:** [uv](https://github.com/astral-sh/uv)
 
 ## Repository map
@@ -111,9 +111,10 @@ uv run pytest tests/ -m "not slow"     # the fast loop (~1 min): everything that
 
 `uv sync` installs every provider extra (the dev group pulls
 `metric-breakdown[all]`), so the whole suite runs. **Users don't get that** —
-`pip install metric-breakdown` is base-only and the provider SDKs are the `dbt`
-and `databricks` extras, so nothing provider-specific may be imported at module
-scope and the three tests that need a real SDK skip themselves when it's absent.
+`pip install metric-breakdown` is base-only and the provider SDKs are the `dbt`,
+`databricks`, `dbt-bridge` and `duckdb` extras, so nothing provider-specific may
+be imported at module scope and the tests that need a real SDK skip themselves
+when it's absent.
 CI proves this with a no-extras job; see `docs/ai-context/python-backend.md`.
 
 Point at your own tree with `--tree path/to/tree.yml --start-date … --end-date …`,

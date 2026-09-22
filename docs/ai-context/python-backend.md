@@ -81,13 +81,13 @@ A zero denominator yields numpy's own `inf`/`nan` rather than raising; callers d
 
 ### Provider SDKs are optional extras
 
-Only `pymc`/`pandas`/`fastapi`-class dependencies are unconditional. `dbtsl` (cloud), the MetricFlow `mf` binary (local) and `databricks-*` (warehouse) ship as the `dbt` and `databricks` extras, so **nothing provider-specific may be imported at module scope** — `api/main.py` imports `data_fetch`, and a module-level `import dbtsl` would make a base install unable to start the server.
+Only `pymc`/`pandas`/`fastapi`-class dependencies are unconditional. `dbtsl` (cloud), the MetricFlow `mf` binary (local), `databricks-*` (warehouse), `sqlglot` (dbt) and `duckdb` (duckdb) ship as the `dbt`, `databricks`, `dbt-bridge` and `duckdb` extras, so **nothing provider-specific may be imported at module scope** — `api/main.py` imports `data_fetch`, and a module-level `import dbtsl` would make a base install unable to start the server.
 
 The rules, all in `data_fetch.py`:
 
 - `PROVIDER_EXTRAS` maps provider type → extra name; `MissingProviderExtra` (a `RuntimeError`, deliberately **not** an `ImportError`) is what a missing extra raises, carrying the literal `pip install 'metric-breakdown[…]'` to run.
 - `_require_module(module, provider, extra)` is the only way a provider SDK enters the process. `provider_extra_missing(provider)` is the non-raising form, used by `doctor.check_provider_extra` and by tests to skip themselves.
-- **The check belongs at the point of use, not in `__init__`.** Constructing a fetcher is pure config and must stay free of SDK requirements: a tree can name `local` and be served entirely from committed snapshots (the white-cube demo does exactly this), so `LocalDataFetcher.__init__` must not demand `mf`. `LocalDataFetcher` checks in `_run_mf_query`, `WarehouseDataFetcher` in `_connect`. `CloudDataFetcher` is the exception — it builds a live `SemanticLayerClient` in `__init__`, so that is its point of use.
+- **The check belongs at the point of use, not in `__init__`.** Constructing a fetcher is pure config and must stay free of SDK requirements: a tree can name `local` and be served entirely from committed snapshots (the white-cube demo does exactly this), so `LocalDataFetcher.__init__` must not demand `mf`. `LocalDataFetcher` checks in `_run_mf_query`, `WarehouseDataFetcher` in `_connect`, and the `duckdb` provider in `dbt_provider.open_data_dir` — the `connect` callable, before the folder is even looked at, so a base install names the extra rather than a path. `CloudDataFetcher` is the exception — it builds a live `SemanticLayerClient` in `__init__`, so that is its point of use.
 
 `doctor.py` reports a missing extra as its own `CheckResult` before the provider chain runs and skips `_DOWNSTREAM_CHECKS[provider]`; otherwise every connectivity check fails with a remediation pointing at the wrong problem. Its last check, `check_inference_toolchain`, is the one that is not about a provider: it compiles a squared-sum gradient through pytensor's C backend in `FAST_RUN`, because issue #115 showed a machine on which `doctor` passed, `serve` started, and the first NUTS fit died in the compiler (`'vector' file not found` from a broken macOS Command Line Tools install that a plain `clang++` compile does not reveal). Fail carries the platform's reinstall recipe; an empty `cxx` warns rather than fails, since pytensor's Python backend is correct and slow. Memoized per process so the suite's many `run_doctor` calls compile once.
 
@@ -429,6 +429,29 @@ constructs without touching the warehouse — a tree whose metrics all have
 snapshots has to boot with the warehouse down, the same rule `LocalDataFetcher`
 follows for `mf`.
 
+**The `duckdb` provider is this fetcher too** (roadmap 2.2, the CSV / Parquet
+on-ramp). `fetcher_from_data_dir(data_dir, bindings)` beside
+`fetcher_from_project` builds a `DbtDataFetcher` whose binding set is the
+tree's own `bind:` blocks (keyed by node name — `provider_query_name` lists
+`duckdb` as name-keyed, since there is no manifest to reconcile `source`
+against) and whose `connect` is `open_data_dir`: import `duckdb` at the point
+of use, open an in-memory connection, `CREATE VIEW <stem>` over
+`read_csv_auto` / `read_parquet` for every file `list_data_files` returns.
+That listing refuses a missing folder, an empty one and a stem collision by
+name. No new fetcher class, deliberately: the grain claim, declared
+dimensions, `agg: ratio` and the provenance surface are all this class's, and a
+second class would be the "same policy, one file over" defect the four rules
+name. `DbtDataFetcher` itself depends on no dbt artifact — `bridge_project` is
+called only inside `fetcher_from_project`. Two policies follow from the files
+being the artifact: the parser requires `bind:` on every fetched node under
+`duckdb` and refuses a legacy top-level `sql` with the pointer at `bind.sql`
+(`MetricTreeConfig.check_duckdb_nodes_are_bound`), and `loading.wrap_snapshots`
+never wraps this provider, because a snapshot keyed without a content hash
+would freeze an edited CSV silently (rule 1). `loading.resolve_data_dir` is the
+one place a relative `data_dir` is anchored to the tree file; `build_fetcher`
+takes `tree_path` for it, and `load_tree`, `check_fit_readiness`,
+`check_snapshots` and `check_duckdb` all pass theirs.
+
 `resolve_profile` reads `dbt_project.yml` for the `profile:` name, then that
 profile's target from `profiles.yml` (searching `profiles_dir` →
 `$DBT_PROFILES_DIR` → the project dir → `~/.dbt`). It renders `env_var()` and
@@ -541,8 +564,16 @@ window-mean gap and must never be rendered as though they do.
 `doctor`'s `check_dbt` walks the chain in the order failures actually cascade —
 semantic manifest → dbt profile → warehouse connection → tree metrics bind →
 declared dimensions exist → grain claims hold → filters narrow → entity grain
-resolves — skipping the rest rather than reporting the same root cause six
-times. Three of those are worth their place: **declared dimensions** turns a 500
+resolves → metric sql runs — skipping the rest rather than reporting the same
+root cause six times. Everything after the connection is `_check_bindings`,
+one function shared with `check_duckdb` (whose own chain is `data files` →
+the same six): it takes any `DbtDataFetcher` and the provider type, so a
+hand-written binding over a CSV is asserted by exactly the code that asserts
+a manifest binding — copying the back half of `check_dbt` for the on-ramp
+would have been the four rules' founding defect. The last step, `metric sql
+runs`, fetches every metric over the probe window through the full fetch
+path, because the grain claim selects only the key and a misspelt `measure`
+survives every check before it. Three of those are worth their place: **declared dimensions** turns a 500
 on the first *slice by* click into a startup failure (the same too-late class as
 C12); **grain claims** is the check no other semantic layer makes, since
 MetricFlow and Cube accept declared relationships on trust; and **filters
@@ -809,7 +840,7 @@ Coefficients are read against **`beta_axis[node]`** — the fit's own `parents` 
 
 `check.py` (issue #117) answers *would `serve` accept this tree?* without serving: `discover_trees` → `parse_tree` (the failure-soft server parse, so the message is the server's) → `resolve_default` → `_pre_fetch_load_error`, which mirrors `load_tree` up to its first provider call (extra installed, warehouse `sql` present, `validate_cold_start`). A refusal added to `load_tree` before the fetch belongs there too. It is a separate command rather than `doctor --offline` because the two answer different questions with different exit contracts: `doctor` fails an unanswered rate denominator (trust gate), `serve` warns and starts, and `check` follows `serve` — it warns, and points at `doctor`. Nothing that needs data (window coverage, the per-grain join, identities, fit readiness) is in scope; the docstring says so.
 
-`doctor.py` walks the provider auth chain as `CheckResult`s (`pass`/`fail`/`skip` + copy-paste remediation): tree file → raw YAML → unset `${VAR}` scan (via `parser._ENV_REF`, before the full parse would abort on the first one) → `Parser` parse → per-provider chain (`warehouse`: auth mode / CLI / profile host / `_connect()` + `USE` / per-metric `fetch_metric` over a 7-day probe window; `cloud`: config fields, `client.metrics()` inside a session — one call that proves token + cell host + environment + SL credential mapping — then tree `source`s ⊆ SL metrics; `local`: `mf` on PATH, `dbt_project.yml`, `mf list metrics`; `none`: `validate_cold_start(dag)` — no connection to prove, readiness means every baseline/edge-prior belief is declared, same check the server runs at startup). A final **fit readiness** check (`check_fit_readiness`) runs when both dates are explicit (the default 7-day probe window would always fail it): per-metric whole-period counts over the window vs `model.MIN_FIT_PERIODS`, through the real fetcher path — the graduation report for a tree migrating from cold start to fitted. Skipped for `provider: none`, without an explicit window, or when provider checks failed. All checks run; failed prerequisites mark dependents `skip`. Connection logic is the real fetchers' — never a duplicate.
+`doctor.py` walks the provider auth chain as `CheckResult`s (`pass`/`fail`/`skip` + copy-paste remediation): tree file → raw YAML → unset `${VAR}` scan (via `parser._ENV_REF`, before the full parse would abort on the first one) → `Parser` parse → per-provider chain (`warehouse`: auth mode / CLI / profile host / `_connect()` + `USE` / per-metric `fetch_metric` over a 7-day probe window; `cloud`: config fields, `client.metrics()` inside a session — one call that proves token + cell host + environment + SL credential mapping — then tree `source`s ⊆ SL metrics; `local`: `mf` on PATH, `dbt_project.yml`, `mf list metrics`; `dbt` and `duckdb`: their own chains above, sharing `_check_bindings`; `none`: `validate_cold_start(dag)` — no connection to prove, readiness means every baseline/edge-prior belief is declared, same check the server runs at startup). A final **fit readiness** check (`check_fit_readiness`) runs when both dates are explicit (the default 7-day probe window would always fail it): per-metric whole-period counts over the window vs `model.MIN_FIT_PERIODS`, through the real fetcher path — the graduation report for a tree migrating from cold start to fitted. Skipped for `provider: none`, without an explicit window, or when provider checks failed. All checks run; failed prerequisites mark dependents `skip`. Connection logic is the real fetchers' — never a duplicate.
 
 ---
 

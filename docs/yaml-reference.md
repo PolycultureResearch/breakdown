@@ -48,8 +48,9 @@ Controls how metric time-series data is fetched.
 
 ```yaml
 provider:
-  type: mock           # mock | local | cloud | dbt | warehouse | none
+  type: mock           # mock | local | cloud | dbt | warehouse | duckdb | none
   project_path: "..."  # required for type: local and type: dbt
+  data_dir: "..."      # required for type: duckdb: a folder of .csv/.parquet exports (relative to the tree file)
   target: "..."        # optional for type: dbt (defaults to the profile's target)
   profiles_dir: "..."  # optional for type: dbt (defaults to $DBT_PROFILES_DIR, then ~/.dbt)
   environment_id: "..."  # required for type: cloud
@@ -68,6 +69,7 @@ provider:
 | `cloud` | Queries the dbt Semantic Layer API via the `dbt-sl-sdk`. Requires `environment_id`, `host`, and `token`. |
 | `dbt` | Reads your dbt project's own `target/semantic_manifest.json` (written by plain `dbt parse` on **dbt Core**) and generates the SQL for each metric, running it over the connection in the project's `profiles.yml`. **No dbt Cloud, no Semantic Layer credential, no service token, and no new credentials of any kind.** Requires `project_path`. A node may override what dbt declares with its own `bind:` block. Executes on **BigQuery, Databricks, DuckDB, Postgres or Snowflake**, whichever your project's own target already uses. |
 | `warehouse` | Runs each metric's own `sql` directly against a warehouse (currently Databricks SQL). Use when the semantic layer isn't queryable, so the analyst mirrors governed definitions in SQL. Requires `http_path` plus **one of**: a PAT `token` (with `host`), or a Databricks CLI OAuth `profile` created by `databricks auth login --profile <name>` (host is read from the profile). |
+| `duckdb` | The **CSV / Parquet on-ramp**: a folder of exports, no warehouse, no dbt project. Every `.csv` and `.parquet` directly inside `data_dir` becomes a relation named by its file stem (`orders.csv` → `orders`), read in-process by DuckDB, and every fetched node declares a `bind:` block over those relations — the same twelve lines that bind a node to a warehouse table under `dbt`, so the grain claim, declared dimensions and `agg: ratio` decomposition all apply, and the tree moves to a warehouse later by changing `provider:`. Requires `data_dir`. See [CSV or Parquet on-ramp](#csv-or-parquet-on-ramp-provider-duckdb). |
 | `none` | No data is ever fetched; the tree is a **cold-start tree** of declared beliefs (`assumed` is an accepted alias). Only what-if simulation is available; every non-formula node needs a `baseline` and every probabilistic edge an explicit prior. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
 
 **Installing the extra.** The base install is the whole product. Engine, API,
@@ -82,8 +84,9 @@ opt into:
 | `local` (MetricFlow CLI) or `cloud` (dbt Cloud Semantic Layer) | `pip install 'metric-breakdown[dbt]'` | `dbt-metricflow`, `dbt-sl-sdk` |
 | `warehouse` (direct SQL) | `pip install 'metric-breakdown[databricks]'` | `databricks-sdk`, `databricks-sql-connector` |
 | reading a dbt project's own metric definitions (the `dbt` provider) | `pip install 'metric-breakdown[dbt-bridge]'` | `sqlglot` |
+| `duckdb` (CSV / Parquet exports on disk) | `pip install 'metric-breakdown[duckdb]'` | `duckdb`, plus `dbt-bridge` (the generated SQL is the same) |
 | running that generated SQL on **BigQuery** | `pip install 'metric-breakdown[bigquery]'` | `google-cloud-bigquery` |
-| all of them | `pip install 'metric-breakdown[all]'` | all of the above, **except on Python 3.14**, where it installs `databricks` and `dbt-bridge` and omits `dbt` (see below) |
+| all of them | `pip install 'metric-breakdown[all]'` | all of the above, **except on Python 3.14**, where it installs `databricks`, `dbt-bridge` and `duckdb` and omits `dbt` (see below) |
 
 `dbt-bridge` is deliberately not part of `dbt`, and depends on nothing from dbt
 Labs: reading the semantic manifest `dbt parse` already wrote needs neither
@@ -246,7 +249,84 @@ names the ones that need MetricFlow. A tree can also mix the two: keep `local`
 for the metrics that need it, or give a node its own `bind:` block with the SQL
 you want and move the rest.
 
-For `local`, `cloud` and `dbt`, the metric queried from the semantic layer is the last segment of `source` (e.g., `source: jaffle_shop.metrics.revenue` queries the metric `revenue`); the result is exposed in the tree under `name`. For `warehouse`, each metric carries its own `sql` (see the `metrics` table) and is keyed by `name`. The data window defaults to `2024-01-01`–`2024-04-09` and is set with `--start-date` / `--end-date` (or the `BREAKDOWN_START_DATE` / `BREAKDOWN_END_DATE` / `BREAKDOWN_TREE` environment variables).
+### CSV or Parquet on-ramp (`provider: duckdb`)
+
+No warehouse, no dbt project, no credentials: a folder of exports is enough
+to run an RCA, and the tree you write against it is the tree you keep. Each
+`.csv` or `.parquet` file directly inside `data_dir` becomes a relation named
+by its stem (`orders.csv` → `orders`, `ad_spend.parquet` → `ad_spend`), and
+every fetched node declares the same `bind:` block it would declare over a
+warehouse table under the `dbt` provider — a relation or an inline `bind.sql`
+subquery, the `grain_key` that makes it one row per grain, the `time_column`,
+and how to aggregate. Export **rows, not pre-built pivots**: aggregation
+happens in the binding, where `breakdown doctor` can check it.
+
+```yaml
+provider:
+  type: duckdb
+  data_dir: ./exports          # relative to this tree file
+
+metrics:
+  - name: tickets_sold
+    source: exports.orders.tickets_sold
+    kind: flow
+    dimensions:
+      tier: ticket_tier          # a slice the binding below exposes
+    bind:
+      sql: SELECT * FROM orders WHERE status != 'test'
+      grain_key: order_id
+      time_column: created_at
+      agg: sum
+      measure: quantity
+      dimensions:
+        ticket_tier: {column: ticket_tier}
+
+  - name: average_ticket_price
+    source: exports.orders.average_ticket_price
+    kind: rate
+    denominator: tickets_sold    # what this rate is a rate *of*, for window aggregates
+    bind:
+      sql: SELECT * FROM orders WHERE status != 'test'
+      grain_key: order_id
+      time_column: created_at
+      agg: ratio
+      numerator: gross_amount
+      denominator: quantity
+
+  - name: paid_spend
+    source: exports.ad_spend.paid_spend
+    grain: week
+    bind:
+      relation: ad_spend
+      grain_key: spend_id
+      time_column: day
+      agg: sum
+      measure: spend
+```
+
+What that buys over a hand-written `date, value` query: the `tier` slices
+come from the binding's own dimension, the ratio decomposes into within-slice
+movement and mix because its numerator and denominator are separate measures,
+and `doctor` asserts `count(*) == count(distinct grain_key)` on each relation —
+a hand-exported CSV with a duplicated `order_id` is exactly the fan-out that
+check exists to catch. Weeks bucket to Monday.
+
+Three rules. **`source` is required and is a label**: bindings are keyed by
+the node's `name`, since there is no manifest to reconcile `source` against.
+**A top-level `sql` is refused** under `duckdb`, with the message pointing at
+`bind.sql` — the two are different contracts (`sql` returns the finished
+series; `bind.sql` is a relation the binding aggregates), and handing one to
+the other would produce a wrong shape rather than an error. **A folder that is
+missing, empty, or holds two files with one stem** (`orders.csv` beside
+`orders.parquet`) is refused by name at first use.
+
+The files are the artifact, so this provider is **never wrapped in the
+snapshot cache** (see [Snapshots](deploying.md#snapshots-fetch-once-refit-forever)):
+re-export the CSV and the next start reads it. Moving to a live source later
+is a `provider:` change; each `bind:` stays as written, reviewed for dialect
+differences.
+
+For `local`, `cloud` and `dbt`, the metric queried from the semantic layer is the last segment of `source` (e.g., `source: jaffle_shop.metrics.revenue` queries the metric `revenue`); the result is exposed in the tree under `name`. For `warehouse`, each metric carries its own `sql` (see the `metrics` table) and is keyed by `name`; for `duckdb`, each carries its own `bind:` and is likewise keyed by `name`. The data window defaults to `2024-01-01`–`2024-04-09` and is set with `--start-date` / `--end-date` (or the `BREAKDOWN_START_DATE` / `BREAKDOWN_END_DATE` / `BREAKDOWN_TREE` environment variables).
 
 **Secrets in config.** Any provider string field may reference an environment variable with `${VAR}` syntax (e.g. `token: ${DATABRICKS_TOKEN}`), so a tree can be committed without embedding credentials. A referenced variable that isn't set raises a clear error at load time. The `warehouse` provider's `profile` avoids secrets entirely. Credentials come from the Databricks CLI's OAuth token cache, so nothing sensitive lives in the tree or the environment.
 
@@ -261,7 +341,8 @@ Each metric entry supports the following fields:
 | `grain` | string | The metric's natural grain: `day` (default), `week`, or `month`. It is fetched, fitted, and attributed at this grain, never below it. See [Grains](#grains). |
 | `kind` | string | Temporal aggregation kind: `flow` (default, sums over time), `stock` (a point-in-time level, takes the last value), or `rate` (a ratio, never auto-aggregated). See [Grains](#grains). |
 | `sparse` | bool | `kind: flow` only. The source emits a row only when something happened (an event count, a comms log), so a period with no row inside the loaded window **is a zero**, at every edge — including the trailing run, which is otherwise trimmed as "not loaded yet". Refused on a stock, a rate, or a derived node. Every filled period is counted and named at load (`sparse_fills` on `/meta`, `/health` and MCP `get_tree`). See [Sparse sources](#sparse-sources-an-absent-period-is-a-zero). |
-| `sql` | string | For the `warehouse` provider: a SQL query returning columns `date` and `value`, with `:start_date` / `:end_date` named parameters, one row per period at the metric's `grain`. Ignored by other providers. |
+| `sql` | string | For the `warehouse` provider: a SQL query returning columns `date` and `value`, with `:start_date` / `:end_date` named parameters, one row per period at the metric's `grain`. Refused under `duckdb` (use `bind.sql`); ignored by other providers. |
+| `bind` | dict | How this node gets its series, per node: a `relation` (a table, or a file stem under `duckdb`) **or** an inline `sql` relation, the `grain_key` that makes it one row per grain, its `time_column`, an `agg` (`sum` \| `count` \| `count_distinct` \| `ratio` \| `average` \| `last`) with `measure` — or `numerator` and `denominator` for `ratio` — and optional `dimensions` for slicing and `entity_key` / `entity_grain` for distinct counts. Under `dbt` it overrides what the manifest declares; under `duckdb` it is required on every fetched node. Mutually exclusive with `sql`. See [CSV or Parquet on-ramp](#csv-or-parquet-on-ramp-provider-duckdb) and the filter and distinct-count passages under [`provider`](#provider). |
 | `description` | string | Optional human-readable description |
 | `parents` | list | Names of metrics that causally influence this one |
 | `formula` | string | Arithmetic expression over parent names (e.g., `"order_count * average_order_value"`). Enables Shapley attribution. |
