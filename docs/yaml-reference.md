@@ -271,6 +271,8 @@ Each metric entry supports the following fields:
 | `dimensions` | dict | Declared slicing dimensions, `name: provider_dimension` shorthand (`region: customer__region`) or a mapping with `source`, `top_k`, `values`, `weight`. Enables `POST /rca/{name}/slices` and the MCP `slice_metric` tool, which localize a gap within the metric (which geo, plan, app version). Analysis-time only; never affects fetching at startup, fitting, or tree attribution. See [Dimensions (slicing)](#dimensions-slicing). |
 | `seasonality` | list | Periodic components to include in the BSTS model. Periods are in grain steps at the node's grain. |
 | `trend` | string or dict | Local-level (random-walk) trend. `trend: linear` uses the default step-size prior HalfNormal(0.05); `trend: {type: linear, sigma: 0.1}` widens it so the trend may absorb faster drift. Only `type: linear` is supported. |
+| `interventions` | list | Known, dated changes to this metric's own level — a price flip, an on-sale day — each `{name, date, kind: step \| pulse, until?, prior?, learn_from?}`. Each becomes a known 0/1 regressor the fit sizes on its own coefficient; the author dates the step, the engine sizes it. Probabilistic and source nodes only (refused on a formula node and under `provider: none`). See [Interventions](#interventions-known-dated-steps). |
+| `fit_start` | date | The date this metric's current regime began. Its fit uses only whole periods starting on or after it — the per-node form of `--start-date` — so one node's old regime can be cut without shortening every other node's history. A window it leaves shorter than 10 periods is refused, naming it. See [Interventions](#interventions-known-dated-steps). |
 | `baseline` | number or dict | **Cold-start mode only.** Asserted operating point for a tree with no data: `baseline: 1200` (point) or `baseline: {low: 800, high: 1600}` (central 90% interval), in mean-per-period units at the node's grain. `distribution: Normal` (default) or `LogNormal`; the latter reads `[low, high]` on the log scale, needs `low > 0`, and is the natural shape for an order-of-magnitude belief about a positive quantity. Rejected on formula nodes, since theirs derive from parents so the identity holds. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
 | `plausible` | dict | **Cold-start mode only.** Declared honesty band `{min, max}` (either bound may be omitted, at least one required). Belief draws are **truncated** to it at sampling time (rejection resampling, so no mass piles up on the bound, and `min: 0` means customer counts cannot be drawn negative), and it stands in for historical min/max in the what-if extrapolation flags. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
 | `share` | bool | `kind: rate` only. **This rate is a proportion: it lies in `[0, 1]` by construction.** A what-if that simulates it outside those bounds is flagged `non_physical` (impossible) rather than `extrapolation` (unusual), on both sides and with or without history. Never inferred — a `denominator` says only how the rate aggregates over time, and `average_order_value` has one. See [Grains](#grains). |
@@ -420,6 +422,42 @@ Rules:
 ```
 
 Shapley attribution and the residual fit both read each lagged parent from windows shifted back by its lag, so the identity and its exact attribution both hold cohort-by-cohort.
+
+## Interventions (known, dated steps)
+
+A local level with a tight step-size prior cannot take a step. A metric whose history is made of regime changes — price tiers flipping, an on-sale day, a policy change — fits badly by construction: the posterior smooths the level change over many periods, inflates the observation noise to cover the residuals around it, and pulls every parent's coefficient toward whatever moved on the same date. When you *know* the date, declare it, and the model learns the size:
+
+```yaml
+- name: orders
+  source: festival.metrics.orders
+  parents: [sessions, flip_comms]
+  fit_start: 2026-07-30            # this regime began at on-sale; fit from here
+  interventions:
+    - name: tier_2_flip
+      date: 2026-08-10
+      kind: step                   # 1 from this period onward
+      prior: { distribution: Normal, params: { mu: 150, sigma: 100 } }  # orders/day, optional
+    - name: lineup_announce
+      date: 2026-08-03
+      kind: pulse                  # 1 on this period only …
+      until: 2026-08-04            # … or through this one
+    - name: spring_push
+      date: 2026-09-07
+      kind: pulse
+      until: 2026-09-20
+      learn_from: window           # the exception — see below; the default is history
+  expected_signs: { tier_2_flip: positive }
+```
+
+Each entry is a **known regressor**: `1[t ≥ date]` for a `step`, `1[date ≤ t ≤ until]` for a `pulse` (`until` omitted means one period). Its coefficient lives on its own axis — `beta_intervention` / `beta_intervention_raw` — never appended to `beta`, whose order is the parent list. The column is 0/1 and is not z-scored, so the `prior` (the same four distributions as parent priors) is stated directly in the metric's units: "about +150 orders a day, give or take 100". Without one it is Normal(0, 1) in normalized space, a step of about one series SD.
+
+Rules the parser enforces: `name` is an identifier and is unique among the node's parents *and* interventions (both are `expected_signs` keys); `kind ∈ {step, pulse}`; `until` only with `pulse` and not before `date`; `learn_from ∈ {history, window}`, default `history`. Refused on a **formula node** — the identity has no regressors; the step happened to a parent, declare it there — and under **`provider: none`**, where there is no series to size a step against. A date not aligned to the node's grain (a Wednesday on a weekly node) **warns and snaps** to the containing period, because a mid-period step is a partial-period effect you should date to the period start.
+
+**What you get back.** The fit's `interventions` list (snapped dates, the axis of the summary's `beta_intervention_raw[i]` rows) and `dropped_interventions` — the ones whose indicator was constant over the fit window (no instance inside it, or on for every period of it), each with a reason saying where the effect went — on `POST /analyze/{name}`, `GET /metrics/{name}`, every RCA node, `explain_metric` and `run_rca`. On an RCA node each fitted intervention reports `estimate`, `ci_95`, `ci_status`, `prob_same_direction` and `window_delta` — the fraction of the analysis window it was on minus the fraction of the reference window — and enters the identity `unexplained = gap − Σ contributions − trend − seasonal − Σ interventions`. It is **not** in `ranked_causes` (it is not a metric to drill into) and not in `components` (trend and seasonal are nobody's fault; a flip is somebody's decision). The posterior predictive check runs on the mean function *with* the steps, so a pass is evidence about the residual regime, not about the steps, whose size the model was told; `ppc.conditioned_on_interventions` names them. See [`docs/model.md`](model.md#declared-interventions-a-step-the-author-dates-and-the-model-sizes).
+
+**`learn_from: history` (default) vs `window`.** RCA fits every node on data strictly before the analysis window, so an intervention with no instance in that history — a flip that happens only inside the window you are analysing — is a constant column and is **dropped by name**; its effect is then in `unexplained` or in the parents that moved with it, which is the finding RCA exists to report. `learn_from: window` is the opt-in exception for sizing a one-off from the event itself (Box and Tiao's intervention analysis): that node's RCA fit is extended *through* the intervention's periods — the analysis window's end for a `step`, `until` for a `pulse` — with the indicator in the design matrix. Three things follow, each stated on the payload: the estimate is the shift coincident with the date, not separable from anything else dated the same (`interventions[].claim`); the node's other coefficients were fitted on a window containing the anomaly (`fit_window.extended_for`); and the interval does not include forecast uncertainty about the regime it stepped from (roadmap 3.4/S16). It is per intervention and per node, never tree-wide.
+
+**`fit_start`.** The cheaper remedy when you do not want to model the old regime at all: the node's fit uses only whole periods starting on or after the date, and the default RCA reference window will not start before it. Everything else in the tree keeps its history. The engine refuses a fit this leaves shorter than 10 periods, with the message naming `fit_start` as the cause.
 
 ## Grains
 

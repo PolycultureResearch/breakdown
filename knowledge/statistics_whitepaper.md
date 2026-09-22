@@ -3,7 +3,7 @@
 **A white paper on the models behind Bayesian metric trees, why each was chosen,
 and where each one stops being trustworthy.**
 
-> **Written:** 2026-08-04 · **Last updated:** 2026-09-14 ·
+> **Written:** 2026-08-04 · **Last updated:** 2026-09-21 ·
 > **Engine version:** 0.2.0
 >
 > **This is a living document.** The assessment in §3 and the improvements in §4
@@ -1250,7 +1250,7 @@ scheduled start.
 | S21 | Fit through undefined periods by masking the likelihood | ○ optional — build on demand |
 | S22 | k̂'s own Monte-Carlo error, and a seeded manual-fit path | ✅ closed 2026-08-27 |
 | S23 | Reference-window sensitivity — the uncertainty the bootstrap never sees | ✅ closed 2026-09-14 |
-| S24 | Known, dated interventions — a declared step/pulse term in the fit | ○ open — designed 2026-09-14 |
+| S24 | Known, dated interventions — a declared step/pulse term in the fit | ✅ closed 2026-09-21 |
 | 3.4 | Counterfactual RCA (Horizon 3, not the S track) | ○ open |
 
 Below, the reasoning behind each — ordered by value per unit of effort.
@@ -1618,31 +1618,44 @@ probabilistic and gappy), and because two questions must be settled first:
 periods is not a fit on 100), and `MIN_FIT_PERIODS` must count *observed*
 periods, or the floor is not a floor.
 
-**Known, dated interventions** — `S24`, ○ open, designed 2026-09-14
-([`step_change_design.md`](step_change_design.md)). A local level with a
-tight step-size prior cannot take a step: a one-SD jump in one period needs
-`z[t] ≈ 20` at the default `σ_trend`, so the posterior smooths the level
-change over many periods and inflates `σ_obs` to cover the residuals around
-it — which is exactly what S3's `resid_max` and `resid_acf1` were built to
-catch, and did, on a field tree whose history is price flips and on-sale
-days (issue #114). The verdict is honest and the reader is left with nothing
-to declare. The design is a per-node `interventions:` list — name, date,
-`step` or `pulse`, an optional prior in business units — entering the fit as
-a known 0/1 regressor on its own coefficient axis, learned from the
-instances inside the fit window and dropped by name when there are none; the
-step's window delta times its coefficient is a named term in the gap, beside
-`components`, outside `ranked_causes`. Two distinctions carry the argument.
-First, a step inside the *analysis* window is not this defect at all: RCA
-fits strictly before that window, so the flip a user analyses was never in
-the training data, and its effect is in the parents that moved with it or
-in `unexplained`, which is the finding. Second, a declared step is a claim
-the author makes, like the DAG, and the check that then passes is evidence
-about the residual regime, not about the step — which is why automatic
-changepoint detection stays out (a model free to place steps reproduces
-anything) and why an opt-in `learn_from: window`, which lets the fit see the
-event's own periods to size a one-off, is Box and Tiao (1975) intervention
-analysis with its claim stated on the payload: the shift coincident with the
-date, whatever caused it.
+**Known, dated interventions** — `S24`, ✅ closed 2026-09-21
+([`step_change_design.md`](step_change_design.md); account in
+[roadmap_log S24](roadmap_log.md#s24)). A local level with a tight step-size
+prior cannot take a step: a one-SD jump in one period needs `z[t] ≈ 20` at
+the default `σ_trend`, so the posterior smooths the level change over many
+periods and inflates `σ_obs` to cover the residuals around it. Shipped as a
+per-node `interventions:` list — name, date, `step` or `pulse`, an optional
+prior in business units — entering the fit as a known 0/1 regressor on its
+own coefficient axis (`beta_intervention_raw`, never appended to the
+parent-ordered `beta`), learned from the instances inside the fit window and
+dropped by name when there are none; the step's window delta times its
+coefficient is a named term in the gap, beside `components`, inside
+`unexplained`'s identity, outside `ranked_causes`. Measured before quoting
+(§4.4 of the design): on a synthetic world an undeclared step of about two
+series SD inflated `σ_trend` some 40×, `σ_obs` 1.26× (2.09× at twice the
+size) and β's interval 2.5–4.5×; with a parent that co-stepped on the same
+date, β came out at 0.94 against a truth of 0.5, and declared it returned to
+0.55 [0.48, 0.60] with the collinearity check naming the parent and the
+intervention together at |r| = 0.97. One expectation did not reproduce: the
+undeclared step did not fail S3's check on this world (`ok` through a step of
+30, `moderate` on `min` at 60) — the level absorbs a single clean step by
+inflating its own variance, and the damage is in the intervals and β rather
+than in the verdict. The field report's `severe` is therefore a compound of
+several steps and a zero floor, and its four p-values still decide whether
+this item or S20 is the one it was waiting for. Two distinctions carry the
+argument. First, a step inside the *analysis* window is not this defect at
+all: RCA fits strictly before that window, so the flip a user analyses was
+never in the training data, and its effect is in the parents that moved with
+it or in `unexplained`, which is the finding. Second, a declared step is a
+claim the author makes, like the DAG, and the check that then passes is
+evidence about the residual regime, not about the step
+(`ppc.conditioned_on_interventions` says so) — which is why automatic
+changepoint detection stays out, and why the opt-in `learn_from: window`,
+which lets the fit see the event's own periods to size a one-off, is Box and
+Tiao (1975) intervention analysis with its claim stated on the payload: the
+shift coincident with the date, whatever caused it, on a fit that saw the
+analysis window (`fit_window.extended_for`), with an interval that omits the
+forecast uncertainty 3.4/S16 will supply.
 
 **Reference-window sensitivity** — `S23`, ✅ closed 2026-09-14. Named by the
 2026-08-29 grill as the weakest load-bearing assumption in the engine, and it
@@ -1746,6 +1759,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-09-21 | **S24 shipped — known, dated interventions as a declared step/pulse term.** A node's `interventions:` enter the fit as known 0/1 regressors on their own `beta_intervention_raw` axis, are dropped by name when unidentified, and appear on every RCA node as their own term in the gap (inside `unexplained`'s identity, outside `ranked_causes`); `learn_from: window` is the per-intervention Box–Tiao opt-in with its claim on the payload; `fit_start` is the per-node regime start. §4's table and §4.2 record the closure and the §4.4 measurement: an undeclared ~2-SD step inflates `σ_obs` 1.26× and β's interval 2.5×, and a co-stepping parent puts β at 0.94 against 0.5. The measurement also corrects the item's own rationale: on a clean synthetic step the S3 check stays `ok` (the level absorbs it by inflating `σ_trend` ~40×), so the check the design leaned on is not what a single step trips — the intervals are. No §3.2 weakness changed status; S24 was never listed there, because S3 already disclosed the misspecification and §2.5 already states within-window stationarity as assumed. |
 | 2026-09-14 | **S23 shipped — the reference window is no longer the one input nobody resampled.** `run_rca` re-attributes under two neighbouring reference blocks (one period earlier, one whole block earlier; same fits, no new sampling) and publishes `reference_sensitivity`: whether the top cause and the gap's direction survive the move, the blocks tried with what each said, and a `gap_range` that is a sensitivity band by name — kept out of `ci_95`, because window choice is not sampling error. §4's table and §4.2 record the closure and what it deliberately does not claim (two blocks are a probe, not a distribution over references). No §3.2 weakness changed status: S23 was never listed there, because the engine's *disclosed* position (§2.5) was always that the bootstrap is within-window only; what changed is that the payload now says what the window choice cost, on every surface. |
 | 2026-09-14 | **S24 filed — a declared step/pulse term for known, dated interventions, designed and not built.** A field user re-ran an RCA under 0.2.0 on a ticketed-event tree and got the honest verdict — `ppc_status: severe` — for a history made of price flips and on-sale days, with nowhere to go inside the tool (issue #114); a marketing team raised the analysis-window half of the same shape the same day (a campaign flag constant over the fit window is dropped, correctly). §4 gains the item and its rationale; no §3.2 weakness changes, because S3 already discloses the misspecification on every surface and §2.5 already states within-window stationarity as assumed. The design (`step_change_design.md`) separates a step in the *fit history*, which is what the PPC scores and what the term fixes, from a step in the *analysis window*, which RCA measures by construction; keeps the intervention coefficients off the parent-ordered `beta` axis; keeps automatic changepoint placement out; and makes the fit-window exception an explicit per-intervention opt-in with its claim on the payload. |
 | 2026-08-31 | **C29, C30 and C34 shipped — the shared statistics moved into `engine/stats.py`, and the grill's worst numbers are refusals now.** One change, because the three were one defect: `rca.py`, `slices.py` and `simulate.py` each carried a private copy of the degeneracy guard, the finite filter and the gap epsilon, and the copies had drifted (the posterior branch had neither guard — that was C29's NaN payload; `slices` had the pre-C4 zero-width interval and the pre-C5 absolute epsilon — that was C30). `engine/stats.py` now holds the single public implementation (`sample_summary`, `share_of_gap`, `direction_fields`, `block_bootstrap_indices`, the epsilons) and `engine/windows.py` the window→scalar rules; all three modules import them. The H1 shape — a rate parent undefined inside the analysis window, outside the fit window — is refused by name before any attribution math (`attribution_failed` off-target, a 422 naming parent and dates on-target), on the argument that filtering the NaN replicates away would publish a quietly-censored window as if it were the asked-for one. The slice panel gains the tree's `degenerate_bootstrap_spread` state, withholds interval/probability/verdict together on a collapsed resampling, and C34's gate now requires `noise_level is False` — measured, not merely unwithheld. §3.2 #2 returns to ✅ and #8's defect half stays closed with its correction resolved; both corrections' text records the round trip. The strict-encoding invariant test now drives a probabilistic node through a stub fit and was verified failing against the pre-fix engine. |

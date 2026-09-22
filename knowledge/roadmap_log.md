@@ -814,6 +814,112 @@ loaded history saying so; a rate target undefined over one alternative,
 withheld and still encoding strictly.
 
 
+## S24
+
+**Status at compression:** ○ (designed 2026-09-14) · **Closed:** ✅ 2026-09-21 (account below)
+
+**Known, dated interventions — a declared step/pulse term in the fit** — a node declares `interventions:` (name, date, `kind: step|pulse`, optional business-unit prior), each a known 0/1 regressor on its own `beta_intervention` axis (never appended to `beta`, whose order is the parent list), learned by default from instances inside the fit window and dropped by name when there are none; an explicit per-intervention `learn_from: window` opt-in lets the fit see the event's own periods (Box–Tiao intervention analysis) with the claim stated on the payload, and a per-node `fit_start` beside it. Design: [step_change_design.md](step_change_design.md).
+
+**Why:** Raised by issue #114 (a ticketed-event tree: price flips, on-sale and announce days are steps, and a local level cannot take a step, so the S3 check says `severe` and the practitioner has nowhere to go inside the tool) and independently by a marketing team the same day (a campaign flag that lives only in the analysis window is dropped, correctly, and its effect lands in `unexplained`).
+
+**Shipped 2026-09-21.** The design's v1 as written, in one PR, `learn_from: window`
+included rather than deferred — its engine cost turned out to be one helper
+(`_node_fit_end`) and a per-node trace-cache key, and shipping the schema
+without the behaviour would have reserved a field that did nothing.
+
+*What landed.* Parser: `Intervention` model and `MetricDefinition.interventions`
+/ `fit_start`, with §4.1's rules (identifier names unique among parents and
+interventions; `until` only on a pulse and not before `date`; `learn_from ∈
+{history, window}`; refused on a formula node and under `provider: none`; an
+off-grain date warns and snaps). Engine: `_intervention_columns` builds the
+0/1 block over the fitted dates and drops a constant column under the #113
+mechanism with two reasons — no instance inside the window, or on throughout
+(the latter pointing at `fit_start`) — and `_intervention_component` puts the
+coefficients on `beta_intervention` / `beta_intervention_raw = beta · y_std`,
+a separate stacked axis; the block joins the collinearity design, the PPC mean
+function (`ppc.conditioned_on_interventions`) and the sign check. `fit_start`
+is applied after the `fit_end` cut, whole periods starting on or after the
+date, and `_enforce_fit_length` names it when it is what made a window short.
+RCA: a node with interventions is fitted even without parents; each fitted
+intervention reports `estimate = beta_intervention_raw × window_delta` with a
+posterior-only interval (the dates are facts, so nothing is bootstrapped), a
+zero delta as `estimate: 0, ci_95: null, ci_status: indicator_unchanged`
+(C4: never a zero-width interval), a non-finite posterior withheld by name
+(rule 3); `unexplained` subtracts the sum; nothing enters `ranked_causes`.
+API, MCP (`compact_rca` keeps the list; `RCA_HOW_TO_READ` gains one static
+clause and `rca_how_to_read` one per-node line where a `claim`, an
+`indicator_unchanged` zero or a drop changes what may be said; the guide's
+ceiling moved 6500 → 6600 with its reason), UI (rows in the coefficient and
+contributions tables, chips, the export's caveat block, dashed rules on the
+PPC panel), and the docs.
+
+*Choices the design left open, and why each went the MVP way.*
+
+- **The window delta is not bootstrapped.** Parents' contributions carry a
+  block-bootstrap interval on the window means; the indicator's window
+  fraction is a fact about dates, so its interval is the coefficient's
+  posterior alone. Resampling a 0/1 column would have manufactured
+  window-sampling uncertainty about when a flip happened.
+- **`learn_from: window` extends `fit_end` per node through the analysis
+  window's last whole period for a step and through `until` for a pulse,
+  never earlier than `analysis_start`**, so a window-mode intervention
+  already in history changes nothing. The trace cache keys on that per-node
+  `fit_end`, at the to-fit check, the fit and the read. The trend delta then
+  reads the analysis window's own fitted states (`trend[:, min(t_an, T−1)]`),
+  which is `trend[-1]` exactly on the default path.
+- **`fit_window.extended_for` is RCA-only.** `GET /metrics/{name}` already
+  carries `fit_end`; which declaration chose it is a fact about the analysis,
+  not the fit.
+- **The `provider: none` refusal is tree-level** (interventions need a series),
+  and `fit_start` is allowed everywhere, including formula nodes, whose
+  residual fit has a window too.
+- **`interventions` is required to name `kind`** — a claim should be spelled
+  out — and defaults `learn_from` to `history`, the design's stated default.
+- **Not built:** interventions as what-if levers, a tree-level `events:`
+  registry, cold-start interventions, `breakdown doctor` counting a node's
+  `fit_start` in its readiness figure (it reports the loaded window's count).
+
+*Measurement (§4.4), on `y = 0.5·x + step·1[t ≥ 40] + N(0, 1)`, x stationary
+around 100 (sd 4), 91 fitted days, NUTS 300 × 4 after 500 tuning steps, seed 0.*
+Series SD of y over the fit window ≈ 15 at step 30, so a step of 30 is ~2 SD.
+
+| step | undeclared β (truth 0.5) | undeclared σ_obs (truth 1.0) | undeclared σ_trend (z) | undeclared PPC | declared β | declared σ_obs | declared σ_trend |
+|---|---|---|---|---|---|---|---|
+| 5 | 0.511 [0.458, 0.562] | 1.04 | 0.131 | ok | 0.514 [0.467, 0.562] | 1.03 | 0.013 |
+| 15 | 0.488 [0.415, 0.570] | 1.07 | 0.168 | ok | 0.514 [0.466, 0.561] | 1.03 | 0.006 |
+| 30 | 0.453 [0.322, 0.583] | **1.26** | 0.175 | ok | 0.515 [0.463, 0.565] | 1.03 | 0.004 |
+| 60 | 0.387 [0.165, 0.625] | **2.09** | 0.176 | moderate (`min`, p = 0.09) | 0.515 [0.465, 0.565] | 1.03 | 0.002 |
+
+**The co-stepping parent (world 6):** x itself steps by 30 on the same date.
+Undeclared, β = **0.939 [0.822, 1.074]** against 0.5 — the level change
+pushed onto the parent, which is the number a reader of the reporter's
+`β_flip_comms` needs. Declared, β = 0.545 [0.481, 0.604], the step 28.6
+[26.8, 30.5] against 30, and the collinearity check says `high` (|r| = 0.97)
+naming `x` and `flip` together — correctly, because which of them "caused"
+the step is not a determined quantity.
+
+**One design expectation did not reproduce, and the test says so rather than
+asserting it.** §4.3 test 1 expected the undeclared step to fail the PPC on
+`resid_acf1` or `resid_max`. On this world it does not: the posterior absorbs
+the step by inflating `σ_trend` ~40× (0.175 against 0.004 once declared) so
+the level takes it over a few periods, and the residuals around it are not
+autocorrelated enough to trip the check — `ok` through a step of 30, and
+`moderate` on `min` only at 60. The §1.2 *consequences* — inflated `σ_obs`,
+a widened and biased β, a shared fit that every RCA on the node inherits — are
+what the test pins. The reporter's `severe` (a daily count with several steps
+and a zero floor) is therefore not reproduced by one clean step on a Gaussian
+series, and the reply to #114 should still ask for the four p-values: if
+`min` is the one firing, S20 is the item, not this one.
+
+Tests are `tests/test_interventions.py`: the parser rules, indicator and
+fit-window arithmetic and MCP compaction in the fast loop; §4.3's worlds 1–6,
+8 and 9 (plus a source node with a step, and a declared sign on an
+intervention) marked slow. The invariants suite covers the new `FitResult`
+fields, the render-site check for the two new node fields, and strict
+encoding; `docs/yaml-reference.md`'s new example is executed by
+`tests/test_docs_examples.py`.
+
+
 ## Per-metric windows
 
 **Status:** ✅ shipped 2026-09-15 (GitHub #112, second suggestion; PR follows

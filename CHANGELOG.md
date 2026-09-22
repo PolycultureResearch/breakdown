@@ -25,6 +25,34 @@ its notes never listed it at all.)
 
 ### Added
 
+- **Known, dated interventions — `interventions:` and `fit_start` on a
+  node (roadmap S24, #114).** A metric whose history is made of steps —
+  price flips, on-sale days — can declare them: each `{name, date, kind:
+  step | pulse, until?, prior?, learn_from?}` becomes a known 0/1 regressor
+  the fit sizes on its own `beta_intervention_raw` axis (never appended to
+  `beta`, whose order is the parent list), with the prior in the metric's
+  own units. The author dates the step; the engine sizes it — automatic
+  changepoint detection stays out. An intervention with no instance inside
+  the fit window is dropped by name (`dropped_interventions`, the #113
+  shape), never silently. On an RCA node each fitted intervention is its own
+  term — `estimate`, `ci_95`, `ci_status`, `prob_same_direction`,
+  `window_delta` — entering `unexplained = gap − Σ contributions − trend −
+  seasonal − Σ interventions`, outside `ranked_causes` and outside
+  `components`; the posterior predictive check runs conditioned on the
+  declared steps and says so (`ppc.conditioned_on_interventions`).
+  `learn_from: window` is the per-intervention opt-in that lets the node's
+  RCA fit see the event's own periods (Box–Tiao intervention analysis), with
+  the claim stated on the entry and `fit_window.extended_for` on the node.
+  `fit_start` cuts one node's fit to whole periods on or after a date, the
+  per-node form of `--start-date`. On `GET /metrics/{name}`,
+  `POST /analyze/{name}`, `POST /rca/{name}`, `explain_metric`, `run_rca` and
+  `get_tree`; the UI gives each a labelled row in the coefficient and
+  contributions tables and draws the dates on the PPC panel. Refused on a
+  formula node and under `provider: none`. Measured on a synthetic world: an
+  undeclared step of about two series SD inflated `σ_obs` 1.26× and β's
+  interval 2.5×, and with a co-stepping parent put β at 0.94 against a truth
+  of 0.5; declared, β returned to 0.55 [0.48, 0.60] and the step to 28.6
+  [26.8, 30.5] against 30.
 - **Per-metric windows: a short series bounds only the analyses that read
   it** (#112, #135). The within-grain join is outer, each metric keeps its
   own range, and a fit's window is the intersection of the node's range and
