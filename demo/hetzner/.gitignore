@@ -1,0 +1,3 @@
+# Holds BREAKDOWN_API_TOKEN. The root .gitignore's /.env is anchored at the
+# repo root and does not reach this directory.
+.env

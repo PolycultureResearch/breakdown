@@ -1,0 +1,11 @@
+# One site block per demo. Caddy obtains and renews each certificate itself,
+# which needs the name's DNS pointing at this box and ports 80/443 open.
+#
+# No timeouts are set on purpose: a cold RCA can take minutes, and Caddy's
+# reverse_proxy has no response timeout by default. MCP's streamed responses
+# are flushed as they arrive without extra configuration.
+
+{$WHITE_CUBE_HOSTNAME} {
+	encode zstd gzip
+	reverse_proxy white-cube:9090
+}
