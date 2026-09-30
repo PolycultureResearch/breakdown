@@ -1663,8 +1663,9 @@ dropped by name when there are none; the step's window delta times its
 coefficient is a named term in the gap, beside `components`, inside
 `unexplained`'s identity, outside `ranked_causes`. Measured before quoting
 (§4.4 of the design): on a synthetic world an undeclared step of about two
-series SD inflated `σ_trend` some 40×, `σ_obs` 1.26× (2.09× at twice the
-size) and β's interval 2.5–4.5×; with a parent that co-stepped on the same
+series SD inflated `σ_trend` some 40× and β's interval 2.5–4.5× (and, at
+twice the size, `σ_obs` 1.65× — the 1.26× first quoted at the smaller step was
+an unconverged explicit-latent fit, corrected under S25); with a parent that co-stepped on the same
 date, β came out at 0.94 against a truth of 0.5, and declared it returned to
 0.55 [0.48, 0.60] with the collinearity check naming the parent and the
 intervention together at |r| = 0.97. One expectation did not reproduce: the

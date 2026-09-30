@@ -66,12 +66,12 @@ The local level above cannot take a step. Its increments are
 `σ_trend · z[t]` with `σ_trend ~ HalfNormal(0.05)` in z-scored space, so a
 level change of one series SD in one period would need `z[t] ≈ 20`. The
 posterior does not do that. It spreads the change over many periods by
-inflating `σ_trend`, inflates `σ_obs` to cover the residuals around the step,
+inflating `σ_trend`, inflates `σ_obs` when the step is large against that,
 and — where a parent moved on the same date — pushes the level change onto
-that parent's β. Measured on a synthetic world (roadmap S24): an undeclared
-step of about two series SD inflated `σ_trend` some 40× and `σ_obs` by 1.26×
-(2.09× at twice the size), widened β's interval 2.5–4.5× and pulled its mean
-off the truth; with a parent that co-stepped on the same date, β came out at
+that parent's β. Measured on a synthetic world (roadmap S24, re-measured under
+S25): an undeclared step of about two series SD inflated `σ_trend` some 40×,
+widened β's interval 2.5× (4.5× at twice the size) and pulled its mean off the
+truth, and at twice the size inflated `σ_obs` 1.65×; with a parent that co-stepped on the same date, β came out at
 0.94 against a truth of 0.5.
 
 A metric whose history has such steps — price tiers, an on-sale day, a policy

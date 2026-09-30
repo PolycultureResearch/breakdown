@@ -890,6 +890,19 @@ Series SD of y over the fit window ≈ 15 at step 30, so a step of 30 is ~2 SD.
 | 30 | 0.453 [0.322, 0.583] | **1.26** | 0.175 | ok | 0.515 [0.463, 0.565] | 1.03 | 0.004 |
 | 60 | 0.387 [0.165, 0.625] | **2.09** | 0.176 | moderate (`min`, p = 0.09) | 0.515 [0.465, 0.565] | 1.03 | 0.002 |
 
+**Corrected 2026-09-30 (S25): the undeclared σ_obs column at steps 30 and 60
+was a sampler failure, not the posterior.** Re-run on the explicit latent the
+same fits report 86 and 126 divergences with bulk ESS 55 and 27 (still R̂ up to
+1.57 at `target_accept` 0.995 and 1,500 draws); with the level integrated out
+they report 0 divergences, ESS 307 and 378, and σ_obs **1.02** at step 30 and
+**1.65** at step 60 (stable across four seeds: 1.06–1.10 at 1,500 draws). The
+undeclared PPC at 60 reads `ok` on the converged fit. The β columns, σ_trend
+and every declared column reproduce within Monte-Carlo error (undeclared β
+0.449 [0.329, 0.580] at 30, 0.378 [0.135, 0.610] at 60; world 6 β 0.931
+[0.816, 1.051], declared 0.547 [0.487, 0.611], step 28.6 [26.5, 30.6]). So
+the finding that stands is β's interval and bias; `test_world_1` no longer
+pins σ_obs inflation. The table above is kept as measured.
+
 **The co-stepping parent (world 6):** x itself steps by 30 on the same date.
 Undeclared, β = **0.939 [0.822, 1.074]** against 0.5 — the level change
 pushed onto the parent, which is the number a reader of the reporter's
@@ -1000,6 +1013,17 @@ stays `suspect` — its S3 check is `severe` (`min` p = 0.004 → 0.000) on both
 paths — but its 10 divergences are gone; `customer_churn_rate`'s PPC moved
 `ok` → `moderate` on `min` p 0.116 → 0.092, a p-value within one of its own
 standard errors of the 0.1 band edge.
+
+*One re-pin, and it is a correction rather than drift.* The full suite's one
+failure was `test_world_1_the_defect_reproduced`, which pinned S24's
+"undeclared step inflates σ_obs > 1.15×" (measured 1.26×). Investigated, not
+re-pinned: on that world the explicit path does not converge (86 divergences,
+ESS 55; R̂ up to 1.57 even at `target_accept` 0.995 with 1,500 draws, one
+chain parked at σ_obs ≈ 0.05), while the marginalized path does (0
+divergences, ESS 307, four seeds agreeing at 1,500 draws). The converged
+σ_obs is 1.02×. The test now pins what reproduces — β's wider interval and
+biased mean, σ_trend's inflation, the declared fit's noise — and S24's section
+above carries the correction beside its original table.
 
 
 ## Per-metric windows
