@@ -920,6 +920,88 @@ encoding; `docs/yaml-reference.md`'s new example is executed by
 `tests/test_docs_examples.py`.
 
 
+## S25
+
+**Status:** ✅ shipped 2026-09-30 (the roadmap row itself arrives with PR #143,
+which files the item; its status flips to ✅ pointing here once both are on
+`main`).
+
+**Integrate the local level out with a Kalman filter** — per
+[`speed_and_warm_analyses_design.md`](speed_and_warm_analyses_design.md) §2.
+
+*What landed.* On the NUTS path `fit_metric` no longer builds `trend_z` or an
+observed node. The likelihood with the level summed out is a scalar Kalman
+filter (`_kalman_local_level_loglik`, a `pytensor.scan`, `a0 = 0, P0 = 0`)
+entered as a `pm.Potential` on `y − (α + seasonal + Xβ + X_iv β_iv)`, sampled
+with `compile_kwargs={"mode": "NUMBA"}`. After sampling,
+`_attach_recovered_level` draws the level once per posterior draw by
+forward-filtering backward-sampling in numpy (vectorized across draws, seeded
+from the fit's `random_seed` on its own `SeedSequence` stream) and writes
+`posterior["trend"]` with the old dims and shape; `rca.py` and the PPC read it
+unchanged. The S3 replicates are `μ + trend + N(0, σ_obs²)` drawn from the
+joint draws. `_nuts_diagnostics` summarizes `model.free_RVs` only, with
+`kind="diagnostics"`. The dispatch is `_level_is_marginalized(inference_method)`
+— NUTS only; ADVI keeps the explicit latent its k̂ was measured against. The
+`pymc` floor rose 5.16.0 → 5.27.0, the first release whose pytensor requires
+numba (5.16.0 resolved pytensor 2.23 and no numba at all).
+
+*Same posterior, measured.* Three levels of evidence:
+
+1. **Exact, no sampler** (`tests/test_kalman_level.py`): the filter's
+   log-likelihood equals the dense Gaussian marginal `N(0, σ²_trend·K + σ²_obs·I)`
+   (`K[i,j] = min(i,j)+1`) to 1e-9 at three scales, and 40,000 backward-sampled
+   paths match the closed-form conditional `level | r` in mean (within 5 SE) and
+   covariance.
+2. **Calibration worlds, twelve seeds per path.** Six `fit_metric` fits from
+   `tests/test_calibration.py`'s worlds (contemporaneous, lagged, null,
+   unrelated parent, coverage world 0, and a source node), `draws=300`,
+   `fit_end` = the analysis start, seeds 0–11 on each path. For every sampled
+   parameter and `trend` at the first, middle and last period, the old→new
+   shift in the posterior mean and both 94% HDI endpoints was scored against
+   the seed-to-seed spread: **144 comparisons, mean z +0.02, RMS 1.04, 8 above
+   |2|, worst +3.04** (the lower HDI endpoint of `σ_trend` on the lagged world,
+   3.0e-5 vs 6.8e-5 — both at the HalfNormal's boundary). That is the
+   distribution of noise. The old path threw divergences on 59 of 72 fits (up
+   to 25 per fit); the new one on 24 of 72, at most 6.
+3. **White Cube story B**, `fit_end = 2026-05-11`, seed 0, one run per path,
+   z = difference over the combined MC standard error: worst |z| 2.45 across
+   the four nodes' parameters, HDI endpoints and trend points (table in the
+   PR). β: `sessions` 0.600 → 0.600, `trials_started` 0.931 → 0.931,
+   `trial_conversion_rate` [0.427, 0.305] → [0.420, 0.307],
+   `customer_churn_rate` −0.173 → −0.174.
+
+A seeded test (`test_marginalized_level_samples_the_same_posterior`) pins the
+equivalence on a small seasonal world with a parent.
+
+*Faster, measured the same way on both sides* (M2 Max, 12 cores, one process,
+`random_seed=0`):
+
+| | before | after |
+|---|---|---|
+| `sessions` (709 days) | 33.1s | 8.8s |
+| `trials_started` (709 days) | 6.9s | 6.4s |
+| `trial_conversion_rate` (101 weeks) | 3.6s | 2.3s |
+| `customer_churn_rate` (101 weeks) | 3.4s | 1.6s |
+| **four fits** | **47.0s** | **19.1s** |
+| cold story-B RCA (`POST /rca/net_new_mrr`) | 47.7s | 20.0s |
+| same, chains under `forkserver` (Linux 3.14's default) | 58.7s (fits) | 21.6s (fits) |
+
+The design's 66.4s cold baseline was measured differently (it included
+process start-up); both columns here come from the same script. Short fits
+are now compile-bound (numba ~2–3s per model): on the ~90-period calibration
+worlds a fit takes 2.5–4s against 1.4–3s before. §2.6 of the design (reuse the
+compiled model across `fit_end`) is the follow-up that removes that.
+
+*Diagnostics changed meaning, on purpose.* `min_ess_bulk` used to be the
+minimum over every trend state as well as the parameters; on a daily node it
+was usually one level state's ESS. It is now the worst-mixing sampled
+parameter. `sessions` 460 → 2,072, `trials_started` 390 → 562. `trials_started`
+stays `suspect` — its S3 check is `severe` (`min` p = 0.004 → 0.000) on both
+paths — but its 10 divergences are gone; `customer_churn_rate`'s PPC moved
+`ok` → `moderate` on `min` p 0.116 → 0.092, a p-value within one of its own
+standard errors of the 0.1 band edge.
+
+
 ## Per-metric windows
 
 **Status:** ✅ shipped 2026-09-15 (GitHub #112, second suggestion; PR follows

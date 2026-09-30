@@ -21,15 +21,26 @@ y[t] = α + trend[t] + seasonal[t] + regression[t] + intervention[t] + ε[t]
 | Term | What it is | Prior |
 |---|---|---|
 | `α` | intercept | Normal(0, 1). The data is z-scored, so its mean is exactly 0 |
-| `trend[t]` | local level: a non-centered random walk (`cumsum(σ_trend · z)`) that absorbs slow drift | step size σ_trend ~ HalfNormal(0.05) by default, set by the YAML `trend.sigma` |
+| `trend[t]` | local level: a random walk (`trend[t] = trend[t−1] + η[t]`, `η ~ Normal(0, σ_trend²)`, starting from 0) that absorbs slow drift | step size σ_trend ~ HalfNormal(0.05) by default, set by the YAML `trend.sigma` |
 | `seasonal[t]` | 2 sin/cos Fourier pairs per `seasonality` entry | coefficients ~ Normal(0, 1) |
 | `regression[t]` | `Σᵢ βᵢ · xᵢ[t]` over the metric's parents | from your YAML `priors`, else Normal(0, 1) in normalized space |
 | `intervention[t]` | `Σₖ δₖ · 1ₖ[t]` over the metric's declared `interventions` — a known 0/1 column per dated step or pulse, on its own coefficient axis | from each entry's `prior`, in the metric's own units (the column is not z-scored), else Normal(0, 1) in normalized space |
 | `ε[t]` | observation noise | sd ~ HalfNormal(1) |
 
-The trend uses a **non-centered** parameterization (unit normals scaled by
-`σ_trend`) to avoid the funnel geometry that makes a centered random walk hard
-for NUTS and unreliable for ADVI. The default step-size prior is deliberately
+**How the trend is computed depends on the sampler, and the model does not.**
+Under NUTS (the default) the level is **integrated out**: a Kalman filter
+computes the likelihood with every possible level path summed over, NUTS
+samples only the handful of parameters (α, β, σ_trend, σ_obs, the seasonal and
+intervention coefficients), and the `trend` you see is then drawn exactly from
+its posterior given each of those draws (forward-filtering backward-sampling).
+That is the same posterior as sampling one latent per period directly —
+measured to agree within Monte-Carlo error — at a fraction of the cost, and
+without the divergences a long, coupled latent used to cause. Under the ADVI
+opt-in the level is sampled explicitly, with a **non-centered**
+parameterization (unit normals scaled by `σ_trend`) to avoid the funnel
+geometry that makes a centered random walk unreliable for variational
+inference; PSIS k̂ (limitation 6) is measured against that form. The
+default step-size prior is deliberately
 tight (HalfNormal(0.05)): the level should drift slowly, so parents and
 seasonality explain the movement instead of a flexible trend absorbing it.
 Loosen it per metric with `trend: {sigma: ...}` when a node genuinely has fast
@@ -861,7 +872,9 @@ ship in every cold-start response.
    the regime you care about, and look at the time-series panel.
 6. **NUTS is the default; ADVI is an opt-in, and PSIS k̂ is what keeps that
    choice honest.** NUTS is exact MCMC and reports convergence diagnostics
-   (R̂ < 1.05 is healthy). ADVI is a mean-field variational approximation:
+   (R̂ < 1.05 is healthy), computed over the parameters it samples — not over
+   the per-period `trend`, which is drawn exactly from its posterior after
+   sampling and so has nothing of its own to converge. ADVI is a mean-field variational approximation:
    faster, and — on this engine's model — measurably wrong. Every path that
    fits on your behalf (`POST /rca/{name}`, `POST /simulate`,
    `POST /analyze/{name}`, and the MCP tools) samples with NUTS unless you

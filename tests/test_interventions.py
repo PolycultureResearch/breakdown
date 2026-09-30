@@ -535,13 +535,19 @@ def test_world_1_the_defect_reproduced():
     The design predicted a `moderate`/`severe` PPC with `resid_acf1` or
     `resid_max` flagged. On this world it does not fire: the local level
     absorbs the step over a few periods by inflating `σ_trend` some 40x
-    (0.175 vs 0.004 in z-space) and the residuals around it are not
-    autocorrelated enough to trip the check (`ok` up to a step of 30; a step
-    of 60 reaches `moderate`, on `min`). What *is* measured, and asserted
-    here: `σ_obs` is inflated (1.26x at step 30, 2.09x at 60), and β's
-    interval is 2.5–4.5x wider with the mean pulled off the truth. The
-    sweep is in roadmap_log S24; the PPC verdict is deliberately not
-    asserted either way."""
+    (0.18 vs 0.004 in z-space) and the residuals around it are not
+    autocorrelated enough to trip the check. What *is* measured, and
+    asserted here: β's interval is 2.5x wider at step 30 (4.5x at 60) and
+    its mean is pulled off the truth. The sweep is in roadmap_log S24; the
+    PPC verdict is deliberately not asserted either way.
+
+    `σ_obs` used to be asserted inflated (1.26x at step 30). That was the
+    explicit-latent sampler failing on this world — 86 divergences, bulk
+    ESS 55 — and it did not survive a converged fit: with the level
+    integrated out (roadmap S25; 0 divergences, ESS 300+, and the explicit
+    path still unconverged at target_accept 0.995) the posterior mean is
+    1.02 at step 30 and 1.65 at 60. The inflation is real only for a step
+    large against the level's own step size, and it is not pinned here."""
     frame = step_world(40)
     undeclared = fit_metric(
         Parser(PLAIN_YAML).dag, frame, "y", draws=300, fit_end=AN[0], random_seed=0
@@ -560,10 +566,14 @@ def test_world_1_the_defect_reproduced():
         b = fit.trace.posterior["beta_raw"].values.reshape(-1)
         return float(np.percentile(b, 97.5) - np.percentile(b, 2.5))
 
-    assert sigma_obs(undeclared) > 1.15 * NOISE, sigma_obs(undeclared)
-    assert sigma_obs(undeclared) > 1.15 * sigma_obs(declared)
+    def beta_mean(fit):
+        return float(fit.trace.posterior["beta_raw"].values.mean())
+
+    # Declared, the noise is the planted noise.
+    assert abs(sigma_obs(declared) - NOISE) < 0.1, sigma_obs(declared)
     assert sigma_trend(undeclared) > 10 * sigma_trend(declared)
     assert beta_width(undeclared) > 1.8 * beta_width(declared)
+    assert abs(beta_mean(undeclared) - BETA) > 2 * abs(beta_mean(declared) - BETA)
     assert undeclared.interventions == [] and undeclared.dropped_interventions == []
     assert undeclared.diagnostics["ppc"]["conditioned_on_interventions"] == []
 
