@@ -15,7 +15,7 @@ argument as `engine/stats.py`).
 
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -35,7 +35,34 @@ from breakdown.snapshots import SnapshotFetcher, SnapshotStore, resolve_snapshot
 logger = logging.getLogger(__name__)
 
 
-def build_fetcher(provider_cfg, dag, metrics=None):
+def resolve_data_dir(data_dir: str, tree_path: Optional[str]) -> str:
+    """The folder the `duckdb` provider reads, as an absolute path.
+
+    A relative `data_dir` is anchored to the **tree file's directory**, not the
+    process's working directory, so a tree and its exports move together and
+    `breakdown serve --tree some/where/tree.yml` starts from anywhere. This is
+    the one place that resolution happens; the server (`load_tree`) and
+    `doctor` both reach it through `build_fetcher`, which is what keeps the two
+    reading the same folder — the same argument as `resolve_snapshot_dir`.
+
+    Without a tree path (a library caller building a fetcher from a parsed
+    config) a relative path means what it means everywhere else, relative to
+    the working directory, and the resolved absolute path is what every error
+    message names, so nothing is guessed silently.
+    """
+    if os.path.isabs(data_dir):
+        return os.path.normpath(data_dir)
+    base = os.path.dirname(os.path.abspath(tree_path)) if tree_path else os.getcwd()
+    return os.path.normpath(os.path.join(base, data_dir))
+
+
+def build_fetcher(provider_cfg, dag, metrics=None, *, tree_path: Optional[str] = None):
+    """The provider's fetcher for one tree, before the snapshot wrapper.
+
+    `tree_path` is the tree file being served; the `duckdb` provider anchors a
+    relative `data_dir` to it (`resolve_data_dir`). Every other provider
+    ignores it.
+    """
     if provider_cfg.type == "local":
         return LocalDataFetcher(project_path=provider_cfg.project_path)
     if provider_cfg.type == "cloud":
@@ -59,6 +86,19 @@ def build_fetcher(provider_cfg, dag, metrics=None):
             profiles_dir=provider_cfg.profiles_dir,
             overrides=overrides,
         )
+    if provider_cfg.type == "duckdb":
+        # The CSV/Parquet on-ramp (roadmap 2.2): the tree's own `bind:` blocks
+        # are the whole binding set — the parser has already refused a node
+        # without one — served by the `dbt` provider's fetcher over an
+        # in-memory DuckDB with one view per export. Keyed by the node's name
+        # (`provider_query_name`), since there is no manifest to reconcile
+        # `source` against.
+        from breakdown.dbt_provider import fetcher_from_data_dir
+
+        bindings = {
+            provider_query_name("duckdb", m): m.bind for m in (metrics or []) if not m.derived
+        }
+        return fetcher_from_data_dir(resolve_data_dir(provider_cfg.data_dir, tree_path), bindings)
     if provider_cfg.type == "warehouse":
         metric_sql = {m.name: m.sql for m in (metrics or []) if m.sql}
         # A derived node is never fetched, so it owes no `sql` — the same
@@ -92,8 +132,16 @@ def wrap_snapshots(fetcher, provider_type: str, tree_path: str, slice_span=None)
 
     `slice_span` is the loaded data window. Sliced fetches are widened to it
     before being stored, so one snapshot per (metric, dimension) serves every
-    analysis window rather than only the ones already run."""
-    if provider_type == "mock":
+    analysis window rather than only the ones already run.
+
+    The `duckdb` provider is not wrapped either, and for the opposite reason:
+    its files *are* the committed artifact. A snapshot is keyed on
+    `(metric, grain, kind, window)` with no content hash, so it would freeze
+    an edited or re-exported CSV at whatever it said the first time and serve
+    that silently — the C18 shape at a new boundary (rule 1). Reading the
+    files again is free; a stale copy of them is not.
+    """
+    if provider_type in ("mock", "duckdb"):
         return fetcher
     # Directory resolution lives in snapshots.py so `doctor` resolves the same
     # one — the two disagreeing about where snapshots live was half of 2.20.

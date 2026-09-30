@@ -301,8 +301,8 @@ DOCS = [
     ),
     DocFile(
         "docs/yaml-reference.md",
-        yaml_blocks=23,
-        parsable_yaml_blocks=18,
+        yaml_blocks=24,
+        parsable_yaml_blocks=19,
         skipped_yaml=[
             "bind",  # the count_distinct entity-grain binding excerpt
             "priors",  # the shared-coefficient prior example

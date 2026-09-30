@@ -240,6 +240,29 @@ def test_endpoint_labels_a_snapshot_served_query_as_not_executed(tmp_path, monke
     assert "served from a snapshot" in body["note"]
 
 
+def test_endpoint_never_blames_a_snapshot_store_the_duckdb_provider_does_not_have(
+    tmp_path, monkeypatch
+):
+    # The on-ramp is never wrapped (its files are the artifact), so a query
+    # that has not run can only be one nothing has asked for yet — and the
+    # note must say that, not "served from a snapshot".
+    from breakdown.parser import BindingSpec
+
+    pytest.importorskip("sqlglot")
+    from breakdown.dbt_provider import DbtDataFetcher
+
+    bind = BindingSpec(relation="fct", grain_key="id", time_column="d", agg="sum", measure="v")
+    with _client(tmp_path, monkeypatch) as c:
+        c.app.state.parser.config.provider.type = "duckdb"
+        c.app.state.fetcher = DbtDataFetcher(
+            {"revenue": bind}, connect=lambda: None, dialect="duckdb"
+        )
+        body = c.get("/metrics/revenue/query").json()
+    assert body["executed"] is False
+    assert "snapshot" not in body["note"].replace("never snapshot-cached", "")
+    assert "never snapshot-cached" in body["note"]
+
+
 def test_endpoint_reads_dialect_through_the_snapshot_wrapper(tmp_path, monkeypatch):
     # SnapshotFetcher delegates the query but carries none of the provider's
     # own attributes, so the dialect has to be read from the inner fetcher.

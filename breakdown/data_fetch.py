@@ -26,14 +26,17 @@ PROVIDER_EXTRAS = {
     "local": "dbt",
     "dbt": "dbt-bridge",
     "warehouse": "databricks",
+    "duckdb": "duckdb",
 }
 
 
 # Providers keyed by the tree's own metric name rather than by `source`. The
 # semantic-layer providers (`local`, `cloud`, `dbt`) address their source system
-# by the last segment of `source`; `mock` and `warehouse` resolve the tree name
-# directly, because the tree *is* their addressing scheme.
-_NAME_KEYED_PROVIDERS = ("mock", "warehouse")
+# by the last segment of `source`; `mock`, `warehouse` and `duckdb` resolve the
+# tree name directly, because the tree *is* their addressing scheme (`duckdb`
+# has no manifest to reconcile a `source` against — every binding is the
+# node's own `bind:` block, so the node's name is the only name there is).
+_NAME_KEYED_PROVIDERS = ("mock", "warehouse", "duckdb")
 
 
 def provider_query_name(provider_type: str, metric) -> str:
@@ -102,6 +105,9 @@ def provider_extra_missing(provider: str) -> Optional[str]:
         # only third-party piece left is the SQL generator.
         "dbt": ("sqlglot",),
         "warehouse": ("databricks.sql", "databricks.sdk"),
+        # The engine that reads the files, and the generator that writes the
+        # SQL it runs: the `duckdb` extra pulls in `dbt-bridge` for the second.
+        "duckdb": ("duckdb", "sqlglot"),
     }[provider]
     for module in modules:
         # `databricks` is a namespace package split across two distributions,

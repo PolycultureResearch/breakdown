@@ -108,8 +108,14 @@ def _expand_env(value: Optional[str]) -> Optional[str]:
 
 
 class DataProviderConfig(BaseModel):
-    type: str = "mock"  # mock | local | cloud | dbt | warehouse | none (alias "assumed")
+    type: str = "mock"  # mock | local | cloud | dbt | warehouse | duckdb | none (alias "assumed")
     project_path: Optional[str] = None
+    # `duckdb` provider (roadmap 2.2): a folder of CSV/Parquet exports, each
+    # file queryable as a relation named by its stem (`orders.csv` -> `orders`).
+    # A relative path is anchored to the tree file's directory by
+    # `loading.resolve_data_dir` — the one place that knows the tree path — so
+    # a tree and its exports move together and the server starts from anywhere.
+    data_dir: Optional[str] = None
     # `dbt` provider: which profiles.yml target to use, and where to find it.
     # Both default to what dbt itself would pick for the project.
     target: Optional[str] = None
@@ -137,8 +143,10 @@ class DataProviderConfig(BaseModel):
         # `assumed` is the same thing said from the tree author's seat.
         if v == "assumed":
             return "none"
-        if v not in ["mock", "local", "cloud", "dbt", "warehouse", "none"]:
-            raise ValueError("type must be one of: mock, local, cloud, dbt, warehouse, none")
+        if v not in ["mock", "local", "cloud", "dbt", "warehouse", "duckdb", "none"]:
+            raise ValueError(
+                "type must be one of: mock, local, cloud, dbt, warehouse, duckdb, none"
+            )
         return v
 
     @field_validator(
@@ -152,11 +160,21 @@ class DataProviderConfig(BaseModel):
         "profile",
         "catalog",
         "db_schema",
+        "data_dir",
         mode="after",
     )
     @classmethod
     def expand_env_vars(cls, v: Optional[str]) -> Optional[str]:
         return _expand_env(v)
+
+    @model_validator(mode="after")
+    def check_duckdb_data_dir(self) -> "DataProviderConfig":
+        if self.type == "duckdb" and not self.data_dir:
+            raise ValueError(
+                "provider type 'duckdb' requires `data_dir`: the folder holding the "
+                ".csv / .parquet exports (relative paths resolve against the tree file)."
+            )
+        return self
 
 
 class GoalSpec(BaseModel):
@@ -1605,6 +1623,52 @@ class MetricTreeConfig(BaseModel):
                 "A cold-start tree has no series to size a step against, so the "
                 "coefficient could only restate its prior; interventions need a data "
                 "provider."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def check_duckdb_nodes_are_bound(self) -> "MetricTreeConfig":
+        """Roadmap 2.2: the `duckdb` provider serves `bind:` blocks, nothing else.
+
+        It is the CSV on-ramp to the per-node binding contract (2.9), not a
+        second `sql:`-returning-`date, value` provider: the same twelve lines
+        that bind a node to a warehouse table bind it to an export, so the
+        grain claim, declared dimensions and ratio decomposition all hold on
+        day one and the tree moves to a warehouse by changing `provider:`.
+
+        A legacy top-level `sql` is refused here rather than ignored, with the
+        pointer at `bind.sql`, because the two are different contracts
+        (`BindingSpec`'s docstring): `sql` returns the finished series, while
+        `bind.sql` is a relation — one row per `grain_key` — the binding then
+        aggregates. Handing the first to the second would produce a wrong
+        shape at startup instead of a sentence at parse.
+        """
+        if self.provider.type != "duckdb":
+            return self
+        legacy = [m.name for m in self.metrics if m.sql is not None]
+        if legacy:
+            raise ValueError(
+                f"Metric(s) {legacy} declare a top-level `sql` under `provider: duckdb`. "
+                "That is the `warehouse` provider's contract (a query returning the "
+                "finished `date, value` series); the duckdb provider serves `bind:` "
+                "blocks. Move the query under `bind.sql` as a *relation* — one row "
+                "per `grain_key`, with a `time_column` and the column to aggregate — "
+                "and declare `grain_key`, `time_column` and `agg` beside it:\n"
+                "    bind:\n"
+                "      sql: SELECT * FROM orders WHERE status != 'test'\n"
+                "      grain_key: order_id\n"
+                "      time_column: created_at\n"
+                "      agg: sum\n"
+                "      measure: quantity"
+            )
+        unbound = [m.name for m in self.metrics if not m.derived and m.bind is None]
+        if unbound:
+            raise ValueError(
+                f"Metric(s) {unbound} declare no `bind:` under `provider: duckdb`. Every "
+                "fetched node needs one: `relation` (a file stem in `data_dir`, e.g. "
+                "`orders` for orders.csv) or an inline `bind.sql` relation, plus "
+                "`grain_key`, `time_column` and `agg`. A formula node without a `source` "
+                "is derived from its parents and needs none."
             )
         return self
 

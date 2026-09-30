@@ -1827,6 +1827,7 @@ all = [
     { name = "databricks-sql-connector" },
     { name = "dbt-metricflow", marker = "python_full_version < '3.14'" },
     { name = "dbt-sl-sdk", extra = ["sync"], marker = "python_full_version < '3.14'" },
+    { name = "duckdb" },
     { name = "google-cloud-bigquery" },
     { name = "sqlglot" },
 ]
@@ -1842,6 +1843,10 @@ dbt = [
     { name = "dbt-sl-sdk", extra = ["sync"] },
 ]
 dbt-bridge = [
+    { name = "sqlglot" },
+]
+duckdb = [
+    { name = "duckdb" },
     { name = "sqlglot" },
 ]
 
@@ -1864,10 +1869,12 @@ requires-dist = [
     { name = "dbt-metricflow", marker = "extra == 'dbt'", specifier = ">=0.13.0" },
     { name = "dbt-sl-sdk", extras = ["sync"], marker = "python_full_version < '3.14' and extra == 'all'", specifier = ">=0.13.2" },
     { name = "dbt-sl-sdk", extras = ["sync"], marker = "extra == 'dbt'", specifier = ">=0.13.2" },
+    { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=1.1.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "google-cloud-bigquery", marker = "extra == 'bigquery'", specifier = ">=3.11.0" },
     { name = "mcp", specifier = ">=2.0.0" },
-    { name = "metric-breakdown", extras = ["bigquery", "databricks", "dbt-bridge"], marker = "extra == 'all'" },
+    { name = "metric-breakdown", extras = ["bigquery", "databricks", "dbt-bridge", "duckdb"], marker = "extra == 'all'" },
+    { name = "metric-breakdown", extras = ["dbt-bridge"], marker = "extra == 'duckdb'" },
     { name = "networkx", specifier = ">=3.1" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "pandas", specifier = ">=2.1.0" },
@@ -1878,7 +1885,7 @@ requires-dist = [
     { name = "sqlglot", marker = "extra == 'dbt-bridge'", specifier = ">=20.0.0" },
     { name = "uvicorn", specifier = ">=0.27.0" },
 ]
-provides-extras = ["dbt", "dbt-bridge", "databricks", "bigquery", "all"]
+provides-extras = ["dbt", "dbt-bridge", "databricks", "duckdb", "bigquery", "all"]
 
 [package.metadata.requires-dev]
 dev = [

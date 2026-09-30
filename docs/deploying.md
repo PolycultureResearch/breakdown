@@ -245,14 +245,23 @@ A last check, `inference compiler`, is about the machine rather than the data: i
 A machine with no C++ compiler at all gets a `[WARN]` instead: pytensor falls back to its Python backend, which is correct but many times slower.
 
 For the `dbt` provider, `doctor` walks manifest → profile → connection →
-bindings → dimensions → grain claims → filters, in the order a failure cascades.
-The last three are the ones that pay for themselves. A declared dimension that
-does not exist becomes a startup failure rather than a 500 on the first *slice
-by* click. The grain claim (`count(*)` vs `count(distinct grain_key)`) catches
-a relation that is not one row per grain, the silent fan-out that multiplies
-every aggregate over it, which neither MetricFlow nor Cube checks. And
-`filters narrow` counts kept-vs-total rows for every metric whose dbt
-`filter:` was imported.
+bindings → dimensions → grain claims → filters → entity grain → metric SQL
+runs, in the order a failure cascades. The middle three are the ones that pay
+for themselves. A declared dimension that does not exist becomes a startup
+failure rather than a 500 on the first *slice by* click. The grain claim
+(`count(*)` vs `count(distinct grain_key)`) catches a relation that is not one
+row per grain, the silent fan-out that multiplies every aggregate over it,
+which neither MetricFlow nor Cube checks. And `filters narrow` counts
+kept-vs-total rows for every metric whose dbt `filter:` was imported. The last
+step runs every metric's generated query over the probe window through the
+full fetch path, since the grain claim selects only the key and a misspelt
+`measure` would otherwise survive to the first `serve`.
+
+For the `duckdb` provider the chain is shorter at the front and identical
+after: `data files` (the folder exists, and which relation each file became)
+and then exactly the binding checks above, run by the same code. A
+hand-exported CSV with a duplicated `order_id` fails `grain claims hold` the
+way a fact table would.
 
 ```
 [PASS] grain claims hold  — 12 relation(s) one row per grain, 3 under a filter
@@ -315,6 +324,8 @@ uv run breakdown serve --tree my_tree.yml --refresh        # refetch everything,
 uv run breakdown serve --tree my_tree.yml --no-snapshots   # always hit the provider
 uv run breakdown serve --tree my_tree.yml --snapshot-dir /somewhere/writable
 ```
+
+**The `duckdb` provider is never wrapped.** Its CSV / Parquet files already are the committed artifact, and a snapshot is keyed without a content hash, so caching them would freeze an edited or re-exported file at whatever it said the first time and serve that silently. Reading the files again is free; `doctor` reports no snapshot store for such a tree, because the server reads none.
 
 A snapshot freezes what the provider returned at fetch time. If the warehouse backfills late-arriving data, run `--refresh` once to pick it up. `BREAKDOWN_REFRESH=1` is the environment-variable form, for a scheduled refresh that has no command line to edit. In Docker, `compose.yaml` mounts `./snapshots` and sets `BREAKDOWN_SNAPSHOT_DIR` (the default tree-adjacent location is unwritable there because `/config` is read-only). An unwritable snapshot directory is never fatal; the server logs one warning and runs uncached.
 

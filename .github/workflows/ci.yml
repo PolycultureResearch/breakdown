@@ -129,6 +129,13 @@ jobs:
                       "breakdown.dbt_sql", fromlist=["_require_sqlglot"]
                   )._require_sqlglot(),
               ],
+              # The on-ramp's point of use: opening the folder, before it is
+              # even looked at, so a base install names the extra and not a path.
+              "duckdb": [
+                  lambda: __import__(
+                      "breakdown.dbt_provider", fromlist=["open_data_dir"]
+                  ).open_data_dir("/tmp/x"),
+              ],
           }
           for extra, builders in cases.items():
               for build in builders:
