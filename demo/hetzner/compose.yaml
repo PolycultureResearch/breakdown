@@ -1,0 +1,68 @@
+# The hosted demos on one Hetzner box (CAX21: 4 Ampere vCPUs, 8 GB).
+#
+# Run from this directory on the server:  docker compose up -d --build --wait
+# Setup, secrets and the deploy workflow:  README.md next to this file.
+#
+# One container per demo, not one process serving a directory of trees. The
+# trace cache is in-memory and per-process, so a restart throws away every
+# fit the prewarm paid for; separate containers mean redeploying one demo
+# leaves the others warm. Caddy is the only thing that publishes a port.
+
+name: breakdown-demos
+
+services:
+  white-cube:
+    build:
+      # The demo Dockerfile installs the package from pyproject.toml/uv.lock,
+      # so the context is the repo root, as it was on Fly.
+      context: ../..
+      dockerfile: demo/Dockerfile
+    image: breakdown-demo-white-cube
+    # `expose`, not `ports`: reachable from Caddy on the compose network and
+    # from nothing else. Docker-published ports bypass ufw, so the only ports
+    # on this host that face the internet are the three Caddy publishes below.
+    expose:
+      - "9090"
+    environment:
+      # Required, and refused rather than defaulted: without a token, a
+      # 0.0.0.0 bind leaves /mcp open to anyone (roadmap C42).
+      BREAKDOWN_API_TOKEN: ${BREAKDOWN_API_TOKEN:?set BREAKDOWN_API_TOKEN in .env}
+      # MCP report_url deep links are built from this.
+      BREAKDOWN_PUBLIC_URL: https://${WHITE_CUBE_HOSTNAME:?set WHITE_CUBE_HOSTNAME in .env}
+      # Echoed by GET /manifest, as fly.toml's [env] did.
+      BREAKDOWN_DEMO_SLUG: white_cube
+      BREAKDOWN_DEMO_VERTICAL: b2c_saas
+      BREAKDOWN_DEMO_DATASET: fake_companies datasets-v1
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:9090/health')
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates live here. Losing the volume means re-issuing, and
+      # Let's Encrypt rate-limits re-issues for the same name.
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      WHITE_CUBE_HOSTNAME: ${WHITE_CUBE_HOSTNAME:?set WHITE_CUBE_HOSTNAME in .env}
+    depends_on:
+      - white-cube
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

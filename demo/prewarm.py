@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -122,13 +123,16 @@ def warm_rcas(base: str) -> list[str]:
             f"{base}/rca/{target}?reference_start={rs}&reference_end={re}"
             f"&analysis_start={as_}&analysis_end={ae}"
         )
+        # Timed because the elapsed time on a new host is the measurement that
+        # says whether its CPU is good enough (demo/hetzner/README.md).
+        t0 = time.monotonic()
         try:
             d = call(url, method="POST")
             top = (d.get("ranked_causes") or [{}])[0].get("metric", "?")
-            print(f"  ok   {label}: {target} -> top cause {top}")
+            print(f"  ok   {label}: {target} -> top cause {top}  ({time.monotonic() - t0:.0f}s)")
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
             detail = e.read().decode()[:200] if isinstance(e, urllib.error.HTTPError) else str(e)
-            print(f"  FAIL {label}: {detail}")
+            print(f"  FAIL {label}: {detail}  ({time.monotonic() - t0:.0f}s)")
             failures.append(label)
     return failures
 

@@ -54,6 +54,11 @@ invokes `.venv/bin/breakdown` directly rather than through `uv run`.
 
 ## Deploying
 
+**Moving to Hetzner.** A single CAX21 box set up by
+[`hetzner/`](hetzner/README.md) replaces the Fly app below once its cutover
+checklist is done. Until then, Fly is still the public instance, and the rest of
+this section still describes it.
+
 ```bash
 # All from the repo root — the build context must be the whole repo.
 fly launch --no-deploy --copy-config --config demo/fly.toml --name white-cube-demo

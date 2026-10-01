@@ -1,0 +1,51 @@
+name: Deploy demo (Hetzner)
+
+# Deploys the hosted demos to the Hetzner box (demo/hetzner/README.md).
+#
+# Manual-only while the Fly instance is still the public one. At cutover this
+# takes over deploy-demo.yml's `push` trigger and path filter, and the Fly
+# workflow is deleted with the Fly app.
+#
+# Prerequisites, in the `demo` environment (not repo-level):
+#   secrets.HETZNER_SSH_KEY      private half of the CI deploy key
+#   secrets.HETZNER_KNOWN_HOSTS  `ssh-keyscan -t ed25519 <server>` output
+#   vars.HETZNER_HOST            the server's IP or hostname
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  # Never let two deploys race; a half-finished rollout is worse than a late one.
+  group: deploy-demo-hetzner
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: demo
+    # Build plus a cold prewarm of four tour stories. Generous, because a
+    # deploy that finishes late beats one that fails and leaves old code up.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.HETZNER_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      # The script is piped from this checkout, so the deploy logic that runs
+      # is the commit being deployed. Keepalives stop the long prewarm from
+      # being dropped as an idle connection.
+      - name: Deploy and warm
+        env:
+          HOST: ${{ vars.HETZNER_HOST }}
+        run: |
+          ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=5 \
+            "deploy@${HOST:?set vars.HETZNER_HOST in the demo environment}" \
+            'bash -s' -- "$GITHUB_SHA" < demo/hetzner/deploy.sh
