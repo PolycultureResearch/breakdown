@@ -73,8 +73,8 @@ its notes never listed it at all.)
   `get_tree`; the UI gives each a labelled row in the coefficient and
   contributions tables and draws the dates on the PPC panel. Refused on a
   formula node and under `provider: none`. Measured on a synthetic world: an
-  undeclared step of about two series SD inflated `σ_obs` 1.26× and β's
-  interval 2.5×, and with a co-stepping parent put β at 0.94 against a truth
+  undeclared step of about two series SD widened β's interval 2.5× and
+  pulled its mean off the truth, and with a co-stepping parent put β at 0.94 against a truth
   of 0.5; declared, β returned to 0.55 [0.48, 0.60] and the step to 28.6
   [26.8, 30.5] against 30.
 - **Per-metric windows: a short series bounds only the analyses that read
@@ -215,6 +215,32 @@ its notes never listed it at all.)
   reason that says so.
 
 ### Changed
+
+- **NUTS fits integrate the local level out, and a cold RCA is about 2.4×
+  faster (roadmap S25).** The level was sampled as one latent per period
+  (`cumsum(σ_trend · z)`), which on a long series left NUTS integrating a
+  tightly coupled 700-dimensional ridge: the demo's daily `sessions` needed
+  ~263 leapfrog steps per draw and was 70% of a cold story-B RCA. It is now
+  marginalized exactly by a scalar Kalman filter (a `pm.Potential`, compiled
+  on PyMC's numba backend), and `trend` is recovered after sampling by
+  forward-filtering backward-sampling, with the same name, dims and shape.
+  **Same model, same posterior**: on six calibration worlds (twelve seeds per
+  path) and the demo's four story-B nodes, every parameter's mean and 94% HDI
+  and the level at its first, middle and last period agree with the old path
+  within Monte-Carlo error. Measured on an M2 Max: story B's four fits
+  47.0s → 19.1s (`sessions` 33.1s → 8.8s, bulk ESS 460 → 2,072), the cold
+  story-B RCA 47.7s → 20.0s, and the divergences the old path threw on
+  `trials_started` and `trial_conversion_rate` are gone. What a caller sees
+  change: `min_ess_bulk` / `max_rhat` now cover the sampled parameters only
+  (not the recovered trend states), a NUTS trace no longer carries `trend_z`
+  and is about half the size, and seeded NUTS results move within
+  Monte-Carlo error. One published S24 figure is corrected by it: the
+  σ_obs inflation quoted for an undeclared step (1.26×) came from a fit the
+  old path had not converged on (86 divergences, bulk ESS 55); the
+  converged posterior says 1.02× at that step. Short (~100-period) fits are compile-bound and take
+  about the same time as before. The ADVI opt-in is unchanged. **The `pymc`
+  floor rises from 5.16.0 to 5.27.0**, the first release whose pytensor
+  requires numba — the filter is ~3× *slower* than the old model without it.
 
 - **Fits on Python 3.14 no longer import `pymc` once per chain.** 3.14 made
   `forkserver` the default start method on Linux, and PyMC samples each chain

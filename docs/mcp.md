@@ -223,7 +223,8 @@ RCA names.
 > ranking, activation outranks trial volume itself.
 >
 > Now the part worth reading out loud. The second driver, days active,
-> carries about 37% with an interval that straddles zero and P(direction) 0.89.
+> carries a little over a third, with an interval that straddles zero and
+> P(direction) about 0.9.
 > The two measures move together, since an activated trialist is an active
 > one, so the data pins their combined effect much harder than the split
 > between them. The tool says exactly that instead of manufacturing

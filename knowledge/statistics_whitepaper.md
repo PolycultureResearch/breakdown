@@ -184,12 +184,35 @@ the latter: fit the normal regime, then ask what the departure means.
 
 **Implementation notes that matter statistically.**
 
-- The trend uses a **non-centered parameterization** (sampling unit normals and
-  scaling by `σ_trend`) rather than a centered one. A centered hierarchical
-  random walk produces the "funnel" geometry (Neal, 2003) that Hamiltonian
-  samplers handle badly and mean-field variational inference fails on outright.
-  The non-centered reparameterization is standard practice for exactly this
-  reason (Papaspiliopoulos, Roberts & Sköld, 2007; Betancourt & Girolami, 2015).
+- **Under NUTS the level is integrated out, not sampled** (roadmap S25, since
+  2026-09-30). With every other term fixed the model is a linear Gaussian
+  state-space model, so `p(y | α, β, σ_trend, σ_obs, …)` with the level summed
+  out is computed exactly by a scalar Kalman filter's prediction-error
+  decomposition (Harvey, 1989; Durbin & Koopman, 2012, ch. 7), started at
+  `level[-1] = 0` so the first prediction is `Normal(0, σ_trend²)` — the same
+  random walk as above. NUTS samples only the handful of parameters; the
+  `trend` posterior is then recovered by forward-filtering backward-sampling
+  (Frühwirth-Schnatter, 1994; Carter & Kohn, 1994), one exact conditional
+  draw of the whole level per posterior draw. **This is the same posterior**,
+  computed differently: measured against the explicit latent on the
+  calibration worlds and the demo's story-B nodes, every parameter's mean and
+  94% HDI and the level at its first, middle and last period agree within
+  Monte-Carlo error. What changed is geometry: the explicit latent left NUTS
+  integrating one tightly coupled `z[t]` per period, which on the demo's daily
+  `sessions` meant ~263 leapfrog steps per draw and on shorter nodes a
+  handful of divergences; marginalized, the same fit takes ~7, bulk ESS rises
+  4×, and the divergences are gone. The filter is exact only for a Gaussian
+  observation model, which is every node today; a count likelihood (S20)
+  would keep the explicit latent.
+- The **ADVI opt-in keeps the explicit latent**, with a **non-centered
+  parameterization** (sampling unit normals and scaling by `σ_trend`) rather
+  than a centered one: PSIS k̂ (§2.2) was measured against it. A centered
+  hierarchical random walk produces the "funnel" geometry (Neal, 2003) that
+  Hamiltonian samplers handle badly and mean-field variational inference fails
+  on outright. The non-centered reparameterization is standard practice for
+  exactly this reason (Papaspiliopoulos, Roberts & Sköld, 2007; Betancourt &
+  Girolami, 2015); it avoids the funnel, and it is what the marginalized NUTS
+  path above no longer needs.
 - **Priors are stated in business units and rescaled internally.** You write
   `mu: 0.1` meaning "0.1 orders per session"; the engine converts to z-scored
   space via `scale = x_std / y_std`. Because that scale uses sample statistics
@@ -273,7 +296,14 @@ returned as trustworthy:
   within-chain to between-chain variance (Gelman & Rubin, 1992; the modern
   rank-normalized form in Vehtari et al., 2021); divergences indicate the
   sampler hit curvature it could not integrate through — usually a geometry
-  problem, and the reason the trend is non-centered.
+  problem, and the reason the level is integrated out under NUTS (§2.1).
+  **R̂ and ESS are computed over the sampled parameters** (α, β, σ_trend,
+  σ_obs, the seasonal and intervention coefficients) — not over the recovered
+  `trend` states, which are exact conditional draws given those parameters and
+  whose "ESS" would measure nothing new. Before S25 the minimum ran over every
+  per-period trend state as well, so `min_ess_bulk` on a daily node was often
+  the ESS of one level state; it is now the ESS of the worst-mixing parameter,
+  which is the quantity the threshold was written for.
 - **ADVI** is flagged `suspect` when the ELBO is still moving at the end of
   optimization by more than half its recent noise level — i.e. it had not
   converged.
@@ -1251,7 +1281,7 @@ scheduled start.
 | S22 | k̂'s own Monte-Carlo error, and a seeded manual-fit path | ✅ closed 2026-08-27 |
 | S23 | Reference-window sensitivity — the uncertainty the bootstrap never sees | ✅ closed 2026-09-14 |
 | S24 | Known, dated interventions — a declared step/pulse term in the fit | ✅ closed 2026-09-21 |
-| S25 | Integrate the local level out with a Kalman filter | ○ open |
+| S25 | Integrate the local level out with a Kalman filter | ✅ closed 2026-09-30 |
 | 3.4 | Counterfactual RCA (Horizon 3, not the S track) | ○ open |
 
 Below, the reasoning behind each — ordered by value per unit of effort.
@@ -1633,8 +1663,9 @@ dropped by name when there are none; the step's window delta times its
 coefficient is a named term in the gap, beside `components`, inside
 `unexplained`'s identity, outside `ranked_causes`. Measured before quoting
 (§4.4 of the design): on a synthetic world an undeclared step of about two
-series SD inflated `σ_trend` some 40×, `σ_obs` 1.26× (2.09× at twice the
-size) and β's interval 2.5–4.5×; with a parent that co-stepped on the same
+series SD inflated `σ_trend` some 40× and β's interval 2.5–4.5× (and, at
+twice the size, `σ_obs` 1.65× — the 1.26× first quoted at the smaller step was
+an unconverged explicit-latent fit, corrected under S25); with a parent that co-stepped on the same
 date, β came out at 0.94 against a truth of 0.5, and declared it returned to
 0.55 [0.48, 0.60] with the collinearity check naming the parent and the
 intervention together at |r| = 0.97. One expectation did not reproduce: the
@@ -1693,8 +1724,9 @@ does not answer — the *distribution* of the top cause over a family of
 plausible references — which is a research item rather than a disclosure, and
 is not scheduled.
 
-**Integrate the local level out with a Kalman filter** — `S25`, ○ open
-([`speed_and_warm_analyses_design.md`](speed_and_warm_analyses_design.md) §2).
+**Integrate the local level out with a Kalman filter** — `S25`, ✅ closed 2026-09-30
+([`speed_and_warm_analyses_design.md`](speed_and_warm_analyses_design.md) §2;
+account in [roadmap_log S25](roadmap_log.md#s25)).
 Not a weakness in what the engine computes; a weakness in what it costs to
 compute it, and a place where cost and quality turn out to be the same
 problem. The non-centered level `cumsum(σ_trend · z)` avoids the centered
@@ -1706,13 +1738,15 @@ model is a linear Gaussian state-space model, so the level can be
 marginalized exactly by the Kalman filter's prediction-error decomposition
 (Harvey, 1989; Durbin & Koopman, 2012) and recovered afterwards by
 forward-filtering backward-sampling (Frühwirth-Schnatter, 1994; Carter &
-Kohn, 1994). The posterior is unchanged; only its computation is. A
-prototype measured 6.9 steps per draw, bulk ESS 460 → ~2,000, zero
-divergences on all four story-B nodes, β equal to the third decimal, and the
-four fits in 19.0s against ~46s. Two consequences for this paper when it
-ships: §2.2's diagnostics paragraph must say that R̂ and ESS are computed over
+Kohn, 1994). The posterior is unchanged; only its computation is. As
+shipped: the posterior agrees with the explicit latent within Monte-Carlo
+error on six calibration worlds (twelve seeds per path) and the four story-B
+nodes; `sessions` needs ~7 steps per draw with bulk ESS 460 → 2,072, story B's
+divergences are gone (calibration worlds: 59 of 72 fits diverged before, 24 after), and story B's four fits went 47.0s →
+19.1s. Two consequences for this paper, both made in the same change: §2.2's
+diagnostics paragraph says that R̂ and ESS are computed over
 the sampled parameters rather than the recovered trend states, and S21's
-likelihood masking becomes the filter skipping an update. Gaussian
+likelihood masking becomes the filter skipping an update (still open). Gaussian
 likelihoods only: S20's count likelihoods would keep the explicit latent.
 
 ### 4.3 Explainability
@@ -1782,6 +1816,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-09-30 | **S25 shipped — the local level is integrated out of every NUTS fit.** A scalar Kalman filter computes the likelihood with the level marginalized (a `pm.Potential`, compiled on PyMC's numba backend); `trend` is recovered afterwards by forward-filtering backward-sampling with the same name and shape, so RCA and the posterior predictive check read it unchanged; the S3 replicates are drawn as `μ + trend + N(0, σ_obs²)` from the joint draws because there is no observed node any more. §2.1 now describes the computation and §2.2 says R̂/ESS are over the sampled parameters, not the recovered trend states. The acceptance test was that the posterior did not move: on six calibration worlds (twelve seeds per path) and the demo's four story-B nodes every parameter's mean and 94% HDI and the level at its first, middle and last period agree with the explicit latent within Monte-Carlo error, and a seeded test pins it. What moved is cost and geometry: story B's four fits 47.0s → 19.1s, the cold RCA 47.7s → 20.0s, `sessions` bulk ESS 460 → 2,072, and the divergences the explicit latent threw on `trials_started` (10), `trial_conversion_rate` (6) and most calibration worlds are gone. No §3.2 weakness changed status; the ADVI opt-in keeps the explicit latent its k̂ was measured against. |
 | 2026-09-30 | **S25 filed — integrate the local level out with a Kalman filter, designed and prototyped, not built.** Profiling a cold story-B RCA found one daily node (`sessions`, ~263 leapfrog steps per draw) was 70% of the wait, from the coupled non-centered level rather than from compute. §4 gains the item and its prototype measurements (same β, ~4× the ESS, zero divergences, the four fits 2.4× faster); nothing in §2 or §3 changes until it ships. |
 | 2026-09-21 | **S24 shipped — known, dated interventions as a declared step/pulse term.** A node's `interventions:` enter the fit as known 0/1 regressors on their own `beta_intervention_raw` axis, are dropped by name when unidentified, and appear on every RCA node as their own term in the gap (inside `unexplained`'s identity, outside `ranked_causes`); `learn_from: window` is the per-intervention Box–Tiao opt-in with its claim on the payload; `fit_start` is the per-node regime start. §4's table and §4.2 record the closure and the §4.4 measurement: an undeclared ~2-SD step inflates `σ_obs` 1.26× and β's interval 2.5×, and a co-stepping parent puts β at 0.94 against 0.5. The measurement also corrects the item's own rationale: on a clean synthetic step the S3 check stays `ok` (the level absorbs it by inflating `σ_trend` ~40×), so the check the design leaned on is not what a single step trips — the intervals are. No §3.2 weakness changed status; S24 was never listed there, because S3 already disclosed the misspecification and §2.5 already states within-window stationarity as assumed. |
 | 2026-09-14 | **S23 shipped — the reference window is no longer the one input nobody resampled.** `run_rca` re-attributes under two neighbouring reference blocks (one period earlier, one whole block earlier; same fits, no new sampling) and publishes `reference_sensitivity`: whether the top cause and the gap's direction survive the move, the blocks tried with what each said, and a `gap_range` that is a sensitivity band by name — kept out of `ci_95`, because window choice is not sampling error. §4's table and §4.2 record the closure and what it deliberately does not claim (two blocks are a probe, not a distribution over references). No §3.2 weakness changed status: S23 was never listed there, because the engine's *disclosed* position (§2.5) was always that the bootstrap is within-window only; what changed is that the payload now says what the window choice cost, on every surface. |

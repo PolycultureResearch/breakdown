@@ -84,7 +84,13 @@ dependencies = [
     "pandas>=2.1.0",
     "pyarrow>=15.0.0",
     "pydantic>=2.7.0",
-    "pymc>=5.16.0",
+    # 5.27.0 is the first release whose pytensor (2.36) requires numba, and
+    # roadmap S25's NUTS path compiles the Kalman-filtered likelihood with
+    # `mode="NUMBA"` — under the C backend it is ~3x slower than the model it
+    # replaced, so numba is not optional. The old floor (5.16.0) resolved
+    # pytensor 2.23 with no numba at all. Raising the floor rather than adding
+    # `numba` directly keeps the pair PyMC tested together.
+    "pymc>=5.27.0",
     "pyyaml>=6.0",
     "uvicorn>=0.27.0",
 ]

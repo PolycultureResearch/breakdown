@@ -252,7 +252,9 @@ curl -X POST "http://localhost:9090/analyze/order_count?inference_method=advi"
 ```
 
 The response's `diagnostics` block carries the engine's verdict on the fit.
-NUTS reports `max_rhat`, `divergences` and `min_ess_bulk`; a variational fit
+NUTS reports `max_rhat`, `divergences` and `min_ess_bulk` — R̂ and ESS over
+the parameters the sampler draws, not the per-period `trend`, which is
+recovered exactly from them after sampling (roadmap S25); a variational fit
 reports `elbo_drop` (did the optimizer settle?) and **`khat` / `khat_status`**
 (did it settle anywhere near the posterior?) — the PSIS diagnostic of Yao et
 al. (2018). `khat_status` is one of `ok` (k̂ ≤ 0.5), `suspect` (≤ 0.7),

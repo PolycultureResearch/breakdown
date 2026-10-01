@@ -917,7 +917,12 @@ def test_mcp_session_names_activation_with_an_honest_split(mcp_session):
     # reason the tour writes P(direction) as "≈0.84"; see
     # tests/test_white_cube_demo.py's module docstring for the measurement.
     assert a["share_of_gap"] == pytest.approx(0.689, abs=0.015)
-    assert d["share_of_gap"] == pytest.approx(0.377, abs=0.018)
+    # Days active is the ridge's other end and spreads wider still. Under S25's
+    # marginalized level, seeded, it measured 0.379 (macOS, Python 3.14) and
+    # 0.351 (Linux, Python 3.13), against 0.377 ± 0.018 on the explicit latent.
+    # The doc says "a little over a third", which is the claim both stacks
+    # support, and this pins exactly that claim rather than a decimal.
+    assert 1 / 3 < d["share_of_gap"] < 0.40
     # The narration's whole argument: one interval clear of zero, one not.
     assert a["ci_95"][0] > 0
     assert a["prob_same_direction"] == pytest.approx(0.998, abs=0.04)
@@ -925,7 +930,8 @@ def test_mcp_session_names_activation_with_an_honest_split(mcp_session):
         "the doc says the days-active interval straddles zero — if it no "
         "longer does, the honest-split paragraph must be rewritten"
     )
-    assert d["prob_same_direction"] == pytest.approx(0.89, abs=0.05)
+    # "P(direction) about 0.9" — 0.8765 on macOS / Python 3.14 under S25.
+    assert d["prob_same_direction"] == pytest.approx(0.9, abs=0.05)
     assert a["share_of_gap"] > d["share_of_gap"]
 
     # "In the tree-wide ranking, activation outranks trial volume itself."

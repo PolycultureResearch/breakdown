@@ -9,6 +9,7 @@ Window-over-window attribution (Shapley and posterior-based) lives in
 `breakdown.engine.rca`; only the pure Shapley computation is defined here.
 """
 
+import inspect
 import logging
 import math
 from dataclasses import dataclass, field
@@ -372,17 +373,27 @@ def summarize_trace(trace: Any) -> pd.DataFrame:
     return az.summary(trace, hdi_prob=0.95)
 
 
-def _nuts_diagnostics(trace: Any, draws: int, chains: int) -> Dict[str, Any]:
+def _nuts_diagnostics(
+    trace: Any, draws: int, chains: int, var_names: Optional[List[str]] = None
+) -> Dict[str, Any]:
     """Convergence diagnostics for a NUTS trace.
 
     `fit_quality` is "suspect" when divergences exceed 1% of total draws, any
     r_hat exceeds 1.05, or any bulk ESS falls below 100 — coarse thresholds
     that flag only fits whose credible intervals should not be trusted as-is.
     Nothing blocks on "suspect"; it is information, not an error.
+
+    `var_names` is the set the sampler actually drew — `fit_metric` passes the
+    model's free random variables (roadmap S25). On the marginalized path the
+    recovered `trend` is an exact conditional draw given those parameters, so
+    its "ESS" measures nothing the parameters' does not, and scoring ~700
+    trend states also cost ~1.5s per daily fit. Deterministics (`beta`,
+    `beta_raw`) are one-to-one functions of sampled variables and add nothing
+    either. `kind="diagnostics"` skips the means and HDIs nobody reads here.
     """
     import arviz as az
 
-    summary = az.summary(trace)
+    summary = az.summary(trace, var_names=var_names, kind="diagnostics")
     divergences = int(trace.sample_stats.diverging.sum())
     rhat_vals = summary["r_hat"].to_numpy(dtype=float)
     ess_vals = summary["ess_bulk"].to_numpy(dtype=float)
@@ -1588,6 +1599,38 @@ def _seasonal_draws(posterior: Any, seasonality: List[Any], t: np.ndarray) -> np
     return out
 
 
+def _mean_function_draws(
+    posterior: Any,
+    X: Optional[np.ndarray],
+    defn: MetricDefinition,
+    t: np.ndarray,
+    X_iv: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """`(n_draws, n_periods)` mean function *without* the level, from a trace.
+
+    `alpha + seasonal + X @ beta + X_iv @ beta_intervention`, reconstructed in
+    numpy from the variables the posterior already holds. Two readers: the
+    posterior predictive check (which adds `trend` back) and roadmap S25's
+    level recovery (which subtracts this from `y` to get the series the level
+    was marginalized against). One function, so the two cannot disagree about
+    what the mean function is.
+    """
+    n_draws = int(posterior.sizes["chain"] * posterior.sizes["draw"])
+    mu = np.zeros((n_draws, len(t)), dtype=float)
+    mu += posterior["alpha"].values.reshape(-1, 1)
+    mu += _seasonal_draws(posterior, defn.seasonality, t)
+    if X is not None:
+        # `beta` is the Deterministic stack in `list(dag.predecessors)`
+        # order — the same axis order every other component reads.
+        mu += posterior["beta"].values.reshape(-1, X.shape[1]) @ X.T
+    if X_iv is not None:
+        # Roadmap S24: the declared steps are part of the mean function,
+        # so the check asks whether the model reproduces the series
+        # *given* them — `ppc.conditioned_on_interventions` says so.
+        mu += posterior["beta_intervention"].values.reshape(-1, X_iv.shape[1]) @ X_iv.T
+    return mu
+
+
 def _posterior_predictive_draws(
     pm: Any,
     trace: Any,
@@ -1596,11 +1639,19 @@ def _posterior_predictive_draws(
     t: np.ndarray,
     random_seed: Optional[int] = None,
     X_iv: Optional[np.ndarray] = None,
+    marginalized: bool = False,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[str]]:
     """Replicated series and the matching mean function, for S3.
 
-    Must be called **inside** the model context: `sample_posterior_predictive`
-    needs the graph, not just the trace.
+    Two ways to draw the replicates, one distribution. On the explicit-latent
+    path (the ADVI variants) the graph has an observed node, so
+    `sample_posterior_predictive` draws from it, and this must be called
+    **inside** the model context. On the marginalized path (NUTS, roadmap
+    S25) the level was integrated out and there is no observed node to draw
+    from, so the replicate is drawn directly as `mu + N(0, sigma_obs^2)` from
+    the joint draws — `mu` including the recovered `trend` — which is exactly
+    what the observed node's distribution is. The four statistics and their
+    bands do not move.
 
     Two things are load-bearing here. The posterior is thinned to
     `_PPC_DRAWS` *before* the replicates are drawn — a 4-chain, 1000-draw
@@ -1626,29 +1677,24 @@ def _posterior_predictive_draws(
             return None, None, "the posterior carries no draws"
         step = max(1, n_draws // _PPC_DRAWS)
         thinned = trace.sel(draw=slice(None, None, step)) if step > 1 else trace
-
-        pp = pm.sample_posterior_predictive(
-            thinned,
-            var_names=["obs"],
-            random_seed=random_seed,
-            progressbar=False,
-        )
-        y_rep = pp.posterior_predictive["obs"].values.reshape(-1, len(t))
-
         post = thinned.posterior
-        mu = np.zeros_like(y_rep, dtype=float)
-        mu += post["alpha"].values.reshape(-1, 1)
+
+        mu = _mean_function_draws(post, X, defn, t, X_iv)
         mu += post["trend"].values.reshape(-1, len(t))
-        mu += _seasonal_draws(post, defn.seasonality, t)
-        if X is not None:
-            # `beta` is the Deterministic stack in `list(dag.predecessors)`
-            # order — the same axis order every other component reads.
-            mu += post["beta"].values.reshape(-1, X.shape[1]) @ X.T
-        if X_iv is not None:
-            # Roadmap S24: the declared steps are part of the mean function,
-            # so the check asks whether the model reproduces the series
-            # *given* them — `ppc.conditioned_on_interventions` says so.
-            mu += post["beta_intervention"].values.reshape(-1, X_iv.shape[1]) @ X_iv.T
+
+        if marginalized:
+            rng = np.random.default_rng(_seed_stream(random_seed, _PPC_STREAM))
+            sigma_obs = post["sigma_obs"].values.reshape(-1, 1)
+            y_rep = mu + sigma_obs * rng.standard_normal(mu.shape)
+        else:
+            pp = pm.sample_posterior_predictive(
+                thinned,
+                var_names=["obs"],
+                random_seed=random_seed,
+                progressbar=False,
+            )
+            y_rep = pp.posterior_predictive["obs"].values.reshape(-1, len(t))
+
         if mu.shape != y_rep.shape:
             return (
                 None,
@@ -1661,6 +1707,179 @@ def _posterior_predictive_draws(
         return y_rep, mu, None
     except Exception as exc:  # pragma: no cover - defensive; rule 3
         return None, None, f"{type(exc).__name__}: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# Roadmap S25: the local level, integrated out of the NUTS fit.
+#
+# With every other term fixed, the model is a linear Gaussian state-space model
+#
+#     y[t]     = mu[t] + level[t] + eps[t],   eps ~ N(0, sigma_obs^2)
+#     level[t] = level[t-1] + eta[t],         eta ~ N(0, sigma_trend^2), level[-1] = 0
+#
+# and `cumsum(sigma_trend * z)` with `z ~ N(0, 1)` *is* that random walk. So
+# `p(y | theta)` with the level integrated out is computed exactly by the
+# Kalman filter's prediction-error decomposition (Harvey 1989; Durbin & Koopman
+# 2012, ch. 7), NUTS samples only theta, and the level is recovered afterwards
+# by exact conditional draws (forward-filtering backward-sampling:
+# Fruhwirth-Schnatter 1994; Carter & Kohn 1994). The posterior is the same
+# posterior; what changes is that the sampler no longer integrates one tightly
+# coupled latent per period with tiny steps (design:
+# knowledge/speed_and_warm_analyses_design.md §1–§2).
+# ---------------------------------------------------------------------------
+
+#: Independent random streams derived from a fit's `random_seed`, so the level
+#: recovery and the replicate draws are reproducible from the one seed the
+#: caller passed and never share draws with each other. The integers only name
+#: the stream (`SeedSequence` entropy); changing one changes the numbers a
+#: seeded fit reports, within Monte-Carlo error.
+_LEVEL_STREAM = 25
+_PPC_STREAM = 3
+
+
+def _seed_stream(random_seed: Optional[int], stream: int) -> np.random.SeedSequence:
+    """A `SeedSequence` for one named stream of a fit's seed (fresh entropy if None)."""
+    if random_seed is None:
+        return np.random.SeedSequence()
+    return np.random.SeedSequence([int(random_seed), stream])
+
+
+def _level_is_marginalized(inference_method: str) -> bool:
+    """Whether this fit integrates the local level out of the sampled model.
+
+    The dispatch is by **likelihood**, not by node: the Kalman filter is exact
+    only for a Gaussian observation model, which is every node today (white
+    paper §2.1). Roadmap S20's count likelihoods would end that, and a
+    non-Gaussian node would keep the explicit latent — this is the one place
+    that decision lives.
+
+    NUTS only. The ADVI variants keep the explicit per-period latent because
+    their PSIS k-hat (S2) was measured against that parameterization, and the
+    benchmark that retired them as a default is a statement about it.
+    """
+    return inference_method == "nuts"
+
+
+def _kalman_local_level_loglik(r: Any, sigma_trend: Any, sigma_obs: Any) -> Any:
+    """`log p(r | sigma_trend, sigma_obs)` with the local level integrated out.
+
+    `r = y - mu` is the series the level has to explain. A scalar Kalman
+    filter: predict `P += sigma_trend^2`; innovation `v = r[t] - a` with
+    variance `F = P + sigma_obs^2`; gain `K = P / F`; update `a += K v`,
+    `P *= 1 - K`; accumulate `-0.5 (log 2 pi F + v^2 / F)`. Started at
+    `a0 = 0, P0 = 0`, so the first prediction is `N(0, sigma_trend^2)` —
+    exactly the explicit model's `level[0] = sigma_trend * z[0]`.
+
+    Must be compiled with the numba backend (`fit_metric` passes
+    `compile_kwargs={"mode": "NUMBA"}`): under the C backend the scan's
+    per-step overhead dominates a scalar recursion and the fit is ~3x *slower*
+    than the explicit latent it replaces (design §2.2).
+    """
+    import pytensor
+    import pytensor.tensor as pt
+
+    s2 = sigma_trend**2
+    o2 = sigma_obs**2
+
+    def step(r_t, a, P, s2, o2):
+        P = P + s2
+        F = P + o2
+        v = r_t - a
+        K = P / F
+        return a + K * v, P * (1 - K), -0.5 * (pt.log(2 * np.pi * F) + v**2 / F)
+
+    kwargs = dict(
+        sequences=[r],
+        outputs_info=[pt.zeros(()), pt.zeros(()), None],
+        non_sequences=[s2, o2],
+    )
+    # PyTensor 2.36+ deprecates returning the (empty) updates dict; older
+    # releases, which the `pymc` floor still admits, do not take the flag.
+    if "return_updates" in inspect.signature(pytensor.scan).parameters:
+        _, _, ll = pytensor.scan(step, return_updates=False, **kwargs)
+    else:  # pragma: no cover - older pytensor
+        (_, _, ll), _ = pytensor.scan(step, **kwargs)
+    return ll.sum()
+
+
+def _ffbs_local_level(
+    r: np.ndarray, s2: np.ndarray, o2: np.ndarray, rng: np.random.Generator
+) -> np.ndarray:
+    """One exact draw of `level | r, theta` per posterior draw, vectorized.
+
+    `r` is `(n_draws, T)`; `s2`/`o2` are `(n_draws,)` variances. The forward
+    pass is the same filter as `_kalman_local_level_loglik` (the same `a0 = 0,
+    P0 = 0` start); the backward pass samples `level[T-1]` from its filtered
+    distribution and each earlier state from its conditional given the one
+    after it (Carter & Kohn 1994; Fruhwirth-Schnatter 1994). These are draws
+    from the joint posterior, not smoothed means: the recovered `trend` carries
+    the level's full posterior uncertainty, as the explicit latent's did.
+
+    The posterior variances are written in their subtraction-free forms
+    (`P (1 - K) = P_pred o2 / F`, `P - J P = P s2 / (P + s2)`), so a
+    near-deterministic level cannot produce a negative variance.
+    """
+    n, T = r.shape
+    a_f = np.empty((n, T))
+    P_f = np.empty((n, T))
+    a = np.zeros(n)
+    P = np.zeros(n)
+    for t in range(T):
+        P_pred = P + s2
+        F = P_pred + o2
+        K = P_pred / F
+        a = a + K * (r[:, t] - a)
+        P = P_pred * o2 / F
+        a_f[:, t] = a
+        P_f[:, t] = P
+
+    z = rng.standard_normal((n, T))
+    level = np.empty((n, T))
+    level[:, T - 1] = a_f[:, T - 1] + np.sqrt(P_f[:, T - 1]) * z[:, T - 1]
+    for t in range(T - 2, -1, -1):
+        denom = P_f[:, t] + s2
+        J = P_f[:, t] / denom
+        mean = a_f[:, t] + J * (level[:, t + 1] - a_f[:, t])
+        var = P_f[:, t] * s2 / denom
+        level[:, t] = mean + np.sqrt(var) * z[:, t]
+    return level
+
+
+def _attach_recovered_level(
+    trace: Any,
+    y: np.ndarray,
+    X: Optional[np.ndarray],
+    defn: MetricDefinition,
+    t: np.ndarray,
+    X_iv: Optional[np.ndarray],
+    random_seed: Optional[int],
+) -> None:
+    """Write `trend` into `trace.posterior` for a marginalized fit.
+
+    The same name, dims (`chain`, `draw`, `trend_dim_0`) and shape the explicit
+    latent's `pm.Deterministic("trend", ...)` produced, so every reader —
+    RCA's trend delta (`rca.py`), the posterior predictive check, the UI's
+    trend band — reads it unchanged. Seeded from the fit's `random_seed` on
+    its own stream, so a seeded fit stays a pure function of its inputs.
+    """
+    import xarray as xr
+
+    posterior = trace.posterior
+    n_chain, n_draw = int(posterior.sizes["chain"]), int(posterior.sizes["draw"])
+    mu = _mean_function_draws(posterior, X, defn, t, X_iv)
+    s2 = posterior["sigma_trend"].values.reshape(-1) ** 2
+    o2 = posterior["sigma_obs"].values.reshape(-1) ** 2
+    rng = np.random.default_rng(_seed_stream(random_seed, _LEVEL_STREAM))
+    level = _ffbs_local_level(y[None, :] - mu, s2, o2, rng)
+    posterior["trend"] = xr.DataArray(
+        level.reshape(n_chain, n_draw, len(t)),
+        dims=("chain", "draw", "trend_dim_0"),
+        coords={
+            "chain": posterior["chain"].values,
+            "draw": posterior["draw"].values,
+            "trend_dim_0": np.arange(len(t)),
+        },
+    )
 
 
 def intervention_record(iv: Any, grain: str) -> Dict[str, Any]:
@@ -2168,11 +2387,17 @@ def fit_metric(
         alpha      ~  Normal(0, 1)   (data is z-scored; the mean is exactly 0)
         eps[t]     ~  Normal(0, sigma_obs)
 
-    The trend is a non-centered random walk: sampling unit normals and scaling
-    by `sigma_trend` avoids the Neal's-funnel geometry of a centered walk, which
-    NUTS handles poorly and mean-field ADVI (the opt-in fast path) fails on outright.
-    `pm.Deterministic("trend", ...)` preserves the `trend` posterior variable so
-    downstream decomposition reads it unchanged.
+    How the trend is *computed* depends on the sampler; the model does not
+    (roadmap S25, `_level_is_marginalized`). Under NUTS the level is integrated
+    out by a Kalman filter (`_kalman_local_level_loglik`, a `pm.Potential`
+    compiled on the numba backend), only the parameters are sampled, and
+    `trend` is recovered afterwards by forward-filtering backward-sampling
+    (`_attach_recovered_level`) — exact conditional draws, written with the
+    same name and shape. Under ADVI the level is the explicit non-centered
+    walk above, whose unit normals avoid the Neal's-funnel geometry mean-field
+    fails on outright, and which PSIS k-hat was measured against. Either way
+    `posterior["trend"]` is there, so downstream decomposition reads it
+    unchanged.
 
     Node types:
     - Formula nodes fit the residual (observed - formula(parents)); no beta.
@@ -2375,23 +2600,37 @@ def fit_metric(
         design, design_names, target, grain
     )
 
-    with pm.Model():
+    # Roadmap S25: on the NUTS path the level is integrated out by a Kalman
+    # filter and recovered after sampling; the ADVI variants keep the explicit
+    # latent. Same model either way — see `_level_is_marginalized`.
+    marginalized = _level_is_marginalized(inference_method)
+
+    with pm.Model() as model:
         trend_sigma_prior = defn.trend.sigma if defn.trend else 0.05
         sigma_trend = pm.HalfNormal("sigma_trend", trend_sigma_prior)
-        trend_z = pm.Normal("trend_z", 0.0, 1.0, shape=len(y))
-        trend = pm.Deterministic("trend", pt.cumsum(sigma_trend * trend_z))
+        if not marginalized:
+            trend_z = pm.Normal("trend_z", 0.0, 1.0, shape=len(y))
+            trend = pm.Deterministic("trend", pt.cumsum(sigma_trend * trend_z))
         seasonal = _seasonal_component(defn.seasonality, t)
         regression = _regression_component(defn, fitted_parents, X, scale)
         intervention = _intervention_component(fitted_ivs, X_iv, y_std)
 
         alpha = pm.Normal("alpha", mu=0, sigma=1.0)
         sigma_obs = pm.HalfNormal("sigma_obs", 1.0)
-        pm.Normal(
-            "obs",
-            mu=alpha + trend + seasonal + regression + intervention,
-            sigma=sigma_obs,
-            observed=y,
-        )
+        mean_fn = alpha + seasonal + regression + intervention
+        if marginalized:
+            # No observed node: the likelihood of `y` with the level summed
+            # out enters as a potential on the residual the level must explain.
+            pm.Potential(
+                "level_marginal_loglik",
+                _kalman_local_level_loglik(pt.as_tensor(y) - mean_fn, sigma_trend, sigma_obs),
+            )
+        else:
+            pm.Normal("obs", mu=mean_fn + trend, sigma=sigma_obs, observed=y)
+        # What NUTS actually samples — the set R-hat and ESS are computed over
+        # (roadmap S25 §2.3 item 4). Read before `trend` is attached, and by
+        # name, so a recovered state can never count as a sampled parameter.
+        sampled = [rv.name for rv in model.free_RVs]
 
         logger.info(
             "Sampling metric '%s' method=%s draws=%d tune=%d fit_end=%s",
@@ -2420,15 +2659,21 @@ def fit_metric(
                 target_accept=0.9,
                 chains=chains,
                 random_seed=random_seed,
+                # Roadmap S25: the Kalman scan needs the numba backend; under
+                # the default C backend it is ~3x slower than the latent it
+                # replaced (see `_kalman_local_level_loglik`).
+                **({"compile_kwargs": {"mode": "NUMBA"}} if marginalized else {}),
             )
-            diagnostics = _nuts_diagnostics(trace, draws, chains)
+            diagnostics = _nuts_diagnostics(trace, draws, chains, var_names=sampled)
+            if marginalized:
+                _attach_recovered_level(trace, y, X, defn, t, X_iv, random_seed)
 
         # Roadmap S3, inside the model context because that is the only place
         # `sample_posterior_predictive` can run — and computed here for every
         # method, because misspecification is a property of the model, not of
         # how its posterior was approximated.
         y_rep, mu_draws, ppc_reason = _posterior_predictive_draws(
-            pm, trace, X, defn, t, random_seed=random_seed, X_iv=X_iv
+            pm, trace, X, defn, t, random_seed=random_seed, X_iv=X_iv, marginalized=marginalized
         )
 
     ppc, ppc_warnings = (

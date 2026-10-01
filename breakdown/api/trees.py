@@ -55,6 +55,13 @@ logger = logging.getLogger(__name__)
 # budget**, with the count kept as a secondary backstop against a pathological
 # number of tiny fits.
 #
+# Roadmap S25 (2026-09-30) roughly halved that figure without touching the
+# budget: the NUTS posterior no longer carries the per-period `trend_z` latent
+# beside `trend` (the level is integrated out and recovered after sampling),
+# measured 23.1 MB -> 11.8 MB on the demo's 709-day `sessions`. The ADVI
+# opt-in keeps the latent, and so keeps the larger size; the budget below is
+# written for the larger of the two and is left there as headroom.
+#
 # Re-measured 2026-08-24 when NUTS became the default (roadmap S2); the figure
 # here had been 13.4 MB, which was one 1000-draw *ADVI* fit — one chain, and
 # the sampler no route runs by default any more. Roadmap C27 then fixed

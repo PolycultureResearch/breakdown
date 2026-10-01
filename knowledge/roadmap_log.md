@@ -890,6 +890,19 @@ Series SD of y over the fit window ≈ 15 at step 30, so a step of 30 is ~2 SD.
 | 30 | 0.453 [0.322, 0.583] | **1.26** | 0.175 | ok | 0.515 [0.463, 0.565] | 1.03 | 0.004 |
 | 60 | 0.387 [0.165, 0.625] | **2.09** | 0.176 | moderate (`min`, p = 0.09) | 0.515 [0.465, 0.565] | 1.03 | 0.002 |
 
+**Corrected 2026-09-30 (S25): the undeclared σ_obs column at steps 30 and 60
+was a sampler failure, not the posterior.** Re-run on the explicit latent the
+same fits report 86 and 126 divergences with bulk ESS 55 and 27 (still R̂ up to
+1.57 at `target_accept` 0.995 and 1,500 draws); with the level integrated out
+they report 0 divergences, ESS 307 and 378, and σ_obs **1.02** at step 30 and
+**1.65** at step 60 (stable across four seeds: 1.06–1.10 at 1,500 draws). The
+undeclared PPC at 60 reads `ok` on the converged fit. The β columns, σ_trend
+and every declared column reproduce within Monte-Carlo error (undeclared β
+0.449 [0.329, 0.580] at 30, 0.378 [0.135, 0.610] at 60; world 6 β 0.931
+[0.816, 1.051], declared 0.547 [0.487, 0.611], step 28.6 [26.5, 30.6]). So
+the finding that stands is β's interval and bias; `test_world_1` no longer
+pins σ_obs inflation. The table above is kept as measured.
+
 **The co-stepping parent (world 6):** x itself steps by 30 on the same date.
 Undeclared, β = **0.939 [0.822, 1.074]** against 0.5 — the level change
 pushed onto the parent, which is the number a reader of the reporter's
@@ -918,6 +931,99 @@ intervention) marked slow. The invariants suite covers the new `FitResult`
 fields, the render-site check for the two new node fields, and strict
 encoding; `docs/yaml-reference.md`'s new example is executed by
 `tests/test_docs_examples.py`.
+
+
+## S25
+
+**Status:** ✅ shipped 2026-09-30 (the roadmap row itself arrives with PR #143,
+which files the item; its status flips to ✅ pointing here once both are on
+`main`).
+
+**Integrate the local level out with a Kalman filter** — per
+[`speed_and_warm_analyses_design.md`](speed_and_warm_analyses_design.md) §2.
+
+*What landed.* On the NUTS path `fit_metric` no longer builds `trend_z` or an
+observed node. The likelihood with the level summed out is a scalar Kalman
+filter (`_kalman_local_level_loglik`, a `pytensor.scan`, `a0 = 0, P0 = 0`)
+entered as a `pm.Potential` on `y − (α + seasonal + Xβ + X_iv β_iv)`, sampled
+with `compile_kwargs={"mode": "NUMBA"}`. After sampling,
+`_attach_recovered_level` draws the level once per posterior draw by
+forward-filtering backward-sampling in numpy (vectorized across draws, seeded
+from the fit's `random_seed` on its own `SeedSequence` stream) and writes
+`posterior["trend"]` with the old dims and shape; `rca.py` and the PPC read it
+unchanged. The S3 replicates are `μ + trend + N(0, σ_obs²)` drawn from the
+joint draws. `_nuts_diagnostics` summarizes `model.free_RVs` only, with
+`kind="diagnostics"`. The dispatch is `_level_is_marginalized(inference_method)`
+— NUTS only; ADVI keeps the explicit latent its k̂ was measured against. The
+`pymc` floor rose 5.16.0 → 5.27.0, the first release whose pytensor requires
+numba (5.16.0 resolved pytensor 2.23 and no numba at all).
+
+*Same posterior, measured.* Three levels of evidence:
+
+1. **Exact, no sampler** (`tests/test_kalman_level.py`): the filter's
+   log-likelihood equals the dense Gaussian marginal `N(0, σ²_trend·K + σ²_obs·I)`
+   (`K[i,j] = min(i,j)+1`) to 1e-9 at three scales, and 40,000 backward-sampled
+   paths match the closed-form conditional `level | r` in mean (within 5 SE) and
+   covariance.
+2. **Calibration worlds, twelve seeds per path.** Six `fit_metric` fits from
+   `tests/test_calibration.py`'s worlds (contemporaneous, lagged, null,
+   unrelated parent, coverage world 0, and a source node), `draws=300`,
+   `fit_end` = the analysis start, seeds 0–11 on each path. For every sampled
+   parameter and `trend` at the first, middle and last period, the old→new
+   shift in the posterior mean and both 94% HDI endpoints was scored against
+   the seed-to-seed spread: **144 comparisons, mean z +0.02, RMS 1.04, 8 above
+   |2|, worst +3.04** (the lower HDI endpoint of `σ_trend` on the lagged world,
+   3.0e-5 vs 6.8e-5 — both at the HalfNormal's boundary). That is the
+   distribution of noise. The old path threw divergences on 59 of 72 fits (up
+   to 25 per fit); the new one on 24 of 72, at most 6.
+3. **White Cube story B**, `fit_end = 2026-05-11`, seed 0, one run per path,
+   z = difference over the combined MC standard error: worst |z| 2.45 across
+   the four nodes' parameters, HDI endpoints and trend points (table in the
+   PR). β: `sessions` 0.600 → 0.600, `trials_started` 0.931 → 0.931,
+   `trial_conversion_rate` [0.427, 0.305] → [0.420, 0.307],
+   `customer_churn_rate` −0.173 → −0.174.
+
+A seeded test (`test_marginalized_level_samples_the_same_posterior`) pins the
+equivalence on a small seasonal world with a parent.
+
+*Faster, measured the same way on both sides* (M2 Max, 12 cores, one process,
+`random_seed=0`):
+
+| | before | after |
+|---|---|---|
+| `sessions` (709 days) | 33.1s | 8.8s |
+| `trials_started` (709 days) | 6.9s | 6.4s |
+| `trial_conversion_rate` (101 weeks) | 3.6s | 2.3s |
+| `customer_churn_rate` (101 weeks) | 3.4s | 1.6s |
+| **four fits** | **47.0s** | **19.1s** |
+| cold story-B RCA (`POST /rca/net_new_mrr`) | 47.7s | 20.0s |
+| same, chains under `forkserver` (Linux 3.14's default) | 58.7s (fits) | 21.6s (fits) |
+
+The design's 66.4s cold baseline was measured differently (it included
+process start-up); both columns here come from the same script. Short fits
+are now compile-bound (numba ~2–3s per model): on the ~90-period calibration
+worlds a fit takes 2.5–4s against 1.4–3s before. §2.6 of the design (reuse the
+compiled model across `fit_end`) is the follow-up that removes that.
+
+*Diagnostics changed meaning, on purpose.* `min_ess_bulk` used to be the
+minimum over every trend state as well as the parameters; on a daily node it
+was usually one level state's ESS. It is now the worst-mixing sampled
+parameter. `sessions` 460 → 2,072, `trials_started` 390 → 562. `trials_started`
+stays `suspect` — its S3 check is `severe` (`min` p = 0.004 → 0.000) on both
+paths — but its 10 divergences are gone; `customer_churn_rate`'s PPC moved
+`ok` → `moderate` on `min` p 0.116 → 0.092, a p-value within one of its own
+standard errors of the 0.1 band edge.
+
+*One re-pin, and it is a correction rather than drift.* The full suite's one
+failure was `test_world_1_the_defect_reproduced`, which pinned S24's
+"undeclared step inflates σ_obs > 1.15×" (measured 1.26×). Investigated, not
+re-pinned: on that world the explicit path does not converge (86 divergences,
+ESS 55; R̂ up to 1.57 even at `target_accept` 0.995 with 1,500 draws, one
+chain parked at σ_obs ≈ 0.05), while the marginalized path does (0
+divergences, ESS 307, four seeds agreeing at 1,500 draws). The converged
+σ_obs is 1.02×. The test now pins what reproduces — β's wider interval and
+biased mean, σ_trend's inflation, the declared fit's noise — and S24's section
+above carries the correction beside its original table.
 
 
 ## Per-metric windows

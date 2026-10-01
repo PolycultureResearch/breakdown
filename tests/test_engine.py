@@ -2211,3 +2211,99 @@ def test_a_node_whose_parents_are_all_constant_still_refuses_with_a_reason():
         ValueError, match=r"Every parent of 'y' \(\['flat', 'flat2'\]\) is constant"
     ):
         fit_metric(parser.dag, _constant_parent_frame(), "y", draws=100, tune=100)
+
+
+# --- Roadmap S25: the level integrated out of the NUTS fit ---
+
+
+def _s25_world():
+    """A seasonal world with a slow level: every term the Kalman path has to
+    reconstruct around (alpha, a parent, Fourier seasonality)."""
+    rng = np.random.default_rng(25)
+    n = 120
+    x = 100.0 + np.cumsum(rng.normal(0, 1.0, n))
+    level = np.cumsum(rng.normal(0, 0.4, n))
+    weekly = 2.0 * np.sin(2 * np.pi * np.arange(n) / 7)
+    y = 0.5 * x + level + weekly + rng.normal(0, 1.0, n)
+    frame = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=n), "x": x, "y": y})
+    yaml = """
+metrics:
+  - name: x
+    source: dbt.metric.x
+  - name: y
+    source: dbt.metric.y
+    parents: [x]
+    seasonality:
+      - period: 7
+        name: weekly
+"""
+    return Parser(yaml).dag, frame
+
+
+def test_marginalized_level_samples_the_same_posterior(monkeypatch):
+    """Roadmap S25's acceptance test, pinned: the Kalman path is a change of
+    *computation*, not of model. On one seeded world, the explicit-latent NUTS
+    fit and the marginalized one agree on every sampled parameter's posterior
+    mean and sd, and on the recovered `trend` at the first, middle and last
+    period, within four Monte-Carlo standard errors of their difference.
+
+    A failure here means the two paths sample different posteriors — a bug in
+    the filter, the backward sampler or the mean-function reconstruction —
+    and is investigated, never re-pinned. `tests/test_kalman_level.py` checks
+    the filter and sampler against closed forms without a sampler.
+    """
+    import arviz as az
+
+    import breakdown.engine.model as model
+
+    dag, frame = _s25_world()
+    new = fit_metric(dag, frame, "y", draws=500, random_seed=3)
+    monkeypatch.setattr(model, "_level_is_marginalized", lambda method: False)
+    old = fit_metric(dag, frame, "y", draws=500, random_seed=3)
+
+    # Same variable readers depend on, same dims and shape; the latent is gone.
+    assert "trend_z" in old.trace.posterior and "trend_z" not in new.trace.posterior
+    assert new.trace.posterior["trend"].dims == old.trace.posterior["trend"].dims
+    assert new.trace.posterior["trend"].shape == old.trace.posterior["trend"].shape
+
+    def mcse(x, method="mean", prob=None):
+        kw = {"prob": prob} if prob is not None else {}
+        return float(np.ravel(az.mcse(x, method=method, **kw))[0])
+
+    names = ("alpha", "sigma_obs", "sigma_trend", "beta_x", "sin_weekly_h1", "cos_weekly_h1")
+    pairs = [(n, old.trace.posterior[n].values, new.trace.posterior[n].values) for n in names]
+    T = new.trace.posterior["trend"].shape[-1]
+    for j in (0, T // 2, T - 1):
+        pairs.append(
+            (
+                f"trend[{j}]",
+                old.trace.posterior["trend"].values[..., j],
+                new.trace.posterior["trend"].values[..., j],
+            )
+        )
+    for name, a, b in pairs:
+        se = np.hypot(mcse(a), mcse(b))
+        assert abs(a.mean() - b.mean()) < 4 * se, (name, a.mean(), b.mean(), se)
+        # The spread, through the two tail quantiles an interval is built on.
+        for q in (0.05, 0.95):
+            qa, qb = np.quantile(a, q), np.quantile(b, q)
+            q_se = np.hypot(mcse(a, "quantile", q), mcse(b, "quantile", q))
+            assert abs(qa - qb) < 4 * q_se, (name, q, qa, qb, q_se)
+
+    # R-hat/ESS are over what NUTS sampled, and the posterior predictive check
+    # still ran, on replicates drawn without an observed node.
+    assert new.diagnostics["min_ess_bulk"] is not None
+    assert new.diagnostics["ppc_status"] != "unavailable"
+    assert new.ppc_band.get("reason") is None and new.ppc_band["n_draws"] > 0
+
+
+def test_advi_keeps_the_explicit_latent():
+    """PSIS k-hat (S2) is measured against the explicit parameterization, so
+    the variational paths keep it (roadmap S25 is NUTS-only)."""
+    parser = Parser(SIMPLE_YAML)
+    data = generate_mock_data(n_days=50)
+    result = fit_metric(
+        parser.dag, data, "order_count", draws=100, inference_method="advi", random_seed=0
+    )
+    assert "trend_z" in result.trace.posterior
+    assert result.trace.posterior["trend"].shape[-1] == 50
