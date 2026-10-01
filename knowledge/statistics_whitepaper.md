@@ -3,7 +3,7 @@
 **A white paper on the models behind Bayesian metric trees, why each was chosen,
 and where each one stops being trustworthy.**
 
-> **Written:** 2026-08-04 · **Last updated:** 2026-09-21 ·
+> **Written:** 2026-08-04 · **Last updated:** 2026-09-30 ·
 > **Engine version:** 0.2.0
 >
 > **This is a living document.** The assessment in §3 and the improvements in §4
@@ -1251,6 +1251,7 @@ scheduled start.
 | S22 | k̂'s own Monte-Carlo error, and a seeded manual-fit path | ✅ closed 2026-08-27 |
 | S23 | Reference-window sensitivity — the uncertainty the bootstrap never sees | ✅ closed 2026-09-14 |
 | S24 | Known, dated interventions — a declared step/pulse term in the fit | ✅ closed 2026-09-21 |
+| S25 | Integrate the local level out with a Kalman filter | ○ open |
 | 3.4 | Counterfactual RCA (Horizon 3, not the S track) | ○ open |
 
 Below, the reasoning behind each — ordered by value per unit of effort.
@@ -1692,6 +1693,28 @@ does not answer — the *distribution* of the top cause over a family of
 plausible references — which is a research item rather than a disclosure, and
 is not scheduled.
 
+**Integrate the local level out with a Kalman filter** — `S25`, ○ open
+([`speed_and_warm_analyses_design.md`](speed_and_warm_analyses_design.md) §2).
+Not a weakness in what the engine computes; a weakness in what it costs to
+compute it, and a place where cost and quality turn out to be the same
+problem. The non-centered level `cumsum(σ_trend · z)` avoids the centered
+walk's funnel, but on a long, informative series it leaves NUTS integrating
+one tightly coupled latent per period: the demo's daily `sessions` needs ~263
+leapfrog steps per draw and is 70% of a cold RCA's wall time, and the weekly
+`trials_started` reports 10 divergences. With every other term fixed, the
+model is a linear Gaussian state-space model, so the level can be
+marginalized exactly by the Kalman filter's prediction-error decomposition
+(Harvey, 1989; Durbin & Koopman, 2012) and recovered afterwards by
+forward-filtering backward-sampling (Frühwirth-Schnatter, 1994; Carter &
+Kohn, 1994). The posterior is unchanged; only its computation is. A
+prototype measured 6.9 steps per draw, bulk ESS 460 → ~2,000, zero
+divergences on all four story-B nodes, β equal to the third decimal, and the
+four fits in 19.0s against ~46s. Two consequences for this paper when it
+ships: §2.2's diagnostics paragraph must say that R̂ and ESS are computed over
+the sampled parameters rather than the recovered trend states, and S21's
+likelihood masking becomes the filter skipping an update. Gaussian
+likelihoods only: S20's count likelihoods would keep the explicit latent.
+
 ### 4.3 Explainability
 
 These do not add rigor; they add the ability to *see* it, which is often what
@@ -1759,6 +1782,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-09-30 | **S25 filed — integrate the local level out with a Kalman filter, designed and prototyped, not built.** Profiling a cold story-B RCA found one daily node (`sessions`, ~263 leapfrog steps per draw) was 70% of the wait, from the coupled non-centered level rather than from compute. §4 gains the item and its prototype measurements (same β, ~4× the ESS, zero divergences, the four fits 2.4× faster); nothing in §2 or §3 changes until it ships. |
 | 2026-09-21 | **S24 shipped — known, dated interventions as a declared step/pulse term.** A node's `interventions:` enter the fit as known 0/1 regressors on their own `beta_intervention_raw` axis, are dropped by name when unidentified, and appear on every RCA node as their own term in the gap (inside `unexplained`'s identity, outside `ranked_causes`); `learn_from: window` is the per-intervention Box–Tiao opt-in with its claim on the payload; `fit_start` is the per-node regime start. §4's table and §4.2 record the closure and the §4.4 measurement: an undeclared ~2-SD step inflates `σ_obs` 1.26× and β's interval 2.5×, and a co-stepping parent puts β at 0.94 against 0.5. The measurement also corrects the item's own rationale: on a clean synthetic step the S3 check stays `ok` (the level absorbs it by inflating `σ_trend` ~40×), so the check the design leaned on is not what a single step trips — the intervals are. No §3.2 weakness changed status; S24 was never listed there, because S3 already disclosed the misspecification and §2.5 already states within-window stationarity as assumed. |
 | 2026-09-14 | **S23 shipped — the reference window is no longer the one input nobody resampled.** `run_rca` re-attributes under two neighbouring reference blocks (one period earlier, one whole block earlier; same fits, no new sampling) and publishes `reference_sensitivity`: whether the top cause and the gap's direction survive the move, the blocks tried with what each said, and a `gap_range` that is a sensitivity band by name — kept out of `ci_95`, because window choice is not sampling error. §4's table and §4.2 record the closure and what it deliberately does not claim (two blocks are a probe, not a distribution over references). No §3.2 weakness changed status: S23 was never listed there, because the engine's *disclosed* position (§2.5) was always that the bootstrap is within-window only; what changed is that the payload now says what the window choice cost, on every surface. |
 | 2026-09-14 | **S24 filed — a declared step/pulse term for known, dated interventions, designed and not built.** A field user re-ran an RCA under 0.2.0 on a ticketed-event tree and got the honest verdict — `ppc_status: severe` — for a history made of price flips and on-sale days, with nowhere to go inside the tool (issue #114); a marketing team raised the analysis-window half of the same shape the same day (a campaign flag constant over the fit window is dropped, correctly). §4 gains the item and its rationale; no §3.2 weakness changes, because S3 already discloses the misspecification on every surface and §2.5 already states within-window stationarity as assumed. The design (`step_change_design.md`) separates a step in the *fit history*, which is what the PPC scores and what the term fixes, from a step in the *analysis window*, which RCA measures by construction; keeps the intervention coefficients off the parent-ordered `beta` axis; keeps automatic changepoint placement out; and makes the fit-window exception an explicit per-intervention opt-in with its claim on the payload. |
