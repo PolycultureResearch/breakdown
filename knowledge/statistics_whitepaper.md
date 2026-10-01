@@ -1281,7 +1281,7 @@ scheduled start.
 | S22 | k̂'s own Monte-Carlo error, and a seeded manual-fit path | ✅ closed 2026-08-27 |
 | S23 | Reference-window sensitivity — the uncertainty the bootstrap never sees | ✅ closed 2026-09-14 |
 | S24 | Known, dated interventions — a declared step/pulse term in the fit | ✅ closed 2026-09-21 |
-| S25 | Integrate the local level out with a Kalman filter | ○ open |
+| S25 | Integrate the local level out with a Kalman filter | ✅ closed 2026-09-30 |
 | 3.4 | Counterfactual RCA (Horizon 3, not the S track) | ○ open |
 
 Below, the reasoning behind each — ordered by value per unit of effort.
@@ -1724,8 +1724,9 @@ does not answer — the *distribution* of the top cause over a family of
 plausible references — which is a research item rather than a disclosure, and
 is not scheduled.
 
-**Integrate the local level out with a Kalman filter** — `S25`, ○ open
-([`speed_and_warm_analyses_design.md`](speed_and_warm_analyses_design.md) §2).
+**Integrate the local level out with a Kalman filter** — `S25`, ✅ closed 2026-09-30
+([`speed_and_warm_analyses_design.md`](speed_and_warm_analyses_design.md) §2;
+account in [roadmap_log S25](roadmap_log.md#s25)).
 Not a weakness in what the engine computes; a weakness in what it costs to
 compute it, and a place where cost and quality turn out to be the same
 problem. The non-centered level `cumsum(σ_trend · z)` avoids the centered
@@ -1737,13 +1738,15 @@ model is a linear Gaussian state-space model, so the level can be
 marginalized exactly by the Kalman filter's prediction-error decomposition
 (Harvey, 1989; Durbin & Koopman, 2012) and recovered afterwards by
 forward-filtering backward-sampling (Frühwirth-Schnatter, 1994; Carter &
-Kohn, 1994). The posterior is unchanged; only its computation is. A
-prototype measured 6.9 steps per draw, bulk ESS 460 → ~2,000, zero
-divergences on all four story-B nodes, β equal to the third decimal, and the
-four fits in 19.0s against ~46s. Two consequences for this paper when it
-ships: §2.2's diagnostics paragraph must say that R̂ and ESS are computed over
+Kohn, 1994). The posterior is unchanged; only its computation is. As
+shipped: the posterior agrees with the explicit latent within Monte-Carlo
+error on six calibration worlds (twelve seeds per path) and the four story-B
+nodes; `sessions` needs ~7 steps per draw with bulk ESS 460 → 2,072, story B's
+divergences are gone (calibration worlds: 59 of 72 fits diverged before, 24 after), and story B's four fits went 47.0s →
+19.1s. Two consequences for this paper, both made in the same change: §2.2's
+diagnostics paragraph says that R̂ and ESS are computed over
 the sampled parameters rather than the recovered trend states, and S21's
-likelihood masking becomes the filter skipping an update. Gaussian
+likelihood masking becomes the filter skipping an update (still open). Gaussian
 likelihoods only: S20's count likelihoods would keep the explicit latent.
 
 ### 4.3 Explainability
