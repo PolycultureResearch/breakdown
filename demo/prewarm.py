@@ -124,7 +124,7 @@ def warm_rcas(base: str) -> list[str]:
             f"&analysis_start={as_}&analysis_end={ae}"
         )
         # Timed because the elapsed time on a new host is the measurement that
-        # says whether its CPU is good enough (demo/hetzner/README.md).
+        # says whether its CPU is good enough (demo/server/README.md).
         t0 = time.monotonic()
         try:
             d = call(url, method="POST")

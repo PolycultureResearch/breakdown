@@ -1,4 +1,4 @@
-# The hosted demos on one Hetzner box (CAX21: 4 Ampere vCPUs, 8 GB).
+# The hosted demos on one dedicated box (OVH Eco SYS-1: 6 Xeon-E cores, 32 GB).
 #
 # Run from this directory on the server:  docker compose up -d --build --wait
 # Setup, secrets and the deploy workflow:  README.md next to this file.
@@ -19,8 +19,9 @@ services:
       dockerfile: demo/Dockerfile
     image: breakdown-demo-white-cube
     # `expose`, not `ports`: reachable from Caddy on the compose network and
-    # from nothing else. Docker-published ports bypass ufw, so the only ports
-    # on this host that face the internet are the three Caddy publishes below.
+    # from nothing else. Docker-published ports bypass ufw, so this is what keeps
+    # 9090 off the internet: the only published ports are Caddy's three below,
+    # which ufw allows anyway.
     expose:
       - "9090"
     environment:
