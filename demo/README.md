@@ -54,8 +54,8 @@ invokes `.venv/bin/breakdown` directly rather than through `uv run`.
 
 ## Deploying
 
-**Moving to Hetzner.** A single CAX21 box set up by
-[`hetzner/`](hetzner/README.md) replaces the Fly app below once its cutover
+**Moving to a dedicated server.** A single OVH Eco SYS-1 set up by
+[`server/`](server/README.md) replaces the Fly app below once its cutover
 checklist is done. Until then, Fly is still the public instance, and the rest of
 this section still describes it.
 
