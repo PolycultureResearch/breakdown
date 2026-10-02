@@ -194,12 +194,79 @@ optimization on top of S25; S25 does not work without it.
 
 ### 2.6 Follow-up, not S25: reuse the compiled model
 
-Build each node's model once with its data as `pm.Data`, cache the compiled
-logp/dlogp on `TreeState` beside `traces`, and swap data for each `fit_end`.
-It saves the 3–5s compile on every fit after a node's first. It is new
-per-tree state, so it follows Rule 2 (bounded, by the thing that grows) and
-the no-hidden-global-state rule. Worth doing only once S25 has made compile
-the dominant cost, which the measurements say it will.
+The proposal: build each node's model once with its data as `pm.Data`, cache
+the compiled logp/dlogp on `TreeState` beside `traces`, and swap data for each
+`fit_end`, saving "the 3–5s compile on every fit after a node's first".
+
+**Evaluated 2026-10-02, after S25 shipped: not worth building.** PyTensor
+already does most of it. Its numba backend keeps an on-disk cache
+(`numba__cache`, on by default, under `base_compiledir`) keyed on the graph
+and not on the data, so the expensive part of the compile is shared across
+`fit_end`s, across fits in one process, and across processes and restarts.
+What §2.6 would add on top is the part the disk cache cannot skip, which is
+building and rewriting the logp/dlogp graph in the parent process. That
+part costs about 0.6–0.7s.
+
+Measured on an M2 Max with
+[`benchmarks/s25_compile_reuse.py`](benchmarks/s25_compile_reuse.py). A
+"cold" cache is a fresh `base_compiledir`, which is what a new container
+sees:
+
+| | cold disk cache | warm disk cache |
+|---|---|---|
+| `sessions`, first fit in a process | 18.4s | 8.2s |
+| `customer_churn_rate`, first fit | 10.5s | 2.5s |
+| `trial_conversion_rate`, first fit | 6.9s | 3.2s |
+| `trials_started`, first fit | 9.1s | 7.2s |
+| 3.10's warm pass on White Cube (6 fits) | **60.1s** | **35.5s** |
+
+- **Numba compiles lazily, inside the first sampling call.** On a cold cache
+  the timed `logp_dlogp_function` is only 1.3–2.3s; the other ~8s of a cold
+  `sessions` fit is jitting during `pm.sample`, with one chain as well as
+  four, so it is compile and not process spawn. Each new graph structure
+  (parent count, seasonality, interventions) pays this once per cache dir.
+- **The disk cache does not care about the data.** A brand-new process
+  fitting `sessions` at a `fit_end` it had never seen ran in 8.8s, the same
+  as an in-process refit.
+- **The prototype saves ~0.7s a fit on a warm cache.** On a synthetic
+  `sessions`-shaped node, rebuilding per fit took 6.3–6.5s and reusing one
+  `pm.Data` model and `pm.NUTS` step took 5.5–5.7s. That is ~10% on a
+  long daily node and ~30% on a ~100-period weekly node (0.6s of 1.7–2.2s).
+  Across the six warm-pass fits it is ~4s, against the 25s the warm disk
+  cache already saved.
+
+Why the remaining ~0.7s is not worth building for:
+
+- **It changes `fit_metric` throughout.** `y`, `X`, `t`, `X_iv` and the
+  seasonal terms all change length with `fit_end`, so every one becomes
+  `pm.Data`. The cache key is the graph structure, and the cache is new
+  per-tree state under Rule 2.
+- **A reused step can break reproducibility.** A `pm.NUTS` step carries
+  adaptation state between `pm.sample` calls. A fit could then depend on
+  what the cache held before it, which breaks 3.10's invariant that a warmed
+  fit is the fit `run_rca` would have made. Making it safe means resetting
+  that state and proving the reset with a seeded equality test.
+- **Multi-chain sampling unpickles the step into each worker anyway**, and
+  that cost stays whatever the parent caches.
+
+**What to do instead.**
+
+1. **Persist `base_compiledir` wherever breakdown runs in a container.**
+   This is the measured 41% on a cold warm pass, and about 8s per node
+   structure on the first RCA after a deploy. Neither `Dockerfile` nor
+   `demo/hetzner/compose.yaml` keeps `~/.pytensor`, so every deploy and
+   restart compiles every structure again. A named volume, or
+   `PYTENSOR_FLAGS=base_compiledir=` pointed at one, is a one-line change.
+   Do not bake the cache into the image: numba's cache is specific to the
+   CPU it was compiled on, and the build machine is not the host.
+2. **What is left on a warm cache is sampling.** That is ~7s of `sessions`
+   and ~6s of `trials_started` at 709 daily periods. If fits need to get
+   faster again, measure there first, starting with the tune/draw budget or
+   a different NUTS implementation. Compile reuse comes after that.
+
+Revisit §2.6 only if a profile on a warm cache shows the parent-side compile
+dominating, for example a tree of many short weekly nodes refitted at many
+`fit_end`s, as 3.10 steps 2–3 might produce.
 
 ---
 
@@ -367,7 +434,9 @@ and the RCA an automation triggers is the same `run_rca` a person gets.
    parallel with either of the above.
 4. **3.10 steps 2–3** (suggestions, then warming them), with the
    `docs/model.md` clause and the S15 disclosure in the same change.
-5. §2.6 (compiled-model reuse), once S25's numbers show compile dominating.
+5. ~~§2.6 (compiled-model reuse)~~ evaluated 2026-10-02 and not built:
+   PyTensor's disk cache already covers most of it. Persisting that cache in
+   containers is the cheaper win (§2.6).
 
 ## 6. Open questions
 
