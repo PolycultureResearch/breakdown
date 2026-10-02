@@ -69,7 +69,7 @@ the decomposition) or `"definitional"` (the node is **derived** — its series i
 the formula, so the zero means nothing was checked).
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import networkx as nx
 import numpy as np
@@ -1153,7 +1153,27 @@ def _node_fit_end(defn, grain: str, analysis_start: str, snapped_an) -> str:
     return str(end.date())
 
 
-def run_rca(
+class RcaFitPlan(NamedTuple):
+    """What `run_rca` resolves before it fits anything: the windows, the
+    scoped frames, and which nodes need a fit at which `fit_end`.
+
+    Its own function so the API's background warm (roadmap 3.10) can compute
+    exactly the cache keys a real request will look up, from the same code,
+    rather than a second copy of the rules that could drift from this one.
+    """
+
+    reference_start: str
+    reference_end: str
+    reference_defaulted: bool
+    data: Any
+    nodes_in_scope: set
+    scoped: Dict[str, Tuple[str, Optional[pd.DataFrame], Any, Any]]
+    frame_failures: Dict[str, str]
+    fit_ends: Dict[str, str]
+    to_fit: List[str]
+
+
+def plan_rca_fits(
     dag: nx.DiGraph,
     data: pd.DataFrame,
     traces: Dict[Tuple[str, Optional[str]], Any],
@@ -1164,47 +1184,11 @@ def run_rca(
     reference_start: Optional[str] = None,
     reference_end: Optional[str] = None,
     inference_method: str = "nuts",
-    draws: int = NUTS_DRAWS,
-    progress: Optional[ProgressFn] = None,
-    reference_sensitivity: bool = True,
-) -> Dict[str, Any]:
-    """Attribute `target`'s window-over-window change to its ancestors.
+) -> RcaFitPlan:
+    """Resolve windows and list the fits `run_rca` would need, without fitting.
 
-    `traces` is the caller's cache, keyed by `(metric name, fit_end)` -> FitResult.
-    Probabilistic nodes in scope without a usable cached trace are fitted on data
-    strictly before `analysis_start` (so the anomaly window is excluded) and added
-    to it. A full-window fit (`fit_end=None`) is never reused here — it is
-    contaminated by the anomaly for attribution purposes.
-
-    `inference_method` is `"nuts"` — exact MCMC — by default, because roadmap S2
-    measured mean-field ADVI failing the PSIS k-hat check on essentially every
-    real node in this engine, moving *point estimates* by 37-57% and in one
-    demo case turning an interval that excludes zero into one that does not.
-    `"advi"` remains available for triage on a tree where NUTS is genuinely too
-    slow (a wide day-grain tree); every node it fits then carries its k-hat and
-    the warning that goes with it, so the trade is visible in the payload
-    rather than assumed. `draws` is the posterior draw count either way
-    (per chain under NUTS); it is forwarded here rather than left to
-    `fit_metric` because this module resamples that posterior itself (see
-    `N_BOOT` below), so its size is the orchestrator's business. The warm-up
-    and chain budgets are pure sampler mechanics and come from `fit_metric`'s
-    `NUTS_TUNE` / `NUTS_CHAINS` — one spelling for the whole engine, so that
-    the route a caller arrives through cannot change the posterior they get
-    (roadmap C27).
-
-    Omitting both reference dates uses the default reference window: the
-    matched adjacent block before the analysis window. The reference is only
-    the comparison baseline — the fit window is all loaded history before
-    `analysis_start` either way. The response echoes the resolved windows and
-    `reference_defaulted`.
-
-    `reference_sensitivity` (roadmap S23) re-attributes the same analysis
-    window under `REFERENCE_SENSITIVITY_SHIFTS` neighbouring reference blocks
-    — over the cached fits, never fitting — and publishes whether the top
-    cause and the gap's direction survive the move, as `reference_sensitivity`.
-    It runs whether the reference was defaulted or chosen: a chosen block is
-    no less one choice among neighbours, and the reader's question is the
-    same. The alternatives themselves run with it off.
+    Raises exactly what `run_rca` raises for an unanalysable target or window.
+    `to_fit` excludes nodes `traces` already holds a usable fit for.
     """
     if target not in dag:
         raise ValueError(f"Metric '{target}' not found in the metric tree.")
@@ -1214,10 +1198,6 @@ def run_rca(
     )
     _validate_windows(reference_start, reference_end, analysis_start, analysis_end)
     data = ensure_grained(data)
-
-    # One seeded generator per call: bootstrap replicates (and hence every
-    # contribution number) are identical across identical calls.
-    rng = np.random.default_rng(0)
 
     nodes_in_scope = nx.ancestors(dag, target) | {target}
 
@@ -1328,6 +1308,124 @@ def run_rca(
             continue
         to_fit.append(node)
 
+    return RcaFitPlan(
+        reference_start,
+        reference_end,
+        reference_defaulted,
+        data,
+        nodes_in_scope,
+        scoped,
+        frame_failures,
+        fit_ends,
+        to_fit,
+    )
+
+
+def fit_rca_node(
+    dag: nx.DiGraph,
+    data: pd.DataFrame,
+    node: str,
+    fit_end: str,
+    *,
+    inference_method: str = "nuts",
+    draws: int = NUTS_DRAWS,
+):
+    """The one fit call an RCA makes per node, seeded as every caller must be.
+
+    Shared with the background warm (roadmap 3.10): a warmed fit is only a
+    cache hit if it is the fit `run_rca` would have made, arguments and seed
+    included.
+    """
+    return fit_metric(
+        dag,
+        data,
+        node,
+        draws=draws,
+        inference_method=inference_method,
+        fit_end=fit_end,
+        random_seed=FIT_RANDOM_SEED,
+    )
+
+
+def run_rca(
+    dag: nx.DiGraph,
+    data: pd.DataFrame,
+    traces: Dict[Tuple[str, Optional[str]], Any],
+    target: str,
+    *,
+    analysis_start: str,
+    analysis_end: str,
+    reference_start: Optional[str] = None,
+    reference_end: Optional[str] = None,
+    inference_method: str = "nuts",
+    draws: int = NUTS_DRAWS,
+    progress: Optional[ProgressFn] = None,
+    reference_sensitivity: bool = True,
+) -> Dict[str, Any]:
+    """Attribute `target`'s window-over-window change to its ancestors.
+
+    `traces` is the caller's cache, keyed by `(metric name, fit_end)` -> FitResult.
+    Probabilistic nodes in scope without a usable cached trace are fitted on data
+    strictly before `analysis_start` (so the anomaly window is excluded) and added
+    to it. A full-window fit (`fit_end=None`) is never reused here — it is
+    contaminated by the anomaly for attribution purposes.
+
+    `inference_method` is `"nuts"` — exact MCMC — by default, because roadmap S2
+    measured mean-field ADVI failing the PSIS k-hat check on essentially every
+    real node in this engine, moving *point estimates* by 37-57% and in one
+    demo case turning an interval that excludes zero into one that does not.
+    `"advi"` remains available for triage on a tree where NUTS is genuinely too
+    slow (a wide day-grain tree); every node it fits then carries its k-hat and
+    the warning that goes with it, so the trade is visible in the payload
+    rather than assumed. `draws` is the posterior draw count either way
+    (per chain under NUTS); it is forwarded here rather than left to
+    `fit_metric` because this module resamples that posterior itself (see
+    `N_BOOT` below), so its size is the orchestrator's business. The warm-up
+    and chain budgets are pure sampler mechanics and come from `fit_metric`'s
+    `NUTS_TUNE` / `NUTS_CHAINS` — one spelling for the whole engine, so that
+    the route a caller arrives through cannot change the posterior they get
+    (roadmap C27).
+
+    Omitting both reference dates uses the default reference window: the
+    matched adjacent block before the analysis window. The reference is only
+    the comparison baseline — the fit window is all loaded history before
+    `analysis_start` either way. The response echoes the resolved windows and
+    `reference_defaulted`.
+
+    `reference_sensitivity` (roadmap S23) re-attributes the same analysis
+    window under `REFERENCE_SENSITIVITY_SHIFTS` neighbouring reference blocks
+    — over the cached fits, never fitting — and publishes whether the top
+    cause and the gap's direction survive the move, as `reference_sensitivity`.
+    It runs whether the reference was defaulted or chosen: a chosen block is
+    no less one choice among neighbours, and the reader's question is the
+    same. The alternatives themselves run with it off.
+    """
+    (
+        reference_start,
+        reference_end,
+        reference_defaulted,
+        data,
+        nodes_in_scope,
+        scoped,
+        frame_failures,
+        fit_ends,
+        to_fit,
+    ) = plan_rca_fits(
+        dag,
+        data,
+        traces,
+        target,
+        analysis_start=analysis_start,
+        analysis_end=analysis_end,
+        reference_start=reference_start,
+        reference_end=reference_end,
+        inference_method=inference_method,
+    )
+
+    # One seeded generator per call: bootstrap replicates (and hence every
+    # contribution number) are identical across identical calls.
+    rng = np.random.default_rng(0)
+
     # A node whose own fit raises is recorded and skipped, not propagated: one
     # unfittable node (a series held flat all fit window has zero variance and
     # cannot be normalized — the seasonal business whose default state is zero)
@@ -1355,14 +1453,8 @@ def run_rca(
     for i, node in enumerate(to_fit, 1):
         _report(progress, stage="fitting", metric=node, current=i, total=len(to_fit))
         try:
-            fit = fit_metric(
-                dag,
-                data,
-                node,
-                draws=draws,
-                inference_method=inference_method,
-                fit_end=fit_ends[node],
-                random_seed=FIT_RANDOM_SEED,
+            fit = fit_rca_node(
+                dag, data, node, fit_ends[node], inference_method=inference_method, draws=draws
             )
         except (ValueError, RuntimeError) as e:
             # RuntimeError included (roadmap C38): PyMC's SamplingError — a

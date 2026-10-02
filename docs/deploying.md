@@ -355,6 +355,37 @@ field.
 
 ---
 
+## Warming the default analysis
+
+A cold RCA spends nearly all its time fitting models: tens of seconds on a
+laptop, minutes on a small shared VM. `--warm latest` (`BREAKDOWN_WARM=latest`)
+spends that time before anyone asks. After a tree loads, a background task
+fits everything the **default analysis** of each metric needs: the window the
+UI selects when that metric is opened (the last 7 days, last whole week or
+last whole month, by the coarsest grain under it). An analyst who opens the
+tree and clicks Analyze gets a cache hit.
+
+```bash
+breakdown serve --tree tree.yml --warm latest
+```
+
+It is off by default, because it spends CPU at every boot on fits a laptop
+session may never open. Three things make it safe to leave on for a shared
+instance:
+
+- **It never makes a person wait for the whole warm.** The tree's lock is taken
+  per fit, so a request that arrives mid-warm waits for at most the one fit in
+  progress.
+- **It never evicts a fit somebody asked for.** Warm fits enter the trace cache
+  as its oldest entries. If `BREAKDOWN_MAX_TRACE_BYTES` has no room for them,
+  the warm stops and logs it.
+- **It is visible.** `GET /meta` reports its progress under `warm`
+  ([API reference](api-reference.md#get-meta)).
+
+A fit depends only on the analysis window's start date, never on the
+reference window, so a warmed default analysis stays a cache hit if the
+analyst then changes the reference.
+
 ## Environment variables
 
 Every `breakdown serve` flag has an environment-variable form, which is what a
@@ -365,6 +396,7 @@ container or a scheduled job uses. The flag wins where both are set.
 | `BREAKDOWN_TREE` | `--tree` | bundled `jaffle_shop_tree.yml` | Tree file or a directory of them ([Serving several trees](#serving-several-trees)) |
 | `BREAKDOWN_DEFAULT_TREE` | `--default-tree` | the only tree, else alphabetically first | Which tree the unprefixed routes mean |
 | `BREAKDOWN_EAGER` | `--eager` | unset (a directory loads lazily) | Load the default tree at boot instead of on first use |
+| `BREAKDOWN_WARM` | `--warm` | `off` | `latest` fits every metric's default analysis in the background after its tree loads; see [Warming the default analysis](#warming-the-default-analysis) |
 | `BREAKDOWN_START_DATE` | `--start-date` | `2024-01-01` | Start of the loaded data window |
 | `BREAKDOWN_END_DATE` | `--end-date` | `2024-04-09` | End of the loaded data window |
 | `BREAKDOWN_HOST` | `--host` | `127.0.0.1` | Bind address. Anything non-loopback exposes the API; see [Authentication](#authentication) |

@@ -121,6 +121,29 @@ against what they expect of the source. `data_through` for a sparse metric
 reports the window's end, since by declaration the source is complete
 through it.
 
+**`warm`** — the background warm of each metric's default analysis
+([`BREAKDOWN_WARM=latest`](deploying.md#warming-the-default-analysis)), `{}`
+when it is off:
+
+```json
+{
+  "mode": "latest",
+  "status": "running",
+  "total": 6,
+  "done": 2,
+  "failed": {},
+  "windows": {"net_new_mrr": {"analysis_start": "2026-07-20", "analysis_end": "2026-07-26"}}
+}
+```
+
+`status` is `planning`, `running`, `done`, `failed` (planning itself raised;
+`error` says why) or `stopped_cache_full` (the trace budget had no room for a
+fit nobody had asked for yet, so the warm stopped rather than evicting one
+somebody had). `windows` is the default analysis window the warm fitted for,
+per target: the same window the UI selects when that metric is opened, so an
+RCA on it is a cache hit. `failed` maps `node@fit_end` to the reason a single
+fit failed; the rest of the warm carries on.
+
 ## `GET /metrics/{name}/query`
 
 Never ship a number the engine can't defend. Most providers gave a reader no

@@ -25,6 +25,7 @@ breakdown/
   engine/
     model.py       # fit_metric() — BSTS via PyMC; compute_shapley(); summarize_trace()
     rca.py         # run_rca() + shapley_attribution() — all window-over-window attribution
+    warm.py        # plan_warm_fits() — which fits each metric's default analysis needs (3.10)
 
     stats.py       # shared uncertainty vocabulary: bootstrap, degeneracy guards, direction probability
     windows.py     # shared window→scalar vocabulary: node_window_value, rate_window_method
@@ -771,6 +772,10 @@ Root cause analysis over `nx.ancestors(dag, target) | {target}`. `traces` is the
    - Every contribution carries `share_of_gap = estimate / gap` (None if `|gap| < 1e-12`).
 3. **`ranked_causes`** (documented heuristic): `score[target]=1.0`, propagated in reverse topological order; `score[p] += score[c] * min(|share_of_gap|, 1.0)`. All scoped nodes except the target, sorted desc, each `{"metric", "score", "via"}`. Scores (not raw gaps) are the cross-grain-comparable quantity. ⚠️ The weight is `0.0 if share is None or not np.isfinite(share)`: a **non-finite share slips straight through `min(abs(share), 1.0)`** because NaN compares false against everything, and one NaN term then poisons the score of every ancestor above it — the whole ranking, from one node. An undefined share carries no evidence about influence, so it weighs nothing, exactly like the `None` case.
 
+### `plan_rca_fits(...)` and `fit_rca_node(...)` — the planner, shared with the warm
+
+`run_rca` resolves its windows, scopes every node's frame and lists the fits it needs (`(node, fit_end)` per probabilistic node without a usable cached trace) in `plan_rca_fits`, which returns an `RcaFitPlan`; each fit is then made by `fit_rca_node`, the one seeded `fit_metric` call. Both are their own functions so that `engine/warm.py` (roadmap 3.10, `BREAKDOWN_WARM=latest`) computes **exactly** the cache keys a real request will look up, from the same code. A second copy of the scoping rules could drift and warm fits nobody reads. `plan_warm_fits` asks `plan_rca_fits` about each metric's default analysis window (`grains.default_analysis_window`, the server-side mirror of `app.js`'s `DEFAULT_PRESET`) and deduplicates the keys. Running them is the API's job (`_warm_latest`): the tree lock is taken **per fit**, never for the whole warm, and each fit enters the cache through `TraceView.put_oldest`, so a warm can only ever evict warm fits.
+
 ### Per-node `status` — one bad node does not end the analysis
 
 Every node in scope carries a `status`; anything other than `"ok"` reports the node **without attribution** and lets the rest of the tree through, with the engine's own diagnostic in **`status_reason`** (`null` when `ok`).
@@ -937,6 +942,7 @@ A process serves **several** trees, and they are peers: a wide tree with revenue
 | `flow_cache` | `BoundedCache` (64) | Entity-flow transition matrices, keyed by a *pair* of windows |
 | `lock` | `asyncio.Lock` | Serializes sampling (analyze + RCA fits) **on this tree** |
 | `earliest` / `earliest_task` | `Dict[str, str \| None]` / `Task` | Background history discovery |
+| `warm` / `warm_task` | `Dict[str, Any]` / `Task` | Background warm of each metric's default analysis (`BREAKDOWN_WARM=latest`, roadmap 3.10); `warm` is the status `/meta` reports, replaced whole |
 
 App-wide state is what genuinely isn't a tree's: `trees`, `default_tree`, `trace_store`, `discovery_error`, `auth_error`, and `progress`.
 

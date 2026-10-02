@@ -25,6 +25,15 @@ its notes never listed it at all.)
 
 ### Added
 
+- **`--warm latest` / `BREAKDOWN_WARM=latest`: the default analysis is fitted
+  before anyone asks (roadmap 3.10, step 1).** After a tree loads, a
+  background task fits everything each metric's default analysis needs — the
+  window the UI selects when that metric is opened — so the first Analyze
+  click is a cache hit. The tree lock is taken per fit, so a person's request
+  mid-warm waits for at most one fit; warm fits enter the trace cache as its
+  oldest entries, so a warm never evicts a fit somebody asked for (it stops
+  and logs when the budget has no room). Off by default. Progress is on
+  `GET /meta` under `warm`.
 - **The CSV / Parquet on-ramp — `provider: duckdb` (roadmap 2.2, #138).** A
   folder of exports is enough to run an RCA: `provider: {type: duckdb,
   data_dir: ./exports}` makes every `.csv` / `.parquet` directly inside the

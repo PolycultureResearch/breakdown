@@ -273,6 +273,27 @@ class TraceView(MutableMapping):
             store.total_bytes += size
             store._evict()
 
+    def put_oldest(self, key: _TraceKey, value: Any) -> None:
+        """Insert as the *oldest* entry: first in line for eviction.
+
+        For fits nobody asked for yet (roadmap 3.10's background warm). An
+        ordinary write goes to the back and can push the oldest entries out;
+        a warm write going to the back could evict a fit a person requested
+        minutes ago, to make room for one they may never open. At the front,
+        if the budget is short, the warm fit is the one that goes. The store's
+        "never evict the newest" rule protects the back, so it does not stop
+        this.
+        """
+        store_key = (self._tree_id, *key)
+        store = self._store
+        size = _trace_nbytes(value)
+        with store._lock:
+            store._forget(store_key)
+            store._entries = {store_key: value, **store._entries}
+            store._sizes[store_key] = size
+            store.total_bytes += size
+            store._evict()
+
     def __delitem__(self, key: _TraceKey) -> None:
         store_key = (self._tree_id, *key)
         with self._store._lock:
@@ -408,6 +429,12 @@ class TreeState:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     earliest: Dict[str, Optional[str]] = field(default_factory=dict)
     earliest_task: Optional[asyncio.Task] = None
+    # Roadmap 3.10's background warm of each metric's default analysis (opt-in,
+    # BREAKDOWN_WARM=latest). `warm` is the status `/meta` reports, replaced
+    # whole rather than mutated, like `progress`: the task writes it from the
+    # event loop and handlers read it there too.
+    warm: Dict[str, Any] = field(default_factory=dict)
+    warm_task: Optional[asyncio.Task] = None
 
     @property
     def title(self) -> str:

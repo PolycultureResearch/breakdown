@@ -19,6 +19,7 @@ def serve(
     snapshot_dir: str | None = None,
     no_snapshots: bool = False,
     refresh: bool = False,
+    warm: str | None = None,
 ) -> None:
     import uvicorn
 
@@ -35,6 +36,8 @@ def serve(
         os.environ["BREAKDOWN_DEFAULT_TREE"] = default_tree
     if eager:
         os.environ["BREAKDOWN_EAGER"] = "1"
+    if warm:
+        os.environ["BREAKDOWN_WARM"] = warm
     for flag, value, env in (
         ("--start-date", start_date, "BREAKDOWN_START_DATE"),
         ("--end-date", end_date, "BREAKDOWN_END_DATE"),
@@ -129,6 +132,14 @@ def main(argv: list[str] | None = None) -> None:
         "use (a directory of trees loads lazily by default)",
     )
     serve_parser.add_argument(
+        "--warm",
+        choices=("off", "latest"),
+        default=None,
+        help="After a tree loads, fit every metric's default analysis in the "
+        "background so the first click is a cache hit: 'latest' (the UI's "
+        "default window), or 'off' (default; env BREAKDOWN_WARM)",
+    )
+    serve_parser.add_argument(
         "--start-date",
         type=str,
         default=None,
@@ -213,6 +224,7 @@ def main(argv: list[str] | None = None) -> None:
             reload=args.reload,
             snapshot_dir=args.snapshot_dir,
             no_snapshots=args.no_snapshots,
+            warm=args.warm,
             refresh=args.refresh,
         )
     elif args.command == "doctor":

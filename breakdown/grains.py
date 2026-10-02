@@ -311,6 +311,49 @@ def default_reference_window(
     return (str(ref_start.date()), str(ref_end.date()))
 
 
+def default_analysis_window(data_start, data_end, grain: str) -> Optional[Tuple[str, str]]:
+    """The analysis window the UI selects by default for a target, or None.
+
+    **Mirrored by `app.js` (`DEFAULT_PRESET` and the presets it names), and the
+    two must change together.** The UI computes this client-side for its
+    window picker. The background warm (roadmap 3.10) computes it here to
+    fit ahead of time exactly what the out-of-the-box click will ask for, and
+    a fit warmed at a date the UI never sends is a wasted fit, not an error.
+    Same arrangement as `default_reference_window`, mirrored the other way.
+
+    `grain` is the coarsest grain in the target's ancestor scope; `data_end`
+    is the earliest data edge across that scope. By grain:
+
+    - **day:** the last 7 days, when the data spans at least 8.
+    - **week:** the last whole Monday–Sunday week ending on or before
+      `data_end`, starting after `data_start`.
+    - **month:** the last whole month ending on or before `data_end`,
+      starting after `data_start`.
+
+    None when the data is too short for that preset; the UI then falls back
+    to whatever preset fits, which nothing warms.
+    """
+    _check_grain(grain)
+    start = pd.Timestamp(data_start).normalize()
+    end = pd.Timestamp(data_end).normalize()
+    if grain == "day":
+        if (end - start).days + 1 < 8:
+            return None
+        an_start, an_end = end - pd.Timedelta(days=6), end
+    elif grain == "week":
+        # Days since the most recent Sunday (dayofweek: Mon=0 .. Sun=6).
+        an_end = end - pd.Timedelta(days=(end.dayofweek + 1) % 7)
+        an_start = an_end - pd.Timedelta(days=6)
+    else:
+        last = end.replace(day=1)
+        if end < last + pd.offsets.MonthEnd(0):
+            last = (last - pd.Timedelta(days=1)).replace(day=1)
+        an_start, an_end = last, last + pd.offsets.MonthEnd(0)
+    if grain != "day" and an_start <= start:
+        return None
+    return str(an_start.date()), str(an_end.date())
+
+
 def resample_up(
     series: pd.Series,
     from_grain: str,

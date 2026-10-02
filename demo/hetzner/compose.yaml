@@ -33,6 +33,10 @@ services:
       BREAKDOWN_DEMO_SLUG: white_cube
       BREAKDOWN_DEMO_VERTICAL: b2c_saas
       BREAKDOWN_DEMO_DATASET: fake_companies datasets-v1
+      # Fit every metric's default analysis after boot (roadmap 3.10), so a
+      # visitor's first Analyze click is a cache hit. prewarm.py still warms
+      # the tour stories, whose windows are not the defaults.
+      BREAKDOWN_WARM: latest
     healthcheck:
       test:
         - CMD
