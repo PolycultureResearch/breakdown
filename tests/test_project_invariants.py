@@ -274,6 +274,12 @@ def test_every_cache_on_tree_state_is_bounded():
         # being called something innocuous.
         if field.name == "earliest":
             continue
+        # `warm` (roadmap 3.10) is a status record replaced whole on each
+        # warm, not a cache: one default window per metric and one entry per
+        # planned fit, all derived from the tree at load. No request adds to
+        # it. Exempt by name for the same reason as `earliest`.
+        if field.name == "warm":
+            continue
         if not isinstance(value, trees_mod.BoundedCache):
             unbounded.append(field.name)
             continue

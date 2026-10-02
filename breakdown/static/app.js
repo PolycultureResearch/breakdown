@@ -724,7 +724,11 @@ const WINDOW_PRESETS = [
 ];
 
 /* The default preset per target grain: the largest-window preset that is
-   guaranteed to snap to whole periods, so the out-of-the-box click works. */
+   guaranteed to snap to whole periods, so the out-of-the-box click works.
+   Mirrored server-side by `grains.default_analysis_window`, which the
+   background warm (BREAKDOWN_WARM=latest, roadmap 3.10) uses to fit this exact
+   window ahead of the click. Change the two together, or the warm fits a
+   window nobody requests. */
 const DEFAULT_PRESET = { day: "last7", week: "last-full-week", month: "last-full-month" };
 
 /* The data edge the presets compute against: the earliest `data_through`

@@ -36,13 +36,20 @@ from breakdown.engine.model import (
     NUTS_CHAINS,
     NUTS_DRAWS,
     NUTS_TUNE,
+    cached_fit_is_usable,
     fit_metric,
     summarize_trace,
     warm_inference_imports,
 )
-from breakdown.engine.rca import resolve_reference_window, run_rca, shapley_attribution
+from breakdown.engine.rca import (
+    fit_rca_node,
+    resolve_reference_window,
+    run_rca,
+    shapley_attribution,
+)
 from breakdown.engine.simulate import ScenarioRequest, run_scenario, validate_cold_start
 from breakdown.engine.slices import entity_flows, slice_attribution
+from breakdown.engine.warm import plan_warm_fits
 from breakdown.grains import next_start, snap_window
 from breakdown.loading import (
     build_fetcher,
@@ -263,6 +270,7 @@ async def _ensure_loaded(tree: TreeState) -> None:
         finally:
             tree.loading = False
     _start_earliest_discovery(tree)
+    _start_warm(tree)
 
 
 def _require_ready(tree: TreeState) -> None:
@@ -668,6 +676,7 @@ async def lifespan(app: FastAPI):
     for tree in _eager_trees(app):
         await asyncio.to_thread(load_tree, tree)
         _start_earliest_discovery(tree)
+        _start_warm(tree)
     # PyMC/ArviZ/PyTensor are deferred out of `engine.model`'s module scope so
     # the port binds without paying for them (~27s on a shared-CPU VM, which is
     # what made Fly's proxy 503 the first visitor after an idle period). That
@@ -685,13 +694,13 @@ async def lifespan(app: FastAPI):
             yield
     finally:
         for tree in app.state.trees.values():
-            task = tree.earliest_task
-            if task is not None and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+            for task in (tree.earliest_task, tree.warm_task):
+                if task is not None and not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
 
 
 def _eager_trees(app: FastAPI):
@@ -740,6 +749,104 @@ async def _discover_earliest(tree: TreeState) -> None:
             logger.info("earliest_date failed for '%s': %s", metric.name, e)
             earliest = None
         tree.earliest[metric.name] = earliest
+
+
+#: `BREAKDOWN_WARM` values. "latest" fits every metric's default analysis in
+#: the background after its tree loads (roadmap 3.10, step 1); "off", the
+#: default, fits nothing until asked. Opt-in because it spends minutes of CPU
+#: at every boot on fits a laptop session may never open.
+WARM_MODES = ("off", "latest")
+
+
+def _warm_mode() -> str:
+    mode = os.environ.get("BREAKDOWN_WARM", "off").strip().lower() or "off"
+    if mode not in WARM_MODES:
+        logger.warning(
+            "BREAKDOWN_WARM=%r is not one of %s; warming nothing.", mode, ", ".join(WARM_MODES)
+        )
+        return "off"
+    return mode
+
+
+def _start_warm(tree: TreeState) -> None:
+    """Start the background warm for a freshly loaded tree, if enabled."""
+    if _warm_mode() != "latest" or tree.data is None or tree.parser is None:
+        return
+    if tree.warm_task is not None and not tree.warm_task.done():
+        return
+    tree.warm = {"mode": "latest", "status": "planning"}
+    tree.warm_task = asyncio.create_task(_warm_latest(tree))
+
+
+async def _warm_latest(tree: TreeState) -> None:
+    """Fit what each metric's default analysis needs, one node at a time.
+
+    **The lock is taken per fit, never for the whole warm.** `asyncio.Lock`
+    wakes waiters in arrival order, so a person's request that arrives
+    mid-warm runs as soon as the current fit finishes, at most one fit's wait
+    (about 9s for the demo's daily node), not the whole warm's. The warm then
+    queues behind it, and a fit the request made itself is not made twice:
+    each node re-checks the cache under the lock before fitting.
+
+    Fits go in as the cache's *oldest* entries (`TraceView.put_oldest`), so a
+    warm never evicts a fit somebody asked for. When the budget is too small to
+    keep a warm fit at all, the warm stops and says so rather than churning.
+
+    Failure-soft like `_discover_earliest`: one unfittable node is recorded and
+    skipped, and nothing here can take the tree down.
+    """
+    dag, data = tree.parser.dag, tree.data
+    try:
+        async with tree.lock:
+            fits, windows = await asyncio.to_thread(
+                _guarded, tree, plan_warm_fits, dag, data, tree.traces
+            )
+    except Exception as e:  # noqa: BLE001 - a warm must never break serving
+        logger.warning("warm: planning failed for tree '%s': %s", tree.id, e)
+        tree.warm = {"mode": "latest", "status": "failed", "error": str(e)}
+        return
+    total = len(fits)
+    logger.info("warm: tree '%s' — %d fit(s) for %d default analyses", tree.id, total, len(windows))
+    done, failed = 0, {}
+    tree.warm = {
+        "mode": "latest",
+        "status": "running",
+        "total": total,
+        "done": 0,
+        "failed": {},
+        "windows": windows,
+    }
+    for fit_spec in fits:
+        key = (fit_spec.node, fit_spec.fit_end)
+        try:
+            async with tree.lock:
+                cached = tree.traces.get(key)
+                if cached is None or not cached_fit_is_usable(cached, "nuts"):
+                    fit = await asyncio.to_thread(
+                        _guarded, tree, fit_rca_node, dag, data, fit_spec.node, fit_spec.fit_end
+                    )
+                    tree.traces.put_oldest(key, fit)
+                    if key not in tree.traces:
+                        logger.warning(
+                            "warm: tree '%s' stopped after %d of %d fits — the trace "
+                            "cache budget (BREAKDOWN_MAX_TRACE_BYTES) has no room left "
+                            "for a fit nobody has asked for yet.",
+                            tree.id,
+                            done,
+                            total,
+                        )
+                        tree.warm = {**tree.warm, "status": "stopped_cache_full", "done": done}
+                        return
+        except asyncio.CancelledError:
+            raise
+        except (ValueError, RuntimeError, EngineBusy) as e:
+            failed[f"{fit_spec.node}@{fit_spec.fit_end}"] = str(e)
+        done += 1
+        tree.warm = {**tree.warm, "done": done, "failed": dict(failed)}
+    tree.warm = {**tree.warm, "status": "done"}
+    logger.info(
+        "warm: tree '%s' done — %d fit(s), %d failed", tree.id, total - len(failed), len(failed)
+    )
 
 
 app = FastAPI(title="breakdown API", lifespan=lifespan)
@@ -1213,6 +1320,7 @@ async def get_meta(request: Request):
             "short_series": {},
             "sparse_fills": {},
             "fitted": [],
+            "warm": {},
         }
     # A metric whose data edge is unknown is reported as `null`, not omitted.
     # Omitting it made "we don't know when this metric's data ends" and "this
@@ -1275,6 +1383,12 @@ async def get_meta(request: Request):
         # another's analysis ran, which is the single most likely way a
         # multi-viewer demo breaks (C8).
         "fitted": sorted({name for (name, _) in list(tree.traces)}),
+        # The background warm of each metric's default analysis (roadmap 3.10),
+        # `{}` when BREAKDOWN_WARM is off: `status` (planning | running | done
+        # | failed | stopped_cache_full), `done`/`total` fits, the default
+        # window per target it warmed, and any fit that failed, by
+        # `node@fit_end`.
+        "warm": dict(tree.warm),
     }
 
 
