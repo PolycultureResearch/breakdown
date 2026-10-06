@@ -37,7 +37,7 @@ between them. The stance is **probabilistic and causal**, never frequentist:
 - [`docs/mcp.md`](docs/mcp.md) — the MCP server: the six tools, response shaping, security, and a worked session against the live demo
 - [`docs/model.md`](docs/model.md) — statistical assumptions and how to read results; **read this before trusting output**
 - [`docs/ui-guide.md`](docs/ui-guide.md) — driving the UI: fitting a model, running an RCA, slicing, what-if
-- [`docs/deploying.md`](docs/deploying.md) — serving several trees, authentication, Docker, `breakdown doctor`, snapshots, environment variables
+- [`docs/deploying.md`](docs/deploying.md) — serving several trees, authentication, Docker, `breakdown check`, `breakdown doctor`, snapshots, environment variables
 - [`docs/why-breakdown.md`](docs/why-breakdown.md) — the problem breakdown exists to solve
 - [`breakdown/examples/`](breakdown/examples/), [`knowledge/b2b_mrr_tree.yml`](knowledge/b2b_mrr_tree.yml) — the bundled runnable example and a full worked-reference tree
 - [`demo/demos.yaml`](demo/demos.yaml) — **the registry of hosted demos**, one per fake_companies vertical (White Cube live; Alpenglow/Meridian/Bristlecone planned): URL, generating scenario, and prebuilt dataset + ground-truth downloads. `python demo/check_demos.py` probes every deployed demo's `/health` + `/manifest`; `python demo/fetch_demo_data.py` pulls a vertical's duckdb (raw tables + dbt marts prebuilt) and its `ground_truth.json` — the planted-anomaly key, so an RCA answer can be *scored* (`fake-companies score` in the fake_companies repo) instead of eyeballed
@@ -63,12 +63,15 @@ breakdown/
   dbt_manifest.py    # In-tree models for dbt's semantic_manifest.json
   dbt_bridge.py      # semantic_manifest.json → BindingSpec per node (no dbt Cloud)
   dbt_sql.py         # BindingSpec + grain + window (+ dimension) → dialect SQL
-  dbt_provider.py    # The `dbt` provider: profiles.yml → connection → generated SQL
+  dbt_provider.py    # The `dbt` and `duckdb` providers: profiles.yml or a data_dir → connection → generated SQL
   engine/
     model.py         # fit_metric() — BSTS via PyMC; compute_shapley()
     rca.py           # run_rca() + shapley_attribution() — root cause analysis
     slices.py        # slice_attribution() — dimensional slicing of a metric's gap
     simulate.py      # run_scenario() — do-operator what-if (fitted or cold start)
+    stats.py         # Shared uncertainty vocabulary: block bootstrap, degeneracy guards, direction probability
+    windows.py       # Window → scalar: node_window_value() and how the payload names the aggregate
+    warm.py          # plan_warm_fits() — which fits make each metric's default analysis a cache hit
     progress.py      # Progress callbacks for long-running analyses
   api/
     main.py          # FastAPI app
@@ -76,10 +79,11 @@ breakdown/
   mcp/
     server.py        # MCP tools for AI assistants (list_trees, get_tree, explain_metric, run_rca, slice_metric, run_whatif)
     shaping.py       # MCP response compaction + how_to_read caveats + UI deep links
-  cli.py             # `breakdown serve` / `breakdown doctor` console entry point
+  cli.py             # `breakdown serve` / `breakdown check` / `breakdown doctor` console entry point
+  check.py           # `breakdown check`: the refusals `serve` runs before it touches a provider, without serving
   doctor.py          # Provider connectivity checks with copy-paste remediation
   static/
-    index.html       # UI: Cytoscape DAG + RCA workflow (app.js, style.css)
+    index.html       # UI: Cytoscape DAG + RCA workflow (app.js, disclosures.js, style.css)
   examples/
     jaffle_shop_tree.yml   # The bundled default (mock) tree
 docs/
@@ -89,7 +93,7 @@ docs/
   api-reference.md   # Every route the server answers, and what comes back
   mcp.md             # The MCP server: tools, shaping, security, a worked session
   ui-guide.md        # Driving the UI
-  deploying.md       # Serving several trees, auth, Docker, doctor, snapshots
+  deploying.md       # Serving several trees, auth, Docker, check, doctor, snapshots
   why-breakdown.md   # The problem breakdown exists to solve
   ai-context/        # Architecture deep-dives (backend, frontend) for contributors
 knowledge/           # Product & design specs, roadmap, reference trees
