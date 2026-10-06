@@ -945,6 +945,25 @@ function gapLineParts(name, gap) {
   return { cls: d ? goodDir(name, d) : "", sign: d === "up" ? "+" : "" };
 }
 
+/* ---------- the tree-wide data edge ----------
+   The oldest known `data_through` across the tree: the as-of anchor the node
+   cards default to and the "data through" line the export prints. `/meta`
+   deliberately emits `null` for a metric whose edge is unknown (so "we do not
+   know when this ends" is not the same absence as "no such metric"), and a
+   bare string-min over the values loses to it: `null < "2024-06-28"` is true
+   in JavaScript (null coerces to 0), `"2024-06-20" < null` is false, so
+   `["2024-06-20", null, "2024-06-28"]` reduced to "2024-06-28" and the lagging
+   edge was the one thing dropped. The export filtered and the boot path did
+   not — the same policy on one side of the file only — so both go through
+   here. Returns null when no edge is known; the caller chooses the fallback
+   and must not print one as if it were measured. */
+function treeDataEdge(meta) {
+  const through = meta && meta.data_through;
+  if (!through || typeof through !== "object") return null;
+  const known = Object.values(through).filter((d) => typeof d === "string" && d);
+  return known.length ? known.reduce((a, b) => (a < b ? a : b)) : null;
+}
+
 /* ---------- reference-window sensitivity (roadmap S23) ----------
    Every RCA number is a contrast of two window means, and the bootstrap only
    resamples periods *inside* those windows. The engine re-runs the attribution

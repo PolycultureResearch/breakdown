@@ -1295,14 +1295,11 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     .map((c, i) => `<tr><td>${i + 1}</td><td><code>${esc(c.metric)}</code></td>${num(Number.isFinite(c.score) ? c.score.toFixed(2) : "—")}<td>via ${esc(c.via || "—")}</td></tr>`)
     .join("");
 
-  // `data_through` carries `null` for a metric whose data edge is unknown.
-  // Filter before the min: `null < "9999"` is `true` in JS (null coerces to 0),
-  // so an unknown edge would win the comparison and become the tree-wide anchor.
-  const dataThrough = state.meta && state.meta.data_through
-    ? Object.values(state.meta.data_through)
-        .filter((d) => typeof d === "string")
-        .reduce((a, b) => (a < b ? a : b), "9999")
-    : null;
+  // The oldest *known* edge — `data_through` carries `null` for a metric whose
+  // edge is unknown, and `treeDataEdge` says why that must be filtered first.
+  // (This used to seed its reduce with "9999" and print "data through 9999"
+  // when no edge was known at all; null prints nothing.)
+  const dataThrough = treeDataEdge(state.meta);
 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
@@ -5410,8 +5407,9 @@ async function init() {
     // Anchor headlines at the tree-wide data edge: the oldest data_through
     // across metrics. A source mart lagging the requested window then shows
     // its true last day instead of a zero-filled or half-loaded tail.
-    const edges = Object.values(state.meta.data_through || {});
-    state.asOf = edges.length ? edges.reduce((a, b) => (a < b ? a : b)) : state.meta.date_end;
+    // `treeDataEdge` skips the `null` an unknown edge is reported as — a bare
+    // min over the values let it knock out the lagging edge (grill L7).
+    state.asOf = treeDataEdge(state.meta) || state.meta.date_end;
     loadCardConfig();
     initControls();
     buildGraph();
