@@ -46,7 +46,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from breakdown.data_fetch import rolled_in_sql, slice_rollup
+from breakdown.data_fetch import (
+    ReservedSliceValue,
+    reserved_slice_refusal,
+    rolled_in_sql,
+    slice_rollup,
+)
 from breakdown.engine.stats import (
     GAP_REL_EPS,
     MIN_CI_REPLICATES,
@@ -286,6 +291,18 @@ def _select_slices(
     kept = ranked[:top_k]
     folded = ranked[top_k:]
     return sorted(kept), sorted(folded) + provider_other
+
+
+def _refuse_real_other(wide: pd.DataFrame, rollup: Dict[str, Any], metric_name: str) -> None:
+    """Refuse a whole (un-rolled) frame that already holds an `__other__`.
+
+    `_select_slices` reads that column as a provider's own roll-up, which it
+    is only when the provider says it rolled up (`where: sql`). In a frame
+    fetched whole, it is a real dimension value somebody named `__other__`,
+    and folding it into the roll-up returned a 200 with that slice silently
+    gone (grill 2026-10-05 L1). Same sentence as the SQL path's refusal."""
+    if rollup.get("where") != "sql" and _OTHER in wide.columns:
+        raise ReservedSliceValue(reserved_slice_refusal(_OTHER, metric_name))
 
 
 def _n_values(folded: List[str], rollup: Optional[Dict[str, Any]]) -> int:
@@ -611,6 +628,7 @@ def slice_attribution(
     # cardinality gate then reads the provider's count, so a dimension that
     # would have been refused whole is refused off a frame of a dozen rows.
     rollup = slice_rollup(sliced) or {"where": "client"}
+    _refuse_real_other(wide, rollup, defn.name)
     if (
         kind == "rate"
         and weight_sliced is not None

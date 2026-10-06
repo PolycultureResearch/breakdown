@@ -116,6 +116,14 @@ class DataProviderConfig(BaseModel):
     # `loading.resolve_data_dir` — the one place that knows the tree path — so
     # a tree and its exports move together and the server starts from anywhere.
     data_dir: Optional[str] = None
+    # `duckdb` provider only. By default the connection is confined to
+    # `data_dir`: no file outside it, no https:// or s3:// path, and the
+    # configuration is locked so tree SQL cannot undo either (grill 2026-10-05
+    # M10 — a `relation` or `bind.sql` used to read any file the process
+    # could). `true` lifts all of that for a tree that reads from object
+    # storage or another folder on purpose, and is logged at load. It is a
+    # statement that this tree file is as trusted as the process.
+    allow_external_access: bool = False
     # `dbt` provider: which profiles.yml target to use, and where to find it.
     # Both default to what dbt itself would pick for the project.
     target: Optional[str] = None
@@ -173,6 +181,13 @@ class DataProviderConfig(BaseModel):
             raise ValueError(
                 "provider type 'duckdb' requires `data_dir`: the folder holding the "
                 ".csv / .parquet exports (relative paths resolve against the tree file)."
+            )
+        if self.allow_external_access and self.type != "duckdb":
+            # Refused rather than ignored: on any other provider the setting
+            # would read as a restriction lifted when none was ever applied.
+            raise ValueError(
+                "`allow_external_access` applies to provider type 'duckdb' only "
+                f"(it lifts the `data_dir` confinement); got type '{self.type}'."
             )
         return self
 
@@ -431,6 +446,45 @@ class DimensionSpec(BaseModel):
         return v
 
 
+# A lone double-quoted identifier: the one spelling under which a name may
+# hold anything at all, spaces included.
+_QUOTED_IDENTIFIER = re.compile(r'"(?:[^"]|"")+"\Z')
+# What a `relation` holding whitespace has to contain before it is SQL rather
+# than a file somebody named `Orders Export`.
+_SQL_IN_RELATION = re.compile(r"\b(select|from|join|where|union|with|values)\b|[()]", re.I)
+# Words only, separated by spaces: the shape of a column header pasted in
+# unquoted (`Order Date`), and of no SQL expression unless one of the words is
+# an operator (`x IS NOT NULL`, `a AND b`, `ts AT TIME ZONE tz`).
+_SPACED_WORDS = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\s+[A-Za-z_][A-Za-z0-9_]*)+\Z")
+_WORD_OPERATORS = frozenset(
+    "is not null and or in like ilike between as at time zone collate div mod "
+    "true false unknown similar to escape xor isnull notnull glob rlike regexp "
+    "distinct from case when then else end any all some".split()
+)
+
+
+def _refuse_unquoted_spaced_name(value: Optional[str], field: str) -> Optional[str]:
+    """Refuse a binding column written as an unquoted name with spaces.
+
+    Every column field of a binding is pasted into the generated statement as
+    SQL, where `Order Date` is two tokens. It used to reach the SQL parser and
+    come back as `Failed to parse 'DATE_TRUNC('DAY', Order Date) AS "date"'`
+    at load (grill 2026-10-05 L2); the shape is recognisable here, at parse,
+    and the remedy is one line.
+    """
+    token = (value or "").strip()
+    if not _SPACED_WORDS.match(token):
+        return value
+    if any(word.lower() in _WORD_OPERATORS for word in token.split()):
+        return value
+    quoted = '"' + token + '"'
+    raise ValueError(
+        f"binding `{field}: {token}` reads as a column name containing spaces, "
+        "which is not a name in SQL until it is quoted. Quote it as an "
+        f"identifier inside the YAML string: `{field}: '{quoted}'`."
+    )
+
+
 class BindingDimension(BaseModel):
     """One sliceable dimension reachable from a binding's relation.
 
@@ -456,6 +510,11 @@ class BindingDimension(BaseModel):
     join: Optional[str] = None
     key: Optional[str] = None
     to: Optional[str] = None
+
+    @field_validator("column", "key", "to")
+    @classmethod
+    def check_names_are_quoted(cls, v: Optional[str], info) -> Optional[str]:
+        return _refuse_unquoted_spaced_name(v, info.field_name)
 
     @model_validator(mode="after")
     def check_join(self) -> "BindingDimension":
@@ -552,6 +611,15 @@ class BindingSpec(BaseModel):
     # they accept declared relationships on trust.
     grain_key: str
     time_column: str
+    # A strptime-style format for `time_column`, `duckdb` provider only (grill
+    # 2026-10-05 H2). A CSV has no types: `01/02/2025` is January 2nd or
+    # February 1st depending on who exported it, and `read_csv_auto` picks one
+    # from a sample without saying which. When the file's own values do not
+    # settle it the load is refused until this is declared; once declared, the
+    # column is read as text and every value must parse with it. Absent is
+    # right for ISO dates (`2025-01-31`), for anything a day above 12 already
+    # settles, and for Parquet, which stores a typed date.
+    date_format: Optional[str] = None
 
     agg: str
     # The aggregated column/expression, for every agg except `ratio`.
@@ -609,10 +677,37 @@ class BindingSpec(BaseModel):
         # A relation is a table reference, not a query. Catching this here is
         # worth a validator because the failure is otherwise a warehouse syntax
         # error thrown from inside a generated query at startup.
-        if v is not None and (";" in v or any(c.isspace() for c in v)):
+        #
+        # Whitespace alone is no longer the test (grill 2026-10-05 L2): the
+        # `duckdb` provider advertises each file's stem as its relation, and
+        # `Orders Export.csv` is an ordinary thing for an export to be called.
+        # A quoted identifier is one name whatever it holds, and an unquoted
+        # name with spaces but nothing SQL in it is left for
+        # `MetricTreeConfig.check_relation_names`, which knows the provider.
+        if v is None or _QUOTED_IDENTIFIER.match(v):
+            return v
+        spaced = any(c.isspace() for c in v)
+        if ";" in v or (spaced and _SQL_IN_RELATION.search(v)):
             raise ValueError(
                 f"binding relation '{v}' looks like SQL rather than a table "
                 "reference; use `sql:` for an inline relation."
+            )
+        return v
+
+    @field_validator(
+        "grain_key", "time_column", "measure", "numerator", "denominator", "entity_key"
+    )
+    @classmethod
+    def check_names_are_quoted(cls, v: Optional[str], info) -> Optional[str]:
+        return _refuse_unquoted_spaced_name(v, info.field_name)
+
+    @field_validator("date_format")
+    @classmethod
+    def check_date_format(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and "%" not in v:
+            raise ValueError(
+                f"binding date_format {v!r} holds no strptime specifier; write the "
+                "format of the time column's text, e.g. '%m/%d/%Y' or '%d.%m.%Y %H:%M'."
             )
         return v
 
@@ -1670,6 +1765,45 @@ class MetricTreeConfig(BaseModel):
                 "`grain_key`, `time_column` and `agg`. A formula node without a `source` "
                 "is derived from its parents and needs none."
             )
+        return self
+
+    @model_validator(mode="after")
+    def check_relation_names(self) -> "MetricTreeConfig":
+        """The two binding rules that depend on the provider (grill
+        2026-10-05 H2, L2).
+
+        An unquoted `relation` with spaces is a file stem under `duckdb`
+        (`Orders Export.csv`), matched against the folder when the fetcher is
+        built, and a mistake everywhere else — a warehouse has no table by
+        that spelling, and the failure would otherwise be a syntax error out
+        of a generated query at startup. `date_format` is how a CSV's text
+        becomes a date; a warehouse column already has a type, so declaring it
+        there is refused rather than silently ignored.
+        """
+        duckdb = self.provider.type == "duckdb"
+        for m in self.metrics:
+            bind = m.bind
+            if bind is None:
+                continue
+            rel = bind.relation
+            if (
+                not duckdb
+                and rel is not None
+                and any(c.isspace() for c in rel)
+                and not _QUOTED_IDENTIFIER.match(rel)
+            ):
+                raise ValueError(
+                    f"Metric '{m.name}': binding relation '{rel}' looks like SQL rather "
+                    "than a table reference; use `sql:` for an inline relation, or "
+                    "quote it as one identifier if that really is the table's name."
+                )
+            if bind.date_format is not None and not duckdb:
+                raise ValueError(
+                    f"Metric '{m.name}' declares `bind.date_format`, which applies to "
+                    "`provider: duckdb` only (it parses the text of a CSV time column). "
+                    f"Under provider '{self.provider.type}' the column already has a "
+                    "type; drop `date_format`, or cast the column in `bind.sql`."
+                )
         return self
 
 

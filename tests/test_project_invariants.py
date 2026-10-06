@@ -101,18 +101,26 @@ def test_no_gap_is_filled_without_saying_so(kind, rows, gap, caplog):
         )
 
 
-def test_the_one_silent_fill_is_the_documented_one(caplog):
-    """Rule 1, its single deliberate exception, pinned so it stays single.
+def test_the_empty_source_fill_is_said_and_counted(caplog):
+    """Rule 1 has no silent exception left (grill 2026-10-05 H3).
 
     A source returning *no rows at all* keeps the full zero-fill for flows: an
-    all-quiet window is a legitimate flow series, and `_align_to_spine`'s
-    docstring says so. That is the only silent fill in the codebase.
+    all-quiet window is a legitimate flow series. Until H3 that fill was the
+    one deliberately silent one, on the reasoning that the provider which knew
+    the result was empty would say so — and three of four providers did not,
+    so a window that missed the data loaded as zeros with `/health: ok`. It is
+    now warned about here, where every provider passes, and the row count
+    travels on the frame so the load can refuse a tree in which *no* metric
+    returned anything.
     """
     caplog.set_level(logging.WARNING, logger="breakdown.data_fetch")
     empty = pd.DataFrame({"date": pd.to_datetime([]), "m": []})
     out = _align_to_spine(empty, "m", "day", "flow", "2024-01-01", "2024-01-05", "m")
     assert len(out) == 5 and (out["m"] == 0.0).all()
-    assert not caplog.records, "the empty-source fill is deliberate and silent; nothing else is"
+    assert out.attrs["source_rows"] == 0
+    assert [r for r in caplog.records if "returned no rows" in r.getMessage()], (
+        "a whole window was filled from an empty result and nothing was logged"
+    )
 
 
 def _fetcher_classes():
