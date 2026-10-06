@@ -1128,29 +1128,97 @@ def _reference_sensitivity(
     }
 
 
-def _node_fit_end(defn, grain: str, analysis_start: str, snapped_an) -> str:
-    """The `fit_end` this node's RCA fit uses (roadmap S24, design §3.2).
+def _fit_extension(defn, grain: str, analysis_start: str, snapped_an) -> Tuple[str, List[str]]:
+    """The `fit_end` this node's RCA fit uses, and which declared
+    interventions pushed it past `analysis_start` (roadmap S24, design §3.2).
 
     `analysis_start` for every node — the fit-before-analysis rule — except a
-    node declaring a `learn_from: window` intervention, whose fit is extended
-    *through* that intervention's own periods so its coefficient can be
-    identified from the event itself: through the analysis window's last
-    whole period for a `step`, through `until` for a `pulse`. Never earlier
-    than `analysis_start`, so an intervention already inside history changes
-    nothing. The trace cache is keyed by this value, which is what lets a
-    node fitted on a different window from its ancestors coexist with them —
-    and why the exception is per node, never tree-wide.
+    node declaring a `learn_from: window` intervention *the analysis window
+    contains*, whose fit is extended through that intervention's own periods
+    so its coefficient can be identified from the event itself: through the
+    analysis window's last whole period for a `step`, through `until` for a
+    `pulse`.
+
+    "Contains" is the condition that was missing (grill 2026-10-05 M3). A
+    step extended the fit through the analysis window whatever its date, so a
+    flip declared a year before the window — fully inside history, sized from
+    history, with nothing left to learn from the window — still trained the
+    node's betas and level on the anomaly they were about to explain, on every
+    RCA. A step dated *after* the window did the same and was then dropped
+    for having no instance in the fit, leaving the extension disclosed
+    nowhere. So:
+
+    - a `step` extends only when its (grain-snapped) date falls inside the
+      analysis window's whole periods;
+    - a `pulse` extends only when it starts on or before the analysis
+      window's last whole period — one that begins after the window is not
+      this analysis's event — and, as before, only as far as its own `until`,
+      which changes nothing when that is already inside history.
+
+    The names returned are exactly the interventions whose own rule moved the
+    end, whether or not the fit then kept their column: `fit_window.
+    extended_for` publishes them, so no extension happens undisclosed.
+
+    The trace cache is keyed by the returned date, which is what lets a node
+    fitted on a different window from its ancestors coexist with them — and
+    why the exception is per node, never tree-wide.
     """
-    end = pd.Timestamp(analysis_start)
+    start = pd.Timestamp(analysis_start)
+    end = start
+    extended_for: List[str] = []
     for iv in defn.interventions:
         if iv.learn_from != "window":
             continue
+        dated = floor_period(pd.Timestamp(iv.date), grain)
         if iv.kind == "step":
+            if not (snapped_an.first_start <= dated <= snapped_an.last_start):
+                continue
             through = snapped_an.last_start
         else:
+            if dated > snapped_an.last_start:
+                continue
             through = floor_period(pd.Timestamp(iv.until or iv.date), grain)
-        end = max(end, next_start(through, grain))
-    return str(end.date())
+        candidate = next_start(through, grain)
+        if candidate > start:
+            extended_for.append(iv.name)
+        end = max(end, candidate)
+    return str(end.date()), extended_for
+
+
+def _node_fit_end(defn, grain: str, analysis_start: str, snapped_an) -> str:
+    """The `fit_end` half of `_fit_extension`: the trace-cache key."""
+    return _fit_extension(defn, grain, analysis_start, snapped_an)[0]
+
+
+def _reference_before_fit_reason(
+    node: str,
+    defn,
+    grain: str,
+    reference_start: str,
+    reference_end: str,
+    first_fitted: pd.Timestamp,
+) -> str:
+    """Why a reference window cannot be read against this node's fit, in the
+    terms the author can act on: which declaration moved the fit's start, and
+    the earliest reference start that works."""
+    max_lag = max((defn.lags or {}).values(), default=0)
+    causes = []
+    if defn.fit_start is not None:
+        causes.append(f"it declares `fit_start: {defn.fit_start}`")
+    if max_lag:
+        causes.append(
+            f"its longest parent lag ({max_lag} {grain}(s)) trims the periods before "
+            "the lagged parent has a value"
+        )
+    because = f" — {' and '.join(causes)}" if causes else ""
+    return (
+        f"The reference window [{reference_start}, {reference_end}] starts before "
+        f"the first {grain} '{node}' is fitted on ({first_fitted.date()}){because}. "
+        "The node's trend and seasonal terms have no fitted state before that "
+        "date, so its gap cannot be decomposed against this reference. Start "
+        f"the reference on or after {first_fitted.date()}"
+        + (", or move `fit_start` earlier." if defn.fit_start is not None else ".")
+    )
 
 
 class RcaFitPlan(NamedTuple):
@@ -1929,16 +1997,15 @@ def run_rca(
             # Roadmap S24: `extended_for` names the `learn_from: window`
             # interventions whose declaration pushed this node's fit past
             # `analysis_start` — the fit saw the analysis window for this
-            # node, and the reader must know that when reading its β.
+            # node, and the reader must know that when reading its β. Read
+            # from the rule that set `fit_end`, not from the fit's surviving
+            # columns: an intervention that extended the window and was then
+            # dropped still extended it.
             fit_window = {
                 "start": str(fit.dates[0].date()),
                 "end": str(fit.dates[-1].date()),
                 "n_periods": int(len(fit.dates)),
-                "extended_for": [
-                    r["name"]
-                    for r in fit.interventions
-                    if r["learn_from"] == "window" and fit_ends[node] != analysis_start
-                ],
+                "extended_for": _fit_extension(defn, grain, analysis_start, snapped_an)[1],
             }
             seasonality_warnings = fit.diagnostics.get("seasonality_warnings")
             likelihood_warnings = fit.diagnostics.get("likelihood_warnings")
