@@ -1,4 +1,4 @@
-"""Fit numerics (grill 2026-10-05, H1).
+"""Fit numerics (grill 2026-10-05, H1 and L5).
 
 H1: "is this series constant?" was `std() == 0`, and most decimals are not
 representable — `pd.Series([4.99] * 90).std()` is 8.9e-16. A parent held at
@@ -7,6 +7,10 @@ representable — `pd.Series([4.99] * 90).std()` is 8.9e-16. A parent held at
 `fit_quality: ok`. One shared, scale-relative test (`effectively_constant`)
 now answers the question for the drop, for `_normalize` and for the formula
 residual.
+
+L5: a rate's `mix_total` took its point from the bootstrap mean (its
+single-period neighbour used the exact `mix.sum()`), and counted replicates
+with no weight in a window as a measured mix of 0.0.
 
 Most of this file never fits; the tests that do are marked slow one by one.
 """
@@ -17,8 +21,9 @@ import pytest
 
 from breakdown.engine.model import _normalize, _prepare_series, fit_metric
 from breakdown.engine.rca import run_rca
-from breakdown.engine.stats import effectively_constant
-from breakdown.parser import Parser
+from breakdown.engine.slices import _mix_total, slice_attribution
+from breakdown.engine.stats import MIN_CI_REPLICATES, N_BOOT, effectively_constant
+from breakdown.parser import MetricDefinition, Parser
 
 # The reviewer's three, plus one whose rounding lands on a different period
 # (1/3 of a billion) and the two exactly-representable cases the old test
@@ -266,3 +271,113 @@ def test_a_small_magnitude_rate_parent_is_fitted_and_its_coefficient_recovered()
     beta = fit.trace.posterior["beta_raw"].values.reshape(-1, 2).mean(axis=0)
     assert beta[0] == pytest.approx(0.5, abs=0.1)
     assert beta[1] == pytest.approx(40_000, rel=0.2)
+
+
+# -- L5: a rate's mix_total ---------------------------------------------------
+
+S_REF = ("2026-01-05", "2026-02-01")
+S_AN = ("2026-02-02", "2026-02-08")
+
+
+def _rate_defn():
+    return MetricDefinition(
+        name="conversion_rate",
+        source="mock.conversion_rate",
+        kind="rate",
+        dimensions={"region": {"source": "customer__region", "weight": "trial_starts"}},
+    )
+
+
+def _long(frames):
+    return pd.concat(
+        [
+            pd.DataFrame({"date": s.index, "slice": name, "value": s.to_numpy()})
+            for name, s in frames.items()
+        ],
+        ignore_index=True,
+    )
+
+
+def _mix_shift_inputs(sparse_analysis: bool):
+    """Traffic moves amer → apac in the analysis window; rates never move, so
+    the whole gap is mix. With `sparse_analysis` the weight metric reports on
+    only two of the analysis window's seven days (a weekly-loaded denominator),
+    so a good share of bootstrap replicates resample no weight at all."""
+    dates = pd.date_range(S_REF[0], S_AN[1], freq="D")
+    n = len(dates)
+    in_an = np.asarray(dates >= pd.Timestamp(S_AN[0]))
+    saw = np.where(np.arange(n) % 2 == 0, 1.0, -1.0)
+    amer = 600.0 + 10.0 * saw - 300.0 * in_an
+    apac = 100.0 + 10.0 * saw + 300.0 * in_an
+    if sparse_analysis:
+        live = ~in_an | np.isin(np.arange(n), [n - 7, n - 4])
+        amer, apac = amer * live, apac * live
+    weights = {"amer": pd.Series(amer, index=dates), "apac": pd.Series(apac, index=dates)}
+    rates = {
+        "amer": pd.Series(np.full(n, 0.20), index=dates),
+        "apac": pd.Series(np.full(n, 0.05), index=dates),
+    }
+    total = amer + apac
+    with np.errstate(invalid="ignore"):
+        blend = np.where(total > 0, (amer * 0.20 + apac * 0.05) / total, 0.125)
+    unsliced = pd.DataFrame({"date": dates, "conversion_rate": blend})
+    return _long(rates), _long(weights), unsliced
+
+
+def _slice(sparse_analysis: bool):
+    sliced, weight_sliced, unsliced = _mix_shift_inputs(sparse_analysis)
+    return slice_attribution(
+        _rate_defn(), "region", sliced, unsliced, *S_REF, *S_AN, weight_sliced=weight_sliced
+    )
+
+
+def test_mix_total_point_is_the_exact_sum_of_the_rows():
+    """C3's policy: points are exact, the bootstrap supplies intervals. It
+    was the replicate mean, which agreed with the rows only to a few percent."""
+    result = _slice(sparse_analysis=False)
+    block = result["mix_total"]
+    assert block["estimate"] == sum(r["mix"] for r in result["slices"])
+    assert block["estimate"] == pytest.approx(result["gap"], abs=1e-12)  # rates never moved
+    assert block["ci_status"] == "ok"
+    lo, hi = block["ci_95"]
+    assert lo < block["estimate"] < hi
+
+
+def test_mix_total_drops_replicates_that_resampled_no_weight():
+    """Zero-filled, those replicates were a spike of "mix = 0.0" in a
+    distribution that is nowhere near zero, and dragged the interval's upper
+    end onto it. Dropped, the interval is over replicates that had a blend."""
+    result = _slice(sparse_analysis=True)
+    block = result["mix_total"]
+    assert block["estimate"] == sum(r["mix"] for r in result["slices"])
+    assert block["estimate"] < -0.03  # a real, negative mix effect
+    assert block["ci_status"] == "nonfinite_bootstrap_replicates"
+    lo, hi = block["ci_95"]
+    assert lo < block["estimate"] < hi < -0.01
+
+
+def test_mix_total_withholds_the_interval_when_too_few_replicates_have_a_blend():
+    mix = np.array([-0.04, 0.01])
+    rng = np.random.default_rng(0)
+    mix_b = rng.normal(-0.015, 0.002, size=(N_BOOT, 2))
+    defined = np.zeros(N_BOOT, dtype=bool)
+    defined[: MIN_CI_REPLICATES - 1] = True
+    block = _mix_total(mix, mix_b, defined, scale=0.2)
+    assert block == {
+        "estimate": float(mix.sum()),
+        "ci_95": None,
+        "ci_status": "nonfinite_bootstrap_replicates",
+    }
+    # One more survivor and there is an interval, still flagged as censored.
+    defined[MIN_CI_REPLICATES - 1] = True
+    block = _mix_total(mix, mix_b, defined, scale=0.2)
+    assert block["ci_95"] is not None
+    assert block["ci_status"] == "nonfinite_bootstrap_replicates"
+
+
+def test_mix_total_names_the_single_period_and_collapsed_cases():
+    mix = np.array([-0.04, 0.01])
+    assert _mix_total(mix, None, None, 0.2)["ci_status"] == "degenerate_single_period"
+    flat = np.tile(mix, (N_BOOT, 1))
+    block = _mix_total(mix, flat, np.ones(N_BOOT, dtype=bool), 0.2)
+    assert block["ci_95"] is None and block["ci_status"] == "degenerate_bootstrap_spread"
