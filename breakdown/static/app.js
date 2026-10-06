@@ -3841,7 +3841,7 @@ function renderRcaTab() {
         .flatMap(([metric, notes]) =>
           notes
             .filter((n) => n.inWindow)
-            .map((n) => `<p class="degraded-note"><code>${esc(metric)}</code> — ${esc(n.text)}. ${esc(n.detail)}</p>`),
+            .map((n) => `<p class="degraded-note"><code>${esc(metric)}</code> — ${esc(n.short)}. ${esc(n.detail)}</p>`),
         )
         .join("");
       // A failed node gets a block of its own rather than being filtered out.
@@ -4078,7 +4078,7 @@ function renderRcaTab() {
       <div class="sub">${fmt(target.baseline)} → ${fmt(target.actual)} (${windowBasisHtml(target)})</div>
       ${targetRangeNotes
         .filter((n) => n.inWindow)
-        .map((n) => `<p class="degraded-note">${esc(n.text)}. ${esc(n.detail)}</p>`)
+        .map((n) => `<p class="degraded-note">${esc(n.short)}. ${esc(n.detail)}</p>`)
         .join("")}
       ${windowNote}
       ${degradedNote}

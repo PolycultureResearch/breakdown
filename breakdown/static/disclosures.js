@@ -1508,7 +1508,7 @@ function seriesRangeParagraphs(notes, name) {
     .filter((n) => n.cls === "sign-flag")
     .map(
       (n) =>
-        `${name ? `<code>${esc(name)}</code>: ` : ""}<strong>${esc(n.text.replace(/^⚠\s*/, ""))}.</strong> ${esc([n.detail, n.why].filter(Boolean).join(" "))}`,
+        `${name ? `<code>${esc(name)}</code>: ` : ""}<strong>${esc((n.detail ? n.short : n.text).replace(/^⚠\s*/, ""))}.</strong> ${esc([n.detail, n.why].filter(Boolean).join(" "))}`,
     );
 }
 
@@ -1600,7 +1600,7 @@ function referenceBlocksPhrase(rs) {
   if (!b) return "";
   const blocks = `neighbouring reference block${b.tried === 1 ? "" : "s"}`;
   if (b.answered === b.tried) {
-    return b.tried === 1 ? `the one ${blocks} the engine tried` : `all ${b.tried} ${blocks} the engine tried`;
+    return b.tried === 1 ? `the one ${blocks} the engine tried` : `${b.tried === 2 ? "both" : `all ${b.tried}`} ${blocks} the engine tried`;
   }
   if (b.answered === 0) return `the ${b.tried} ${blocks} the engine tried, none of which answered`;
   // "the same under 1 of 2" would read as "and different under the other".
