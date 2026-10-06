@@ -75,6 +75,9 @@ direction survive moving the reference window to a neighbouring block — with
 its `alternatives` intact, because a verdict of `unstable` without the block
 that changed the answer leaves the agent nothing to say about *what* changed;
 `how_to_read` adds that `gap_range` is a sensitivity band, never an interval.
+Its `compared` list says what the verdict is about: `["gap_sign"]` alone means
+the published run ranked no cause, so a `stable` there speaks for the gap's
+direction and must not be narrated as a top cause surviving.
 
 `get_tree` carries `short_series` when, and only when, some metric falls
 short of its grain's reach at either end (`{grain: {trailing | leading:
