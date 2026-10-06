@@ -10,12 +10,16 @@ import json
 import numpy as np
 import pandas as pd
 
+from breakdown.engine import rca as rca_mod
 from breakdown.engine.rca import (
+    REFERENCE_ALTERNATIVE_STATUSES,
+    REFERENCE_SENSITIVITY_COMPARED,
     REFERENCE_SENSITIVITY_SHIFTS,
     REFERENCE_SENSITIVITY_STATUSES,
     _reference_alternatives,
     run_rca,
 )
+from breakdown.grains import build_grained, snap_window
 from breakdown.parser import Parser
 
 YAML = """
@@ -225,3 +229,182 @@ def test_every_status_the_engine_can_emit_is_a_declared_one():
         )
         res = run_rca(Parser(YAML).dag, data, {}, "revenue", **kw)
         assert res["reference_sensitivity"]["status"] in REFERENCE_SENSITIVITY_STATUSES
+
+
+# ---------------------------------------------------------------------------
+# Grill 2026-10-05 M4: whole-period shifts, snapped dedup, and what a verdict
+# is about
+# ---------------------------------------------------------------------------
+
+MONTH_YAML = """
+metrics:
+  - name: orders
+    source: dbt.metric.orders
+    grain: month
+  - name: aov
+    source: dbt.metric.aov
+    grain: month
+  - name: revenue
+    source: dbt.metric.revenue
+    grain: month
+    formula: "orders * aov"
+    parents: [orders, aov]
+"""
+
+
+def month_world(seed=0):
+    rng = np.random.default_rng(seed)
+    dates = pd.date_range("2023-01-01", "2024-12-01", freq="MS")
+    orders = 100 + rng.normal(0, 3, len(dates))
+    orders[dates >= "2024-05-01"] += 30
+    aov = 50 + rng.normal(0, 1, len(dates))
+    cols = {"orders": orders, "aov": aov, "revenue": orders * aov}
+    return build_grained(
+        {name: pd.DataFrame({"date": dates, name: values}) for name, values in cols.items()},
+        dict.fromkeys(cols, "month"),
+        dict.fromkeys(cols, "flow"),
+    )
+
+
+def month_alternatives(ref_start, ref_end):
+    alts = _reference_alternatives(
+        Parser(MONTH_YAML).dag, month_world(), "revenue", ref_start, ref_end
+    )
+    return {
+        a["shift"]: (a["reference_window"]["start"], a["reference_window"]["end"]) for a in alts
+    }
+
+
+def test_month_grain_alternatives_are_whole_months():
+    """Day arithmetic gave Mar 1-30 and Mar 2-31 for an April reference —
+    neither holds a whole month, so both alternatives were refused and a
+    single-month reference in a 30-day month always read `unavailable`."""
+    assert month_alternatives("2024-04-01", "2024-04-30") == {
+        "one_period_earlier": ("2024-03-01", "2024-03-31"),
+    }
+    assert month_alternatives("2024-02-01", "2024-02-29") == {
+        "one_period_earlier": ("2024-01-01", "2024-01-31"),
+    }
+    assert month_alternatives("2024-01-01", "2024-03-31") == {
+        "one_period_earlier": ("2023-12-01", "2024-02-29"),
+        "one_block_earlier": ("2023-10-01", "2023-12-31"),
+    }
+    for start, end in (
+        *month_alternatives("2024-04-01", "2024-04-30").values(),
+        *month_alternatives("2024-01-01", "2024-03-31").values(),
+    ):
+        snapped = snap_window(start, end, "month")
+        assert str(snapped.first_start.date()) == start and str(snapped.last_end.date()) == end
+
+
+def test_two_shifts_that_snap_to_the_same_periods_count_once():
+    """A one-month reference: "one month earlier" and "one block earlier" are
+    the same month. They used to differ in raw dates (Feb 1-29 and Jan 30 -
+    Feb 29), survive the dedup, and give February two votes."""
+    assert month_alternatives("2024-03-01", "2024-03-31") == {
+        "one_period_earlier": ("2024-02-01", "2024-02-29"),
+    }
+
+
+def test_a_month_grain_rca_gets_a_sensitivity_verdict():
+    """End to end. A three-month reference used to answer `ok` on blocks of
+    two whole months (Jan 1 - Mar 30, Nov 3 - Jan 31); a one-month reference
+    in a 30-day month answered nothing at all."""
+    windows = {
+        "reference_start": "2024-02-01",
+        "reference_end": "2024-04-30",
+        "analysis_start": "2024-05-01",
+        "analysis_end": "2024-07-31",
+    }
+    res = run_rca(Parser(MONTH_YAML).dag, month_world(), {}, "revenue", **windows)
+    rs = res["reference_sensitivity"]
+    assert [a["status"] for a in rs["alternatives"]] == ["ok", "ok"]
+    assert [a["reference_window"] for a in rs["alternatives"]] == [
+        {"start": "2024-01-01", "end": "2024-03-31"},
+        {"start": "2023-11-01", "end": "2024-01-31"},
+    ]
+
+    one_month = {**windows, "reference_start": "2024-04-01"}
+    rs_one = run_rca(Parser(MONTH_YAML).dag, month_world(), {}, "revenue", **one_month)[
+        "reference_sensitivity"
+    ]
+    assert [a["status"] for a in rs_one["alternatives"]] == ["ok"]
+    assert rs_one["status"] == "stable"
+
+    assert rs["status"] == "stable" and rs["compared"] == ["top_cause", "gap_sign"]
+    assert rs["top_cause"] == "orders" and rs["top_cause_stable"] is True
+
+
+def test_a_block_that_is_not_whole_weeks_moves_by_whole_weeks_on_a_week_grain():
+    """The block earlier keeps its weekday alignment: ten days go back two
+    whole weeks, not ten days."""
+    yaml = YAML.replace(
+        "    source: dbt.metric.revenue\n", "    source: dbt.metric.revenue\n    grain: week\n"
+    )
+    alts = _reference_alternatives(Parser(yaml).dag, world(), "revenue", "2024-04-01", "2024-04-10")
+    by_shift = {a["shift"]: a["reference_window"] for a in alts}
+    assert by_shift["one_period_earlier"] == {"start": "2024-03-25", "end": "2024-04-03"}
+    assert by_shift["one_block_earlier"] == {"start": "2024-03-18", "end": "2024-03-27"}
+
+
+def test_a_stable_verdict_with_no_ranked_cause_is_about_the_gap_alone():
+    """A source target ranks no cause. `top_cause_stable` stays null — there
+    was no top cause to compare — and `compared` says the verdict is about
+    the gap's direction only, so no surface can tell the reader a top cause
+    survived."""
+    res = run_rca(Parser(YAML).dag, world(), {}, "orders", **AN)
+    rs = res["reference_sensitivity"]
+
+    assert res["ranked_causes"] == []
+    assert rs["status"] == "stable"
+    assert rs["top_cause"] is None and rs["top_cause_stable"] is None
+    assert rs["gap_sign_stable"] is True
+    assert rs["compared"] == ["gap_sign"]
+    # …and with a ranked cause, both were compared.
+    assert rca(world())["reference_sensitivity"]["compared"] == list(REFERENCE_SENSITIVITY_COMPARED)
+
+
+def test_an_unavailable_verdict_compared_nothing():
+    res = run_rca(
+        Parser(YAML).dag,
+        world(n=36, orders_step_at=28),
+        {},
+        "revenue",
+        reference_start="2024-01-01",
+        reference_end="2024-01-05",
+        analysis_start="2024-01-29",
+        analysis_end="2024-02-04",
+    )
+    assert res["reference_sensitivity"]["status"] == "unavailable"
+    assert res["reference_sensitivity"]["compared"] == []
+
+
+def test_every_status_literal_in_the_sensitivity_code_is_declared():
+    """Structural, because pinning today's payloads would not have caught it:
+    `gap_unavailable` was emitted by `_reference_sensitivity` and declared
+    nowhere. Every status literal either function can write must be in the
+    tuple for the field it writes."""
+    import inspect
+    import re
+
+    sensitivity = inspect.getsource(rca_mod._reference_sensitivity)
+    alternative = set(
+        re.findall(r'status="(\w+)"', inspect.getsource(rca_mod._reference_alternatives))
+    ) | set(re.findall(r'status="(\w+)"', sensitivity))
+    assert alternative == set(REFERENCE_ALTERNATIVE_STATUSES)
+    # Every quoted word on a `"status": …` line, so a conditional's both arms count.
+    top_level = {
+        word
+        for line in sensitivity.splitlines()
+        if '"status":' in line
+        for word in re.findall(r'"(\w+)"', line.split('"status":', 1)[1])
+    }
+    assert top_level == set(REFERENCE_SENSITIVITY_STATUSES)
+
+    for data in (world(), world(aov_bump=(64, 92, 60)), world(n=36, orders_step_at=28)):
+        kw = (
+            AN if len(data) > 36 else {"analysis_start": "2024-01-29", "analysis_end": "2024-02-04"}
+        )
+        rs = run_rca(Parser(YAML).dag, data, {}, "revenue", **kw)["reference_sensitivity"]
+        assert {a["status"] for a in rs["alternatives"]} <= set(REFERENCE_ALTERNATIVE_STATUSES)
+        assert set(rs["compared"]) <= set(REFERENCE_SENSITIVITY_COMPARED)

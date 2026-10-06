@@ -66,6 +66,7 @@ from breakdown.engine.model import (
 )
 from breakdown.engine.progress import ProgressFn
 from breakdown.engine.progress import report as _report
+from breakdown.engine.rca import sampling_failures
 from breakdown.engine.stats import direction_fields, negligible_gap, node_scale
 from breakdown.engine.windows import (
     node_window_value,
@@ -638,8 +639,16 @@ def run_scenario(
         )
     # Work list first, fits second, so `progress` can report a real denominator
     # rather than counting toward an unknown total.
+    #
+    # `fits` (node -> FitResult) is this run's own hold on every fit it will
+    # read: the usable cached ones, captured here, and the ones made below.
+    # `traces` is a write-through cache — bounded, and shared by every tree in
+    # the process — so reading it back later was a KeyError (an unhandled 500)
+    # whenever it evicted this run's fit in between, exactly as in `run_rca`
+    # (grill 2026-10-05 M1).
     needs_beta = set()
     to_fit = []
+    fits: Dict[str, Any] = {}
     for node in order:
         defn = dag.nodes[node]["definition"]
         parents = list(dag.predecessors(node))
@@ -649,6 +658,7 @@ def run_scenario(
                 continue
             cached = traces.get((node, fit_end_key))
             if cached is not None and cached_fit_is_usable(cached, inference_method):
+                fits[node] = cached
                 continue
             to_fit.append(node)
 
@@ -668,7 +678,7 @@ def run_scenario(
                 fit_end=fit_end_key,
                 random_seed=FIT_RANDOM_SEED,
             )
-        except ValueError as e:
+        except sampling_failures() as e:
             # `run_rca` degrades this to a per-node `fit_failed` and answers for
             # the rest of the tree. A scenario cannot: it *propagates* along the
             # DAG, so a node with no estimable coefficient breaks the chain, and
@@ -686,16 +696,32 @@ def run_scenario(
             # (The better answer is to mark this node *and its descendants*
             # un-simulated and simulate the rest, the way RCA degrades. That
             # needs a per-node status the scenario payload does not have yet.)
+            #
+            # A *sampling* failure is refused the same way and worded apart
+            # (grill 2026-10-05 L3). `fit_metric`'s own refusals are
+            # ValueErrors about the series; a model that will not initialize
+            # (PyMC's `SamplingError`, a RuntimeError) or a chain that dies in
+            # a multi-process run (`ParallelSamplingError`, neither) says
+            # nothing about a constant series, and the second used to escape
+            # this handler and the route's as an unhandled 500.
             reached = sorted(nx.descendants(dag, node) & set(order) | {node})
+            if isinstance(e, ValueError):
+                why = (
+                    f"{e} A constant series carries no information about how its "
+                    "parents move it, so"
+                )
+                remedy = "Widen the window so the node varies, or intervene"
+            else:
+                why = f"its model could not be sampled ({type(e).__name__}: {e}), so"
+                remedy = "Re-run it (a sampler can fail by chance), or intervene"
             raise ValueError(
                 f"Cannot simulate this scenario: '{node}' lies on the path from "
                 f"the intervention to the target, and its coefficient cannot be "
-                f"estimated — {e} A constant series carries no information about "
-                f"how its parents move it, so every downstream node "
+                f"estimated — {why} every downstream node "
                 f"({', '.join(reached)}) would be simulated with that link "
-                "missing. Widen the window so the node varies, or intervene "
-                "somewhere that does not route through it."
+                f"missing. {remedy} somewhere that does not route through it."
             ) from e
+        fits[node] = fit
         traces[(node, fit_end_key)] = fit
 
     _report(progress, stage="simulating", total=len(to_fit))
@@ -736,7 +762,7 @@ def run_scenario(
             beta_means[node] = np.array([_prior_mean(pr) for pr in priors])
             beta_axis[node] = parents
         else:
-            fit = traces[(node, fit_end_key)]
+            fit = fits[node]
             # A parent the fit dropped (constant over the fit window, issue
             # #113) has no coefficient — and if a delta can reach this node
             # through it, the scenario has no way to carry that delta across
@@ -1018,7 +1044,7 @@ def run_scenario(
         ppc_status = None
         ppc_warnings = None
         if not cold_start and node in needs_beta:
-            dx = traces[(node, fit_end_key)].diagnostics
+            dx = fits[node].diagnostics
             fit_quality = dx.get("fit_quality")
             # Roadmap S2's verdict on the approximation this node's slope came
             # from, and null on the NUTS default (NUTS is not an
