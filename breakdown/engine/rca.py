@@ -62,6 +62,10 @@ lets the rest of the tree through, with the reason in `status_reason`:
   undefined, so the node has no value there to compare (roadmap 1.11c). A rate
   aggregates as `Σnumerator / Σdenominator`, so a window merely *containing*
   undefined periods is still fine; this is the case where nothing survives.
+- `"reference_before_fit_window"` — the reference window starts before the
+  first period the node's own fit trains on (its `fit_start`, then its lag
+  trim). Decided in the plan, so the node is never fitted; when it is the
+  **target**, that raises before any fit.
 
 `unexplained` is accompanied by `unexplained_status`, which says what the
 number is: `"measured"` (the node's own fetched series was compared against
@@ -976,9 +980,10 @@ def shapley_attribution(
 # length and composition and asks whether a single week's drift changes the
 # answer; one whole block earlier is the same-length block that shares no
 # period with the published one — the coarsest neighbour that still means
-# "the regime before the departure". Both are re-attributions over cached
-# fits: no alternative ever fits a node (the fit window is all history before
-# `analysis_start`, independent of the reference), so the added cost is the
+# "the regime before the departure". Both are re-attributions over the
+# published run's own fits: no alternative ever fits a node (the fit window is
+# all history before `analysis_start`, independent of the reference, and
+# `allow_fitting=False` holds it to that), so the added cost is the
 # bootstrap and the Shapley games again, bounded by the count here — rule 4's
 # cap is on the games themselves, one level down.
 REFERENCE_SENSITIVITY_SHIFTS: Tuple[str, ...] = ("one_period_earlier", "one_block_earlier")
@@ -1699,8 +1704,8 @@ def run_rca(
     for i, node in enumerate(to_fit, 1):
         if not allow_fitting:
             fit_failures[node] = known_failures.get(node) or (
-                f"'{node}' has no fit from the published run to attribute over, and "
-                "this re-attribution does not fit."
+                f"'{node}' has no usable fit among the ones this run was given, and "
+                "this run does not fit (`allow_fitting=False`)."
             )
             continue
         _report(progress, stage="fitting", metric=node, current=i, total=len(to_fit))
