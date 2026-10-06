@@ -477,6 +477,12 @@ button:disabled { opacity: 0.5; cursor: default; }
 .kv td { padding: 4px 0; vertical-align: top; font-size: 13px; }
 .kv td:first-child { color: var(--muted); width: 90px; padding-right: 10px; }
 .kv code { background: var(--bg); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+/* A metric's range disclosure (sparse fills, a short series): its own line
+   under the date it qualifies, printed rather than hidden behind a hover —
+   the freshness row is where a reader decides whether the last value is news. */
+.range-note { margin-top: 3px; font-size: 12px; line-height: 1.4; color: var(--muted); }
+.range-note.warn { color: var(--warn-ink); }
+.range-detail { display: block; color: var(--text-2); font-size: 11.5px; }
 
 section h3 {
   font-size: 11.5px;

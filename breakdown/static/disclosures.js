@@ -1027,6 +1027,315 @@ function treeDataEdge(meta) {
   return known.length ? known.reduce((a, b) => (a < b ? a : b)) : null;
 }
 
+/* ---------- a metric's own range, and what was filled inside it (GitHub #112) ----------
+   `/meta` carries three facts about how much of the loaded window a metric
+   really has, and until grill 2026-10-05 (M8) no line of this UI read any of
+   them — while MCP `get_tree` worded all three for an agent:
+
+   - `sparse_fills[name]` — `{first_row, last_row, leading, interior, trailing,
+     whole_window, filled}`: periods with no source row that the load filled
+     with zero because the metric declares `sparse: true`. `data_through` for
+     such a metric reports the window's end *by declaration*, so the "lags
+     window end" chip can never fire on it, and a feed that went stale three
+     weeks ago draws as three weeks of real zeros and an RCA of −100%.
+     `last_row` (the label of the last period the source returned a row for) is
+     the true edge, and it is what the reader is shown.
+   - `short_series[grain].trailing|leading.short[name]` — `{ends|starts,
+     periods}` against that edge's `reach`: the metric stops before, or starts
+     after, the other metrics at its grain.
+   - `data_from[name]` — the first period the metric has, which may be later
+     than the loaded window's start even when every sibling agrees with it.
+
+   The sentences reuse the MCP docstring's wording (`mcp/server.py`
+   `get_tree`) so a person and an agent are told the same thing. Everything
+   here reads `meta` only and never coerces: a count that is not a finite
+   number is not printed as one. */
+const SPARSE_FILL_WHY =
+  "This metric declares `sparse: true`, so periods with no source row were filled " +
+  "with zero by that declaration. Those zeros are the tree's own statement that " +
+  "nothing happened, not observations, and a run of them at the tail is what a " +
+  "stale feed on such a metric would also look like.";
+
+const SHORT_SERIES_WHY =
+  "Every other metric keeps its own range; an analysis that reads this metric — it, " +
+  "or a child of it — cannot reach past its edge. The metric named is a source to " +
+  "widen or repair, not a finding about the business.";
+
+const DATA_FROM_WHY =
+  "This metric has no period before that date. Nothing was filled in front of it: " +
+  "an analysis that reads it — it, or a child of it — cannot start earlier, and the " +
+  "periods before it are absent, not zero.";
+
+/* A finite, non-negative count, or null. `Number(null)` is 0 and `null > 0` is
+   false, so an absent count must never reach arithmetic or a template. */
+function fillCount(v) {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
+}
+
+function isoDateOrNull(v) {
+  return typeof v === "string" && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : null;
+}
+
+/* The period-start label one period after `iso` at `grain` — where a trailing
+   fill begins, given the last period that had a row. Null on anything it
+   cannot parse or a grain it does not know. */
+function nextPeriodStart(iso, grain) {
+  const d = isoDateOrNull(iso);
+  if (!d) return null;
+  const t = new Date(`${d}T00:00:00Z`);
+  if (Number.isNaN(t.getTime())) return null;
+  if (grain === "day") t.setUTCDate(t.getUTCDate() + 1);
+  else if (grain === "week") t.setUTCDate(t.getUTCDate() + 7);
+  else if (grain === "month") t.setUTCMonth(t.getUTCMonth() + 1, 1);
+  else return null;
+  return t.toISOString().slice(0, 10);
+}
+
+/* The first whole period at `grain` starting on or after `iso`: the earliest
+   label a series at that grain *could* carry inside a window starting there.
+   A weekly metric in a window that opens on a Wednesday starts the following
+   Monday by construction, and calling that "starts late" would put a chip on
+   every weekly node of every such tree. */
+function firstWholePeriodStart(iso, grain) {
+  const d = isoDateOrNull(iso);
+  if (!d) return null;
+  const t = new Date(`${d}T00:00:00Z`);
+  if (Number.isNaN(t.getTime())) return null;
+  if (grain === "week") t.setUTCDate(t.getUTCDate() + ((8 - t.getUTCDay()) % 7)); // Sun=0 → Monday
+  else if (grain === "month") {
+    if (t.getUTCDate() !== 1) t.setUTCMonth(t.getUTCMonth() + 1, 1);
+  } else if (grain !== "day") return null;
+  return t.toISOString().slice(0, 10);
+}
+
+function periodsPhrase(n, grain) {
+  const unit = grain === "day" || grain === "week" || grain === "month" ? `${grain} ` : "";
+  return n === null ? `${unit}periods` : `${n} ${unit}period${n === 1 ? "" : "s"}`;
+}
+
+/* The sparse-fill disclosure for one metric, or null when nothing was filled
+   (the engine only publishes a record where something was). `analysisEnd`,
+   when given, is the end of the analysis window an RCA node was measured
+   over: `inWindow` then says whether that window reaches into the trailing
+   fill, which is the case that turns a quiet (or dead) feed into a measured
+   collapse. `tail` is true when the *end* of the series is declared zeros —
+   the stale-feed lookalike — and is what makes the note a warning rather
+   than a muted fact. */
+function sparseFillNote(meta, name, analysisEnd) {
+  const rec = meta && meta.sparse_fills && meta.sparse_fills[name];
+  if (!rec || typeof rec !== "object") return null;
+  const grain = (meta.grains && meta.grains[name]) || null;
+  const filled = fillCount(rec.filled);
+  const leading = fillCount(rec.leading);
+  const interior = fillCount(rec.interior);
+  const trailing = fillCount(rec.trailing);
+  const whole = fillCount(rec.whole_window);
+  const lastRow = isoDateOrNull(rec.last_row);
+  const firstRow = isoDateOrNull(rec.first_row);
+  if (filled === 0) return null;
+  const noRows = (whole !== null && whole > 0) || (!lastRow && !firstRow);
+  const tail = noRows || (trailing !== null && trailing > 0);
+  const edges = [
+    leading ? `${leading} before the first source row${firstRow ? ` (${firstRow})` : ""}` : "",
+    interior ? `${interior} between source rows` : "",
+    trailing ? `${trailing} after the last source row${lastRow ? ` (${lastRow})` : ""}` : "",
+  ].filter(Boolean);
+  let text, detail;
+  if (noRows) {
+    text = `⚠ sparse: the source returned no rows — ${
+      filled === null ? "every period is" : `all ${periodsPhrase(filled, grain)} are`
+    } a zero by declaration`;
+    detail =
+      "The source returned no rows at all for the loaded window, so every value this " +
+      "metric shows is a declared zero and none is an observation. There is no last " +
+      "source row to date its freshness by.";
+  } else {
+    text = `${tail ? "⚠ " : ""}sparse: ${filled === null ? "some periods" : periodsPhrase(filled, grain)} zero-filled by declaration${
+      tail ? ` — last source row ${lastRow || "unknown"}` : ""
+    }`;
+    detail =
+      `${filled === null ? "Some periods" : periodsPhrase(filled, grain)} had no source row and ` +
+      `${filled === 1 ? "was" : "were"} filled with zero by declaration` +
+      `${edges.length ? ` (${edges.join(", ")})` : ""}.` +
+      (tail
+        ? ` The last period with a source row starts ${lastRow || "on an unknown date"}; that, ` +
+          "not the window's end, is where this metric's observed data stops."
+        : "");
+  }
+  const fillStart = noRows ? null : nextPeriodStart(lastRow, grain);
+  const end = isoDateOrNull(analysisEnd);
+  // Unknown (no window given, or no way to place the fill) is null, never false.
+  const inWindow = !end ? null : noRows ? true : !tail ? false : fillStart ? end >= fillStart : null;
+  if (inWindow) {
+    detail +=
+      ` The analysis window (through ${end}) ${noRows ? "is made of" : "reaches into"} those ` +
+      "declared zeros, so part of the movement measured here is the declaration, not the business.";
+  }
+  return {
+    kind: "sparse",
+    text,
+    short: noRows
+      ? "⚠ sparse: no source rows"
+      : tail
+      ? `⚠ sparse tail: last source row ${lastRow || "unknown"}`
+      : "sparse: zero-filled by declaration",
+    detail,
+    why: SPARSE_FILL_WHY,
+    cls: tail ? "sign-flag" : "dim",
+    edge: "through",
+    tail,
+    inWindow,
+    lastRow,
+    filled,
+  };
+}
+
+/* The short-series disclosures for one metric: at most one per edge. Scans
+   every grain rather than trusting `meta.grains[name]`, so a record filed
+   under a grain this build did not expect is still found. */
+function shortSeriesNotes(meta, name) {
+  const all = meta && meta.short_series;
+  if (!all || typeof all !== "object") return [];
+  const out = [];
+  Object.entries(all).forEach(([grain, rec]) => {
+    if (!rec || typeof rec !== "object") return;
+    const t = rec.trailing && rec.trailing.short && rec.trailing.short[name];
+    if (t) {
+      const n = fillCount(t.periods);
+      const reach = isoDateOrNull(rec.trailing.reach);
+      out.push({
+        kind: "short",
+        text: `⚠ series ends ${isoDateOrNull(t.ends) || "early"} — ${periodsPhrase(n, grain)} short of its grain's reach${reach ? ` (${reach})` : ""}`,
+        short: `⚠ series ends ${isoDateOrNull(t.ends) || "early"}`,
+        detail: "",
+        why: SHORT_SERIES_WHY,
+        cls: "sign-flag",
+        edge: "through",
+      });
+    }
+    const l = rec.leading && rec.leading.short && rec.leading.short[name];
+    if (l) {
+      const n = fillCount(l.periods);
+      const reach = isoDateOrNull(rec.leading.reach);
+      out.push({
+        kind: "short",
+        text: `⚠ series starts ${isoDateOrNull(l.starts) || "late"} — ${periodsPhrase(n, grain)} after the earliest series at its grain${reach ? ` (${reach})` : ""}`,
+        short: `⚠ series starts ${isoDateOrNull(l.starts) || "late"}`,
+        detail: "",
+        why: SHORT_SERIES_WHY,
+        cls: "sign-flag",
+        edge: "from",
+      });
+    }
+  });
+  return out;
+}
+
+/* `data_from` later than the loaded window allows for, or null. Only said
+   when `short_series` has not already said it about the same edge. */
+function dataFromNote(meta, name) {
+  const from = isoDateOrNull(meta && meta.data_from && meta.data_from[name]);
+  const start = isoDateOrNull(meta && meta.date_start);
+  if (!from || !start) return null;
+  const grain = (meta.grains && meta.grains[name]) || "day";
+  const earliest = firstWholePeriodStart(start, grain);
+  if (!earliest || from <= earliest) return null;
+  return {
+    kind: "from",
+    text: `⚠ series starts ${from} — later than the loaded window (${start})`,
+    short: `⚠ series starts ${from}`,
+    detail: "",
+    why: DATA_FROM_WHY,
+    cls: "sign-flag",
+    edge: "from",
+  };
+}
+
+/* Every range disclosure for one metric, in one list — what the Metric tab's
+   freshness rows, the RCA node header and the export each render, so none of
+   the three can carry a fact the others lack. */
+function seriesRangeNotes(meta, name, analysisEnd) {
+  const notes = [];
+  const sparse = sparseFillNote(meta, name, analysisEnd);
+  if (sparse) notes.push(sparse);
+  const short = shortSeriesNotes(meta, name);
+  notes.push(...short);
+  if (!short.some((n) => n.edge === "from")) {
+    const from = dataFromNote(meta, name);
+    if (from) notes.push(from);
+  }
+  return notes;
+}
+
+/* The same list for a node of an RCA result, placed against the analysis
+   window that node was actually measured over (its own snapped one where the
+   grain changed it). */
+function rcaNodeRangeNotes(meta, res, name) {
+  const node = ((res && res.nodes) || {})[name] || {};
+  const ew = node.effective_windows && node.effective_windows.analysis;
+  const end = (ew && ew.end) || (res && res.analysis_window && res.analysis_window.end) || null;
+  return seriesRangeNotes(meta, name, end);
+}
+
+/* The chip form (live surfaces): the sentence on hover. */
+function seriesRangeChipsHtml(notes, sep) {
+  return notes
+    .map(
+      (n) =>
+        `${sep}<span class="${n.cls}" title="${esc([n.detail, n.why].filter(Boolean).join("\n\n"))}">${esc(n.text)}</span>`,
+    )
+    .join("");
+}
+
+/* The flag form, for a row that *names* a metric without being its block — a
+   ranked cause, a parent in a child's contributions table. Warnings only. A
+   plain source metric has no Attribution-detail block of its own, so for the
+   metric most likely to be sparse (an event feed, a source by construction)
+   these rows are the only place an RCA mentions it. */
+function seriesRangeFlagsHtml(notes) {
+  return notes
+    .filter((n) => n.cls === "sign-flag")
+    .map(
+      (n) =>
+        ` <span class="cause-flag" title="${esc([n.text, n.detail, n.why].filter(Boolean).join("\n\n"))}">${esc(n.short)}</span>`,
+    )
+    .join("");
+}
+
+/* The printed form, for the export, which has no hover: one paragraph per
+   warning, optionally naming the metric it is about. Returns the inner HTML
+   of each paragraph; the caller wraps it in its own caveat markup. */
+function seriesRangeParagraphs(notes, name) {
+  return notes
+    .filter((n) => n.cls === "sign-flag")
+    .map(
+      (n) =>
+        `${name ? `<code>${esc(name)}</code>: ` : ""}<strong>${esc(n.text.replace(/^⚠\s*/, ""))}.</strong> ${esc([n.detail, n.why].filter(Boolean).join(" "))}`,
+    );
+}
+
+/* The tree-wide count for the header's context row: how many metrics end in
+   declared zeros. Null when none do — leading and interior fills are not a
+   freshness question and get no chip up there. */
+function sparseTailsSummary(meta) {
+  const fills = meta && meta.sparse_fills;
+  if (!fills || typeof fills !== "object") return null;
+  const names = Object.keys(fills).filter((name) => {
+    const n = sparseFillNote(meta, name);
+    return n && n.tail;
+  });
+  if (!names.length) return null;
+  return {
+    names,
+    text: `${names.length} sparse tail${names.length === 1 ? "" : "s"} zero-filled`,
+    title:
+      `${names.join(", ")}: declared \`sparse: true\`, and the periods after ` +
+      `${names.length === 1 ? "its" : "each one's"} last source row were filled with zero by ` +
+      "that declaration. Their cards and analyses show those zeros as values; a stale feed " +
+      "would look identical. Each metric's own tab names its last source row.",
+  };
+}
+
 /* ---------- reference-window sensitivity (roadmap S23) ----------
    Every RCA number is a contrast of two window means, and the bootstrap only
    resamples periods *inside* those windows. The engine re-runs the attribution
