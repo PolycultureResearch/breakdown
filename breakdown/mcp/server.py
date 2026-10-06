@@ -3,8 +3,9 @@
 Mounted on the FastAPI app at /mcp (streamable HTTP), so tools read the
 same app.state the endpoints do — one process, one warm trace cache, no
 state of their own. Heavy engine calls follow the endpoint concurrency
-pattern exactly: serialized under app.state.lock, off the event loop via
-asyncio.to_thread.
+pattern exactly: serialized under the addressed tree's lock, off the event
+loop via asyncio.to_thread, and inside the tree's engine guard (`_engine`,
+below) so a tool call cannot start a sampler beside an orphaned one.
 """
 
 import asyncio
@@ -15,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, TypeVar
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+from breakdown.api.trees import EngineBusy, guarded, refusal_message
 from breakdown.data_fetch import SliceNotSupported
 from breakdown.engine.rca import run_rca as _engine_run_rca
 from breakdown.engine.simulate import Assumption, Intervention, ScenarioRequest, run_scenario
@@ -59,9 +61,19 @@ _ToolFn = TypeVar("_ToolFn", bound=Callable[..., Any])
 
 #: The exceptions that mean "the caller asked for something this tree cannot
 #: answer", as opposed to "breakdown broke". Not a new judgement: it is the one
-#: `api/main.py` already makes one file over, where exactly these two become a
-#: 422 carrying `str(e)` and everything else becomes a 500.
-_REFUSALS = (ValueError, SliceNotSupported)
+#: `api/main.py` makes one file over, where exactly these become a 422
+#: carrying `str(e)` and everything else becomes a 500.
+#:
+#: This comment claimed that parity while the tuple was `(ValueError,
+#: SliceNotSupported)` and HTTP had caught `RuntimeError` since roadmap C38,
+#: so the per-metric-window refusal `/simulate` returned as a readable 422
+#: reached an agent as `Error executing tool run_whatif` and nothing else
+#: (grill 2026-10-05 M6). The claim is now held by construction, not by this
+#: tuple: both surfaces ask `api.trees.refusal_message`, which also knows the
+#: two refusals that are neither class (a failed sampler, a failed sliced
+#: query). The tuple stays as the readable statement of the common case, and
+#: `tests/test_service_surface.py` checks each member against that function.
+_REFUSALS = (ValueError, RuntimeError, SliceNotSupported)
 
 
 def _surface_refusals(fn: _ToolFn) -> _ToolFn:
@@ -86,14 +98,30 @@ def _surface_refusals(fn: _ToolFn) -> _ToolFn:
     This wrapper covers what is raised deeper — the engine's window and scenario
     validation, a provider that cannot slice — where the raise site knows
     nothing about MCP and shouldn't.
+
+    `EngineBusy` is the one anticipated failure that is not a refusal of the
+    *request*: the tree's engine slot is held by an analysis whose caller went
+    away (roadmap C41). HTTP answers it 409; here it is a `ToolError` whose
+    text says to retry, because a model told only "error executing tool"
+    retries at once, or not at all.
     """
 
     @functools.wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return await fn(*args, **kwargs)
-        except _REFUSALS as e:
-            raise ToolError(str(e)) from e
+        except ToolError:
+            raise
+        except EngineBusy as e:
+            raise ToolError(
+                f"{e} Nothing was run for this call; the same call will work once "
+                "the earlier analysis finishes."
+            ) from e
+        except Exception as e:  # noqa: BLE001 - a crash is re-raised unchanged just below
+            message = refusal_message(e)
+            if message is None:
+                raise
+            raise ToolError(message) from e
 
     # `tests/test_project_invariants.py` enumerates the `@mcp.tool()`
     # decorations and requires this one beside each: a seventh tool added
@@ -136,6 +164,27 @@ async def _state(tree: Optional[str] = None):
             f"Run `breakdown doctor --tree {tree_state.path}` to diagnose."
         )
     return tree_state
+
+
+async def _engine(state, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Run one engine call for a tool, exactly as an HTTP route runs it:
+    under the tree's lock, off the event loop, inside the tree's engine guard.
+
+    The guard is the part that was missing (grill 2026-10-05 H7). The three
+    analysis tools called `asyncio.to_thread(engine_fn, …)` directly while
+    every HTTP route and the warm pass went through `guarded` (roadmap C41).
+    An MCP client is the caller most likely to give up on a multi-minute
+    `run_rca`; its abandoned thread then held no guard, so the next call —
+    over MCP or HTTP — started a second sampler beside it, which is the OOM
+    the guard exists to prevent. And in the other direction a tool call ran
+    straight through an orphan that HTTP was answering 409 for.
+
+    One helper rather than three corrected call sites, so a fourth tool
+    cannot repeat it; `tests/test_service_surface.py` fails on any
+    `to_thread` in this module that does not hand its callee to `guarded`.
+    """
+    async with state.lock:
+        return await asyncio.to_thread(guarded, state, fn, *args, **kwargs)
 
 
 def _known_metric(state, name: str) -> None:
@@ -181,7 +230,10 @@ async def list_trees() -> Dict[str, Any]:
     return round_floats(
         {
             "default": state.default_tree,
-            "trees": [_tree_card(t) for t in state.trees.values()],
+            # Raw `load_error` text: `/mcp` is behind BREAKDOWN_API_TOKEN
+            # whenever one is set, so every caller here is one the HTTP
+            # routes would show it to (`api.main._sees_protected`).
+            "trees": [_tree_card(t, reveal_errors=True) for t in state.trees.values()],
         }
     )
 
@@ -455,18 +507,18 @@ async def run_rca(
     state = await _state(tree)
     _require_data(state)
     _known_metric(state, target)
-    async with state.lock:
-        result = await asyncio.to_thread(
-            _engine_run_rca,
-            state.parser.dag,
-            state.data,
-            state.traces,
-            target,
-            analysis_start=analysis_start,
-            analysis_end=analysis_end,
-            reference_start=reference_start,
-            reference_end=reference_end,
-        )
+    result = await _engine(
+        state,
+        _engine_run_rca,
+        state.parser.dag,
+        state.data,
+        state.traces,
+        target,
+        analysis_start=analysis_start,
+        analysis_end=analysis_end,
+        reference_start=reference_start,
+        reference_end=reference_end,
+    )
     out = round_floats(compact_rca(result))
     out["how_to_read"] = rca_how_to_read(result)
     # Deep link from the *resolved* windows, so a defaulted reference replays
@@ -524,19 +576,19 @@ async def slice_metric(
 
     from breakdown.api.main import _run_slice
 
-    async with state.lock:
-        result = await asyncio.to_thread(
-            _run_slice,
-            state,
-            state.parser,
-            state.data,
-            defn,
-            dimension,
-            reference_start,
-            reference_end,
-            analysis_start,
-            analysis_end,
-        )
+    result = await _engine(
+        state,
+        _run_slice,
+        state,
+        state.parser,
+        state.data,
+        defn,
+        dimension,
+        reference_start,
+        reference_end,
+        analysis_start,
+        analysis_end,
+    )
     out = round_floats(compact_slice(result))
     out["how_to_read"] = SLICE_HOW_TO_READ
     return out
@@ -578,10 +630,9 @@ async def run_whatif(
         interventions=interventions or [],
         assumptions=assumptions or [],
     )
-    async with state.lock:
-        result = await asyncio.to_thread(
-            run_scenario, state.parser.dag, state.data, state.traces, scenario
-        )
+    result = await _engine(
+        state, run_scenario, state.parser.dag, state.data, state.traces, scenario
+    )
     out = round_floats(compact_scenario(result))
     out["how_to_read"] = whatif_how_to_read(result["mode"])
     out["report_url"] = whatif_link(scenario.model_dump(exclude_defaults=True), tree=state.id)
