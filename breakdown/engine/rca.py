@@ -1062,7 +1062,8 @@ def _gap_sign(gap: Optional[float], baseline: Optional[float], actual: Optional[
 def _reference_sensitivity(
     dag: nx.DiGraph,
     data,
-    traces: Dict[Tuple[str, Optional[str]], Any],
+    fits: Dict[Tuple[str, Optional[str]], Any],
+    fit_failures: Dict[str, str],
     target: str,
     result: Dict[str, Any],
     *,
@@ -1072,6 +1073,14 @@ def _reference_sensitivity(
     draws: int,
 ) -> Dict[str, Any]:
     """Re-attribute under each alternative block and say what moved.
+
+    `fits` is the published run's own fits, keyed like the trace cache, and
+    `fit_failures` the nodes it could not fit. The alternatives attribute
+    over exactly those and are forbidden to fit (`allow_fitting=False`): they
+    used to be handed the caller's cache instead, so a node whose fit had
+    failed or been evicted was refitted once per alternative — up to tripling
+    the wall-clock under the tree's lock, against this section's own "never
+    fits" (grill 2026-10-05 L4).
 
     `status` is `stable` when every alternative that could answer names the
     same top cause and the same gap direction as the published windows,
@@ -1121,7 +1130,7 @@ def _reference_sensitivity(
             alt_result = run_rca(
                 dag,
                 data,
-                traces,
+                fits,
                 target,
                 analysis_start=analysis_start,
                 analysis_end=analysis_end,
@@ -1130,6 +1139,8 @@ def _reference_sensitivity(
                 inference_method=inference_method,
                 draws=draws,
                 reference_sensitivity=False,
+                allow_fitting=False,
+                fit_failures=fit_failures,
             )
         except ValueError as e:
             # The engine's own refusal of that block (coverage, an undefined
@@ -1290,6 +1301,16 @@ class RcaFitPlan(NamedTuple):
     frame_failures: Dict[str, str]
     fit_ends: Dict[str, str]
     to_fit: List[str]
+    # The usable cached fits the plan found, by node, *held here* rather than
+    # left to be looked up again: `traces` is a bounded cache shared by every
+    # tree in the process, so a fit that was there when the plan was made can
+    # be gone by the time the attribution reads it (grill 2026-10-05 M1).
+    fits: Dict[str, Any]
+    # Nodes whose reference window starts before the first period their own
+    # fit trains on (`fit_start`, then the lag trim), each with the reason.
+    # Never fitted — there is nothing the fit could say about that reference
+    # — and reported as `reference_before_fit_window` (grill 2026-10-05 M2).
+    reference_before_fit: Dict[str, str]
 
 
 def plan_rca_fits(
@@ -1307,7 +1328,9 @@ def plan_rca_fits(
     """Resolve windows and list the fits `run_rca` would need, without fitting.
 
     Raises exactly what `run_rca` raises for an unanalysable target or window.
-    `to_fit` excludes nodes `traces` already holds a usable fit for.
+    `to_fit` excludes nodes `traces` already holds a usable fit for; those
+    fits are returned on the plan (`fits`), so the caller reads them from
+    there and never from `traces` again.
     """
     if target not in dag:
         raise ValueError(f"Metric '{target}' not found in the metric tree.")
@@ -1414,6 +1437,8 @@ def plan_rca_fits(
     # key here, at the fit and at the read, so the three cannot disagree.
     to_fit = []
     fit_ends: Dict[str, str] = {}
+    fits: Dict[str, Any] = {}
+    reference_before_fit: Dict[str, str] = {}
     for node in sorted(nodes_in_scope):
         defn = dag.nodes[node]["definition"]
         parents = list(dag.predecessors(node))
@@ -1424,6 +1449,7 @@ def plan_rca_fits(
         fit_ends[node] = _node_fit_end(defn, scoped[node][0], analysis_start, scoped[node][3])
         cached = traces.get((node, fit_ends[node]))
         if cached is not None and cached_fit_is_usable(cached, inference_method):
+            fits[node] = cached
             continue
         to_fit.append(node)
 
@@ -1437,6 +1463,8 @@ def plan_rca_fits(
         frame_failures,
         fit_ends,
         to_fit,
+        fits,
+        reference_before_fit,
     )
 
 
@@ -1480,6 +1508,8 @@ def run_rca(
     draws: int = NUTS_DRAWS,
     progress: Optional[ProgressFn] = None,
     reference_sensitivity: bool = True,
+    allow_fitting: bool = True,
+    fit_failures: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Attribute `target`'s window-over-window change to its ancestors.
 
@@ -1488,6 +1518,19 @@ def run_rca(
     strictly before `analysis_start` (so the anomaly window is excluded) and added
     to it. A full-window fit (`fit_end=None`) is never reused here — it is
     contaminated by the anomaly for attribution purposes.
+
+    `traces` is a **write-through cache, never this call's working memory**.
+    The fits a run needs are held in a local mapping from the moment they are
+    found or made until the call returns; `traces` is read once, in the plan,
+    and written once per new fit. The caller's mapping is allowed to be
+    bounded and shared (the API's is both), so a run must not depend on it
+    still holding what the run itself put there a moment ago.
+
+    `allow_fitting=False` attributes over the fits `traces` already holds and
+    makes none: a node with no usable fit there reports `fit_failed`, with the
+    reason from `fit_failures` (node -> reason, a previous run's failures)
+    when it has one. It is how the S23 alternatives run — over the published
+    run's fits, and nothing else.
 
     `inference_method` is `"nuts"` — exact MCMC — by default, because roadmap S2
     measured mean-field ADVI failing the PSIS k-hat check on essentially every
@@ -1513,7 +1556,7 @@ def run_rca(
 
     `reference_sensitivity` (roadmap S23) re-attributes the same analysis
     window under `REFERENCE_SENSITIVITY_SHIFTS` neighbouring reference blocks
-    — over the cached fits, never fitting — and publishes whether the top
+    — over this run's own fits, never fitting — and publishes whether the top
     cause and the gap's direction survive the move, as `reference_sensitivity`.
     It runs whether the reference was defaulted or chosen: a chosen block is
     no less one choice among neighbours, and the reader's question is the
@@ -1529,6 +1572,8 @@ def run_rca(
         frame_failures,
         fit_ends,
         to_fit,
+        fits,
+        reference_before_fit,
     ) = plan_rca_fits(
         dag,
         data,
@@ -1568,8 +1613,23 @@ def run_rca(
     # a node reaches this loop only when the cache held nothing usable for the
     # method asked for, so the fit being stored is never worse than the one it
     # replaces.
-    fit_failures: Dict[str, str] = {}
+    #
+    # `fits` (node -> FitResult) is where this run keeps what it will read:
+    # the plan's cached fits plus the ones made here. The write to `traces` is
+    # for the *next* caller. Reading it back below was a KeyError — an
+    # unhandled 500 — whenever the bounded, process-wide store evicted this
+    # run's own fit between the two loops: a scope with more fitted nodes
+    # than the byte budget holds, or another tree's analysis writing in
+    # between (grill 2026-10-05 M1).
+    known_failures = fit_failures or {}
+    fit_failures = {}
     for i, node in enumerate(to_fit, 1):
+        if not allow_fitting:
+            fit_failures[node] = known_failures.get(node) or (
+                f"'{node}' has no fit from the published run to attribute over, and "
+                "this re-attribution does not fit."
+            )
+            continue
         _report(progress, stage="fitting", metric=node, current=i, total=len(to_fit))
         try:
             fit = fit_rca_node(
@@ -1582,6 +1642,7 @@ def run_rca(
             # node until it degraded here like every other unfittable one.
             fit_failures[node] = str(e)
             continue
+        fits[node] = fit
         traces[(node, fit_ends[node])] = fit
 
     _report(progress, stage="attributing", total=len(to_fit))
@@ -1709,7 +1770,11 @@ def run_rca(
 
         contributions = []
         components = None
-        inference_method = None
+        # Not `inference_method`: that is this call's *requested* sampler, and
+        # rebinding it per node handed whatever the last node in scope
+        # happened to be fitted with (or None, after a formula node) to the
+        # S23 alternatives as the method to plan with.
+        node_inference_method = None
         fit_quality = None
         khat = None
         khat_se = None
@@ -2025,8 +2090,8 @@ def run_rca(
                 unexplained_status = "measured"
         else:
             attribution_method = "posterior"
-            fit = traces[(node, fit_ends[node])]
-            inference_method = fit.inference_method
+            fit = fits[node]
+            node_inference_method = fit.inference_method
             fit_quality = fit.diagnostics.get("fit_quality")
             khat = fit.diagnostics.get("khat")
             khat_se = fit.diagnostics.get("khat_se")
@@ -2333,7 +2398,7 @@ def run_rca(
             gap=gap,
             relative_change=relative_change,
             attribution_method=attribution_method,
-            inference_method=inference_method,
+            inference_method=node_inference_method,
             fit_quality=fit_quality,
             khat=khat,
             khat_se=khat_se,
@@ -2376,7 +2441,8 @@ def run_rca(
         result["reference_sensitivity"] = _reference_sensitivity(
             dag,
             data,
-            traces,
+            {(node, fit_ends[node]): fit for node, fit in fits.items()},
+            fit_failures,
             target,
             result,
             analysis_start=analysis_start,

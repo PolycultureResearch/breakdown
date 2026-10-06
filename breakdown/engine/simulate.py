@@ -638,8 +638,16 @@ def run_scenario(
         )
     # Work list first, fits second, so `progress` can report a real denominator
     # rather than counting toward an unknown total.
+    #
+    # `fits` (node -> FitResult) is this run's own hold on every fit it will
+    # read: the usable cached ones, captured here, and the ones made below.
+    # `traces` is a write-through cache — bounded, and shared by every tree in
+    # the process — so reading it back later was a KeyError (an unhandled 500)
+    # whenever it evicted this run's fit in between, exactly as in `run_rca`
+    # (grill 2026-10-05 M1).
     needs_beta = set()
     to_fit = []
+    fits: Dict[str, Any] = {}
     for node in order:
         defn = dag.nodes[node]["definition"]
         parents = list(dag.predecessors(node))
@@ -649,6 +657,7 @@ def run_scenario(
                 continue
             cached = traces.get((node, fit_end_key))
             if cached is not None and cached_fit_is_usable(cached, inference_method):
+                fits[node] = cached
                 continue
             to_fit.append(node)
 
@@ -696,6 +705,7 @@ def run_scenario(
                 "missing. Widen the window so the node varies, or intervene "
                 "somewhere that does not route through it."
             ) from e
+        fits[node] = fit
         traces[(node, fit_end_key)] = fit
 
     _report(progress, stage="simulating", total=len(to_fit))
@@ -736,7 +746,7 @@ def run_scenario(
             beta_means[node] = np.array([_prior_mean(pr) for pr in priors])
             beta_axis[node] = parents
         else:
-            fit = traces[(node, fit_end_key)]
+            fit = fits[node]
             # A parent the fit dropped (constant over the fit window, issue
             # #113) has no coefficient — and if a delta can reach this node
             # through it, the scenario has no way to carry that delta across
@@ -1018,7 +1028,7 @@ def run_scenario(
         ppc_status = None
         ppc_warnings = None
         if not cold_start and node in needs_beta:
-            dx = traces[(node, fit_end_key)].diagnostics
+            dx = fits[node].diagnostics
             fit_quality = dx.get("fit_quality")
             # Roadmap S2's verdict on the approximation this node's slope came
             # from, and null on the NUTS default (NUTS is not an
