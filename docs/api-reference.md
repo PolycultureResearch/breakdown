@@ -27,10 +27,10 @@ about the whole process rather than one tree.
 | `GET` | `/meta` | Metric names, data window, provider type, mode (`fitted` \| `cold_start`), per-metric `grains`/`kinds`/`data_through`/`data_from`, fitted models, per-metric `earliest_available` history discovery, and `short_series` — which metrics stop before their grain's reach and by how much, if any (UI bootstrap) |
 | `GET` | `/dag` | Full metric DAG (nodes + edges), each node carrying its whole definition. `sql` and `bind` come back `null` to a caller that presents no token when one is configured. See [Authentication](deploying.md#authentication) |
 | `GET` | `/series` | Every metric's series at its native grain, `{name: {grain, dates, values}}`. One call hydrates the UI's node cards. Mixed-grain trees have no shared date axis, so dates are per metric |
-| `GET` | `/metrics/{name}` | Metric definition, time series, posterior summary and fit diagnostics — plus top-level `inference_method` and `fit_end` for the fit those describe (`null` when nothing is fitted), so a reader never infers the sampler from the presence of a k̂ (roadmap C35), and `fitted_parents` / `dropped_parents` — the parent axis the summary's `beta_raw[i]` rows follow, and the parents the fit left out for zero variance (#113; both `null` when nothing is fitted) — and `interventions` / `dropped_interventions`, the declared interventions the fit sized (the axis of `beta_intervention_raw[i]`) and the ones it could not (roadmap S24) |
+| `GET` | `/metrics/{name}` | Metric definition (its `sql` and `bind` `null` on the same terms as `GET /dag`), time series, posterior summary and fit diagnostics — plus top-level `inference_method` and `fit_end` for the fit those describe (`null` when nothing is fitted), so a reader never infers the sampler from the presence of a k̂ (roadmap C35), and `fitted_parents` / `dropped_parents` — the parent axis the summary's `beta_raw[i]` rows follow, and the parents the fit left out for zero variance (#113; both `null` when nothing is fitted) — and `interventions` / `dropped_interventions`, the declared interventions the fit sized (the axis of `beta_intervention_raw[i]`) and the ones it could not (roadmap S24) |
 | `GET` | `/metrics/{name}/query` | The query behind a metric's numbers, when the provider knows it. Optional `dimension` for the sliced form |
 | `GET` | `/metrics/{name}/ppc` | The observed-vs-replicated series behind this node's posterior predictive verdict — the arrays the Metric tab plots |
-| `POST` | `/analyze/{name}` | Run Bayesian sampling for a metric |
+| `POST` | `/analyze/{name}` | Run Bayesian sampling for a metric. A refusal from the fit (too little history, a `fit_end` before the data, a sampler that failed) is a 422 carrying the reason, as on `/rca` and `/simulate` |
 | `GET` | `/shapley/{name}` | Shapley attribution for a formula metric |
 | `POST` | `/rca/{name}` | Root cause analysis over the metric's ancestors |
 | `POST` | `/rca/{name}/slices` | Attribute one metric's gap across a declared dimension's values, the traverse-then-slice follow-up |
@@ -41,9 +41,9 @@ about the whole process rather than one tree.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/` | A one-line "the API is running" banner carrying no tree data. Open even under `BREAKDOWN_REQUIRE_AUTH` |
-| `GET` | `/health` | Always 200. `{"status": "ok", provider, metrics, state, data_through, data_through_bounded_by, short_series, sparse_fills}`, or `{"status": "degraded", "error_kind": …, "error": …}` when the default tree can't serve. `data_through` is the date the loaded data runs through — the tree-wide as-of date, the *earliest* of the metrics' last fully covered dates (the anchor the node cards and the goal progress use), kept at the earliest edge even though per-metric windows let analyses that do not read the shortest series run past it, because a max would keep a stale feed looking fresh — so a monitor can alert on a serve whose data has stopped advancing (GitHub #117). `null` when nothing has been fetched yet (`state` is `not_loaded` or `loading` for a lazily loaded directory tree, or the provider is `none`), never a date taken from the requested window. `data_through_bounded_by` names the metric(s) whose edge it is — the feed to widen or repair — and `short_series` is `/meta`'s record of every metric that stops before its grain's reach, `{}` when clean. `error_kind` is a stable classification (`parse_error` \| `data_load_error` \| `auth_config_error` \| `discovery_error`) and `error` a generic sentence — never the exception text, which can carry the tree's SQL or a provider's hostnames and this route is deliberately open (roadmap C43). The full diagnostic is in the server log and on the auth-gated `GET /trees` card. Liveness for orchestrators; the body, not the status code, says whether the tree is degraded. Open even under `BREAKDOWN_REQUIRE_AUTH` |
-| `GET` | `/manifest` | Which deployment answered: `{app, version, status, demo?, default_tree, snapshots?}`. `demo` echoes the `BREAKDOWN_DEMO_*` env vars the deploy stamped (slug, vertical, dataset); `default_tree` is `{id, title, provider, metric_count, state}` — deliberately not the full index card, whose `load_error` this open route must not carry (the same C43 rule `/health` follows); `snapshots` reports count and latest `fetched_at` from the snapshot store. Metadata only. Open even under `BREAKDOWN_REQUIRE_AUTH` |
-| `GET` | `/trees` | Every tree: title, owner, metric count, `state` (`loaded` \| `not_loaded` \| `loading` \| `error`), plus `period`/`goal` where declared and `progress` for a loaded tree that has a goal. Reads parsed YAML only and never triggers a data load |
+| `GET` | `/health` | Always 200. `{"status": "ok", provider, metrics, state, data_through, data_through_bounded_by, short_series, sparse_fills, no_nonzero_data}`, or `{"status": "degraded", "error_kind": …, "error": …}` when the default tree can't serve. `data_through` is the date the loaded data runs through — the tree-wide as-of date, the *earliest* of the metrics' last fully covered dates (the anchor the node cards and the goal progress use), kept at the earliest edge even though per-metric windows let analyses that do not read the shortest series run past it, because a max would keep a stale feed looking fresh — so a monitor can alert on a serve whose data has stopped advancing (GitHub #117). `null` when nothing has been fetched yet (`state` is `not_loaded` or `loading` for a lazily loaded directory tree, or the provider is `none`), never a date taken from the requested window: a metric whose loaded series is zero or undefined in every period offers no edge (an empty result is filled to the requested end date, which says where the request ended, not where the data does), so a load in which no metric was observed reports `null` too. `no_nonzero_data` lists those metrics, `[]` when every series has a value. `data_through_bounded_by` names the metric(s) whose edge it is — the feed to widen or repair — and `short_series` is `/meta`'s record of every metric that stops before its grain's reach, `{}` when clean. **These four fields name metrics, so when `BREAKDOWN_API_TOKEN` is set and the request does not present it they are `null` and `withheld` carries their counts instead** (`{data_through_bounded_by, short_series, sparse_fills, no_nonzero_data}`, each the number of metrics named); `data_through` and `status` are never withheld. See [what the open routes carry](deploying.md#what-the-open-routes-carry). `error_kind` is a stable classification (`parse_error` \| `data_load_error` \| `auth_config_error` \| `discovery_error`) and `error` a generic sentence — never the exception text, which can carry the tree's SQL or a provider's hostnames and this route is deliberately open (roadmap C43). The full diagnostic is in the server log, and on the `GET /trees` card for a request that presents the token (for every request when no token is configured). Liveness for orchestrators; the body, not the status code, says whether the tree is degraded. Open even under `BREAKDOWN_REQUIRE_AUTH` |
+| `GET` | `/manifest` | Which deployment answered: `{app, version, status, demo?, default_tree, snapshots?}`. `demo` echoes the `BREAKDOWN_DEMO_*` env vars the deploy stamped (slug, vertical, dataset); `default_tree` is `{id, title, provider, metric_count, state}` — deliberately not the full index card: identity only, for every caller, with no metric names and no `load_error` (the same open-route policy `/health` follows); `snapshots` reports count and latest `fetched_at` from the snapshot store. Metadata only. Open even under `BREAKDOWN_REQUIRE_AUTH` |
+| `GET` | `/trees` | Every tree: title, owner, metric count, `state` (`loaded` \| `not_loaded` \| `loading` \| `error`), plus `period`/`goal` where declared and `progress` for a loaded tree that has a goal. A tree in `state: error` carries `load_error` and `load_error_kind` (`parse_error` \| `data_load_error`; both `null` otherwise). `load_error` is the parser's or the provider's own message — which can quote generated SQL and the server's path to the tree — unless `BREAKDOWN_API_TOKEN` is set and the request does not present it, in which case it is the classification in a sentence; the top-level `discovery_error` follows the same rule. Reads parsed YAML only and never triggers a data load |
 | `POST` | `/trees/{id}/load` | Fetch one tree's data now, and return its updated index card |
 | `GET` | `/progress/{run_id}` | Live stage of an in-flight RCA or simulation started with that `run_id` |
 | `GET` | `/ui` | Interactive DAG visualization |
@@ -136,13 +136,24 @@ when it is off:
 }
 ```
 
-`status` is `planning`, `running`, `done`, `failed` (planning itself raised;
-`error` says why) or `stopped_cache_full` (the trace budget had no room for a
-fit nobody had asked for yet, so the warm stopped rather than evicting one
-somebody had). `windows` is the default analysis window the warm fitted for,
-per target: the same window the UI selects when that metric is opened, so an
-RCA on it is a cache hit. `failed` maps `node@fit_end` to the reason a single
-fit failed; the rest of the warm carries on.
+`status` takes six values:
+
+| `status` | Meaning |
+|----------|---------|
+| `planning` | Working out which fits the default analyses need. No `total` yet |
+| `running` | Fitting. `done` of `total` are finished |
+| `done` | Every planned fit was made or recorded under `failed` |
+| `failed` | The warm stopped on an error it did not expect (anything but a single fit's refusal). `error` is the error's class and message, and the traceback is in the server log. Fits already made stay cached; serving is unaffected |
+| `stopped_cache_full` | The trace budget had no room for a fit nobody had asked for yet, so the warm stopped rather than evicting one somebody had |
+| `cancelled` | The process is shutting down |
+
+`windows` is the default analysis window the warm fitted for, per target: the
+same window the UI selects when that metric is opened, so an RCA on it is a
+cache hit. `failed` (the field) maps `node@fit_end` to the reason a single fit
+was refused — too little history, a sampler that failed — and the rest of the
+warm carries on. A fit that found the tree busy finishing an abandoned
+analysis (the 409 case below) is neither failed nor done: the warm waits and
+retries it.
 
 ## `GET /metrics/{name}/query`
 
@@ -659,6 +670,16 @@ warehouse for a 200-year scan, hold the tree's lock for the duration, and only
 then fail for having no data in it. If you need a window outside what is
 loaded, restart with a wider `--start-date`/`--end-date` for that tree.
 
+**A sliced query the source refuses is a 422 that names the dimension.** A
+binding dimension whose `column:` is not on the relation, or a dimension shape
+the provider cannot compile, fails in the source's own driver; the response
+says which metric and dimension were being sliced and the error's class, and
+points at `breakdown doctor`, which runs one sliced query per declared
+dimension. The driver's message quotes the generated SQL, so it is appended
+(`Cause: …`) only when no `BREAKDOWN_API_TOKEN` is configured or the request
+presents it — the same condition as `sql`/`bind` on `GET /dag`. Any other
+refusal from the slice engine is a 422 with its reason, as on `/rca`.
+
 ## `POST /simulate`
 
 Do-operator what-if: intervene on one or more metrics, propagate the change
@@ -699,7 +720,16 @@ curl -X POST "http://localhost:9090/simulate" \
 Analysis routes (`/rca`, `/simulate`, `/analyze`, `/shapley`, slicing) can
 also answer **409**: a previous run on this tree was cancelled mid-flight
 (engine threads cannot be), and its orphan is still finishing — retry once it
-completes (roadmap C41). And a metric **outside the scenario's affected cone**
+completes (roadmap C41). The MCP tools take the same guard, so a tool call
+abandoned by its client is refused for the next caller on either surface, and
+an MCP caller gets the same sentence as a tool error.
+
+Every analysis route answers a refusal with **422** and the reason in
+`detail`: a window the data does not cover, a grain with no whole period, a
+node with too little history, a sampler that failed. Anything else is a 500.
+The MCP tools carry the same text for the same refusals.
+
+And a metric **outside the scenario's affected cone**
 whose baseline window holds no whole period at its grain (or no defined value)
 is omitted from `nodes` and named in `warnings` as
 `{"kind": "baseline_unavailable", "metric": …, "detail": …}` rather than
