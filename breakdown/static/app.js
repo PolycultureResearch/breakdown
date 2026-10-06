@@ -1126,7 +1126,7 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     // drift.
     const kn = khatNote(node);
     if (kn) bits.push(`${kn.text}${khatFigure(node) ? ` (PSIS k̂ ${khatFigure(node)})` : ""}`);
-    if (node.sign_warnings && node.sign_warnings.length) bits.push("⚠ learned sign contradicts declared expectation");
+    if (nodeWarningChip(node, "sign_warnings")) bits.push(nodeWarningChip(node, "sign_warnings"));
     // Roadmap S4. The pair travels in the header line so a reader scanning the
     // export's sections sees which node's per-parent rows are not a ranking.
     const cn2 = collinearityNote(node.collinearity_status);
@@ -1135,8 +1135,8 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     // not reproduce its own history.
     const pn2 = ppcNote(node.ppc_status);
     if (pn2) bits.push(`${pn2.text}${ppcStatText(node)}`);
-    if (node.seasonality_warnings && node.seasonality_warnings.length) bits.push("⚠ seasonality unidentifiable from fitted history");
-    if (node.likelihood_warnings && node.likelihood_warnings.length) bits.push("⚠ zero-inflated fit window — intervals approximate");
+    if (nodeWarningChip(node, "seasonality_warnings")) bits.push(nodeWarningChip(node, "seasonality_warnings"));
+    if (nodeWarningChip(node, "likelihood_warnings")) bits.push(nodeWarningChip(node, "likelihood_warnings"));
     // Issue #113: which parents this node's table does not have a row for,
     // and that the absence is an exclusion rather than a zero.
     const dn2 = droppedParentsNote(node);
@@ -2741,7 +2741,7 @@ function renderPosterior(name, data) {
     (data.dropped_parents || []).forEach((d) => {
       rows += `<tr class="dim">
         <td title="${esc(`${d.reason}\n\n${DROPPED_PARENT_WHY}`)}"><code>${esc(d.parent)}</code></td>
-        <td colspan="2">not fitted — did not vary over the fit window</td>
+        <td colspan="2">${esc(DROPPED_PARENT_LABEL)}</td>
       </tr>`;
     });
   }
@@ -2853,50 +2853,31 @@ function renderPosterior(name, data) {
   // word that says the landing was not decisive; printing the band alone
   // would be a verdict the number cannot support.
   if (typeof dx.khat === "number" && Number.isFinite(dx.khat)) {
-    const st = dx.khat_status;
-    const cls = st === "ok" && !dx.khat_borderline ? "ok" : "warn";
-    const band =
-      st === "ok" ? "close to the posterior"
-        : st === "suspect" ? "measurably off"
-        : st === "unusable" ? "not usable"
-        : esc(String(st));
-    const edge = dx.khat_borderline ? ", band unresolved at this error" : "";
-    bits.push(`PSIS k̂ = <span class="${cls}">${khatFigure(dx)}</span> (${band}${edge})`);
+    // The band's words are `KHAT_BAND` in disclosures.js, beside `KHAT_NOTE`.
+    bits.push(`PSIS k̂ = <span class="${khatBandClass(dx)}">${khatFigure(dx)}</span> (${esc(khatBandText(dx))})`);
   }
   // Roadmap S4, in the same row and for the same reason: this is a check of
   // the design rather than of the sampler, and its *pass* has to be visible or
   // the reader cannot tell a separable node from an unchecked one. `high` says
   // so here too — the full sentence is in `collinWarningHtml` above, this is
   // the one-line version that sits with the other verdicts.
-  if (dx.collinearity_status) {
+  // The words are `collinDiagBit`'s, derived from `COLLIN_NOTE`.
+  const collinBit = collinDiagBit(dx.collinearity_status);
+  if (collinBit) {
     const r = fmtCorr(dx.collinearity && dx.collinearity.max_abs_correlation);
-    if (dx.collinearity_status === "ok") {
-      bits.push(`parents <span class="ok">separable</span>${r ? ` (max |r| = ${r})` : ""}`);
-    } else if (dx.collinearity_status === "high" || dx.collinearity_status === "moderate") {
-      const word = dx.collinearity_status === "high" ? "collinear" : "partly collinear";
-      bits.push(`parents <span class="warn">${word}</span>${r ? ` (max |r| = ${r})` : ""}`);
-    } else {
-      bits.push(`collinearity <span class="warn">${esc(String(dx.collinearity_status))}</span>`);
-    }
+    bits.push(`${collinBit.subject} <span class="${collinBit.cls}">${esc(collinBit.word)}</span>${r ? ` (max |r| = ${r})` : ""}`);
   }
   // Roadmap S3, in the same row and for the same reason as S4 above: this
   // checks the *model* rather than the sampler or the design, and its pass has
   // to be visible or a validated node is indistinguishable from an unchecked
   // one. The worst statistic's p-value rides along so the verdict is a
   // measurement rather than an assertion.
-  if (dx.ppc_status) {
-    const worst = ((dx.ppc || {}).statistics || []).filter((e) => e.status !== "ok")[0];
-    const pTxt = worst && Number.isFinite(worst.p_value)
-      ? ` (${worst.statistic}, p = ${worst.p_value.toFixed(3)})`
-      : "";
-    if (dx.ppc_status === "ok") {
-      bits.push(`model <span class="ok">reproduces its data</span>`);
-    } else if (dx.ppc_status === "severe" || dx.ppc_status === "moderate") {
-      const word = dx.ppc_status === "severe" ? "cannot generate this data" : "fits imperfectly";
-      bits.push(`model <span class="warn">${word}</span>${pTxt}`);
-    } else {
-      bits.push(`model check <span class="warn">${esc(String(dx.ppc_status))}</span>`);
-    }
+  // The words are `ppcDiagBit`'s, derived from `PPC_NOTE` — this row used to
+  // say "cannot generate this data" beside a chip saying "cannot generate
+  // this node's own data" (grill L9).
+  const ppcBit = ppcDiagBit(dx.ppc_status);
+  if (ppcBit) {
+    bits.push(`${ppcBit.subject} <span class="${ppcBit.cls}">${esc(ppcBit.word)}</span>${ppcBit.cls === "ok" ? "" : ppcStatSuffix(dx)}`);
   }
   // The engine's own verdict on the fit. It is computed for every fit — NUTS
   // thresholds R̂/divergences/ESS, ADVI checks the ELBO *and* PSIS k̂ — and
@@ -2904,35 +2885,9 @@ function renderPosterior(name, data) {
   // `suspect` looked exactly like one it was happy with. UC4's whole job is
   // telling a healthy fit from a broken one; a verdict the engine reached and
   // the screen withheld is the most expensive kind of silence here.
-  let verdict = "";
-  if (dx.fit_quality === "suspect") {
-    verdict = `<div class="diag"><span class="warn">⚠ The engine flagged this fit as suspect.</span>
-      ${dx.method === "advi" || dx.method === "fullrank_advi"
-        ? (dx.khat_status === "unusable" || dx.khat_status === "suspect"
-          ? `Its PSIS k̂ is ${esc(khatFigure(dx) || "above the threshold")}: the approximation sits away from the posterior it approximates, so its credible intervals are not a measurement of the real ones. Re-run this metric with NUTS.`
-          // Roadmap S22. Without this branch a borderline-`ok` fit would be
-          // explained by the ELBO sentence below — an explanation of a check
-          // that passed, offered for a failure it did not cause.
-          : dx.khat_borderline
-          ? `Its PSIS k̂ is ${esc(khatFigure(dx) || "close to a band edge")}, which is nearer the band edge than its own Monte-Carlo error: the check cannot say which side of the threshold this approximation is on. Re-run this metric with NUTS for anything that turns on it.`
-          : "The ADVI objective (the ELBO) had not settled by the end of optimization, so the approximation may not have converged on anything.")
-        // Roadmap S3 made this branch conditional. A `severe` posterior
-        // predictive check also sets `suspect`, and on a NUTS fit it is the
-        // *only* thing that can have — so the old unconditional sentence about
-        // R̂/divergences/ESS would have named a cause that did not happen. A
-        // correct payload explained by the wrong sentence is the fifth rule's
-        // failure, not a cosmetic one.
-        : dx.ppc_status === "severe"
-        ? "Series simulated from this model do not look like the series it was fitted on, so the likelihood is wrong for this metric — the sentences above say which summary failed. The sampler itself may well have converged; that is a different question from whether the model is right."
-        : "One of R̂, the divergence count or the effective sample size crossed the engine's threshold."}
-      Numbers derived from this fit — coefficients, intervals, and any RCA contribution through this node — inherit that.</div>`;
-  } else if (dx.fit_quality === "ok") {
-    verdict = `<div class="diag">Engine fit check: <span class="ok">ok</span>.</div>`;
-  } else if (dx.fit_quality) {
-    // Unknown verdict: shown verbatim rather than swallowed into silence,
-    // which would read as "nothing to report".
-    verdict = `<div class="diag">Engine fit check: <span class="warn">${esc(dx.fit_quality)}</span>.</div>`;
-  }
+  // The words — and the choice of which cause to name — are
+  // `fitVerdictDiagHtml`'s, in disclosures.js beside `fitQualityNote`.
+  const verdict = fitVerdictDiagHtml(dx);
 
   let diag = "";
   if (bits.length) {
@@ -3041,12 +2996,7 @@ async function renderPpcBand(name, data) {
 
   const band = res.band;
   if (!band) {
-    ppcPanelNote(
-      `This fit was <strong>not checked</strong> against its own posterior predictive `
-      + `distribution: ${esc(res.reason || "no reason given")}. That is the absence of a `
-      + `check, not a clean bill of health — if this node's likelihood is wrong for its `
-      + `data, nothing here will say so.`,
-    );
+    ppcPanelNote(ppcBandUncheckedHtml(res.reason));
     return;
   }
 
@@ -3944,10 +3894,13 @@ function renderRcaTab() {
       const khatFlag = kn
         ? ` · <span class="${kn.cls}" title="${esc(kn.why + (khatFigure(node) ? `\n\nPSIS k̂ = ${khatFigure(node)}.` : "") + (node.khat_warnings && node.khat_warnings.length ? "\n\n" + node.khat_warnings.join("\n\n") : ""))}">${esc(kn.text)}${khatFigure(node) ? ` (k̂ ${khatFigure(node)})` : ""}</span>`
         : "";
-      const signNote =
-        node.sign_warnings && node.sign_warnings.length
-          ? ` · <span class="sign-flag" title="${esc(node.sign_warnings.join("\n\n"))}">⚠ learned sign contradicts expectation</span>`
+      // The chip labels are `NODE_WARNING_CHIP` in disclosures.js, shared
+      // with the export's header line.
+      const warningChip = (field) =>
+        nodeWarningChip(node, field)
+          ? ` · <span class="sign-flag" title="${esc(node[field].join("\n\n"))}">${esc(nodeWarningChip(node, field))}</span>`
           : "";
+      const signNote = warningChip("sign_warnings");
       // Roadmap S4, beside the sign flag and not folded into it: a contradicted
       // sign says the edge answers the wrong question, while this says the
       // *rows below* cannot be read one at a time. The warnings name the pair;
@@ -3977,14 +3930,8 @@ function renderRcaTab() {
       const fitNote = node.fit_window
         ? ` · fitted on ${node.fit_window.n_periods} ${esc(node.grain)}s (${esc(node.fit_window.start)} → ${esc(node.fit_window.end)})`
         : "";
-      const seasNote =
-        node.seasonality_warnings && node.seasonality_warnings.length
-          ? ` · <span class="sign-flag" title="${esc(node.seasonality_warnings.join("\n\n"))}">⚠ seasonality unidentifiable from fitted history</span>`
-          : "";
-      const zeroNote =
-        node.likelihood_warnings && node.likelihood_warnings.length
-          ? ` · <span class="sign-flag" title="${esc(node.likelihood_warnings.join("\n\n"))}">⚠ zero-inflated fit window — intervals approximate</span>`
-          : "";
+      const seasNote = warningChip("seasonality_warnings");
+      const zeroNote = warningChip("likelihood_warnings");
       // Issue #113: a parent the fit left out. The chip names it; the table
       // below keeps a labelled row for it, so its absence from the
       // contributions cannot read as "contributed nothing".

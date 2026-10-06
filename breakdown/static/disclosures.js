@@ -259,6 +259,131 @@ function fitQualityNote(node) {
   };
 }
 
+/* ---------- the Metric tab's diagnostics row, in this file's words ----------
+   The diagnostics row prints one short phrase per check and, unlike the RCA
+   header chips, prints the *pass* too. Those phrases were written inline in
+   `renderPosterior` (grill 2026-10-05 L9), against the 2026-08-31 agreement
+   and with the result that agreement predicts: `PPC_NOTE` says "the model
+   cannot generate this node's own data" and the row beside it said "cannot
+   generate this data"; `moderate` was "reproduces its own data imperfectly"
+   in one and "fits imperfectly" in the other. Each helper returns
+   `{subject, word, cls}` — the renderer supplies only the markup — and the
+   flagged words are *derived from* the note tables rather than copied beside
+   them, so there is one wording to edit. An unknown status keeps the
+   verbatim fallback, under a subject that does not presume which way it
+   points. */
+const KHAT_BAND = {
+  ok: "close to the posterior",
+  suspect: "measurably off",
+  unusable: "not usable",
+};
+
+/* The band a k̂ landed in, with S22's "the landing was not decisive" beside
+   it. A k̂ with no status is "band not reported" — `String(undefined)` used
+   to print the word "undefined" as a band. */
+function khatBandText(dx) {
+  const st = dx && dx.khat_status;
+  const band = !st ? "band not reported" : KHAT_BAND[st] || String(st);
+  return `${band}${dx && dx.khat_borderline ? ", band unresolved at this error" : ""}`;
+}
+
+function khatBandClass(dx) {
+  return dx && dx.khat_status === "ok" && !dx.khat_borderline ? "ok" : "warn";
+}
+
+function collinDiagBit(status) {
+  if (!status) return null;
+  if (status === "ok") return { subject: "parents", word: "separable", cls: "ok" };
+  const note = COLLIN_NOTE[status];
+  // "⚠ parents collinear — the split …" → "collinear".
+  const m = note && /^⚠\s*parents\s+(.+?)\s+—/.exec(note.text);
+  if (m) return { subject: "parents", word: m[1], cls: "warn" };
+  return { subject: "collinearity", word: String(status), cls: "warn" };
+}
+
+function ppcDiagBit(status) {
+  if (!status) return null;
+  if (status === "ok") return { subject: "model", word: "reproduces its data", cls: "ok" };
+  const note = PPC_NOTE[status];
+  // "⚠ the model cannot generate this node's own data" → the predicate.
+  const m = note && /^⚠\s*the model\s+(.+)$/.exec(note.text);
+  if (m) return { subject: "model", word: m[1], cls: "warn" };
+  return { subject: "model check", word: String(status), cls: "warn" };
+}
+
+/* The engine's `fit_quality` verdict as the Metric tab's own block: the same
+   causes `fitQualityNote` names, plus the k̂ figure this surface can see.
+   Moved here from `renderPosterior` for the reason above. Returns HTML ("" for
+   a fit with no verdict), built only from escaped strings.
+
+   One branch is new. An ADVI fit whose k̂ was fine and whose posterior
+   predictive check was `severe` used to be explained by the ELBO sentence —
+   the residual branch — which names a cause that did not happen; the S3
+   comment this block carried made the NUTS side conditional for exactly that
+   reason and stopped there. `severe` is checked for both samplers now, after
+   the k̂ causes, which are the more specific finding when both apply. */
+function fitVerdictDiagHtml(dx) {
+  if (!dx || !dx.fit_quality) return "";
+  if (dx.fit_quality === "ok") {
+    return `<div class="diag">Engine fit check: <span class="ok">ok</span>.</div>`;
+  }
+  if (dx.fit_quality !== "suspect") {
+    // Unknown verdict: shown verbatim rather than swallowed into silence,
+    // which would read as "nothing to report".
+    return `<div class="diag">Engine fit check: <span class="warn">${esc(String(dx.fit_quality))}</span>.</div>`;
+  }
+  const advi = dx.method === "advi" || dx.method === "fullrank_advi";
+  let cause;
+  if (advi && (dx.khat_status === "unusable" || dx.khat_status === "suspect")) {
+    cause = `Its PSIS k̂ is ${khatFigure(dx) || "above the threshold"}: the approximation sits away from the posterior it approximates, so its credible intervals are not a measurement of the real ones. Re-run this metric with NUTS.`;
+  } else if (advi && dx.khat_borderline) {
+    // Roadmap S22. Without this branch a borderline-`ok` fit would be
+    // explained by the ELBO sentence below — an explanation of a check that
+    // passed, offered for a failure it did not cause.
+    cause = `Its PSIS k̂ is ${khatFigure(dx) || "close to a band edge"}, which is nearer the band edge than its own Monte-Carlo error: the check cannot say which side of the threshold this approximation is on. Re-run this metric with NUTS for anything that turns on it.`;
+  } else if (dx.ppc_status === "severe") {
+    // Roadmap S3: on a NUTS fit this is the only thing that can set
+    // `suspect`. One wording with the RCA chip's tooltip.
+    cause = fitQualityNote({ fit_quality: "suspect", ppc_status: "severe" }).why;
+  } else if (advi) {
+    cause = "The ADVI objective (the ELBO) had not settled by the end of optimization, so the approximation may not have converged on anything.";
+  } else {
+    cause = "One of R̂, the divergence count or the effective sample size crossed the engine's threshold.";
+  }
+  return `<div class="diag"><span class="warn">⚠ The engine flagged this fit as suspect.</span>
+      ${esc(cause)}
+      Numbers derived from this fit — coefficients, intervals, and any RCA contribution through this node — inherit that.</div>`;
+}
+
+/* The header chip for each list of engine warning sentences an RCA node can
+   carry. The sentences themselves are the engine's and print verbatim (hover
+   on the live tab, in full in the export); these are only the chips that say
+   a list is non-empty. They were string literals at both render sites, and
+   the two had already drifted: the export said "contradicts declared
+   expectation", the live header "contradicts expectation". */
+const NODE_WARNING_CHIP = {
+  sign_warnings: "⚠ learned sign contradicts declared expectation",
+  seasonality_warnings: "⚠ seasonality unidentifiable from fitted history",
+  likelihood_warnings: "⚠ zero-inflated fit window — intervals approximate",
+};
+
+/* The chip for one of those lists, or null when the node carries none. */
+function nodeWarningChip(node, field) {
+  const list = node && node[field];
+  return Array.isArray(list) && list.length ? NODE_WARNING_CHIP[field] : null;
+}
+
+/* A fit whose posterior predictive band could not be built: the PPC panel's
+   one verdict-bearing state. `reason` is the server's. Returns HTML. */
+function ppcBandUncheckedHtml(reason) {
+  return (
+    "This fit was <strong>not checked</strong> against its own posterior predictive " +
+    `distribution: ${esc(reason || "no reason given")}. That is the absence of a ` +
+    "check, not a clean bill of health — if this node's likelihood is wrong for its " +
+    "data, nothing here will say so."
+  );
+}
+
 function ciStatusNote(status) {
   if (!status || status === "ok") return null;
   return (
@@ -717,6 +842,10 @@ const DROPPED_PARENT_WHY =
   "but it is not a measured zero either. If this parent moved between the two " +
   "windows, that movement is in the unexplained row.";
 
+/* The one label for a dropped parent's row: the Metric tab's coefficient
+   table, the live RCA table and the export. */
+const DROPPED_PARENT_LABEL = "not fitted — did not vary over the fit window";
+
 /* The note for a node that dropped a parent, or null when nothing was dropped.
    `names` and `reasons` are the engine's own words; `text` is the chip. */
 function droppedParentsNote(node) {
@@ -742,7 +871,7 @@ function droppedParentRowsHtml(node, nCols) {
   return dropped
     .map(
       (d) =>
-        `<tr class="dim"><td title="${esc(`${d.reason}\n\n${DROPPED_PARENT_WHY}`)}"><code>${esc(d.parent)}</code> — not fitted: did not vary over the fit window</td>${dash.repeat(Math.max(nCols - 1, 0))}</tr>`,
+        `<tr class="dim"><td title="${esc(`${d.reason}\n\n${DROPPED_PARENT_WHY}`)}"><code>${esc(d.parent)}</code>, ${esc(DROPPED_PARENT_LABEL)}</td>${dash.repeat(Math.max(nCols - 1, 0))}</tr>`,
     )
     .join("");
 }
