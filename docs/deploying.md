@@ -263,6 +263,38 @@ and then exactly the binding checks above, run by the same code. A
 hand-exported CSV with a duplicated `order_id` fails `grain claims hold` the
 way a fact table would.
 
+### The `duckdb` provider: what a tree file can read
+
+A `bind.sql` is SQL, and a `relation` may be a table function, so a tree file
+under `provider: duckdb` is code that runs inside the server. What that code
+can reach is bounded:
+
+- **Only `data_dir`, by default.** The connection is opened with DuckDB's
+  `allowed_directories` set to the resolved `data_dir`, `enable_external_access`
+  off, and the configuration locked, in that order. A binding that names a file
+  elsewhere on disk (`read_csv_auto('/etc/…')`, a `../` path), an `https://`
+  URL or an `s3://` object is refused with a message naming the folder, and no
+  SQL in the tree can turn the restriction off.
+- **`allow_external_access: true` lifts it, per tree.** Set it under
+  `provider:` for a tree that reads object storage or another folder on
+  purpose. The server logs a warning at load naming the folder that is no
+  longer a boundary. With it on, the tree file can read any local file the
+  server process can, and reach any network address it can: treat such a tree
+  as trusted exactly as far as the process is, and do not turn it on for a
+  directory of trees that several people can write to.
+- **What is not bounded either way.** Request parameters never reach SQL as
+  text (dates are parsed, dimensions are looked up in the declared set, pinned
+  slice values are bound as literals), so the tree file is the whole surface. A
+  tree can still read every file *inside* `data_dir`, including ones no binding
+  was meant to expose, so keep the folder to the exports the tree serves. The
+  other providers run the tree's SQL on your warehouse under the credentials
+  you configured; their boundary is that role's grants, not anything here.
+
+A data file that is rewritten or removed while the server runs is not reloaded.
+The series were fetched at startup; a slice requested afterwards is refused
+(`422`, naming the file) until the server restarts, because slices read from
+the new file would not sum to the totals read from the old one.
+
 ```
 [PASS] grain claims hold  — 12 relation(s) one row per grain, 3 under a filter
 [WARN] filters narrow     — 1 filter(s) excluded nothing: everything (6 of 6 rows)
@@ -296,8 +328,9 @@ the same functions, so a failure here prints the sentence the server log would
 have carried: the path resolves (a directory holds at least one `*.yml`), each
 tree parses (schema, DAG rules, `${VAR}` references), `--default-tree` names a
 discovered tree, and the pre-fetch load checks pass (the provider's extra is
-installed, a `warehouse` tree has `sql` on every fetched metric, a cold-start
-tree declares every belief it needs). One `[PASS]` or `[FAIL]` line per tree,
+installed, a `warehouse` tree has `sql` on every fetched metric, a `duckdb`
+tree's `data_dir` exists and holds at least one export, a cold-start tree
+declares every belief it needs). One `[PASS]` or `[FAIL]` line per tree,
 non-zero exit if any tree would be refused, and no connection is opened, so it
 runs anywhere the YAML does, credentials or not.
 
@@ -306,8 +339,9 @@ runs anywhere the YAML does, credentials or not.
 [FAIL] tree 'aov' — ValueError: Rate 'aov' (grain 'week') declares dimension 'addon_presence' with weight 'orders' at grain 'day'. …
 ```
 
-What it cannot see is anything that needs data: window coverage, a short
-series bounding the analyses that read it, identity checks on fetched formula
+What it cannot see is anything that needs data: window coverage (a window
+that misses the data entirely is refused at load, not here), an ambiguous date
+format in a CSV, a short series bounding the analyses that read it, identity checks on fetched formula
 nodes, fit readiness. A clean `check` means the tree will parse and start; `doctor` with
 an explicit window is the tool that proves it will serve. An unanswered rate
 denominator is reported as a `[WARN]` here because `serve` starts on it, while
@@ -325,7 +359,7 @@ uv run breakdown serve --tree my_tree.yml --no-snapshots   # always hit the prov
 uv run breakdown serve --tree my_tree.yml --snapshot-dir /somewhere/writable
 ```
 
-**The `duckdb` provider is never wrapped.** Its CSV / Parquet files already are the committed artifact, and a snapshot is keyed without a content hash, so caching them would freeze an edited or re-exported file at whatever it said the first time and serve that silently. Reading the files again is free; `doctor` reports no snapshot store for such a tree, because the server reads none.
+**The `duckdb` provider is never wrapped.** Its CSV / Parquet files already are the committed artifact, and a snapshot is keyed without a content hash, so caching them would freeze an edited or re-exported file at whatever it said the first time and serve that silently. Reading the files again is free; `doctor` reports no snapshot store for such a tree, because the server reads none. The files are read at startup, though: one that changes under a running server is detected (size and modification time) and slices are refused until a restart, rather than mixed with the totals already loaded.
 
 A snapshot freezes what the provider returned at fetch time. If the warehouse backfills late-arriving data, run `--refresh` once to pick it up. `BREAKDOWN_REFRESH=1` is the environment-variable form, for a scheduled refresh that has no command line to edit. In Docker, `compose.yaml` mounts `./snapshots` and sets `BREAKDOWN_SNAPSHOT_DIR` (the default tree-adjacent location is unwritable there because `/config` is read-only). An unwritable snapshot directory is never fatal; the server logs one warning and runs uncached.
 

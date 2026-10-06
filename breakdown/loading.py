@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from breakdown.data_fetch import (
+    SOURCE_ROWS,
     CloudDataFetcher,
     LocalDataFetcher,
     MockDataFetcher,
@@ -33,6 +34,44 @@ from breakdown.grains import GrainedData, build_grained, resample_up
 from breakdown.snapshots import SnapshotFetcher, SnapshotStore, resolve_snapshot_dir
 
 logger = logging.getLogger(__name__)
+
+
+class NoDataInWindow(RuntimeError):
+    """Every fetched metric returned no rows for the loaded window."""
+
+
+def refuse_empty_window(source_rows: Dict[str, Optional[int]], start_date, end_date) -> None:
+    """Refuse a load in which **no** fetched metric returned a row.
+
+    `source_rows` is `{metric: rows the source returned}`, read off each
+    frame's `attrs[SOURCE_ROWS]`; None means the provider did not say (the
+    mock synthesizes and never aligns), and one None is enough to stand down,
+    because this refuses only what it can prove.
+
+    One empty series is an ordinary fact (a product stream not on sale yet)
+    and is warned about where it is fetched. *Every* series empty is a window
+    that misses the data: `breakdown serve --tree t.yml` with no dates reads
+    the default window, a folder of 2025 exports answers it with nothing, and
+    until grill 2026-10-05 H3 the tree then loaded as a hundred periods of
+    zeros with `/health: ok` and a `data_through` invented from the requested
+    window. There is no analysis to run on that tree, so it is a load error
+    with the remedy rather than a flat line (rule 1).
+
+    Here rather than in `load_tree` so `serve` and anything else that loads a
+    tree (`doctor` can call it with the counts from its own fetches) refuse on
+    the same terms.
+    """
+    if not source_rows or any(n is None or n > 0 for n in source_rows.values()):
+        return
+    names = sorted(source_rows)
+    raise NoDataInWindow(
+        f"None of the {len(names)} fetched metric(s) returned a row for "
+        f"[{start_date}, {end_date}] ({', '.join(names[:5])}"
+        f"{', …' if len(names) > 5 else ''}). The window misses the data, so "
+        "every series would be zeros or undefined. Pass --start-date/--end-date "
+        "(or BREAKDOWN_START_DATE/BREAKDOWN_END_DATE) matching the dates the "
+        "source holds."
+    )
 
 
 def resolve_data_dir(data_dir: str, tree_path: Optional[str]) -> str:
@@ -98,7 +137,11 @@ def build_fetcher(provider_cfg, dag, metrics=None, *, tree_path: Optional[str] =
         bindings = {
             provider_query_name("duckdb", m): m.bind for m in (metrics or []) if not m.derived
         }
-        return fetcher_from_data_dir(resolve_data_dir(provider_cfg.data_dir, tree_path), bindings)
+        return fetcher_from_data_dir(
+            resolve_data_dir(provider_cfg.data_dir, tree_path),
+            bindings,
+            allow_external_access=provider_cfg.allow_external_access,
+        )
     if provider_cfg.type == "warehouse":
         metric_sql = {m.name: m.sql for m in (metrics or []) if m.sql}
         # A derived node is never fetched, so it owes no `sql` — the same
@@ -140,6 +183,15 @@ def wrap_snapshots(fetcher, provider_type: str, tree_path: str, slice_span=None)
     an edited or re-exported CSV at whatever it said the first time and serve
     that silently — the C18 shape at a new boundary (rule 1). Reading the
     files again is free; a stale copy of them is not.
+
+    That argument holds for the fetcher and not for `tree.data`, which is the
+    boot-time fetch of those same files (grill 2026-10-05 M9): a file rewritten
+    under a running server left the totals at what they were and the slices at
+    what the file says now, and the reconciliation blamed the dimension. The
+    provider therefore records each file's size and mtime when it opens the
+    folder and refuses a sliced fetch once one has changed
+    (`dbt_provider.DataFilesChanged`), naming the file — a restart re-reads
+    both sides; nothing is reloaded behind the reader's back.
     """
     if provider_type in ("mock", "duckdb"):
         return fetcher
@@ -186,6 +238,7 @@ def fetch_all_metrics(parser, fetcher, provider_type, start_date, end_date) -> G
     # (GitHub #112): kept only where something was actually filled, so the
     # payload never carries "declared, nothing to do" — the YAML says that.
     sparse_fills: Dict[str, Dict[str, Any]] = {}
+    source_rows: Dict[str, Optional[int]] = {}
     for metric in parser.config.metrics:
         if metric.derived:
             continue
@@ -201,8 +254,12 @@ def fetch_all_metrics(parser, fetcher, provider_type, start_date, end_date) -> G
         record = df.attrs.get("sparse_fill")
         if record and record.get("filled"):
             sparse_fills[metric.name] = dict(record)
+        source_rows[metric.name] = df.attrs.get(SOURCE_ROWS)
         df = df.rename(columns={query_name: metric.name})
         series[metric.name] = df[["date", metric.name]]
+    # Before anything is derived or checked: every later step would be
+    # reporting on zeros nobody observed.
+    refuse_empty_window(source_rows, start_date, end_date)
 
     # Derived nodes second, in topological order so a derived node whose parent
     # is itself derived still finds its inputs.

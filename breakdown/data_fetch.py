@@ -7,7 +7,7 @@ import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import networkx as nx
 import numpy as np
@@ -219,6 +219,14 @@ def _floor_labels(df: pd.DataFrame, metric_name: str, grain: str) -> pd.DataFram
     return df
 
 
+# How many rows the source returned for a fetch, before the spine filled
+# anything: `_align_to_spine` sets it on every frame it returns, and
+# `loading.fetch_all_metrics` reads it to tell a tree whose window missed the
+# data from one that is merely quiet. Absent (a provider that does not align
+# through here, such as `mock`) means "not known", never zero.
+SOURCE_ROWS = "source_rows"
+
+
 def _align_to_spine(
     df: pd.DataFrame,
     metric_name: str,
@@ -308,12 +316,35 @@ def _align_to_spine(
       is, the warning names exactly which periods are invented.)
     - A source returning *no rows at all* keeps the full fill for flows — an
       all-quiet window is a legitimate flow series, so it is *not* a leading
-      gap and does not draw the leading warning (the provider that knows the
-      result was empty says so itself). Rows that all miss the spine is a
-      different thing entirely (a query ignoring its bound window), and raises.
+      gap and does not draw the leading warning. It draws its own, here, and
+      the count of rows the source returned travels on the frame as
+      `attrs["source_rows"]` (grill 2026-10-05 H3). This used to read "the
+      provider that knows the result was empty says so itself", and one of
+      four did: `LocalDataFetcher` warned, while `DbtDataFetcher`, `cloud` and
+      `warehouse` filled a window that missed the data entirely with zeros and
+      said nothing, so the tree loaded as a flat line with `/health: ok`. An
+      all-quiet window and a window that misses the data look identical from
+      one series; `loading.fetch_all_metrics` reads the count across the
+      tree and refuses when *no* metric returned a row. Rows that all miss the
+      spine is a different thing entirely (a query ignoring its bound window),
+      and raises.
     """
     spine = period_spine(start_date, end_date, grain)
     s = df.set_index("date")[value_col].astype(float)
+    source_rows = int(len(s))
+    if not source_rows:
+        logger.warning(
+            "Metric '%s' returned no rows for [%s, %s]; %s. An all-quiet window "
+            "and a window that misses the data look the same from here: check "
+            "that --start-date/--end-date cover the dates the source holds.",
+            metric_name,
+            start_date,
+            end_date,
+            {
+                "flow": "the whole window is filled with 0.0",
+                "rate": "every period is left undefined",
+            }.get(kind, "there is nothing to carry forward"),
+        )
 
     kept = s.index.isin(spine)
     if len(s) and len(spine) and not kept.any():
@@ -476,6 +507,7 @@ def _align_to_spine(
     # else: rate — the NaNs stay. Nothing is filled and nothing is refused;
     # the periods are undefined and travel that way (warned above).
     out = s.rename(metric_name).rename_axis("date").reset_index()
+    out.attrs[SOURCE_ROWS] = source_rows
     if record is not None:
         out.attrs["sparse_fill"] = record
     return out
@@ -690,6 +722,16 @@ class BaseDataFetcher(ABC):
         """
         return None
 
+    def changed_files(self) -> List[str]:
+        """Names of the source files rewritten or removed since this fetcher
+        first read them. Empty for every provider that reads a service rather
+        than a folder; the `duckdb` provider answers from two `stat` calls per
+        file, and refuses a sliced fetch while the list is non-empty (grill
+        2026-10-05 M9), so a caller that wants to say so earlier — a health
+        route, a banner — can ask without fetching.
+        """
+        return []
+
     def earliest_date(self, metric_name: str, grain: str = "day") -> Optional[str]:
         """Earliest period-start date the source has for this metric
         (ISO ``YYYY-MM-DD``), or None when the provider cannot answer cheaply.
@@ -699,6 +741,54 @@ class BaseDataFetcher(ABC):
         exists before ``--start-date``; nothing downstream depends on it.
         """
         return None
+
+
+# The two slice labels the engine writes itself: the roll-up of everything
+# outside `top_k`, and a NULL dimension value. A source that holds a real value
+# spelled the same way cannot be told apart from either once the frame is
+# labelled (grill 2026-10-05 L1): rolled up in SQL it collided with the fold
+# rows and surfaced as a 422 about duplicate (date, slice) pairs, which names
+# the wrong defect, and rolled up client-side `_select_slices` took it for a
+# provider's own roll-up and folded it away with a 200. Both paths now refuse
+# it by name, through the one sentence below.
+OTHER_SLICE = "__other__"
+NULL_SLICE = "__null__"
+RESERVED_SLICE_LABELS = (OTHER_SLICE, NULL_SLICE)
+
+
+class ReservedSliceValue(ValueError):
+    """A dimension holds a real value spelled like a label the engine reserves.
+
+    A `ValueError` so the slice route's existing 422 mapping carries the
+    sentence to the reader unchanged."""
+
+
+def reserved_slice_refusal(label: str, metric_name: str) -> str:
+    """The one message for a real dimension value named like a reserved label."""
+    meaning = (
+        "the roll-up of the slices outside `top_k`"
+        if label == OTHER_SLICE
+        else "a NULL dimension value"
+    )
+    return (
+        f"The slices of '{metric_name}' hold a real dimension value named "
+        f"'{label}', which breakdown reserves for {meaning}; the two could not "
+        "be told apart in the result, so the slice is refused rather than "
+        "merged. Rename the value at the source, for example in a `bind.sql` "
+        f"relation: CASE WHEN <column> = '{label}' THEN "
+        f"'{label.strip('_')}' ELSE <column> END."
+    )
+
+
+def label_slices(values: pd.Series, metric_name: str) -> pd.Series:
+    """Raw dimension values -> the slice labels the engine reads: `str()` of
+    the value, `__null__` for a NULL, and a refusal for a real value that
+    spells either reserved label (see `RESERVED_SLICE_LABELS`)."""
+    present = values[values.notna()]
+    for label in RESERVED_SLICE_LABELS:
+        if (present.astype(str) == label).any():
+            raise ReservedSliceValue(reserved_slice_refusal(label, metric_name))
+    return values.map(lambda v: NULL_SLICE if pd.isna(v) else str(v))
 
 
 def _sliced_long(df: pd.DataFrame, metric_name: str, grain: str) -> pd.DataFrame:
@@ -731,7 +821,7 @@ def _sliced_long(df: pd.DataFrame, metric_name: str, grain: str) -> pd.DataFrame
     # where the flow fill turns it into a panel of invented zeros.
     out = _to_naive_dates(out, metric_name)
     out = _floor_labels(out, metric_name, grain)
-    out["slice"] = out["slice"].map(lambda v: "__null__" if pd.isna(v) else str(v))
+    out["slice"] = label_slices(out["slice"], metric_name)
     out["value"] = out["value"].astype(float)
     return out.sort_values(["date", "slice"]).reset_index(drop=True)
 
@@ -882,15 +972,16 @@ class LocalDataFetcher(BaseDataFetcher):
                 # what to do with it: "a source returning no rows at all keeps
                 # the full fill for flows". Hand it the empty frame with the
                 # columns it expects so it can, instead of dying on the way.
-                # Warned rather than silent, on the same reasoning as the
-                # interior gap-fill: an all-quiet window and a filter that
-                # matches nothing look identical from here.
-                logger.warning(
-                    "Metric '%s' returned no rows for [%s, %s]; treating the "
-                    "window as empty (a flow fills to zero, a rate still errors).",
+                # The warning itself is `_align_to_spine`'s, said once for
+                # every provider (grill 2026-10-05 H3); this line records only
+                # the mechanism, and is the one a sliced fetch gets.
+                logger.info(
+                    "mf wrote an empty file for '%s' over [%s, %s] (grouped by "
+                    "%s): no rows matched.",
                     metric_name,
                     start_date,
                     end_date,
+                    group_by,
                 )
                 return pd.DataFrame({c: [] for c in [*group_by.split(","), metric_name]})
         finally:

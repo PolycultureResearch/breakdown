@@ -112,7 +112,7 @@ Returns a DataFrame with columns `["date", metric_name]`, sorted by date, no NaN
   | **Interior** | fill `0` + warning | forward-fill + warning | raise |
   | **Trailing** | trim | trim | trim |
 
-  Rows that *all* miss the spine raise (a query ignoring its bound window); *no rows at all* keeps the full fill for flows, since an all-quiet window is a legitimate flow series — and that case draws **no** leading warning, because the provider that knows the result was empty says so itself.
+  Rows that *all* miss the spine raise (a query ignoring its bound window); *no rows at all* keeps the full fill for flows, since an all-quiet window is a legitimate flow series — and that case draws **no** leading warning. It draws its own (`returned no rows for [start, end]`), from `_align_to_spine` itself, and the frame carries `attrs["source_rows"]` (`data_fetch.SOURCE_ROWS`) — the rows the source returned before anything was filled. Until grill 2026-10-05 H3 the policy read "the provider that knows the result was empty says so itself", and only `LocalDataFetcher` did: `DbtDataFetcher` (so `dbt` and `duckdb`), `cloud` and `warehouse` filled a window that missed the data with zeros in silence, and the tree loaded flat with `/health: ok`. One series cannot tell an all-quiet window from a missed one; `loading.fetch_all_metrics` can, across the tree, and `loading.refuse_empty_window` raises `NoDataInWindow` when **every** fetched metric reports `source_rows == 0` (a metric whose frame carries no count — the mock — stands the check down). `doctor` fetches metric by metric and does not go through `fetch_all_metrics`; it can call `refuse_empty_window` with its own counts. A snapshot hit re-aligns stored rows, so its count is the stored spine's, not zero: an all-empty load is refused the first time and its zero-filled snapshots are on disk for the second (`snapshots.py` should not store a frame whose `source_rows` is 0).
 
   **The leading warning is the recent half of the same defect the interior one guards** (previously silent). A metric that started partway into the window — a product launched in March, a channel switched on in week 3 — trains on a run of fabricated zeros, so the fit sees a manufactured level shift *and* a manufactured trend on a node RCA will happily rank as a cause. The warning names the fabricated periods and the source's actual first row, and points at a later `--start-date`.
 
@@ -147,7 +147,7 @@ Runs each metric's own `sql` against Databricks SQL. The SQL owns the aggregatio
 ### `LocalDataFetcher`
 Invokes `mf query --metrics <name> --group-by metric_time__<grain> --start-time ... --end-time ... --csv <tmpfile>` as a subprocess. `project_path` becomes the working directory. Raises `RuntimeError` on non-zero exit code or OS errors (e.g., path not found), and `MissingProviderExtra` when `mf` is not on `PATH` — a `PATH` check rather than an import check, because `uv tool install dbt-metricflow` satisfies this provider just as well as the `dbt` extra.
 
-A metric matching **no rows** is not an error here. `mf` writes a zero-byte file — not even a header — and `pd.read_csv` raises `EmptyDataError`, so `_run_mf_query` catches it and synthesizes the empty frame with the columns the callers expect (from `group_by` plus the metric name). That is a fix, not a special case: `_align_to_spine` has always specified the behavior ("a source returning no rows at all keeps the full fill for flows"), and every other provider reaches it because their drivers return an empty result *with* its schema. Only the CSV round-trip loses the columns. The warning matters — an all-quiet window and a filter that silently matches nothing are indistinguishable from here, which is the same reasoning as the interior gap-fill warning.
+A metric matching **no rows** is not an error here. `mf` writes a zero-byte file — not even a header — and `pd.read_csv` raises `EmptyDataError`, so `_run_mf_query` catches it and synthesizes the empty frame with the columns the callers expect (from `group_by` plus the metric name). That is a fix, not a special case: `_align_to_spine` has always specified the behavior ("a source returning no rows at all keeps the full fill for flows"), and every other provider reaches it because their drivers return an empty result *with* its schema. Only the CSV round-trip loses the columns. The warning for it is `_align_to_spine`'s, shared by every provider (H3, above); `_run_mf_query` logs only the mechanism at INFO, which is also the one line a sliced `mf` fetch gets.
 
 ### `CloudDataFetcher`
 Uses the `dbtsl.SemanticLayerClient` sync API; the Arrow result is converted to pandas and the `metric_time__<grain>` column renamed to `date`.
@@ -435,8 +435,9 @@ on-ramp). `fetcher_from_data_dir(data_dir, bindings)` beside
 `fetcher_from_project` builds a `DbtDataFetcher` whose binding set is the
 tree's own `bind:` blocks (keyed by node name — `provider_query_name` lists
 `duckdb` as name-keyed, since there is no manifest to reconcile `source`
-against) and whose `connect` is `open_data_dir`: import `duckdb` at the point
-of use, open an in-memory connection, `CREATE VIEW <stem>` over
+against) and whose `connect` is `DataDir.connect` (`open_data_dir` is the
+same call as a function): import `duckdb` at the point
+of use, open an in-memory connection, `CREATE VIEW "<stem>"` over
 `read_csv_auto` / `read_parquet` for every file `list_data_files` returns.
 That listing refuses a missing folder, an empty one and a stem collision by
 name. No new fetcher class, deliberately: the grain claim, declared
@@ -452,6 +453,93 @@ would freeze an edited CSV silently (rule 1). `loading.resolve_data_dir` is the
 one place a relative `data_dir` is anchored to the tree file; `build_fetcher`
 takes `tree_path` for it, and `load_tree`, `check_fit_readiness`,
 `check_snapshots` and `check_duckdb` all pass theirs.
+
+**What a folder has that a warehouse does not lives on `dbt_provider.DataDir`**
+(grill 2026-10-05), and reaches the fetcher as three callables rather than a
+subclass: `connect`, `changed_files` and `explain_error`. `DataDir.connect`
+does four things in an order that matters:
+
+1. **Fingerprints** every file (`size`, `mtime_ns`) before reading any, on the
+   first connect only, so a reconnect cannot re-baseline against a file the
+   loaded totals never saw (M9).
+2. **Pins UTC** with `SET GLOBAL TimeZone` (`_pin_utc`; H4), then **confines**
+   the connection: `allowed_directories = [data_dir]`, then
+   `enable_external_access = false` (M10). `GLOBAL` is load-bearing:
+   `DbtDataFetcher._cursor` calls `con.cursor()`, which in DuckDB's Python
+   client is a new session inheriting only global settings, so a plain `SET`
+   pins a connection nothing queries through. `_connect_duckdb` (the `dbt`
+   provider's DuckDB target) pins the zone the same way.
+3. **Settles each time column's date format** (`_time_column_plan`; H2) and
+   creates one view per file, the stem quoted by `_sql_identifier` so a file
+   named `a"b.csv` cannot end the identifier early.
+4. **Locks the configuration** last, so tree SQL cannot undo step 2.
+
+`provider.allow_external_access: true` skips the confinement and the lock and
+logs a warning when the fetcher is built; the parser refuses the setting on any
+other provider type. DuckDB's own refusal ("file system operations are disabled
+by configuration") is reworded by `DataDir.explain_error` into
+`OutsideDataDir`, naming the folder and the opt-out.
+
+**Ambiguous dates are detected from the raw text, not the sniffed type.**
+`read_csv_auto` picks a date format by trying candidates on a sample, and for
+`01/01/2025 … 12/01/2025` both orders parse every row; it chose day-first and
+reported the column as `DATE`, which says nothing about the guess. So each
+governed column is re-read with `all_varchar = true` and every value that
+begins like a numeric date with the year last gives up its first two fields:
+the column is ambiguous when neither field ever exceeds 12, or when the year
+has fewer than four digits. Year-first text is never ambiguous; a column its
+own values settle is left to DuckDB; Parquet is typed at rest. An ambiguous
+column with no declared `bind.date_format` raises `AmbiguousDateFormat` with
+the file, the column, a sample and the YAML line; a declared one is read as
+`VARCHAR` (`types = {col: 'VARCHAR'}`), validated once over the whole file
+(`DateFormatMismatch` names a value that does not parse) and parsed in the view
+by `strptime`, which raises on a later bad row rather than nulling it. The
+governed column is the binding's `time_column` when it is a plain identifier,
+in every file the binding reads (`relation`, or the tables sqlglot finds in
+`bind.sql`). A time expression or a renamed column cannot be traced, so every
+other date-typed column of a file some binding reads is scanned too and
+**warned** about when ambiguous — warned, not refused, because no binding is
+known to use it.
+
+**A changed file refuses the analysis-time reads.** `tree.data` is the
+boot-time fetch, and the views re-read the files on every query, so after a
+rewrite the slices describe a different file from the totals and the
+reconciliation blamed the dimension. `DbtDataFetcher.changed_files()` (default
+`[]` on `BaseDataFetcher`) reports the files whose fingerprint moved, and
+`fetch_metric_sliced` / `fetch_entity_flows` raise `DataFilesChanged` — a
+`ValueError`, so the slice route's existing 422 mapping carries the sentence —
+naming the file and telling the reader to restart. Deliberately coarse (any
+loaded file, not only the ones this metric reads) and deliberately not a
+reload: a reload would move the totals under every cached fit.
+
+**Stems are quoted for the author; columns are not.** `fetcher_from_data_dir`
+lists the folder, failure-soft, and `_quoted_file_relations` rewrites every
+`relation` (and dimension `join`, and `entity_grain.relation`) that equals a
+stem exactly into a quoted identifier, so `orders-2025` and `Orders Export`
+bind as written. `BindingSpec.check_relation_is_a_reference` therefore no
+longer refuses whitespace alone: a quoted identifier passes, `;` or
+whitespace-plus-SQL is refused as before, and an unquoted spaced name is left
+to `MetricTreeConfig.check_relation_names`, which allows it under `duckdb` and
+refuses it elsewhere. Column fields are SQL expressions and cannot be quoted
+blindly, so an unquoted words-with-spaces value with no word operator in it is
+refused at parse (`_refuse_unquoted_spaced_name`) with the quoted spelling, and
+any `ParseError` that still reaches a `dbt_sql` builder is reworded by
+`_readable_parse_errors` into an `UnsupportedBinding` that says what to quote.
+
+**DuckDB buckets are DATEs.** `_TRUNC_OVERRIDES` casts every DuckDB truncation
+to `DATE`: `DATE_TRUNC` on the `TIMESTAMPTZ` that `read_csv_auto` makes of a
+`…Z` column returns a `TIMESTAMPTZ`, which the Python driver converts through
+`pytz` (not installed with pandas 3 — the fetch died on an import) and which
+followed the session zone. With the zone pinned the cast is the UTC date.
+
+**Reserved slice labels are refused, not merged** (L1).
+`data_fetch.label_slices` is the one place raw dimension values become labels,
+used by `_sliced_long` and `DbtDataFetcher`; a real value spelled `__other__`
+or `__null__` raises `ReservedSliceValue` (a `ValueError`) with
+`reserved_slice_refusal`'s sentence. The SQL roll-up returns `bd_reserved` (the
+reserved spelling found among *all* distinct values, kept or folded) so both
+roll-up paths refuse on the same data, and `engine.slices._refuse_real_other`
+is the backstop for a whole frame from a provider that labels its own.
 
 `resolve_profile` reads `dbt_project.yml` for the `profile:` name, then that
 profile's target from `profiles.yml` (searching `profiles_dir` →

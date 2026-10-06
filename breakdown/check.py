@@ -19,8 +19,8 @@ here is the message the server log would carry:
 3. **default** — `resolve_default`: `--default-tree` names a discovered tree.
 4. **pre-fetch load** — the checks `load_tree` makes before its first fetch:
    the provider's extra is installed, a `warehouse` tree has `sql` on every
-   fetched metric, a cold-start tree declares every belief `validate_cold_start`
-   needs.
+   fetched metric, a `duckdb` tree's `data_dir` exists and holds exports, a
+   cold-start tree declares every belief `validate_cold_start` needs.
 
 **What it cannot see**, and says so rather than implying otherwise: anything
 that needs data. Window coverage, a short series bounding the analyses that
@@ -71,6 +71,19 @@ def _pre_fetch_load_error(tree: TreeState) -> Optional[str]:
         absent = [m.name for m in tree.parser.config.metrics if not m.sql and not m.derived]
         if absent:
             return f"warehouse provider requires `sql` on every metric; missing for: {absent}"
+    if provider_cfg.type == "duckdb":
+        # Serve meets this at its first fetch, when the connection lists the
+        # folder: a `data_dir` that is not there, holds no .csv/.parquet, or
+        # has two files claiming one relation name. Listing a directory is not
+        # reading data, so it belongs on this side of the line (grill
+        # 2026-10-05 L2: a tree pointing at a missing folder used to pass).
+        from breakdown.dbt_provider import list_data_files
+        from breakdown.loading import resolve_data_dir
+
+        try:
+            list_data_files(resolve_data_dir(provider_cfg.data_dir, tree.path))
+        except RuntimeError as e:
+            return str(e)
     return None
 
 

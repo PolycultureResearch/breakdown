@@ -206,3 +206,33 @@ def test_check_never_opens_a_connection(tmp_path, monkeypatch):
     (tmp_path / "wh.yml").write_text(WAREHOUSE_NO_SQL)
     (tmp_path / "good.yml").write_text(GOOD)
     run_check(str(tmp_path))
+
+
+DUCKDB_TREE = """
+provider: {type: duckdb, data_dir: ./exports}
+metrics:
+  - name: m
+    source: x.m
+    bind: {relation: orders, grain_key: id, time_column: d, agg: sum, measure: v}
+"""
+
+
+def test_a_duckdb_tree_whose_data_dir_is_missing_fails(tmp_path):
+    """Grill 2026-10-05 L2: this passed, and serve then refused it at the
+    first fetch. Listing a folder is not reading data, so check can see it."""
+    pytest.importorskip("duckdb")
+    pytest.importorskip("sqlglot")
+    tree = tmp_path / "csv.yml"
+    tree.write_text(DUCKDB_TREE)
+    fails = _by_status(run_check(str(tree)), "fail")
+    assert len(fails) == 1
+    assert "serve would refuse it at load" in fails[0].detail
+    assert (
+        "`data_dir` not found" in fails[0].detail and str(tmp_path / "exports") in fails[0].detail
+    )
+
+    (tmp_path / "exports").mkdir()
+    assert "No .csv or .parquet files" in _by_status(run_check(str(tree)), "fail")[0].detail
+
+    (tmp_path / "exports" / "orders.csv").write_text("id,d,v\n1,2025-06-02,3\n")
+    assert [r.status for r in run_check(str(tree))] == ["pass"]
