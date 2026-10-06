@@ -127,6 +127,32 @@ from breakdown.parser import _SIMPLE_RATIO
 _MAX_SHOWN_DATES = 5
 
 
+def sampling_failures() -> Tuple[type, ...]:
+    """The exception types a failed fit raises, for the engine's fit call sites.
+
+    `ValueError` is `fit_metric`'s own refusal (a flat series, a window too
+    short) and `RuntimeError` covers PyMC's `SamplingError`, a model that
+    fails to initialize (roadmap C38). The third is the one that was missing
+    (grill 2026-10-05 L3): a chain that dies inside a *multi-process* NUTS run
+    surfaces as `pymc.sampling.parallel.ParallelSamplingError`, which
+    subclasses neither, so C38's "a sampling failure degrades to `fit_failed`"
+    held only when the chains ran in one process.
+
+    A function rather than a module constant, called in the `except` clause:
+    the clause is evaluated only once something is propagating, by which time
+    the fit has imported PyMC, so this module still imports without it. Caught
+    by name and looked up defensively, because the class is not part of PyMC's
+    documented API and has no public alias; if it moves, the two builtins
+    still stand and nothing here breaks.
+    """
+    types: Tuple[type, ...] = (ValueError, RuntimeError)
+    try:
+        from pymc.sampling.parallel import ParallelSamplingError
+    except Exception:  # noqa: BLE001 - any import failure means "not available"
+        return types
+    return (*types, ParallelSamplingError)
+
+
 class NonFiniteAttribution(ValueError):
     """A formula node's decomposition is not a finite number over these windows.
 
@@ -1635,11 +1661,13 @@ def run_rca(
             fit = fit_rca_node(
                 dag, data, node, fit_ends[node], inference_method=inference_method, draws=draws
             )
-        except (ValueError, RuntimeError) as e:
+        except sampling_failures() as e:
             # RuntimeError included (roadmap C38): PyMC's SamplingError — a
             # model that fails to initialize — subclasses it, and "one bad
             # node does not end the analysis" was false for exactly that
             # node until it degraded here like every other unfittable one.
+            # `ParallelSamplingError`, a chain dying in a multi-process run,
+            # subclasses neither and is named by `sampling_failures`.
             fit_failures[node] = str(e)
             continue
         fits[node] = fit

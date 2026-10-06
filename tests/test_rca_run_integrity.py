@@ -20,7 +20,7 @@ import xarray as xr
 from breakdown.engine import rca as rca_mod
 from breakdown.engine import simulate as sim_mod
 from breakdown.engine.model import FitResult
-from breakdown.engine.rca import plan_rca_fits, run_rca
+from breakdown.engine.rca import plan_rca_fits, run_rca, sampling_failures
 from breakdown.engine.simulate import Intervention, ScenarioRequest, run_scenario
 from breakdown.grains import ensure_grained, fit_grain, next_start
 from breakdown.parser import Parser
@@ -254,6 +254,47 @@ def test_the_alternatives_plan_with_the_requested_sampler(fits, monkeypatch):
     monkeypatch.setattr(rca_mod, "plan_rca_fits", spy)
     run_rca(chain_dag(), chain_data(), {}, "z", **REF, **AN, inference_method="advi")
     assert seen == ["advi", "advi", "advi"]
+
+
+# ---------------------------------------------------------------------------
+# L3: a chain dying in a multi-process run is a fit failure like any other
+# ---------------------------------------------------------------------------
+
+
+def test_parallel_sampling_error_is_among_the_fit_failures():
+    error = _parallel_sampling_error()
+    assert not isinstance(error, (ValueError, RuntimeError))  # why it escaped
+    assert isinstance(error, sampling_failures())
+    assert {ValueError, RuntimeError} <= set(sampling_failures())
+
+
+def test_a_failed_chain_degrades_the_node_in_rca(fits):
+    fits.install(fail={"y": _parallel_sampling_error()})
+    res = run_rca(chain_dag(), chain_data(), {}, "z", **REF, **AN, reference_sensitivity=False)
+    assert res["nodes"]["y"]["status"] == "fit_failed"
+    assert res["nodes"]["y"]["status_reason"] == "Chain 2 failed."
+    assert res["nodes"]["z"]["status"] == "ok"
+
+
+@pytest.mark.parametrize("error", ["parallel", "runtime"])
+def test_a_failed_sample_refuses_the_scenario_in_its_own_words(fits, error):
+    """A scenario cannot degrade one node, so it refuses — as a ValueError the
+    route turns into a 422, and without calling a sampler crash a constant
+    series."""
+    raised = (
+        _parallel_sampling_error() if error == "parallel" else RuntimeError("Bad initial energy")
+    )
+    fits.install(fail={"y": raised})
+    scenario = ScenarioRequest(
+        baseline_start="2024-03-01",
+        baseline_end="2024-03-31",
+        interventions=[Intervention(metric="x", mode="delta", value=10.0)],
+    )
+    with pytest.raises(ValueError, match="Cannot simulate this scenario: 'y'") as e:
+        run_scenario(chain_dag(), chain_data(), {}, scenario)
+    assert "could not be sampled" in str(e.value)
+    assert type(raised).__name__ in str(e.value)
+    assert "constant series" not in str(e.value)
 
 
 # ---------------------------------------------------------------------------
