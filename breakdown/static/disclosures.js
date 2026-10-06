@@ -51,6 +51,11 @@ const NODE_STATUS = {
     short: "no aligned frame",
     explains: "This metric's series and its parents' share no whole period at its grain over the loaded window (for example, a monthly node whose daily parent covers no whole month), so there is nothing to measure and nothing was fitted. The reason names the metrics and the grain.",
   },
+  reference_before_fit_window: {
+    label: "not decomposed — reference window precedes this node's fit",
+    short: "reference before fit",
+    explains: "Its movement below is measured from the data and stands; what is missing is the decomposition. The reference window starts before the first period this node's model is fitted on (a declared `fit_start`, or the periods a lagged parent trims), so the model has no level there to compare against, and it was not fitted for this analysis. Move the reference window later, or the node's `fit_start` earlier.",
+  },
   undefined_over_window: {
     label: "no value — every period undefined",
     short: "undefined over window",
@@ -152,6 +157,10 @@ const CI_STATUS_NOTE = {
   nonfinite_bootstrap_replicates: {
     text: "intervals withheld: non-finite bootstrap replicates",
     why: "Enough bootstrap replicates came out non-finite (a resampled denominator mean landing on zero) that an interval was withheld entirely, or computed only from the replicates that survived. Point estimates are unaffected: they are the exact Shapley values, never bootstrap means.",
+  },
+  nonfinite_posterior: {
+    text: "terms withheld: non-finite posterior",
+    why: "This node's fitted posterior holds a non-finite value in at least one term: a parent's coefficient, the trend or seasonal component, or a declared intervention. That term is shown as \u2014 with no estimate, share or interval, and the node's unexplained remainder is withheld with it, because a remainder computed around a missing term would quietly treat that term as zero. The other terms stand.",
   },
   degenerate_bootstrap_spread: {
     text: "intervals withheld: the resampling cannot move",
@@ -676,8 +685,25 @@ function ppcNote(status) {
 function ppcStatText(node) {
   const s = ((node.ppc || {}).statistics || []).filter((e) => e.status !== "ok")[0];
   if (!s) return "";
+  const num = (v) => (typeof v === "number" && Number.isFinite(v) ? Number(v.toPrecision(3)).toString() : null);
   const p = typeof s.p_value === "number" && Number.isFinite(s.p_value) ? s.p_value.toFixed(3) : null;
-  return ` (${s.statistic}${p ? `, p ${p}` : ""})`;
+  // The two numbers the p-value compares: what the data shows, and what the
+  // model's own replicates average. Either missing, neither is printed — one
+  // side of a comparison is not a comparison.
+  const obs = num(s.observed), rep = num(s.replicated_mean);
+  const versus = obs !== null && rep !== null ? `: observed ${obs}, replicates average ${rep}` : "";
+  return ` (${s.statistic}${versus}${p ? `, p ${p}` : ""})`;
+}
+
+/* Roadmap S24: a posterior predictive check on a node that declares
+   interventions was run *given* them. The replicates come from a mean
+   function that already contains the declared steps, so a pass says the model
+   reproduces the data around the steps, not that the data shows them. Empty
+   for a node that declares none, or an engine too old to say. */
+function ppcConditionedText(node) {
+  const names = ((node || {}).ppc || {}).conditioned_on_interventions;
+  if (!Array.isArray(names) || !names.length) return "";
+  return ` · checked given the declared intervention${names.length === 1 ? "" : "s"} ${names.join(", ")}`;
 }
 
 function ppcStatSuffix(node) {
@@ -954,6 +980,35 @@ function interventionClaim(iv) {
 
 /* One row per fitted intervention, for the single-level (5-column) table. A
    posterior node is the only kind that carries them and is never two-level. */
+/* `window_delta` is the multiplier behind an intervention's row: the share of
+   the analysis window's periods it was in force for, minus the reference
+   window's. The estimate is the fitted step size times this, so a step that
+   was already on for the whole reference contributes nothing however large it
+   is, and the row has to say which of the two it is looking at. Silent when
+   the engine does not report it. */
+function interventionWindowDeltaText(iv) {
+  const d = iv && iv.window_delta;
+  if (typeof d !== "number" || !Number.isFinite(d)) return "";
+  const pctOf = `${Math.round(Math.abs(d) * 100)}%`;
+  if (d === 0) return " · in force for the same share of both windows";
+  return ` · in force for ${pctOf} ${d > 0 ? "more" : "less"} of the analysis window than the reference`;
+}
+
+/* The two numbers behind a rate slice's `within` and `mix` cells: the slice's
+   own rate in each window, and its share of the denominator in each. Either
+   end missing (a slice with no denominator in one window has no rate there)
+   and the pair is not printed: one end is not a movement. */
+function sliceRateMoveText(row) {
+  const a = row && row.rate_reference, b = row && row.rate_analysis;
+  if (typeof a !== "number" || typeof b !== "number" || !Number.isFinite(a) || !Number.isFinite(b)) return "";
+  return ` (its rate went ${Number(a.toPrecision(4))} → ${Number(b.toPrecision(4))})`;
+}
+function sliceShareMoveText(row) {
+  const a = row && row.baseline_share, b = row && row.share_analysis;
+  if (typeof a !== "number" || typeof b !== "number" || !Number.isFinite(a) || !Number.isFinite(b)) return "";
+  return ` (its share of the denominator went ${(a * 100).toFixed(1)}% → ${(b * 100).toFixed(1)}%)`;
+}
+
 function interventionRowsHtml(node, nCols, shareOf, ciCell) {
   const ivs = node && node.interventions;
   if (!Array.isArray(ivs) || !ivs.length || nCols !== 5) return "";
@@ -965,7 +1020,7 @@ function interventionRowsHtml(node, nCols, shareOf, ciCell) {
       // Both, when both apply. The claim tag used to win, so a
       // `learn_from: window` row whose interval had collapsed showed "fit saw
       // this window" and an unexplained em dash.
-      const tag = `${claim ? " · fit saw this window" : ""}${note ? ` · ${note.text}` : ""}`;
+      const tag = `${interventionWindowDeltaText(iv)}${claim ? " · fit saw this window" : ""}${note ? ` · ${note.text}` : ""}`;
       const est = iv.estimate == null ? "—" : fmt(iv.estimate);
       const share = iv.estimate == null ? "—" : shareOf(iv.estimate, node.gap);
       return `<tr class="intervention-row"><td title="${esc(title)}"><code>${esc(iv.name)}</code> <span class="dim">— ${esc(declaredInterventionLabel(iv).replace(`${iv.name} — `, ""))}${esc(tag)}</span></td>
@@ -1626,15 +1681,21 @@ function stableSummary(rs) {
   const rest = referenceBlocksUnanswered(rs);
   const top = rs.top_cause_stable;
   const sign = rs.gap_sign_stable;
-  if (top === true && sign === true) {
+  // `compared` is the engine saying which of the two it actually checked
+  // (grill 2026-10-05 M4). Where it is present it decides; a payload from an
+  // engine too old to send it falls back to reading `top_cause_stable`.
+  const compared = Array.isArray(rs.compared) ? rs.compared : null;
+  const topCompared = compared ? compared.includes("top_cause") : top !== null;
+  if (top === true && sign === true && topCompared) {
     return {
       label: "Survives a moved reference window",
       summary: `The top cause and the gap's direction are the same${scope}.${rest}`,
     };
   }
-  // Strictly null: that is the engine saying "no top cause". A field that is
-  // simply absent is not that statement and falls through.
-  if (top === null && sign === true) {
+  // Strictly null, or left out of `compared`: that is the engine saying "no
+  // top cause". A field that is simply absent is not that statement and
+  // falls through.
+  if (sign === true && (compared ? !topCompared : top === null)) {
     return {
       label: "Gap direction survives a moved reference window",
       summary:

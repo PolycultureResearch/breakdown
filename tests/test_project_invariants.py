@@ -73,86 +73,27 @@ from breakdown.parser import Parser
 PACKAGE = Path(__file__).resolve().parent.parent / "breakdown"
 
 
-# --- Violations the 2026-10-05 grill found, being fixed on sibling branches ---
+# --- How a test in this file reports what it found -----------------------------
 #
-# The third review (grill 2026-10-05, M11) found that most tests in this file
-# checked the *spelling* of a guard rather than the property — rule 4 passed
-# for `model.py` on a comment that named another module's constant. They were
-# rewritten to check the property, and the rewritten tests correctly flag
-# defects that review had already catalogued and that are being fixed in
-# parallel. Each such violation is listed here, by the key the test that finds
-# it reports, against the finding that owns it.
-#
-# This is not an exemption list. `_settle` below is strict in both directions:
-# a violation that is not listed fails its test, and an entry whose violation
-# is gone fails it too — so the fix for H7 cannot merge without deleting H7's
-# lines, and this dict cannot quietly outlive the defects it names. When it is
-# empty, delete it and `_settle`'s second half with it.
-_PENDING_GRILL_1005: typing.Dict[str, str] = {
-    # H7: the three analysis tools hand the engine to `asyncio.to_thread`
-    # directly, so an orphaned run on a tree holds no guard an MCP caller
-    # would meet (mcp/server.py:459, 528, 582).
-    "mcp-guard:run_rca": "H7 — MCP run_rca calls the engine outside `_guarded`",
-    "mcp-guard:slice_metric": "H7 — MCP slice_metric calls the engine outside `_guarded`",
-    "mcp-guard:run_whatif": "H7 — MCP run_whatif calls the engine outside `_guarded`",
-    # M6: what HTTP answers with a 422 and a message, MCP answers with
-    # "Error executing tool" and nothing else.
-    "mcp-refusals:RuntimeError": "M6 — HTTP maps RuntimeError to 422 (C38); `_REFUSALS` omits it",
-    # H6: the third door on `sql`/`bind`, and the load error on every
-    # degraded response.
-    "redaction-definition:GET /metrics/{name}": (
-        "H6 — returns `metric.model_dump()` with `sql`/`bind` that `/dag` redacts"
-    ),
-    "redaction-load-error:GET /trees": "H6 — the index card carries the raw `load_error`",
-    "redaction-load-error:POST /trees/{tree_id}/load": "H6 — returns the same card",
-    "redaction-load-error:GET /meta": "H6 — 503 detail carries the raw `load_error`",
-    "redaction-load-error:GET /dag": "H6 — 503 detail carries the raw `load_error`",
-    "redaction-load-error:GET /series": "H6 — 503 detail carries the raw `load_error`",
-    "redaction-load-error:GET /metrics/{name}": "H6 — 503 detail carries the raw `load_error`",
-    "redaction-load-error:GET /metrics/{name}/query": (
-        "H6 — 503 detail carries the raw `load_error` (readiness is checked before the token)"
-    ),
-    "redaction-load-error:GET /metrics/{name}/ppc": "H6 — 503 detail carries the raw `load_error`",
-    "redaction-load-error:POST /analyze/{name}": "H6 — 503 detail carries the raw `load_error`",
-    "redaction-load-error:GET /shapley/{name}": "H6 — 503 detail carries the raw `load_error`",
-    "redaction-load-error:POST /rca/{name}": "H6 — 503 detail carries the raw `load_error`",
-    "redaction-load-error:POST /rca/{name}/slices": "H6 — 503 detail carries the raw `load_error`",
-    "redaction-load-error:POST /simulate": "H6 — 503 detail carries the raw `load_error`",
-    # M8: emitted on `/meta`, read by no surface of the UI.
-    "render-site:/meta.sparse_fills": "M8 — declared zero-fills have no reader in the UI",
-    "render-site:/meta.short_series": "M8 — no reader in the UI",
-    "render-site:/meta.data_from": "M8 — no reader in the UI",
-    # M11's catalogue, and unowned: the frontend package adds readers for the
-    # three above only. The row prints `estimate` and words the multiplier,
-    # but the figure itself reaches an agent and not a browser.
-    "render-site:rca.intervention.window_delta": (
-        "M8/M11 — the indicator's window delta is emitted per intervention and never rendered"
-    ),
-    # H3: `_align_to_spine` leaves the empty-result disclosure to "the
-    # provider that knows the result was empty", and this one does not make it.
-    "empty-result:DbtDataFetcher": (
-        "H3 — `fetch_metric` zero-fills an empty result without a word (dbt_provider.py:412-445)"
-    ),
-}
+# The fourth review (grill 2026-10-05, M11) found that most tests here checked
+# the *spelling* of a guard rather than the property: rule 4 passed for
+# `model.py` on a comment that named another module's constant. They were
+# rewritten to enumerate the code and check the property. While the review's
+# own fixes were in flight this helper also carried a list of the violations
+# already catalogued, strict in both directions; that list was emptied as each
+# fix merged and is gone. There is no exemption list to add to: a deliberate
+# exception goes in the table beside the test that owns it, with its reason.
 
 
 def _settle(scope: str, violations: typing.Mapping[str, str], remedy: str) -> None:
-    """Fail on any violation in `scope` that is not pending, and on any pending
-    entry in `scope` that is no longer a violation.
+    """Fail on any violation in `scope`, naming each one.
 
     `violations` maps an item's key (a route, a tool, a field) to what is wrong
-    with it. Keys are namespaced `scope:key` in `_PENDING_GRILL_1005`.
+    with it; the report prints them as `scope:key`.
     """
     found = {f"{scope}:{key}": why for key, why in violations.items()}
-    pending = {k for k in _PENDING_GRILL_1005 if k.startswith(f"{scope}:")}
-    new = {k: why for k, why in found.items() if k not in pending}
-    assert not new, f"{remedy}\n" + "\n".join(f"  {k} — {why}" for k, why in sorted(new.items()))
-    fixed = sorted(pending - set(found))
-    assert not fixed, (
-        f"{fixed} are listed in `_PENDING_GRILL_1005` and no longer violate "
-        "anything: the fix has landed. Delete those entries — the list exists "
-        "to be emptied, and an entry that outlives its defect is an exemption "
-        "nobody decided to grant."
+    assert not found, f"{remedy}\n" + "\n".join(
+        f"  {k} — {why}" for k, why in sorted(found.items())
     )
 
 
@@ -912,6 +853,13 @@ _FETCHER_STATE = {
     "MockDataFetcher._cache": "one entry per loaded window; slice fetches reuse it",
     # One `BindingSpec` per metric, copied from the tree at construction.
     "DbtDataFetcher.bindings": "one binding per metric",
+    # The `duckdb` provider's folder of exports (grill 2026-10-05 M9, M10).
+    # `bindings` is the same per-metric copy, kept to know which files and
+    # time columns the tree reads. `_loaded` is one (size, mtime) pair per
+    # data file, recorded once at the first connect and never added to: a
+    # request can make it report a change, not grow it.
+    "DataDir.bindings": "one binding per metric",
+    "DataDir._loaded": "one (size, mtime) pair per file in data_dir, recorded once at load",
     # The last statement per metric and kind of query (`m`, `m::dim`,
     # `m::dim::flows`, `m::grain`, `m::filter`), overwritten in place. The
     # dimension is a declared one, never a caller's string.
@@ -2803,6 +2751,11 @@ _DELIBERATELY_UNRENDERED = {
     "/health.data_through_bounded_by": "monitor-facing; the UI anchors on /meta.data_through",
     "/health.short_series": "monitor-facing; the browser's copy is /meta's",
     "/health.sparse_fills": "monitor-facing; the browser's copy is /meta's",
+    "/health.no_nonzero_data": "monitor-facing; names metrics with no observed value at all",
+    # The classification of `load_error`, for a monitor or an agent to branch
+    # on. The browser prints `load_error` itself in the degraded banner, and
+    # that text leads with the kind whenever the raw error is withheld.
+    "tree card.load_error_kind": "machine-readable twin of the banner's load_error text",
     # `/dag` carries every node's `kind` on its definition, which is what the
     # cards read; this is the same map for a client that skips `/dag`.
     "/meta.kinds": "duplicates definition.kind from /dag, which the UI reads",
@@ -3626,13 +3579,21 @@ def _import_aliases(tree: ast.AST) -> dict:
     return aliases
 
 
+#: The engine guard (`api.trees.guarded`, roadmap C41) and the two ways the
+#: service layer hands work to a thread: the loop's executor, and the warm
+#: pass's daemon thread (`api.main._in_daemon_thread`, grill 2026-10-05 M5).
+_GUARD = "guarded"
+_THREAD_CALLS = ("to_thread", "_in_daemon_thread")
+
+
 def _to_thread_calls(func: ast.AST):
-    """Every `asyncio.to_thread(...)` (or bare `to_thread(...)`) in a function."""
+    """Every `asyncio.to_thread(...)` (or bare `to_thread(...)`, or the warm
+    pass's `_in_daemon_thread(...)`) in a function."""
     return [
         node
         for node in ast.walk(func)
         if isinstance(node, ast.Call)
-        and (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) == "to_thread"
+        and (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) in _THREAD_CALLS
     ]
 
 
@@ -3643,7 +3604,7 @@ def _engine_entry_points_http_guards() -> set:
     aliases = _import_aliases(tree)
     guarded = set()
     for call in _to_thread_calls(tree):
-        if len(call.args) >= 3 and getattr(call.args[0], "id", None) == "_guarded":
+        if len(call.args) >= 3 and getattr(call.args[0], "id", None) == _GUARD:
             name = getattr(call.args[2], "id", None)
             if name:
                 guarded.add(aliases.get(name, name))
@@ -3665,7 +3626,7 @@ def test_every_engine_call_from_mcp_goes_through_the_same_guard_as_http():
     """
     guarded = _engine_entry_points_http_guards()
     assert {"run_rca", "run_scenario", "_run_slice", "fit_metric"} <= guarded, (
-        f"the scan of api/main.py found only {sorted(guarded)} behind `_guarded`; "
+        f"the scan of api/main.py found only {sorted(guarded)} behind `guarded`; "
         "has the call shape changed?"
     )
 
@@ -3677,13 +3638,13 @@ def test_every_engine_call_from_mcp_goes_through_the_same_guard_as_http():
     for qualname, func in _functions(tree):
         for call in _to_thread_calls(func):
             first = call.args[0] if call.args else None
-            if getattr(first, "id", None) != "_guarded":
+            if getattr(first, "id", None) != _GUARD:
                 target = aliases.get(getattr(first, "id", None)) or (
                     ast.unparse(first) if first is not None else "?"
                 )
                 unguarded[qualname] = (
                     f"line {call.lineno}: `to_thread({target}, ...)` runs the engine "
-                    "with no guard; use `to_thread(_guarded, state, ...)`"
+                    "with no guard; use `_engine(state, ...)`"
                 )
         for node in ast.walk(func):
             if (
@@ -3704,19 +3665,33 @@ def test_every_engine_call_from_mcp_goes_through_the_same_guard_as_http():
     )
 
 
-def _exceptions_http_answers_with_a_4xx() -> dict:
-    """`{exception class: where}` for everything `api/main.py` turns into a
-    4xx **around an engine call**, read off the module.
+def _refusals_http_answers_with_a_4xx() -> dict:
+    """`{label: (exception instance, where)}` for everything `api/main.py`
+    turns into a 4xx **around an engine call**.
 
-    An `except X: raise HTTPException(status_code=4xx)` whose `try` wraps a
-    `to_thread` call. Restricted to engine calls on purpose — `except
-    KeyError` around a series lookup is a 404 about the caller's metric name,
-    not a statement that the engine's `KeyError`s are refusals. (`EngineBusy`
-    is mapped by an `@app.exception_handler` instead and is raised by the
-    guard, not the engine; `test_a_busy_engine_is_a_named_refusal_over_mcp`
+    Since grill 2026-10-05 (M6, M7, L3) the routes no longer spell the classes
+    out: each says `except Exception as e: raise _unprocessable(e)` and the
+    judgement is `api.trees.refusal_message`. So the set is read in two parts.
+    The scan finds every `try` that wraps a thread call and counts the
+    handlers that defer to `_unprocessable` (the tripwire for a route that
+    goes back to its own tuple), plus any class a handler still names with a
+    4xx. The classes behind `_unprocessable` are then asked of
+    `refusal_message` itself, over every exception the engine and the
+    providers define plus the two builtins, so a class added to that
+    judgement is picked up here without being listed.
+
+    (`EngineBusy` is mapped by an `@app.exception_handler` and is raised by
+    the guard, not the engine; `test_a_busy_engine_is_a_named_refusal_over_mcp`
     covers it by holding the guard.)
     """
+    import builtins
+    import importlib
+    import inspect
+    import pkgutil
+
+    import breakdown
     from breakdown.api import main as main_mod
+    from breakdown.api.trees import SliceQueryFailed, refusal_message
 
     tree = ast.parse((PACKAGE / "api" / "main.py").read_text())
 
@@ -3728,24 +3703,63 @@ def _exceptions_http_answers_with_a_4xx() -> dict:
                         return kw.value.value
         return None
 
-    found = {}
+    def defers(handler: ast.ExceptHandler) -> bool:
+        return any(
+            isinstance(sub, ast.Call) and getattr(sub.func, "id", None) == "_unprocessable"
+            for sub in ast.walk(handler)
+        )
+
+    named, deferring = {}, []
     for node in ast.walk(tree):
         if isinstance(node, ast.Try) and any(_to_thread_calls(stmt) for stmt in node.body):
             for handler in node.handlers:
+                if defers(handler):
+                    deferring.append(handler.lineno)
+                    continue
                 status = status_of(handler)
                 if handler.type is None or status is None or not 400 <= status < 500:
                     continue
                 names = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
                 for name in names:
-                    found.setdefault(
+                    named.setdefault(
                         ast.unparse(name), f"except -> {status} (line {handler.lineno})"
                     )
-    import builtins
+    assert len(deferring) >= 4, (
+        f"the scan of api/main.py found {len(deferring)} engine route(s) deferring to "
+        "`_unprocessable`; has the handler shape changed?"
+    )
 
-    return {
-        getattr(main_mod, name, None) or getattr(builtins, name): where
-        for name, where in found.items()
-    }
+    def make(cls):
+        if cls is SliceQueryFailed:
+            return cls("m", "d", "d", ValueError("narrow the window to whole months"))
+        return cls("narrow the window to whole months")
+
+    class ParallelSamplingError(Exception):
+        """Stands in for PyMC's, which `refusal_message` matches by name."""
+
+    candidates = {ValueError, RuntimeError, ParallelSamplingError}
+    for info in pkgutil.walk_packages(breakdown.__path__, "breakdown."):
+        try:
+            module = importlib.import_module(info.name)
+        except ImportError:  # a provider extra that is not installed
+            continue
+        for _, obj in inspect.getmembers(module, inspect.isclass):
+            if issubclass(obj, Exception) and obj.__module__.startswith("breakdown"):
+                candidates.add(obj)
+
+    found = {}
+    where = f"_unprocessable (lines {deferring})"
+    for cls in sorted(candidates, key=lambda c: c.__name__):
+        try:
+            exc = make(cls)
+        except TypeError:  # an exception with its own constructor; not built blind
+            continue
+        if refusal_message(exc) is not None:
+            found[cls.__name__] = (exc, where)
+    for name, at in named.items():
+        cls = getattr(main_mod, name, None) or getattr(builtins, name)
+        found.setdefault(cls.__name__, (make(cls), at))
+    return found
 
 
 def test_everything_http_refuses_with_a_message_mcp_refuses_with_a_message():
@@ -3769,25 +3783,25 @@ def test_everything_http_refuses_with_a_message_mcp_refuses_with_a_message():
 
     from breakdown.mcp.server import _surface_refusals
 
-    mapped = _exceptions_http_answers_with_a_4xx()
-    assert {ValueError, RuntimeError} <= set(mapped), (
-        f"the scan of api/main.py found only {sorted(c.__name__ for c in mapped)} "
-        "mapped to a 4xx around an engine call; has the handler shape changed?"
+    mapped = _refusals_http_answers_with_a_4xx()
+    assert {"ValueError", "RuntimeError", "ParallelSamplingError"} <= set(mapped), (
+        f"HTTP's refusal judgement covers only {sorted(mapped)}; a refusal the "
+        "engine words for the caller has become a 500"
     )
 
     opaque = {}
-    for exc, where in mapped.items():
+    for name, (exc, where) in mapped.items():
 
         @_surface_refusals
         async def tool(exc=exc):
-            raise exc("narrow the window to whole months")
+            raise exc
 
         try:
             asyncio.run(tool())
         except ToolError as e:
-            assert "whole months" in str(e), f"{exc.__name__}'s message was lost: {e}"
-        except exc:
-            opaque[exc.__name__] = (
+            assert "whole months" in str(e) or name in str(e), f"{name}'s message was lost: {e}"
+        except type(exc):
+            opaque[name] = (
                 f"api/main.py: {where}; over MCP it is a crash, and the caller "
                 "gets `Error executing tool <name>` with the message withheld"
             )

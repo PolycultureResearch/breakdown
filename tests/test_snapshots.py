@@ -676,3 +676,39 @@ def test_covering_window_reports_without_loading(tmp_path):
     )
     assert store.covering_window("rev", "2024-01-10", "2024-02-20", "day", "flow") is None
     assert store.covering_window("rev", "2024-01-10", "2024-01-20", "week", "flow") is None
+
+
+class EmptyThenCountingFetcher(BaseDataFetcher):
+    """A source that returns no rows: the frame is the spine's fill, and says so."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def fetch_metric(self, metric_name, start_date, end_date, grain="day", kind="flow"):
+        from breakdown.data_fetch import _align_to_spine
+
+        self.calls += 1
+        empty = pd.DataFrame({"date": pd.to_datetime([]), metric_name: []})
+        return _align_to_spine(empty, metric_name, grain, kind, start_date, end_date, metric_name)
+
+
+def test_an_empty_answer_is_not_stored_as_data(tmp_path):
+    """Grill 2026-10-05 H3, the half the provider fix could not reach.
+
+    A window that misses the data is refused at load when every metric comes
+    back empty. The snapshot of each zero-filled frame used to be written
+    before that refusal, so the *next* start read them back as rows the source
+    had returned, the row counts were no longer zero, and the tree loaded as
+    zeros with `/health: ok`: refused once, then served forever.
+    """
+    from breakdown.data_fetch import SOURCE_ROWS
+
+    inner = EmptyThenCountingFetcher()
+    store = SnapshotStore(str(tmp_path))
+    first = SnapshotFetcher(inner, store).fetch_metric("m", "2024-01-01", "2024-01-05")
+    assert first.attrs[SOURCE_ROWS] == 0
+    assert store.read("m", "2024-01-01", "2024-01-05", "day", "flow", None) is None
+
+    again = SnapshotFetcher(inner, store).fetch_metric("m", "2024-01-01", "2024-01-05")
+    assert inner.calls == 2, "an empty answer must be asked for again, not replayed"
+    assert again.attrs[SOURCE_ROWS] == 0

@@ -2824,10 +2824,17 @@ function renderPosterior(name, data) {
   // when it actually means "not checked". Say which one it is: the absence of
   // a convergence check is itself something the reader needs to know (UC4).
   const dx = data.diagnostics || {};
+  // The engine's own `max_rhat` is the figure `fit_quality` rests on: since
+  // S25 it leaves out the level states recovered after sampling, which were
+  // never sampled and so have no convergence to check. Recomputing the max
+  // from the summary table put those rows back in, and showed a different R̂
+  // (with its own "check convergence") beside a verdict that had passed
+  // (grill 2026-10-05). The table is the fallback for an engine too old to say.
   const rhats = Object.values(summary.r_hat || {}).filter((v) => v !== null && !Number.isNaN(v));
+  const engineRhat = typeof dx.max_rhat === "number" && Number.isFinite(dx.max_rhat) ? dx.max_rhat : null;
   const bits = [];
-  if (rhats.length) {
-    const worst = Math.max(...rhats);
+  if (engineRhat !== null || rhats.length) {
+    const worst = engineRhat !== null ? engineRhat : Math.max(...rhats);
     const cls = worst < 1.05 ? "ok" : "warn";
     // "R̂" ends in a combining circumflex, which eats a following plain space;
     // the explicit "=" keeps the number from colliding with the glyph.
@@ -2877,7 +2884,7 @@ function renderPosterior(name, data) {
   // this node's own data" (grill L9).
   const ppcBit = ppcDiagBit(dx.ppc_status);
   if (ppcBit) {
-    bits.push(`${ppcBit.subject} <span class="${ppcBit.cls}">${esc(ppcBit.word)}</span>${ppcBit.cls === "ok" ? "" : ppcStatSuffix(dx)}`);
+    bits.push(`${ppcBit.subject} <span class="${ppcBit.cls}">${esc(ppcBit.word)}</span>${ppcBit.cls === "ok" ? "" : ppcStatSuffix(dx)}${esc(ppcConditionedText(dx))}`);
   }
   // The engine's own verdict on the fit. It is computed for every fit — NUTS
   // thresholds R̂/divergences/ESS, ADVI checks the ELBO *and* PSIS k̂ — and
@@ -3578,8 +3585,8 @@ function sliceResultHtml(metric) {
       const label = `<td>${sliceLabel(row.value)}${noise}${row.n_values ? ` <span class="dim">(${row.n_values})</span>` : ""}</td>`;
       return rate
         ? `<tr${lead}>${label}
-             <td class="num" title="the slice's own rate moved: ${esc(fmt(row.within))}">${fmtTight(row.within)}</td>
-             <td class="num" title="traffic moved between slices: ${esc(fmt(row.mix))}">${fmtTight(row.mix)}</td>
+             <td class="num" title="the slice's own rate moved: ${esc(fmt(row.within))}${esc(sliceRateMoveText(row))}">${fmtTight(row.within)}</td>
+             <td class="num" title="traffic moved between slices: ${esc(fmt(row.mix))}${esc(sliceShareMoveText(row))}">${fmtTight(row.mix)}</td>
              ${excessCell(row)}
            </tr>`
         : `<tr${lead}>${label}
@@ -4400,6 +4407,10 @@ async function renderAdjustPanel(name) {
       mean: vals.reduce((a, b) => a + b, 0) / vals.length,
     };
     hist.std = Math.sqrt(vals.reduce((a, v) => a + (v - hist.mean) ** 2, 0) / vals.length);
+    // A series held at 4.99 has a std of ~1e-15, not 0, and the 2σ band below
+    // would call every target outside it. Same relative test as the engine's
+    // `effectively_constant` (grill 2026-10-05 H1).
+    if (hist.max - hist.min <= 1e-9 * Math.max(Math.abs(hist.min), Math.abs(hist.max))) hist.std = 0;
     const inWin = data.time_series
       .filter((r) => {
         const d = String(r.date).slice(0, 10);
@@ -5403,9 +5414,10 @@ async function init() {
       state.trees = [];
     }
     if (!state.trees.length) {
-      // The index carries the discovery failure's real text (auth-gated where
-      // auth exists); /health deliberately carries only a classification
-      // (roadmap C43), so prefer the specific message when we can read it.
+      // The index carries the discovery failure's real text to a caller who
+      // may see it (no token configured, or one presented; otherwise it is the
+      // classification, grill 2026-10-05 H6); /health deliberately carries
+      // only a classification (roadmap C43), so prefer the index's message.
       showDegradedBanner(discoveryError || health.error || "No metric tree was discovered.");
       setStatus("No data loaded", "error");
       return;

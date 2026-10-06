@@ -39,6 +39,7 @@ import pandas as pd
 
 from breakdown.data_fetch import (
     SLICE_ROLLUP,
+    SOURCE_ROWS,
     BaseDataFetcher,
     SliceSelection,
     _align_to_spine,
@@ -607,6 +608,22 @@ class SnapshotFetcher(BaseDataFetcher):
         df = self.inner.fetch_metric(
             metric_name, start_date, end_date, grain=grain, kind=kind, **sparse_kw(sparse)
         )
+        if df.attrs.get(SOURCE_ROWS) == 0:
+            # The source returned no rows for this window and the frame is the
+            # spine's fill. Stored, it would come back on the next start as
+            # rows the source "returned", and the load's all-empty refusal
+            # (`loading.refuse_empty_window`, grill 2026-10-05 H3) would see a
+            # window full of data: refused once, then served as zeros forever.
+            # An empty answer is cheap to ask for again, and asking again is
+            # what repeats the warning.
+            logger.info(
+                "snapshot not written: %s [%s, %s] %s returned no rows",
+                metric_name,
+                start_date,
+                end_date,
+                grain,
+            )
+            return df
         try:
             self.store.write(
                 metric_name,

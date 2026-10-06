@@ -67,7 +67,12 @@ from breakdown.engine.model import (
 from breakdown.engine.progress import ProgressFn
 from breakdown.engine.progress import report as _report
 from breakdown.engine.rca import sampling_failures
-from breakdown.engine.stats import direction_fields, negligible_gap, node_scale
+from breakdown.engine.stats import (
+    direction_fields,
+    effectively_constant,
+    negligible_gap,
+    node_scale,
+)
 from breakdown.engine.windows import (
     node_window_value,
     rate_window_method,
@@ -537,6 +542,15 @@ def run_scenario(
         needed = set(needed_seeds)
         for s in needed_seeds:
             needed |= nx.descendants(dag, s)
+        # A formula node in the cone is re-evaluated from *all* its parents'
+        # baselines, moved or not, so a co-parent is needed even though no
+        # delta reaches it. Left out, a co-parent with no finite baseline was
+        # omitted as "outside the cone" and `propagate` then read it: a
+        # `KeyError`, an HTTP 500 (found by the rule-3 route sweep, grill
+        # 2026-10-05). In the cone it is refused by name like any other.
+        for n in list(needed):
+            if dag.nodes[n]["definition"].formula:
+                needed |= set(dag.predecessors(n))
         for n in dag.nodes:
             g = fit_grain(dag, n)
             snapped = snap_window(b_start, b_end, g)
@@ -577,8 +591,9 @@ def run_scenario(
                 raise ValueError(
                     f"Metric '{n}' has no value over the baseline window "
                     f"[{scenario.baseline_start}, {scenario.baseline_end}]: every "
-                    f"whole '{g}' period in it is undefined (a rate whose "
-                    "denominator is zero has no rate). Choose a baseline window "
+                    f"whole '{g}' period in it is undefined or non-finite (a rate "
+                    "whose denominator is zero has no rate; a series holding an "
+                    "infinite value has no total). Choose a baseline window "
                     "containing at least one defined period."
                 )
             base_draws[n] = np.full(n_draws, base_mu[n])
@@ -837,7 +852,13 @@ def run_scenario(
             defn = dag.nodes[node]["definition"]
             parents = list(dag.predecessors(node))
             d = np.zeros(size)
-            if defn.formula:
+            if defn.formula and any(p not in base_mu for p in parents):
+                # A parent omitted for want of a baseline puts this node
+                # outside the cone too (every co-parent of a formula node in
+                # the cone is in `needed`, and a missing one there is refused
+                # above), so nothing moves it and there is nothing to evaluate.
+                pass
+            elif defn.formula:
                 # The identity holds at the node's grain: finer flow parents
                 # enter as their per-child-period sum (baseline and delta
                 # alike scaled by the edge's periods-per-period factor).
@@ -919,7 +940,11 @@ def run_scenario(
                 "hist_min": float(np.min(observed)),
                 "hist_max": float(np.max(observed)),
                 "hist_mean": float(np.mean(observed)),
-                "hist_std": float(np.std(observed)),
+                # A series held at 4.99 has a std of ~1e-15, not 0, and the
+                # 2-sigma plausibility band below would then flag every
+                # simulated value as outside it. Same judgement as the fit's
+                # constant-parent drop (grill 2026-10-05 H1).
+                "hist_std": 0.0 if effectively_constant(observed) else float(np.std(observed)),
             }
 
     nodes_out: Dict[str, Any] = {}
