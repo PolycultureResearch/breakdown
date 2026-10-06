@@ -1225,7 +1225,7 @@ function buildRcaReportHtml(res, treePng, stripPng) {
 
   const order = [res.target, ...res.ranked_causes.map((c) => c.metric)];
   const blocks = order
-    .filter((name) => res.nodes[name] && (res.nodes[name].contributions.length || nodeStatus(res.nodes[name])))
+    .filter((name) => rcaNodeHasDetail(res.nodes[name]))
     .map((name) => {
       const node = res.nodes[name];
       const st = nodeStatus(node);
@@ -1278,7 +1278,7 @@ function buildRcaReportHtml(res, treePng, stripPng) {
         const unexpl5 = ux
           ? `<tr class="dim"><td>${esc(ux.label)}</td>${num(fmt(node.unexplained))}${num(uxShare)}<td class="num">—</td><td class="num">—</td></tr>`
           : "";
-        tables = `<table><tr><th>Parent</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>${rows}${droppedRows}${ivRows}${droppedIvRows}${comps}${unexpl5}</table>`;
+        tables = `<table><tr><th>${node.contributions.length ? "Parent" : "Term"}</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>${rows}${droppedRows}${ivRows}${droppedIvRows}${comps}${unexpl5}</table>`;
       }
       const signWarn = (node.sign_warnings || []).map((w) => `<p class="warn">⚠ ${esc(w)}</p>`).join("");
       return `<section>
@@ -1338,7 +1338,9 @@ function buildRcaReportHtml(res, treePng, stripPng) {
   ${stripPng ? `<img src="${stripPng}" alt="target series with reference and analysis windows shaded">` : ""}
   ${treePng ? `<h3>Metric tree</h3><img src="${treePng}" alt="metric tree with RCA overlay">` : ""}
   <h3>Ranked causes <span class="meta">(triage heuristic, not rigorous multi-hop attribution)</span></h3>
-  <table><tr><th>#</th><th>Metric</th><th class="num">score</th><th>via</th></tr>${ranked}</table>
+  ${ranked
+    ? `<table><tr><th>#</th><th>Metric</th><th class="num">score</th><th>via</th></tr>${ranked}</table>`
+    : `<p class="meta">${esc(rankedCausesEmptyNote(res, isSourceMetric(res.target)))}</p>`}
   ${degraded.length
     ? `<p class="warn">⚠ ${degraded.length} of ${Object.keys(res.nodes).length} metrics in scope could not be analyzed, so this ranking is incomplete — nothing upstream of them was attributed. ${degraded
         .map(([n, node]) => `<code>${esc(n)}</code> (${esc(nodeStatus(node).short)})`)
@@ -1346,7 +1348,7 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     : ""}
   ${referenceSensitivityHtml(res, { fmt, esc, warn: "warn", ok: "meta" })}
   <h3 style="margin-top:24px">Attribution detail</h3>
-  ${blocks}
+  ${blocks || `<p class="meta">${esc(ATTRIBUTION_EMPTY_NOTE)}</p>`}
   <div class="footnote">
     <strong>Methods.</strong> Changes are window-mean differences at each node's grain, over the whole periods inside the
     requested windows. Formula (identity) nodes use exact symmetric per-period Shapley attribution — a window-means bridge
@@ -3286,9 +3288,13 @@ function applyRcaOverlay() {
       const tint = gd && goodClass(name, gd, "rca");
       if (tint) n.addClass(tint);
       // large-unexplained badge: dashed amber border + ◌ glyph on the card
+      // Gated on the shared predicate rather than `contributions.length`: a
+      // source node fitted for a declared intervention has an `unexplained`
+      // that can be large, and no parents (grill H5).
       if (
-        node.contributions.length &&
+        rcaNodeHasDetail(node) &&
         node.unexplained != null &&
+        node.gap != null &&
         Math.abs(node.gap) > 1e-9 &&
         Math.abs(node.unexplained / node.gap) > 0.35
       ) {
@@ -3451,6 +3457,14 @@ function highlightCause(causeName) {
    measured over — which, across a lagged edge, are shifted back by the lag.
    Slicing a lagged parent over the target's calendar window would compare the
    wrong periods and quietly answer a different question. */
+/* Whether `name` has no parents in the loaded tree — null when the tree does
+   not say, so a caller wording an empty state claims nothing it cannot see. */
+function isSourceMetric(name) {
+  const def = state.defs && state.defs[name];
+  if (!def) return null;
+  return !(def.parents || []).length;
+}
+
 function sliceWindowsFor(metric) {
   const res = state.rca;
   for (const node of Object.values(res.nodes)) {
@@ -3794,7 +3808,7 @@ function renderRcaTab() {
     return n && n.contributions.some((c) => c.decomposition);
   });
   const blocks = order
-    .filter((name) => res.nodes[name] && (res.nodes[name].contributions.length || nodeStatus(res.nodes[name])))
+    .filter((name) => rcaNodeHasDetail(res.nodes[name]))
     .map((name) => {
       const node = res.nodes[name];
       const st = nodeStatus(node);
@@ -3952,7 +3966,9 @@ function renderRcaTab() {
           .join("");
       } else {
         nCols = 5;
-        header = `<tr><th>Parent</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>`;
+        // "Parent" over a table whose only rows are a declared step and the
+        // trend would name a thing the node does not have.
+        header = `<tr><th>${node.contributions.length ? "Parent" : "Term"}</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>`;
         rows = node.contributions
           .map(
             (c) => `<tr>
@@ -4035,7 +4051,7 @@ function renderRcaTab() {
 
     <section>
       <h3>Ranked causes <span class="section-note">triage order, not evidence</span></h3>
-      ${causeRows || '<p class="placeholder">No upstream causes — target is a source metric.</p>'}
+      ${causeRows || `<p class="placeholder">${esc(rankedCausesEmptyNote(res, isSourceMetric(res.target)))}</p>`}
       ${referenceSensitivityHtml(res, { fmt, esc, warn: "degraded-note", ok: "sens-note" })}
     </section>
 
@@ -4044,7 +4060,7 @@ function renderRcaTab() {
         <h3>Attribution detail</h3>
         ${viewToggle}
       </div>
-      ${blocks || '<p class="placeholder">No attributable edges in scope.</p>'}
+      ${blocks || `<p class="placeholder">${esc(ATTRIBUTION_EMPTY_NOTE)}</p>`}
     </section>
     <div class="wf-caveats">${RCA_CAVEATS.map(esc).join("<br>")}</div>`;
 

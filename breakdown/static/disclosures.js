@@ -73,6 +73,69 @@ function nodeStatus(node) {
   );
 }
 
+/* Whether an RCA node has anything to put in an Attribution-detail block.
+
+   Both RCA surfaces used to ask `contributions.length || nodeStatus(node)`,
+   which was the whole answer until roadmap S24: a parentless node that
+   declares `interventions:` is fitted, comes back `status: "ok"` with
+   `contributions: []`, and carries its entire decomposition under the other
+   keys — the sized interventions, the ones the fit could not size, trend and
+   seasonal. `0 || null` dropped the block, and with it the intervention rows,
+   the component rows, `unexplained`, the "fit saw the analysis window" chip
+   and the `claim` sentence, while the engine had attributed most of the gap to
+   the declared step (grill 2026-10-05 H5). One predicate, here, so the live
+   tab, the export and the canvas badge cannot each grow their own idea of
+   "nothing to show". A term the engine can attach to a node goes in this list
+   in the same change that adds the row for it. */
+function rcaNodeHasDetail(node) {
+  if (!node) return false;
+  if (nodeStatus(node)) return true;
+  const some = (a) => Array.isArray(a) && a.length > 0;
+  const comps = node.components;
+  return (
+    some(node.contributions) ||
+    some(node.interventions) ||
+    some(node.dropped_interventions) ||
+    some(node.dropped_parents) ||
+    !!(comps && typeof comps === "object" && Object.values(comps).some((c) => c != null))
+  );
+}
+
+/* The two empty states of the Root cause tab, each printed only when it is
+   true. "No upstream causes — target is a source metric." used to be the
+   fallback for any empty ranking, including a source target whose gap the
+   engine had just attributed to a declared step: a sentence about the tree
+   read as a sentence about the gap. `isSource` is the caller's reading of the
+   tree (the payload does not say whether a node has parents, only whether
+   anything was attributed to them); null means the caller could not tell, and
+   then nothing is claimed about it. */
+function rankedCausesEmptyNote(res, isSource) {
+  const target = ((res && res.nodes) || {})[res && res.target] || {};
+  const ivs = Array.isArray(target.interventions) ? target.interventions : [];
+  const why =
+    isSource === true
+      ? "the target is a source metric, so there is no upstream metric to rank"
+      : isSource === false
+      ? "nothing was attributed to the target's parents"
+      : "no upstream metric was attributed";
+  if (ivs.length) {
+    return (
+      `No ranked causes — ${why}. That is not the same as nothing explaining the gap: ` +
+      `the engine sized the declared intervention${ivs.length === 1 ? "" : "s"} ` +
+      `${ivs.map((iv) => iv.name).join(", ")} on this metric, and a declared intervention is ` +
+      "a term in the gap, never a ranked cause. See Attribution detail."
+    );
+  }
+  if (rcaNodeHasDetail(target)) {
+    return `No ranked causes — ${why}. What the engine did attribute on this metric is under Attribution detail.`;
+  }
+  return `No ranked causes — ${why}.`;
+}
+
+const ATTRIBUTION_EMPTY_NOTE =
+  "Nothing to decompose: no metric in scope has a parent, a declared intervention " +
+  "or a fitted component for its gap to be attributed to.";
+
 /* `ci_status` is the interval's own health, independent of the node's status.
    All four values are surfaced: rendering nothing for three of them and a note
    for the fourth reads as "interval checked and fine" when it means "not
