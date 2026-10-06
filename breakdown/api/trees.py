@@ -98,6 +98,147 @@ MAX_CACHED_FRAME_BYTES = 64 * 1024 * 1024
 _TraceKey = Tuple[str, Optional[str]]
 
 
+class EngineBusy(Exception):
+    """A cancelled request's engine thread is still finishing on this tree.
+
+    The asyncio `tree.lock` released when its coroutine was cancelled (a
+    middleware timeout, a shutdown, a client disconnect on Starlette versions
+    that cancel), but threads are not cancellable and the orphan runs on. A
+    second engine run beside it is the OOM rule 2 exists to prevent — two
+    NUTS working sets on a 2 GB box — so the guard refuses with a 409 and a
+    retry hint instead (roadmap C41).
+    """
+
+
+def guarded(tree: "TreeState", fn, *args, **kwargs):
+    """Run one engine call under the tree's thread-side guard (roadmap C41).
+
+    Non-blocking on purpose: the per-tree asyncio lock already serializes the
+    ordinary flow, so any contention here means an orphaned run. Blocking
+    would quietly queue engine work the caller believes it owns the lock for.
+
+    Lives here, beside the guard it takes, rather than in `api/main.py` where
+    it was written: `mcp/server.py` cannot import `api.main` at module scope
+    (that module imports it, to mount the transport), and for a release the
+    three MCP tools therefore called `asyncio.to_thread(engine_fn, …)` bare —
+    the callers most likely to time out on a multi-minute analysis were the
+    ones whose orphan held no guard (grill 2026-10-05 H7). Both surfaces
+    import it from here now, and `tests/test_service_surface.py` enumerates
+    every `to_thread` in both files.
+    """
+    if not tree.engine_guard.acquire(blocking=False):
+        raise EngineBusy(
+            f"Tree '{tree.id}' is still finishing an analysis whose caller "
+            "went away (engine threads cannot be cancelled). Retry in a "
+            "moment, once it completes."
+        )
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        tree.engine_guard.release()
+
+
+def is_sampling_failure(exc: BaseException) -> bool:
+    """Whether `exc` is PyMC's `ParallelSamplingError` (or a subclass).
+
+    A chain that dies in a multi-process NUTS run raises
+    `pymc.sampling.parallel.ParallelSamplingError`, which derives from
+    `Exception` directly — neither `ValueError` nor `RuntimeError` — so C38's
+    "a failed fit is a named refusal, not a 500" held only for single-process
+    sampling (grill 2026-10-05 L3). Matched by class *name* along the MRO
+    rather than by import: importing `pymc` here would put ~27s of
+    PyTensor back on the boot path this package defers it off, and a name
+    match keeps working if a PyMC release moves the class to another module.
+    """
+    return any(cls.__name__ == "ParallelSamplingError" for cls in type(exc).__mro__)
+
+
+class SliceQueryFailed(Exception):
+    """A provider could not run the sliced query for one declared dimension.
+
+    Raised by `api.main._run_slice` around the provider fetch, so the slice
+    route and the MCP tool can answer with a refusal that names the dimension
+    instead of a bare 500 (grill 2026-10-05 M7): a mistyped `column:` in a
+    binding surfaces as whatever the driver raises — `BinderException`,
+    `ProgrammingError`, a DB-API error with no common base — and nothing but
+    the call site knows that the failing query was *this dimension's*.
+
+    Two texts, because the two halves have different audiences. `public`
+    names the metric, the dimension and the error class, and is safe on a
+    route auth leaves open. `cause` is the driver's own message, which quotes
+    the generated SQL and so follows the `sql`/`bind` redaction (H6):
+    `str(exc)` carries both, `public` only the first.
+    """
+
+    def __init__(self, metric: str, dimension: str, source: str, cause: BaseException):
+        self.metric = metric
+        self.dimension = dimension
+        self.public = (
+            f"Slicing '{metric}' by '{dimension}' failed: the provider could not run "
+            f"the sliced query for dimension source '{source}' ({type(cause).__name__}). "
+            "The usual cause is a `column:` in the metric's `bind.dimensions` that the "
+            "relation does not have, or a dimension shape the provider cannot compile. "
+            "`breakdown doctor --tree <path>` runs one sliced query per declared "
+            "dimension and names the one that fails."
+        )
+        self.cause = f"{type(cause).__name__}: {cause}"
+        super().__init__(f"{self.public} Cause: {self.cause}")
+
+
+def refusal_message(exc: BaseException) -> Optional[str]:
+    """The text to hand a caller when `exc` is a refusal; None when it is a crash.
+
+    One judgement for both surfaces. HTTP turns the text into a 422 and MCP
+    into a `ToolError`; before this lived in one place, HTTP had learned that
+    `RuntimeError` is a refusal (roadmap C38) and MCP had not, so the
+    per-metric-window message `/simulate` returned as a readable 422 reached
+    an agent as `Error executing tool run_whatif` and nothing else (grill
+    2026-10-05 M6).
+
+    - `ValueError` / `RuntimeError` (which `SliceNotSupported` and
+      `UnsupportedBinding` subclass): the engine's and providers' own named
+      diagnoses, written for the caller.
+    - `SliceQueryFailed`: a provider error on a sliced query, already worded.
+    - A sampling failure (`is_sampling_failure`): the fit could not be
+      sampled. The engine catches this at its fit sites and reports the node
+      `fit_failed`; this is the backstop for a path that does not.
+
+    Everything else — a `KeyError` on an engine internal, an `AttributeError`
+    — is a crash, and stays one: there is nothing in it for a caller to act
+    on. `EngineBusy` is deliberately not here; it is not a refusal of the
+    request but of the moment, and each surface answers it on its own terms
+    (a 409, a retryable `ToolError`).
+    """
+    if isinstance(exc, EngineBusy):
+        return None
+    if isinstance(exc, (ValueError, RuntimeError, SliceQueryFailed)):
+        return str(exc)
+    if is_sampling_failure(exc):
+        return f"The model could not be sampled ({type(exc).__name__}): {exc}"
+    return None
+
+
+class WarmGate:
+    """Process-wide state for the background warm (roadmap 3.10).
+
+    Not on `TreeState`, for the reason the trace cap is not: the thing being
+    bounded is the *process*. Each tree's warm is its own task behind its own
+    per-tree lock, so N trees opened in a morning ran N NUTS fits at once —
+    two measured on two trees, and each is a sampler's working set on a box
+    sized for one (grill 2026-10-05 M5). `lock` admits one warm fit at a time
+    across every tree. It is taken *before* the tree's own lock, so a tree
+    waiting its turn holds nothing a person's request could queue behind.
+
+    `stopping` is the shutdown flag, read between fits: a warm that is told to
+    stop starts nothing new. One instance per lifespan (`app.state.warm_gate`)
+    because an `asyncio.Lock` belongs to the loop that first awaits it.
+    """
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.stopping = False
+
+
 def _trace_nbytes(fit: Any) -> int:
     """Approximate resident size of one fit, cheaply and without copying it.
 
@@ -422,7 +563,7 @@ class TreeState:
     # thread it launched keeps running — writing into `traces` — so a second
     # run can start beside the orphan and two NUTS fits side by side is an
     # OOM on the 2 GB box. Acquired non-blocking inside the worker function
-    # itself (`_guarded` in api/main.py): contention is impossible in the
+    # itself (`guarded`, above): contention is impossible in the
     # ordinary flow, so hitting it *means* an orphan is still finishing, and
     # the honest answer is a 409 naming that, not a second sampler.
     engine_guard: threading.Lock = field(default_factory=threading.Lock)
@@ -432,7 +573,8 @@ class TreeState:
     # Roadmap 3.10's background warm of each metric's default analysis (opt-in,
     # BREAKDOWN_WARM=latest). `warm` is the status `/meta` reports, replaced
     # whole rather than mutated, like `progress`: the task writes it from the
-    # event loop and handlers read it there too.
+    # event loop and handlers read it there too. What is process-wide about
+    # the warm — one fit at a time, the stop flag — is `WarmGate`, not here.
     warm: Dict[str, Any] = field(default_factory=dict)
     warm_task: Optional[asyncio.Task] = None
 

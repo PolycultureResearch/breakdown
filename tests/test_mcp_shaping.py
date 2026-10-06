@@ -412,7 +412,13 @@ def test_how_to_read_guides():
         # readings that change what may be *said* about one (`claim`,
         # `indicator_unchanged`) are per-node addenda in `rca_how_to_read`,
         # not here.
-        assert 400 < len(guide) < 6600
+        #
+        # Raised to 6900 for the intervention-interval sentence (grill
+        # 2026-10-05 L8/L13): an intervention's `ci_95` is the coefficient's
+        # posterior alone, with no window resampling in it, and the guide's
+        # one general line about `ci_95` let an agent read it beside a
+        # contribution's as the same kind of interval.
+        assert 400 < len(guide) < 6900
     assert "unexplained" in RCA_HOW_TO_READ
     # Issue #114: both windows travel in the payload, and the guide has to say
     # they are what every figure is a contrast of — and to quote them.
@@ -675,3 +681,66 @@ def test_compact_rca_carries_dropped_parents_and_the_guide_names_them():
     assert "Attribution for `revenue` excludes `pacing_baseline`" in addendum
     assert "did not vary over the fit window" in addendum
     assert "`unexplained`" in addendum
+
+
+# The slice payload's top-level keys that need no reading rule: identity
+# (`metric`, `dimension`, `grain`, `kind`), the headline numbers and the rows
+# themselves, and three the guide covers another way (`caveats` is prose;
+# `ci_status` and `attribution_method` are what the lines about
+# `prob_concentrated` and `within`/`mix` explain).
+_SELF_EXPLANATORY_SLICE_KEYS = {
+    "metric",
+    "dimension",
+    "grain",
+    "kind",
+    "n_periods",
+    "baseline",
+    "actual",
+    "gap",
+    "slices",
+    "caveats",
+    "ci_status",
+    "attribution_method",
+}
+
+
+def test_every_field_compact_slice_emits_has_a_line_in_the_guide():
+    """Grill 2026-10-05 L13: `rollup` rode through `compact_slice` for a
+    release with no line in `SLICE_HOW_TO_READ`, so an agent met `where:
+    client` and a `reason` sentence with nothing saying it is plumbing rather
+    than a caveat on the numbers. Enumerated from the function, not listed:
+    the next field added to the payload has to be either explained or named
+    above as self-explanatory."""
+    import ast
+    import inspect
+
+    from breakdown.mcp import shaping
+
+    keys = []
+    for node in ast.walk(ast.parse(inspect.getsource(shaping.compact_slice))):
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) == "out":
+            keys = [k.value for k in node.value.keys]
+    assert "rollup" in keys and len(keys) > 15, "the scan lost the payload literal"
+    unexplained = [
+        k
+        for k in keys
+        if k not in _SELF_EXPLANATORY_SLICE_KEYS and f"`{k}" not in SLICE_HOW_TO_READ
+    ]
+    assert not unexplained, (
+        f"compact_slice emits {unexplained} and SLICE_HOW_TO_READ never mentions them."
+    )
+    # And the line says the one thing that matters about it.
+    assert "`where: sql`" in SLICE_HOW_TO_READ and "`where: client`" in SLICE_HOW_TO_READ
+    assert "never narrate `where` or `reason` as a caveat" in SLICE_HOW_TO_READ
+
+
+def test_the_rca_guide_says_an_interventions_interval_is_posterior_only():
+    """Grill 2026-10-05 L8. A contribution's `ci_95` combines the coefficient
+    posterior with a resampling of the windows; an intervention's does not —
+    its window delta is a fact of two dates (`rca.py`, roadmap S24) — and the
+    guide's one general sentence about `ci_95` let the two be read as the same
+    kind of interval. The three statuses that null one are listed with it."""
+    assert "step size's posterior only" in RCA_HOW_TO_READ
+    assert "not resampled" in RCA_HOW_TO_READ
+    for status in ("indicator_unchanged", "degenerate", "nonfinite_posterior"):
+        assert f"`{status}`" in RCA_HOW_TO_READ
