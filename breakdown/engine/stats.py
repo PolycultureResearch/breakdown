@@ -45,6 +45,26 @@ BLOCK_CAP_DIVISOR = 4
 # swallowing a real interval.
 DEGENERATE_CI_REL = 1e-9
 
+# A series is "effectively constant" — has no variance a fit may divide by —
+# when its whole range is this small *relative to its own level*. Exact
+# `std() == 0` is the wrong test (grill 2026-10-05 H1): most decimals are not
+# representable, so the mean of ninety 4.99s is not 4.99 and
+# `pd.Series([4.99] * 90).std()` is 8.9e-16, not 0. That column was z-scored
+# into noise with `x_std` ~1e-15 and `beta_raw = beta / scale` published a
+# contribution of -1.6e13 under `fit_quality: ok`.
+#
+# Where the bar sits: a held value carries rounding of ~1e-16 of its level, and
+# a warehouse aggregate over n rows at most ~n times that, so 1e-9 clears a
+# billion-row sum's worst case. On the other side, a column moving by less than
+# one part in a billion of its level has already lost nine of its sixteen
+# digits to the mean subtraction a z-score begins with. Nothing real lives in
+# between: a rate moving between 0.0010 and 0.0012 has a relative range of
+# 0.17, eight orders above the bar, because the yardstick is the series' own
+# level and not an absolute epsilon. Erring toward "constant" is also the safe
+# direction — that outcome is a named drop or a named refusal, where the other
+# is a finite number no sanitizer catches.
+CONSTANT_SERIES_REL = 1e-9
+
 # `gap` is treated as zero — and `share_of_gap` withheld — below this fraction
 # of the node's own level. Relative, not absolute (roadmap C5): a $1e-6 gap on a
 # $26K node and a 1e-6 gap on a rate of 0.4 are not the same claim.
@@ -210,6 +230,37 @@ def degenerate_means(means: np.ndarray) -> bool:
     lo = float(np.min(means))
     hi = float(np.max(means))
     return hi - lo <= DEGENERATE_CI_REL * max(abs(lo), abs(hi))
+
+
+def effectively_constant(values: Any, level: Optional[float] = None) -> bool:
+    """Whether a series has no variation distinguishable from float rounding.
+
+    The single spelling of "may I standardize this / regress on this?" (grill
+    2026-10-05 H1). True when `max - min` is within `CONSTANT_SERIES_REL` of
+    the series' level — by default its own largest magnitude, so the test
+    means the same thing for a price, a rate and a revenue line. A series
+    held identically at zero has level zero and needs a range of exactly
+    zero, which it has.
+
+    `level` overrides the yardstick for a series whose own magnitude is not
+    its natural scale: a formula node's residual is float residue around zero
+    when the identity is exact, so judged against itself it "varies" by 200%;
+    judged against the target it is a residual *of*, it is the constant it is.
+
+    A series carrying a non-finite value is not called constant here. That is
+    a different refusal with its own words (`_refuse_undefined_fit_periods`),
+    and answering "zero variance" for it would name the wrong defect.
+    """
+    arr = np.asarray(values, dtype=float).ravel()
+    if arr.size == 0:
+        return True
+    if not np.isfinite(arr).all():
+        return False
+    lo = float(arr.min())
+    hi = float(arr.max())
+    if level is None or not np.isfinite(level):
+        level = max(abs(lo), abs(hi))
+    return hi - lo <= CONSTANT_SERIES_REL * abs(level)
 
 
 def negligible_gap(gap: Optional[float], scale: float) -> bool:
