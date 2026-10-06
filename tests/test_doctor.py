@@ -349,14 +349,17 @@ metrics:
 {extra}"""
 
 
-def _results(tree_yaml):
+def _results(tree_yaml, start_date=None, end_date=None):
     from breakdown.parser import Parser
 
-    return {r.name: r for r in check_dbt(Parser(tree_yaml).config)}
+    return {r.name: r for r in check_dbt(Parser(tree_yaml).config, start_date, end_date)}
 
 
 def test_dbt_chain_passes_on_a_healthy_project(tmp_path):
-    results = _results(_tree(_dbt_project(tmp_path)))
+    # Over a window that holds the fixture's one row (2024-01-01). With no
+    # dates the last check probes the last seven days, finds nothing, and
+    # says so instead of passing — see the zero-row tests below.
+    results = _results(_tree(_dbt_project(tmp_path)), "2024-01-01", "2024-01-07")
     # Two checks skip on this fixture: its one metric is a plain sum, so there
     # is no non-additive slice to resolve, and it carries no filter. The last
     # check runs every metric's generated query, which is what proves the
@@ -963,3 +966,140 @@ def test_doctor_runs_the_compiler_check_and_skips_it_for_cold_start(tmp_path):
     tree.write_text(NONE_TREE)
     results = by_name(run_doctor(str(tree)))
     assert results["inference compiler"].status == "skip"
+
+
+# --- Zero rows is not a pass; a mistyped dimension column is not one either ---
+#
+# Grill 2026-10-05 H3 and M7. Both were a check reporting green about something
+# it had not looked at: `count(*) == count(distinct key)` over no rows, a query
+# that "runs" and returns nothing, and a declared dimension checked by its key
+# while the column behind it did not exist.
+
+_EXPORT_TREE = """
+provider: {{type: duckdb, data_dir: ./exports}}
+metrics:
+  - name: units
+    source: x.units
+    grain: day
+    dimensions:
+      region: {{source: region, top_k: 3}}
+    bind:
+      relation: orders
+      grain_key: order_id
+      time_column: created_at
+      agg: sum
+      measure: qty
+      dimensions: {{region: {{column: {region_column}}}}}
+  - name: refunds
+    source: x.refunds
+    grain: day
+    bind:
+      relation: {refunds_relation}
+      grain_key: order_id
+      time_column: created_at
+      agg: sum
+      measure: qty
+"""
+
+
+@pytest.fixture
+def export_tree(tmp_path, monkeypatch):
+    """A two-metric duckdb tree over CSVs dated March 2025. `write(...)`
+    rewrites the tree; the env pair is cleared so a window is explicit only
+    when the test passes one."""
+    monkeypatch.delenv("BREAKDOWN_START_DATE", raising=False)
+    monkeypatch.delenv("BREAKDOWN_END_DATE", raising=False)
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    rows = "".join(
+        f"{i},2025-03-{d:02d},{'A' if i % 2 else 'B'},{i + 1}\n"
+        for i, d in enumerate(range(1, 29), start=1)
+    )
+    (exports / "orders.csv").write_text("order_id,created_at,region,qty\n" + rows)
+    # A second relation whose only rows are a year earlier.
+    (exports / "old_refunds.csv").write_text("order_id,created_at,qty\n1,2024-03-05,2\n")
+    path = tmp_path / "tree.yml"
+
+    def write(region_column="region", refunds_relation="orders"):
+        path.write_text(
+            _EXPORT_TREE.format(region_column=region_column, refunds_relation=refunds_relation)
+        )
+        return str(path)
+
+    return write
+
+
+def test_a_window_that_misses_the_data_fails_instead_of_passing_on_zero_rows(export_tree):
+    """An explicit window is the one the server will load. It holds nothing,
+    so the two checks that used to pass vacuously fail, with the remedy."""
+    results = by_name(run_doctor(export_tree(), "2024-06-01", "2024-06-30"))
+    for name in ("grain claims hold", "metric sql runs"):
+        r = results[name]
+        assert r.status == "fail", (name, r)
+        assert "no rows" in r.detail and "nothing was checked" in r.detail
+        assert "--start-date" in r.remediation and "--end-date" in r.remediation
+    assert print_report(list(results.values())) == 1
+
+
+def test_the_default_probe_window_skips_rather_than_passes_on_zero_rows(export_tree):
+    """No window given: doctor looked at its own last seven days, which a
+    tree over last year's export is simply not in. Skipped, saying why, with
+    the command that would run the check — not a pass, and not a failure a
+    monthly mart would trip mid-month."""
+    results = by_name(run_doctor(export_tree()))
+    for name in ("grain claims hold", "metric sql runs"):
+        r = results[name]
+        assert r.status == "skip", (name, r)
+        assert "default probe window" in r.detail and "nothing was checked" in r.detail
+        assert "--start-date YYYY-MM-DD --end-date YYYY-MM-DD" in r.remediation
+    assert not [r for r in results.values() if r.name in _VACUOUS and r.status == "pass"]
+
+
+_VACUOUS = ("grain claims hold", "metric sql runs")
+
+
+def test_a_window_that_holds_the_data_still_passes(export_tree):
+    results = by_name(run_doctor(export_tree(), "2025-03-01", "2025-03-28"))
+    assert results["grain claims hold"].status == "pass"
+    assert results["metric sql runs"].status == "pass"
+
+
+def test_one_empty_metric_among_live_ones_warns_and_is_named(export_tree):
+    """Some relations had rows and held; the empty one was not checked, and
+    the line says which rather than counting it into the pass."""
+    path = export_tree(refunds_relation="old_refunds")
+    results = by_name(run_doctor(path, "2025-03-01", "2025-03-28"))
+    grain, sql = results["grain claims hold"], results["metric sql runs"]
+    assert grain.status == "warn" and "refunds" in grain.detail
+    assert "1 relation(s) one row per grain" in grain.detail
+    assert sql.status == "warn" and "['refunds']" in sql.detail
+    assert "all-zero" in sql.remediation
+
+
+def test_the_no_dates_dbt_chain_no_longer_passes_its_sql_probe_on_nothing(tmp_path):
+    # The fixture's one row is dated 2024-01-01; the default probe is the
+    # last week. The unbounded grain claim still has a row to assert over.
+    results = _results(_tree(_dbt_project(tmp_path)))
+    assert results["grain claims hold"].status == "pass"
+    assert results["metric sql runs"].status == "skip"
+
+
+def test_a_mistyped_dimension_column_fails_in_doctor_not_on_the_first_slice(export_tree):
+    """`column: regionn` has the dimension *key* on the binding and no such
+    column on the relation. The key check passed it and `metric sql runs`
+    fetches the unsliced series, so the first slice request was the first
+    thing to find out. One sliced query per declared dimension finds out here."""
+    results = by_name(run_doctor(export_tree(region_column="regionn"), "2025-03-01", "2025-03-28"))
+    r = results["declared dimensions exist"]
+    assert r.status == "fail"
+    assert "units.region -> 'region'" in r.detail
+    assert "regionn" in r.detail, "the driver's own words name the column that is not there"
+    assert "bind.dimensions.<source>.column" in r.remediation
+    # The unsliced probe is, correctly, still green: that is why it was not enough.
+    assert results["metric sql runs"].status == "pass"
+
+
+def test_a_real_dimension_column_passes_and_says_the_sliced_query_ran(export_tree):
+    r = by_name(run_doctor(export_tree(), "2025-03-01", "2025-03-28"))["declared dimensions exist"]
+    assert r.status == "pass"
+    assert "1 sliced query(ies) ran" in r.detail and "2025-03-01" in r.detail
