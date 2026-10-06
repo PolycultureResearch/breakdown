@@ -1345,10 +1345,16 @@ function sparseTailsSummary(meta) {
    rule for an agent. `gap_range` is a sensitivity band, never an interval —
    no surface may render it as one or add it to a `ci_95`. */
 const REFERENCE_SENSITIVITY_NOTE = {
+  // `stable` has no fixed sentence any more (grill 2026-10-05 M4). The engine
+  // answers `stable` when the gap's direction held and the top cause did not
+  // *change* — which includes a run with no top cause at all
+  // (`top_cause_stable: null`) and one where a single block of two answered.
+  // The old sentence claimed "the top cause and the gap's direction are the
+  // same under each neighbouring block" for all of them. `stableSummary`
+  // builds it from the two booleans and the count of blocks that answered.
   stable: {
     label: "Survives a moved reference window",
-    explains:
-      "The top cause and the gap's direction are the same under each neighbouring reference block the engine tried.",
+    explains: "",
   },
   unstable: {
     label: "Depends on the reference window",
@@ -1369,10 +1375,101 @@ function fmtWindowRange(w) {
 /* One line per alternative block: where it was, and what it said. A block
    that could not answer says so with the engine's reason — "not checked" is
    never allowed to read as "checked and fine". */
+/* Why one alternative block gave no answer. `unavailable`: the block could not
+   be attributed at all (it does not fit the loaded history, or the engine
+   refused it). `gap_unavailable`: it was attributed, and the target has no
+   finite gap under it. A status this build cannot name is printed verbatim —
+   it is still not `ok`. */
+const REFERENCE_ALT_STATUS = {
+  unavailable: "not checked",
+  gap_unavailable: "attributed, but the target has no gap under this block",
+};
+
+function referenceAltStatusText(status) {
+  return REFERENCE_ALT_STATUS[status] || `not checked (${status == null ? "no status given" : status})`;
+}
+
+/* How many neighbouring blocks answered, out of how many were tried — from
+   `alternatives[]`, never assumed. Null when the payload lists none. */
+function referenceBlocksAnswered(rs) {
+  const alts = Array.isArray(rs && rs.alternatives) ? rs.alternatives.filter(Boolean) : [];
+  if (!alts.length) return null;
+  return { answered: alts.filter((a) => a.status === "ok").length, tried: alts.length };
+}
+
+function referenceBlocksPhrase(rs) {
+  const b = referenceBlocksAnswered(rs);
+  if (!b) return "";
+  const blocks = `neighbouring reference block${b.tried === 1 ? "" : "s"}`;
+  if (b.answered === b.tried) {
+    return b.tried === 1 ? `the one ${blocks} the engine tried` : `all ${b.tried} ${blocks} the engine tried`;
+  }
+  if (b.answered === 0) return `the ${b.tried} ${blocks} the engine tried, none of which answered`;
+  // "the same under 1 of 2" would read as "and different under the other".
+  return `the ${b.answered === 1 ? "one" : b.answered} that answered of the ${b.tried} ${blocks} the engine tried`;
+}
+
+/* The sentence for the blocks that gave no answer, or "". Its own sentence so
+   "not checked" is never a subordinate clause of "the same". */
+function referenceBlocksUnanswered(rs) {
+  const b = referenceBlocksAnswered(rs);
+  if (!b || b.answered === b.tried || b.answered === 0) return "";
+  const n = b.tried - b.answered;
+  return ` The other${n === 1 ? " block gave" : ` ${n} gave`} no answer, so nothing is claimed about ${n === 1 ? "it" : "them"}.`;
+}
+
+/* The `stable` sentence, claiming only what the two booleans support.
+   `top_cause_stable: null` means the published run ranked no cause, so there
+   was nothing to compare: the direction is all that was checked, and the
+   label says so rather than borrowing the ranking's. */
+function stableSummary(rs) {
+  const under = referenceBlocksPhrase(rs);
+  const scope = under ? ` under ${under}` : " under the neighbouring reference blocks the engine tried";
+  const rest = referenceBlocksUnanswered(rs);
+  const top = rs.top_cause_stable;
+  const sign = rs.gap_sign_stable;
+  if (top === true && sign === true) {
+    return {
+      label: "Survives a moved reference window",
+      summary: `The top cause and the gap's direction are the same${scope}.${rest}`,
+    };
+  }
+  // Strictly null: that is the engine saying "no top cause". A field that is
+  // simply absent is not that statement and falls through.
+  if (top === null && sign === true) {
+    return {
+      label: "Gap direction survives a moved reference window",
+      summary:
+        `The gap's direction is the same${scope}. The published run ranked no cause, so there ` +
+        `was no top cause to compare: this says nothing about a ranking.${rest}`,
+    };
+  }
+  // `stable` with neither boolean confirming it: a newer engine, or a payload
+  // this build misreads. Say what was reported and claim nothing more.
+  const facts = referenceFacts(rs);
+  return {
+    label: "Reported stable under a moved reference window",
+    summary:
+      `The engine reports this answer as stable${scope}` +
+      `${facts ? ` (${facts})` : ", without saying what it compared"}.${rest}`,
+  };
+}
+
+/* The two booleans in words, for a status this build cannot name. */
+function referenceFacts(rs) {
+  const word = (v, same, changed) => (v === true ? same : v === false ? changed : null);
+  return [
+    word(rs.top_cause_stable, "top cause unchanged", "top cause changes"),
+    word(rs.gap_sign_stable, "gap direction unchanged", "gap direction changes"),
+  ]
+    .filter(Boolean)
+    .join(", ");
+}
+
 function referenceSensitivityDetails(rs, fmtNum) {
-  return (rs.alternatives || []).map((a) => {
+  return (rs.alternatives || []).filter(Boolean).map((a) => {
     const where = `${a.label}${a.reference_window ? ` (${fmtWindowRange(a.reference_window)})` : ""}`;
-    if (a.status !== "ok") return `${where}: not checked — ${a.reason || "no answer"}`;
+    if (a.status !== "ok") return `${where}: ${referenceAltStatusText(a.status)} — ${a.reason || "no reason given"}`;
     const parts = [];
     if (rs.top_cause != null) {
       parts.push(
@@ -1393,20 +1490,50 @@ function referenceSensitivityDetails(rs, fmtNum) {
 function referenceSensitivityNote(res, fmtNum) {
   const rs = res && res.reference_sensitivity;
   if (!rs) return null;
-  const entry = REFERENCE_SENSITIVITY_NOTE[rs.status] || REFERENCE_SENSITIVITY_NOTE.unavailable;
-  let summary = entry.explains;
-  if (rs.status === "unstable") {
+  const known = REFERENCE_SENSITIVITY_NOTE[rs.status];
+  let label, summary;
+  if (!known) {
+    // A status this build cannot name is shown verbatim, the way every other
+    // table in this file does it. It used to fall through to the
+    // `unavailable` entry and render as "not checked" — a specific claim
+    // about what the engine did, made on behalf of a value nobody here read.
+    const facts = referenceFacts(rs);
+    const under = referenceBlocksPhrase(rs);
+    label = `Reference sensitivity: ${rs.status == null ? "no status given" : rs.status}`;
+    summary =
+      "This build does not recognise that reference-sensitivity status, so it is shown " +
+      "verbatim. It is not a verdict that the answer survives a moved reference window." +
+      `${rs.reason ? ` The engine's reason: ${rs.reason}.` : ""}` +
+      `${facts ? ` What the engine reported${under ? ` under ${under}` : ""}: ${facts}.` : ""}` +
+      referenceBlocksUnanswered(rs);
+  } else if (rs.status === "stable") {
+    ({ label, summary } = stableSummary(rs));
+  } else if (rs.status === "unstable") {
     const what = [];
     if (rs.top_cause_stable === false) what.push("the top cause changes");
     if (rs.gap_sign_stable === false) what.push("the gap changes direction");
-    summary = `Moving the reference block: ${what.join(" and ") || "the answer changes"} — read the published ranking as one reading among several, not the finding.`;
-  } else if (rs.status === "unavailable" && rs.reason) {
-    summary = `${entry.explains} ${rs.reason}.`;
+    const under = referenceBlocksPhrase(rs);
+    label = known.label;
+    summary =
+      `Moving the reference block: ${what.join(" and ") || "the answer changes"} — read the published ranking as one reading among several, not the finding.` +
+      `${under ? ` Compared against ${under}.` : ""}${referenceBlocksUnanswered(rs)}`;
+  } else {
+    label = known.label;
+    summary = rs.reason ? `${known.explains} ${rs.reason}.` : known.explains;
   }
-  const range = rs.gap_range
-    ? `Gap across the blocks tried: ${fmtNum(rs.gap_range[0])} to ${fmtNum(rs.gap_range[1])} — a sensitivity band, not an interval.`
-    : "";
-  return { status: rs.status, label: entry.label, summary, range, details: referenceSensitivityDetails(rs, fmtNum) };
+  const gr = rs.gap_range;
+  const range =
+    Array.isArray(gr) && gr.length === 2 && gr.every((v) => typeof v === "number" && Number.isFinite(v))
+      ? `Gap across the blocks tried: ${fmtNum(gr[0])} to ${fmtNum(gr[1])} — a sensitivity band, not an interval.`
+      : "";
+  return {
+    status: rs.status,
+    known: !!known,
+    label,
+    summary,
+    range,
+    details: referenceSensitivityDetails(rs, fmtNum),
+  };
 }
 
 /* The block for the live Root cause tab and the export. `cls.warn` is the
@@ -1418,9 +1545,11 @@ function referenceSensitivityHtml(res, cls) {
   if (!n) return "";
   const esc = cls.esc;
   const klass = n.status === "stable" ? cls.ok : cls.warn;
+  // An unknown status takes the caveat channel and the "not said" mark: it
+  // may be good news, and this build cannot tell.
   const mark = n.status === "stable" ? "✓" : n.status === "unstable" ? "⚠" : "◌";
   const details = n.details.length
     ? `<br><span class="sens-details">${n.details.map((d) => esc(d)).join("<br>")}</span>`
     : "";
-  return `<p class="${klass} sens-${esc(n.status)}">${mark} <strong>${esc(n.label)}.</strong> ${esc(n.summary)}${n.range ? ` ${esc(n.range)}` : ""}${details}</p>`;
+  return `<p class="${klass} sens-${n.known ? esc(n.status) : "unknown"}">${mark} <strong>${esc(n.label)}.</strong> ${esc(n.summary)}${n.range ? ` ${esc(n.range)}` : ""}${details}</p>`;
 }
