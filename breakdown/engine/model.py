@@ -20,6 +20,7 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
+from breakdown.engine.stats import effectively_constant
 from breakdown.formula import eval_formula
 from breakdown.grains import ensure_grained, fit_grain, floor_period, next_start
 from breakdown.parser import MetricDefinition
@@ -901,11 +902,19 @@ def _validate_columns(data: pd.DataFrame, cols: List[str]) -> None:
     )
 
 
-def _normalize(series: pd.Series) -> Tuple[np.ndarray, float, float]:
+def _normalize(series: pd.Series, level: Optional[float] = None) -> Tuple[np.ndarray, float, float]:
+    """Z-score `series`, refusing one with no variance to divide by.
+
+    The refusal is `effectively_constant`, not `std == 0` (grill 2026-10-05
+    H1): a series held at 4.99 has a std of ~1e-15, and dividing by that
+    returns a column of rounding noise and a `std` every later `beta / scale`
+    and `* y_std` inherits. `level` is passed through for a series whose own
+    magnitude is not its scale (the formula residual).
+    """
+    if effectively_constant(series.values, level=level):
+        raise ValueError(f"Column '{series.name}' has zero variance — cannot normalize.")
     mean = series.mean()
     std = series.std()
-    if std == 0:
-        raise ValueError(f"Column '{series.name}' has zero variance — cannot normalize.")
     return (series.values - mean) / std, float(mean), float(std)
 
 
@@ -1001,8 +1010,8 @@ def _collinearity_diagnostic(
     if not np.isfinite(X).all():
         bad = [p for i, p in enumerate(parents) if not np.isfinite(X[:, i]).all()]
         reason = f"non-finite values in the fitted regressor(s) {bad}"
-    elif not np.isfinite(stds := X.std(axis=0)).all() or float(stds.min()) <= 0.0:
-        bad = [p for i, p in enumerate(parents) if not np.isfinite(stds[i]) or stds[i] <= 0]
+    elif any(flat := [effectively_constant(X[:, i]) for i in range(k)]):
+        bad = [p for p, is_flat in zip(parents, flat) if is_flat]
         reason = f"zero or non-finite variance in the fitted regressor(s) {bad}"
     else:
         reason = ""
@@ -2106,7 +2115,15 @@ def _prepare_series(
         }
         target_vals = data[target].values.astype(float)[max_lag:]
         residual = target_vals - eval_formula(defn.formula, parent_arrays)
-        y, y_mean, y_std = _normalize(pd.Series(residual, name=f"{target}_residual"))
+        # Judged against the target's level, not the residual's own: an exact
+        # identity leaves float residue around zero (`a + b + c` against a
+        # stored total), which is 200% "variation" relative to itself and
+        # nothing at all relative to the metric. Only a residual of exactly
+        # 0.0 was refused before, so whether an identity node could be fitted
+        # depended on whether its arithmetic happened to round.
+        finite_target = target_vals[np.isfinite(target_vals)]
+        level = float(np.abs(finite_target).max()) if finite_target.size else None
+        y, y_mean, y_std = _normalize(pd.Series(residual, name=f"{target}_residual"), level=level)
         return y, None, None, y_mean, y_std, None, all_dates[max_lag:], [], []
 
     y_series = data[target].iloc[max_lag:] if max_lag > 0 else data[target]
@@ -2122,13 +2139,19 @@ def _prepare_series(
         shifted = data[p].shift(lags.get(p, 0))
         if max_lag > 0:
             shifted = shifted.iloc[max_lag:]
-        if shifted.std() == 0:
+        if effectively_constant(shifted.values):
             # Judged on the column the model would see — lag-shifted and
             # trimmed to the fit window — not on the loaded series. A parent
             # that moves in the analysis window but not before it lands here
             # too: RCA's fit ends at `analysis_start`, and the coefficient a
             # window it never saw would have needed is not one it can learn.
-            held_at = float(shifted.iloc[0])
+            #
+            # "Constant" is the shared scale-relative test, the same one
+            # `_normalize` refuses on, so the two cannot disagree about a
+            # column (grill 2026-10-05 H1: `std() == 0` passed a price held
+            # at 4.99, whose std is 8.9e-16). The median names the level a
+            # reader would recognize whichever period carries the rounding.
+            held_at = float(np.median(shifted.values))
             reason = f"zero variance over fit window {window} (held at {held_at:g})"
             dropped.append({"parent": p, "reason": reason})
             continue
