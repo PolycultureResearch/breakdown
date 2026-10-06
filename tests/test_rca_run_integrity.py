@@ -19,7 +19,7 @@ import xarray as xr
 
 from breakdown.engine import rca as rca_mod
 from breakdown.engine import simulate as sim_mod
-from breakdown.engine.model import FitResult
+from breakdown.engine.model import FitResult, intervention_record
 from breakdown.engine.rca import plan_rca_fits, run_rca, sampling_failures
 from breakdown.engine.simulate import Intervention, ScenarioRequest, run_scenario
 from breakdown.grains import ensure_grained, fit_grain, next_start
@@ -104,6 +104,13 @@ def stand_in_fit(calls=None, *, fail=None, poison=None):
             "trend": (("chain", "draw", "t"), rng.normal(0, 0.01, (1, draws, len(dates)))),
             "alpha": (("chain", "draw"), np.zeros((1, draws))),
         }
+        # Declared interventions ride their own coefficient axis (roadmap S24).
+        records = [intervention_record(iv, grain) for iv in defn.interventions]
+        if records:
+            posterior["beta_intervention_raw"] = (
+                ("chain", "draw", "iv"),
+                rng.normal(5.0, 0.5, (1, draws, len(records))),
+            )
         if poison and node in poison:
             dims, values = posterior[poison[node]]
             posterior[poison[node]] = (dims, np.full(values.shape, np.nan))
@@ -118,6 +125,7 @@ def stand_in_fit(calls=None, *, fail=None, poison=None):
             inference_method="nuts",
             fit_end=fit_end,
             grain=grain,
+            interventions=records,
         )
 
     return fit
@@ -360,6 +368,66 @@ def test_a_failed_sample_refuses_the_scenario_in_its_own_words(fits, error):
     assert "could not be sampled" in str(e.value)
     assert type(raised).__name__ in str(e.value)
     assert "constant series" not in str(e.value)
+
+
+# ---------------------------------------------------------------------------
+# L6: a non-finite posterior is withheld by name, never emitted or zeroed
+# ---------------------------------------------------------------------------
+
+
+def test_a_non_finite_coefficient_posterior_is_withheld(fits):
+    fits.install(poison={"z": "beta_raw"})
+    res = run_rca(chain_dag(), chain_data(), {}, "z", **REF, **AN, reference_sensitivity=False)
+    json.dumps(res, allow_nan=False)
+
+    z = res["nodes"]["z"]
+    assert z["status"] == "ok" and z["ci_status"] == "nonfinite_posterior"
+    (contribution,) = z["contributions"]
+    assert contribution["estimate"] is None and contribution["ci_95"] is None
+    assert contribution["share_of_gap"] is None and contribution["prob_same_direction"] is None
+    # No residual is computed around a missing term.
+    assert z["unexplained"] is None and z["unexplained_status"] is None
+    assert z["gap"] is not None
+    # A withheld share carries no evidence: `y` is reached and weighs nothing.
+    ranked = {r["metric"]: r for r in res["ranked_causes"]}
+    assert ranked["y"] == {"metric": "y", "score": 0.0, "via": "z"}
+    assert res["nodes"]["y"]["ci_status"] == "ok"
+
+
+def test_a_non_finite_trend_is_withheld_instead_of_raising(fits):
+    """`sample_summary` already answered `estimate: None` for the trend; the
+    sum over the components then raised TypeError — a 500."""
+    fits.install(poison={"z": "trend"})
+    res = run_rca(chain_dag(), chain_data(), {}, "z", **REF, **AN, reference_sensitivity=False)
+    json.dumps(res, allow_nan=False)
+
+    z = res["nodes"]["z"]
+    assert z["components"]["trend"] == {"estimate": None, "ci_95": None}
+    assert z["ci_status"] == "nonfinite_posterior"
+    assert z["unexplained"] is None and z["unexplained_status"] is None
+    # The coefficient posterior was finite, and its contribution still stands.
+    assert z["contributions"][0]["estimate"] is not None
+
+
+def test_a_withheld_intervention_withholds_the_residual_with_it(fits):
+    """The intervention entry already said `nonfinite_posterior`, and the
+    node's `unexplained` was then computed as if the term were zero — the
+    step's whole effect, published as a measured residual with `ci_status: ok`."""
+    step = "    interventions:\n      - {name: flip, date: 2024-03-15, kind: step}\n"
+    res = run_rca(chain_dag(step), chain_data(), {}, "z", **REF, **AN, reference_sensitivity=False)
+    y = res["nodes"]["y"]
+    assert y["interventions"][0]["ci_status"] == "ok" and y["ci_status"] == "ok"
+    assert y["unexplained"] is not None and y["unexplained_status"] == "measured"
+
+    fits.install(poison={"y": "beta_intervention_raw"})
+    res = run_rca(chain_dag(step), chain_data(), {}, "z", **REF, **AN, reference_sensitivity=False)
+    json.dumps(res, allow_nan=False)
+    y = res["nodes"]["y"]
+    (flip,) = y["interventions"]
+    assert flip["estimate"] is None and flip["ci_status"] == "nonfinite_posterior"
+    assert y["ci_status"] == "nonfinite_posterior"
+    assert y["unexplained"] is None and y["unexplained_status"] is None
+    assert y["contributions"][0]["estimate"] is not None
 
 
 # ---------------------------------------------------------------------------

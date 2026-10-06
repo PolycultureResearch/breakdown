@@ -2324,6 +2324,12 @@ def run_rca(
             an_idx = block_bootstrap_indices(len(t_an), N_BOOT, rng, block=block)
 
             estimate_sum = 0.0
+            # Set when any term of this node's decomposition was withheld for
+            # a non-finite posterior — a coefficient, a component, a declared
+            # intervention. The node's `ci_status` names it and `unexplained`
+            # is withheld with it: a residual computed around a missing term
+            # would publish that term's whole effect as "unexplained".
+            withheld_nonfinite = False
             # The same degeneracy the formula path guards against (roadmap
             # C4a) reaches here through the parent's window means: a parent
             # constant over a window contributes no window-sampling
@@ -2370,20 +2376,34 @@ def run_rca(
                 # the same bootstrap replicate across parents.
                 delta_samples = rng.permutation(delta_samples)
                 samples = arr[:, i] * delta_samples[np.arange(n_post) % N_BOOT]
-                estimate = float(samples.mean())
-                estimate_sum += estimate
-                lo = float(np.percentile(samples, 2.5))
-                hi = float(np.percentile(samples, 97.5))
-                # Withheld only when the interval is flatly zero-width; a
-                # parent constant in one window still leaves the coefficient
-                # posterior varying, and that interval is understated (hence
-                # the node's `ci_status`) rather than absent.
-                degenerate = hi - lo <= DEGENERATE_CI_REL * ci_scale
+                # Through `sample_summary`, like every other posterior
+                # summary on this node (rule 3, grill 2026-10-05 L6): this
+                # was `samples.mean()` and two bare percentiles, so a
+                # non-finite coefficient draw — the parent windows are
+                # refused above, the posterior was not checked at all —
+                # reached the encoder as NaN. A non-finite summary is
+                # withheld whole: no estimate, no share, no interval, and the
+                # node's `ci_status` says why.
+                #
+                # The interval is otherwise withheld only when it is flatly
+                # zero-width; a parent constant in one window still leaves the
+                # coefficient posterior varying, and that interval is
+                # understated (hence the node's `ci_status`) rather than
+                # absent.
+                summary = sample_summary(samples, ci_scale)
+                estimate = summary["estimate"]
+                degenerate = summary["ci_95"] is None
+                if estimate is None:
+                    withheld_nonfinite = True
+                else:
+                    estimate_sum += estimate
                 contribution = {
                     "parent": p,
                     "estimate": estimate,
-                    "share_of_gap": share_of_gap(estimate, gap, ci_scale),
-                    "ci_95": None if degenerate else [lo, hi],
+                    "share_of_gap": (
+                        None if estimate is None else share_of_gap(estimate, gap, ci_scale)
+                    ),
+                    "ci_95": summary["ci_95"],
                     # `n_effective=N_BOOT`: `samples` is one value per posterior
                     # draw, but the window delta multiplying them takes only
                     # `N_BOOT` distinct values, so a NUTS fit's 4,000 draws do
@@ -2426,6 +2446,7 @@ def run_rca(
                     entry: Dict[str, Any] = {**record, "window_delta": window_delta}
                     iv_samples = arr_iv[:, j] * window_delta
                     if not np.isfinite(iv_samples).all():
+                        withheld_nonfinite = True
                         entry.update(
                             estimate=None,
                             share_of_gap=None,
@@ -2464,20 +2485,34 @@ def run_rca(
                         )
                     interventions_out.append(entry)
 
-            unexplained = (
-                gap
-                - estimate_sum
-                - sum(c["estimate"] for c in components.values())
-                - intervention_sum
-            )
-            # A probabilistic node is always fetched (there is no derived
-            # regression), so its residual is always a measurement.
-            unexplained_status = "measured"
-            # The beta_raw posterior still carries real uncertainty on a
-            # single-period window; the flag says the window-sampling
-            # component of the CI is absent.
+            # `sample_summary` withholds a non-finite trend or seasonal as
+            # `estimate: None`, and summing those was a TypeError — a 500 —
+            # on exactly the node that most needed a diagnostic.
+            component_estimates = [c["estimate"] for c in components.values()]
+            if any(e is None for e in component_estimates):
+                withheld_nonfinite = True
+            if withheld_nonfinite:
+                # Withheld, not computed around the gap: `gap − Σ(the terms
+                # that survived)` would hand the missing term's effect to
+                # `unexplained` and label it a measurement. Both keys null is
+                # `_node_out`'s "no residual"; `ci_status` is what names why.
+                unexplained = None
+                unexplained_status = None
+            else:
+                unexplained = gap - estimate_sum - sum(component_estimates) - intervention_sum
+                # A probabilistic node is always fetched (there is no derived
+                # regression), so its residual is always a measurement.
+                unexplained_status = "measured"
+            # Most specific cause first. `nonfinite_posterior` outranks the
+            # rest because it is the only one under which a *point estimate*
+            # is missing; the others qualify intervals. Then: the beta_raw
+            # posterior still carries real uncertainty on a single-period
+            # window, and the flag says the window-sampling component of the
+            # CI is absent.
             ci_status = (
-                "posterior_only_single_period"
+                "nonfinite_posterior"
+                if withheld_nonfinite
+                else "posterior_only_single_period"
                 if single_period
                 else "degenerate_bootstrap_spread"
                 if degenerate_inputs
