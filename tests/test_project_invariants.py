@@ -4579,3 +4579,52 @@ def test_no_per_node_payload_carries_a_series(fitted_example):
         "that scales with the fitted window belongs on the fit and behind its "
         "own route, the way roadmap S10's `ppc_band` does."
     )
+
+
+# --- The repository map names every module (grill 2026-10-05 L10) -------------
+
+
+def test_every_module_is_named_in_the_repository_map():
+    """`AGENTS.md`'s project-structure block is where a contributor — human or
+    agent — learns what exists, and it went stale silently: `check.py`,
+    `engine/stats.py`, `engine/windows.py` and `engine/warm.py` each shipped
+    without a line, and `cli.py`'s still described two subcommands of three.
+    A map that omits the module holding the shared bootstrap is how a fourth
+    copy of the bootstrap gets written.
+
+    Every `*.py` under `breakdown/` (bar `__init__.py`) has a line in the
+    block, under its own directory, and no line names a module that is gone.
+    """
+    text = (PACKAGE.parent / "AGENTS.md").read_text()
+    match = re.search(r"### Project structure\n+```\n(.*?)\n```", text, re.S)
+    assert match, "AGENTS.md no longer has a fenced block under '### Project structure'"
+
+    # Rebuild each entry's path from the block's two-space indentation.
+    mapped, stack = set(), []
+    for line in match.group(1).splitlines():
+        entry = line.split("#")[0].rstrip()
+        if not entry.strip():
+            continue
+        depth = (len(entry) - len(entry.lstrip())) // 2
+        name = entry.strip()
+        del stack[depth:]
+        if name.endswith("/"):
+            stack.append(name.rstrip("/"))
+        else:
+            mapped.add("/".join([*stack, name]))
+
+    modules = {
+        str(path.relative_to(PACKAGE.parent))
+        for path in PACKAGE.rglob("*.py")
+        if path.name != "__init__.py"
+    }
+    assert len(modules) >= 20, f"only {len(modules)} modules found; is PACKAGE right?"
+    missing = sorted(modules - mapped)
+    assert not missing, (
+        f"{missing} are not in AGENTS.md's project-structure block. Add one line "
+        "each, in the existing `name  # what it is` style (grill 2026-10-05 L10)."
+    )
+    gone = sorted(
+        p for p in mapped if p.startswith("breakdown/") and p.endswith(".py") and p not in modules
+    )
+    assert not gone, f"{gone} are in AGENTS.md's project-structure block and no longer exist"
