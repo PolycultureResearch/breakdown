@@ -801,6 +801,21 @@ const INTERVENTION_CI_NOTE = {
   },
 };
 
+/* The note for one intervention's `ci_status`, or null when there is nothing
+   to say (`ok`, or no status). The bare `INTERVENTION_CI_NOTE[x]` this
+   replaces returned undefined for a value this build has never heard of and
+   rendered nothing — a row with an em dash where its interval should be and
+   no word on why, which is the silence `ciStatusNote` was written to end. */
+function interventionCiNote(status) {
+  if (!status || status === "ok") return null;
+  return (
+    INTERVENTION_CI_NOTE[status] || {
+      text: `interval flagged: ${status}`,
+      why: "This build does not recognise that status on a declared intervention, so it is shown verbatim. It is not 'ok' — the engine flagged something about this row's estimate or interval that a newer version of the UI would explain.",
+    }
+  );
+}
+
 /* The sentence for a `learn_from: window` intervention, from the engine's own
    `claim` — printed verbatim wherever the row appears, because it is the one
    thing about this number the reader must not lose. */
@@ -815,10 +830,13 @@ function interventionRowsHtml(node, nCols, shareOf, ciCell) {
   if (!Array.isArray(ivs) || !ivs.length || nCols !== 5) return "";
   return ivs
     .map((iv) => {
-      const note = INTERVENTION_CI_NOTE[iv.ci_status];
+      const note = interventionCiNote(iv.ci_status);
       const claim = interventionClaim(iv);
       const title = [INTERVENTION_WHY, note ? note.why : "", claim].filter(Boolean).join("\n\n");
-      const tag = claim ? " · fit saw this window" : note ? ` · ${note.text}` : "";
+      // Both, when both apply. The claim tag used to win, so a
+      // `learn_from: window` row whose interval had collapsed showed "fit saw
+      // this window" and an unexplained em dash.
+      const tag = `${claim ? " · fit saw this window" : ""}${note ? ` · ${note.text}` : ""}`;
       const est = iv.estimate == null ? "—" : fmt(iv.estimate);
       const share = iv.estimate == null ? "—" : shareOf(iv.estimate, node.gap);
       return `<tr class="intervention-row"><td title="${esc(title)}"><code>${esc(iv.name)}</code> <span class="dim">— ${esc(declaredInterventionLabel(iv).replace(`${iv.name} — `, ""))}${esc(tag)}</span></td>
@@ -835,22 +853,73 @@ function interventionRowsHtml(node, nCols, shareOf, ciCell) {
    declared step missing from the table reads as "no effect", when the fact is
    "not fitted" — no instance inside the fit window (the flip is in the
    analysis window, which RCA's fit never sees), or on for every period of it. */
-const DROPPED_INTERVENTION_WHY =
-  "This declared change had no instance inside the window the model was fitted on, " +
-  "or was on for every period of it, so its size could not be learned and it was " +
-  "left out of the fit. If the analysis window contains it, its effect is in the " +
-  "unexplained row or in the parents that moved with it. That is not a measured " +
-  "zero: nothing was estimated.";
+/* The two ways are not one, and the engine says which (`model.py`
+   `_intervention_columns` writes a different `reason` for each because they
+   have different remedies). Every surface used to say "outside the fit
+   window" for both — which, for a regime that was on for the *whole* fit
+   window, is the opposite of the fact (grill 2026-10-05 L8). The payload
+   carries no code for the case, only the sentence, so the sentence is what is
+   matched; one this build cannot place gets the neutral label and is printed
+   in full beside it, never guessed at. */
+const DROPPED_INTERVENTION_CASE = {
+  no_instance: {
+    match: "no instance inside the fit window",
+    short: "no instance inside the fit window",
+    why:
+      "This declared change had no instance inside the window the model was fitted " +
+      "on, so its size could not be learned and it was left out of the fit. If the " +
+      "analysis window contains it, its effect is in the unexplained row or in the " +
+      "parents that moved with it. That is not a measured zero: nothing was estimated.",
+  },
+  always_on: {
+    match: "on for every period of the fit window",
+    short: "on for every period of the fit window",
+    why:
+      "This declared change was already on for every period of the window the model " +
+      "was fitted on, so its column is the intercept's and its coefficient is not " +
+      "identified; it was left out of the fit. The fit saw only the regime with the " +
+      "change on, so that level is in the intercept. Nothing was estimated for the " +
+      "change itself, which is not a measured zero. A regime that began before the " +
+      "fit window is what `fit_start` declares, not an intervention.",
+  },
+};
+
+const DROPPED_INTERVENTION_UNKNOWN = {
+  short: "for a reason this build does not recognise",
+  why:
+    "The engine left this declared change out of the fit and gave the reason shown. " +
+    "This build does not recognise that reason, so it is printed verbatim rather than " +
+    "summarised. Nothing was estimated for it: that is not a measured zero.",
+};
+
+function droppedInterventionCase(d) {
+  const reason = d && typeof d.reason === "string" ? d.reason : "";
+  return (
+    Object.values(DROPPED_INTERVENTION_CASE).find((c) => reason.includes(c.match)) ||
+    DROPPED_INTERVENTION_UNKNOWN
+  );
+}
+
+/* "not fitted — on for every period of the fit window": the one label for a
+   dropped intervention's row, on the Metric tab's coefficient table, the live
+   RCA table and the export. */
+function droppedInterventionLabel(d) {
+  return `not fitted — ${droppedInterventionCase(d).short}`;
+}
 
 function droppedInterventionsNote(node) {
   const dropped = node && node.dropped_interventions;
   if (!Array.isArray(dropped) || !dropped.length) return null;
   const names = dropped.map((d) => d.intervention);
+  const cases = [...new Set(dropped.map(droppedInterventionCase))];
+  // One case: the chip names it. Mixed: the chip says only "not fitted" and
+  // each row carries its own.
+  const how = cases.length === 1 ? ` — ${cases[0].short}` : "";
   return {
     names,
-    text: `⚠ declared intervention${names.length === 1 ? "" : "s"} ${names.join(", ")} not fitted — outside the fit window`,
+    text: `⚠ declared intervention${names.length === 1 ? "" : "s"} ${names.join(", ")} not fitted${how}`,
     cls: "sign-flag",
-    why: DROPPED_INTERVENTION_WHY,
+    why: cases.map((c) => c.why).join("\n\n"),
     reasons: dropped.map((d) => d.reason).join("\n"),
   };
 }
@@ -862,7 +931,7 @@ function droppedInterventionRowsHtml(node, nCols) {
   return dropped
     .map(
       (d) =>
-        `<tr class="dim"><td title="${esc(`${d.reason}\n\n${DROPPED_INTERVENTION_WHY}`)}"><code>${esc(d.intervention)}</code> — declared ${esc(d.kind)} ${esc(d.date)}, not fitted: outside the fit window</td>${dash.repeat(Math.max(nCols - 1, 0))}</tr>`,
+        `<tr class="dim"><td title="${esc(`${d.reason}\n\n${droppedInterventionCase(d).why}`)}"><code>${esc(d.intervention)}</code> — declared ${esc(d.kind)} ${esc(d.date)}, ${esc(droppedInterventionLabel(d))}</td>${dash.repeat(Math.max(nCols - 1, 0))}</tr>`,
     )
     .join("");
 }
@@ -955,7 +1024,7 @@ function windowsHeadlineHtml(res) {
 const RCA_CAVEATS = [
   "Ranked causes are a triage order, not evidence: the score walks the tree multiplying each edge's share of its child's gap. Read it as where to look next, and read the attribution tables for what was actually measured.",
   "Changes are window-mean differences at each node's grain. Formula edges are exact Shapley attributions; probabilistic edges multiply a fitted posterior by the parent's window delta, so they are fitted associations, not experiments.",
-  "Intervals are 95% credible intervals combining the coefficient posterior with a moving-block bootstrap of the window rows. Where one is withheld the table says so; the point estimates are unaffected.",
+  "Intervals are 95% credible intervals combining the coefficient posterior with a moving-block bootstrap of the window rows — except on a declared intervention's row, where the interval is the coefficient's posterior alone: the dates it was on are facts, not samples, so there is nothing to resample. Where an interval is withheld the table says so; the point estimates are unaffected.",
 ];
 
 /* Map a MOVEMENT direction ("up"/"down") to a COLOR direction through the

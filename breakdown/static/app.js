@@ -1382,7 +1382,8 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     so its series is the formula) there is no measurement, which the row says instead of reading zero. Probabilistic nodes multiply the fitted <code>beta_raw</code>
     posterior (BSTS, fit strictly before the analysis window) by the parent's window delta, with trend and seasonal
     components reported separately.${samplerSentence} Intervals combine coefficient posteriors with a circular moving-block bootstrap of
-    the window rows; fits and bootstraps are seeded, so identical requests reproduce identical numbers. Full assumptions:
+    the window rows — except a declared intervention's, which is the coefficient's posterior alone, since the dates
+    it was on are facts and not samples; fits and bootstraps are seeded, so identical requests reproduce identical numbers. Full assumptions:
     docs/model.md in the <a href="https://github.com/PolycultureResearch/breakdown">breakdown</a> repository.
   </div>
 </body></html>`;
@@ -2763,8 +2764,8 @@ function renderPosterior(name, data) {
   });
   (data.dropped_interventions || []).forEach((d) => {
     rows += `<tr class="dim">
-      <td title="${esc(`${d.reason}\n\n${DROPPED_INTERVENTION_WHY}`)}"><code>${esc(d.intervention)}</code> <span class="dim">— declared ${esc(d.kind)} ${esc(d.date)}</span></td>
-      <td colspan="2">not fitted — outside the fit window</td>
+      <td title="${esc(`${d.reason}\n\n${droppedInterventionCase(d).why}`)}"><code>${esc(d.intervention)}</code> <span class="dim">— declared ${esc(d.kind)} ${esc(d.date)}</span></td>
+      <td colspan="2">${esc(droppedInterventionLabel(d))}</td>
     </tr>`;
   });
 
