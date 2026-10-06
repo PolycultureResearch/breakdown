@@ -257,6 +257,71 @@ def test_the_alternatives_plan_with_the_requested_sampler(fits, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# M2: a reference before a node's fitted period is settled before any fit
+# ---------------------------------------------------------------------------
+
+FIT_START = "    fit_start: 2024-03-10\n"
+
+
+def test_an_ancestors_fit_start_degrades_that_node_and_nothing_else(fits):
+    """`y` is fitted from 2024-03-10; the caller's reference starts on the
+    1st. That raised from inside the attribution loop, after every fit."""
+    res = run_rca(chain_dag(FIT_START), chain_data(), {}, "z", **REF, **AN)
+
+    y = res["nodes"]["y"]
+    assert y["status"] == "reference_before_fit_window"
+    assert "fit_start: 2024-03-10" in y["status_reason"]
+    assert "on or after 2024-03-10" in y["status_reason"]
+    # Its movement is measured from the data and stands; only the split is missing.
+    assert y["gap"] is not None and y["contributions"] == []
+    assert fits.calls == ["z"]  # never fitted: there was nothing it could say
+    assert res["nodes"]["z"]["status"] == "ok"
+    assert res["ranked_causes"][0]["metric"] == "y"
+    json.dumps(res, allow_nan=False)
+
+
+def test_the_targets_fit_start_is_refused_before_any_fit(fits):
+    dag = Parser(
+        """
+metrics:
+  - name: x
+    source: a.b.x
+  - name: y
+    source: a.b.y
+    parents: [x]
+  - name: z
+    source: a.b.z
+    parents: [y]
+    fit_start: 2024-03-10
+"""
+    ).dag
+    with pytest.raises(ValueError, match="first day 'z' is fitted on \\(2024-03-10\\)") as e:
+        run_rca(dag, chain_data(), {}, "z", **REF, **AN)
+    assert "Nothing was fitted" in str(e.value)
+    assert fits.calls == []
+
+
+def test_the_lag_trim_counts_toward_the_first_fitted_period(fits):
+    """`fit_start` cuts first and the lag trims after it, so the first fitted
+    day is `fit_start + lag` — which is what the reference is checked against
+    and what the default reference is floored at."""
+    dag = chain_dag("    fit_start: 2024-03-10\n    lags: {x: 3}\n")
+    data = chain_data()
+
+    plan = plan_rca_fits(
+        dag, data, {}, "z", reference_start="2024-03-11", reference_end="2024-03-31", **AN
+    )
+    assert "2024-03-13" in plan.reference_before_fit["y"]
+    assert "longest parent lag (3 day(s))" in plan.reference_before_fit["y"]
+
+    # The default reference is one the engine then accepts.
+    res = run_rca(dag, data, {}, "z", **AN, reference_sensitivity=False)
+    assert res["reference_window"]["start"] == "2024-03-13"
+    assert res["nodes"]["y"]["status"] == "ok"
+    assert res["nodes"]["y"]["fit_window"]["start"] == "2024-03-13"
+
+
+# ---------------------------------------------------------------------------
 # L3: a chain dying in a multi-process run is a fit failure like any other
 # ---------------------------------------------------------------------------
 
@@ -314,4 +379,16 @@ def test_rca_survives_a_store_too_small_for_its_own_fits():
     assert list(traces) == [("z", AN["analysis_start"])]  # `y` was evicted
     assert res["nodes"]["y"]["status"] == "ok" and res["nodes"]["z"]["status"] == "ok"
     assert res["nodes"]["y"]["fit_window"]["end"] == "2024-03-31"
+    json.dumps(res, allow_nan=False)
+
+
+@pytest.mark.slow
+def test_an_ancestors_fit_start_costs_no_fit_and_ends_nothing():
+    traces = {}
+    res = run_rca(chain_dag(FIT_START), chain_data(), traces, "z", **REF, **AN, draws=100)
+
+    assert list(traces) == [("z", AN["analysis_start"])]
+    assert res["nodes"]["y"]["status"] == "reference_before_fit_window"
+    assert res["nodes"]["z"]["status"] == "ok"
+    assert res["nodes"]["z"]["fit_window"]["start"] == "2024-01-01"
     json.dumps(res, allow_nan=False)

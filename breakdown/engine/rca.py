@@ -176,6 +176,27 @@ def _reference_alignment(dag: nx.DiGraph, target: str) -> Tuple[bool, str]:
     return week_align, coarsest_grain
 
 
+def _first_fitted_period(frame: pd.DataFrame, defn) -> Optional[pd.Timestamp]:
+    """The first period a fit of this node trains on, or None when no period
+    survives (the fit then refuses on its own, by name).
+
+    The same two cuts `fit_metric` makes at the front of the window, in the
+    same order: whole periods *starting* on or after the node's `fit_start`
+    (roadmap S24), then the leading max-lag rows a lagged regression cannot
+    use. A reference window may not start before this — the trend delta reads
+    the fitted states over the reference — so every check of "is the reference
+    inside the fitted period" goes through here, rather than through
+    `fit_start` in one place and the lag in another (grill 2026-10-05 M2).
+    """
+    dates = pd.DatetimeIndex(pd.to_datetime(frame["date"])).sort_values()
+    if defn.fit_start is not None:
+        dates = dates[dates >= pd.Timestamp(defn.fit_start)]
+    max_lag = max((defn.lags or {}).values(), default=0)
+    if len(dates) <= max_lag:
+        return None
+    return dates[max_lag]
+
+
 def _earliest_readable_reference(dag: nx.DiGraph, data, target: str) -> pd.Timestamp:
     """The earliest date a reference window may start and still be readable by
     every node in `target`'s scope (roadmap M1).
@@ -208,9 +229,15 @@ def _earliest_readable_reference(dag: nx.DiGraph, data, target: str) -> pd.Times
         floor = max(floor, shift_periods(pd.Timestamp(frame["date"].min()), max_lag, grain))
         # Roadmap S24: a node's `fit_start` cuts its fit window, and the
         # reference must lie inside the fitted period — so the default block
-        # may not start before it either.
+        # may not start before it either. The lag trim comes *after* that cut,
+        # so the floor is the first fitted period, not `fit_start` itself: a
+        # lagged node with a `fit_start` used to be handed a default reference
+        # that `run_rca` then refused.
         if defn.fit_start is not None:
             floor = max(floor, pd.Timestamp(defn.fit_start))
+            first_fitted = _first_fitted_period(frame, defn)
+            if first_fitted is not None:
+                floor = max(floor, first_fitted)
     return floor
 
 
@@ -1461,6 +1488,16 @@ def plan_rca_fits(
     # every node except one with a `learn_from: window` intervention, whose
     # fit runs through the event (see `_node_fit_end`) — and it is the cache
     # key here, at the fit and at the read, so the three cannot disagree.
+    #
+    # The reference must lie inside the period each fit trains on, and that is
+    # checked here too, for the reason coverage is: `_validate_coverage` knows
+    # the node's data range but not its `fit_start`, so an explicit reference
+    # starting before one used to pass every pre-fit check, pay for every fit
+    # in scope, and only then raise from inside the attribution loop — for a
+    # *non-target* node, ending an analysis the module promises one bad node
+    # cannot end (grill 2026-10-05 M2). The target's violation is refused now,
+    # before any fit; an ancestor's is recorded, never fitted, and reported
+    # with its own status.
     to_fit = []
     fit_ends: Dict[str, str] = {}
     fits: Dict[str, Any] = {}
@@ -1470,9 +1507,19 @@ def plan_rca_fits(
         parents = list(dag.predecessors(node))
         if (not parents and not defn.interventions) or defn.formula:
             continue
-        if scoped[node][2] is None:
+        grain, frame, snapped_ref, snapped_an = scoped[node]
+        if snapped_ref is None:
             continue
-        fit_ends[node] = _node_fit_end(defn, scoped[node][0], analysis_start, scoped[node][3])
+        first_fitted = _first_fitted_period(frame, defn)
+        if first_fitted is not None and snapped_ref.first_start < first_fitted:
+            reason = _reference_before_fit_reason(
+                node, defn, grain, reference_start, reference_end, first_fitted
+            )
+            if node == target:
+                raise ValueError(reason + " Nothing was fitted.")
+            reference_before_fit[node] = reason
+            continue
+        fit_ends[node] = _node_fit_end(defn, grain, analysis_start, snapped_an)
         cached = traces.get((node, fit_ends[node]))
         if cached is not None and cached_fit_is_usable(cached, inference_method):
             fits[node] = cached
@@ -1781,11 +1828,13 @@ def run_rca(
 
         # An unfittable node still reports its own movement — baseline, actual
         # and gap are read off the data, not the model. Only the attribution is
-        # missing, and only for this node.
-        if node in fit_failures:
+        # missing, and only for this node. The same holds for a node whose
+        # reference window precedes its fitted period: the plan never fitted
+        # it, and its measured movement stands.
+        if node in fit_failures or node in reference_before_fit:
             nodes_out[node] = _node_out(
-                status="fit_failed",
-                status_reason=fit_failures[node],
+                status="fit_failed" if node in fit_failures else "reference_before_fit_window",
+                status_reason=fit_failures.get(node) or reference_before_fit.get(node),
                 grain=grain,
                 effective_windows=effective_windows,
                 baseline=baseline,
@@ -2215,11 +2264,29 @@ def run_rca(
 
             trend_samples = fit.trace.posterior["trend"].values.reshape(n_post, -1)
             if (t_ref < 0).any() or (t_ref >= trend_samples.shape[1]).any():
-                raise ValueError(
+                # A backstop: `plan_rca_fits` refuses this before any fit,
+                # from the same cuts the fit makes. Kept for a fit whose dates
+                # the plan could not predict, and degraded like every other
+                # per-node failure rather than raised mid-loop.
+                reason = (
                     f"Reference window [{reference_start}, {reference_end}] must lie "
                     f"inside the fitted period for '{node}' (grain '{grain}', "
                     f"{fit.dates[0].date()} to {fit.dates[-1].date()})."
                 )
+                if node == target:
+                    raise ValueError(reason)
+                nodes_out[node] = _node_out(
+                    status="reference_before_fit_window",
+                    status_reason=reason,
+                    grain=grain,
+                    effective_windows=effective_windows,
+                    baseline=baseline,
+                    actual=actual,
+                    gap=gap,
+                    relative_change=relative_change,
+                    **rate_fields,
+                )
+                continue
 
             # Trend: the analysis window is outside the fitted period (the fit
             # ends at analysis_start), and the random-walk forecast of a local
