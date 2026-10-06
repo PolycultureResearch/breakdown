@@ -378,6 +378,20 @@ how the metric moved, because it did not move. Dropping it therefore cannot
 change the posterior on the parents that were fitted; the only thing lost is
 a claim the data could not have supported.
 
+"Does not move" is judged relative to the series' own level, not as an exact
+zero: a series counts as constant when its whole range over the fit window
+(largest value minus smallest) is within one part in a billion of its largest
+magnitude. The exact test is the wrong one, because most decimals have no
+exact binary form: a price held at 4.99 has a computed standard deviation of
+about 1e-15 rather than 0, and standardizing by that turns rounding noise
+into a regressor. The relative test treats 4.99, 0.1 and 5.0 alike, and it
+leaves a small-valued series that really varies alone: a rate moving between
+0.0010 and 0.0012 has a relative range of 17%. The same test decides whether
+the node's own series has "no variance" (the `fit_failed` case above), and,
+for a formula node, whether there is any residual to model: an identity that
+holds to rounding has none, and its residual is measured against the metric's
+level rather than its own.
+
 The drop is never silent. The fit logs a warning naming the node, the parent
 and the window; the node carries `dropped_parents: [{parent, reason}]` on
 every surface — `GET /metrics/{name}` and `POST /analyze/{name}` (beside
