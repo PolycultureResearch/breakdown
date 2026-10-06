@@ -933,6 +933,20 @@ REFERENCE_SENSITIVITY_SHIFTS: Tuple[str, ...] = ("one_period_earlier", "one_bloc
 # Every top-level status the field can carry, in one place for the renderers.
 REFERENCE_SENSITIVITY_STATUSES = ("stable", "unstable", "unavailable")
 
+# …and every status one entry of `alternatives` can carry. A separate tuple
+# because it is a separate field with a separate vocabulary: `ok` (the block
+# answered), `unavailable` (no readable history for it, or the engine refused
+# the block; `reason` carries the refusal) and `gap_unavailable` (it ran, and
+# the target has no finite gap under it). The third was emitted and declared
+# nowhere until grill 2026-10-05 M4.
+REFERENCE_ALTERNATIVE_STATUSES = ("ok", "unavailable", "gap_unavailable")
+
+# What a `stable`/`unstable` verdict can be *about*, as `compared` lists it.
+# `top_cause` is absent from the list when the published run ranked no cause
+# (a source target, a negligible gap): the verdict is then about the gap's
+# direction alone, and a reader must not be told a top cause survived.
+REFERENCE_SENSITIVITY_COMPARED = ("top_cause", "gap_sign")
+
 
 def _reference_alternatives(
     dag: nx.DiGraph,
@@ -943,7 +957,8 @@ def _reference_alternatives(
 ) -> List[Dict[str, Any]]:
     """The neighbouring reference blocks S23 re-attributes under.
 
-    Each is shifted back from the published block, clamped to the earliest
+    Each is shifted back from the published block by whole periods of the
+    scope's coarsest grain, clamped to the earliest
     date every node in scope can read (`_earliest_readable_reference`, the
     same floor the default window respects), and dropped — with the reason —
     when nothing readable is left. Per-node whole-period alignment is
@@ -951,26 +966,50 @@ def _reference_alternatives(
     """
     ref_s = pd.Timestamp(reference_start).normalize()
     ref_e = pd.Timestamp(reference_end).normalize()
-    length_days = (ref_e - ref_s).days + 1
     floor = _earliest_readable_reference(dag, data, target)
     _, coarsest_grain = _reference_alignment(dag, target)
-    if coarsest_grain == "month":
-        period = pd.DateOffset(months=1)
-        period_label = "one month earlier"
-    else:
-        period = pd.Timedelta(days=7)
-        period_label = "one week earlier"
+    # Both shifts move the block by whole periods, through `shift_periods`,
+    # on its *exclusive* end — so April 1-30 one month earlier is March 1-31,
+    # not March 1-30. Day arithmetic (`- 30 days`, `- length_days`) is only
+    # whole-period arithmetic when every period is the same length, and a
+    # month is not: on a month-grain tree it produced blocks holding no whole
+    # month at all, so a single-month reference in a 30-day month or February
+    # always read `unavailable` (grill 2026-10-05 M4).
+    #
+    # "One period" is a week below month grain — a day-grain tree still moves
+    # by seven days, which keeps the weekday mix — and a month at it. "One
+    # block" is the smallest whole number of coarsest-grain periods that
+    # clears the published block, so the two share no period: exactly the
+    # block's own length when it is made of whole periods, and the next whole
+    # period up when it is not.
+    period_unit = "month" if coarsest_grain == "month" else "week"
+    period_label = f"one {period_unit} earlier"
+    end_excl = ref_e + pd.Timedelta(days=1)
+
+    def shifted(n: int, unit: str) -> Tuple[pd.Timestamp, pd.Timestamp]:
+        return (
+            shift_periods(ref_s, -n, unit),
+            shift_periods(end_excl, -n, unit) - pd.Timedelta(days=1),
+        )
+
+    block_periods = 1
+    while shift_periods(end_excl, -block_periods, coarsest_grain) > ref_s:
+        block_periods += 1
     candidates = [
-        ("one_period_earlier", period_label, ref_s - period, ref_e - period),
-        (
-            "one_block_earlier",
-            "one whole block earlier",
-            ref_s - pd.Timedelta(days=length_days),
-            ref_s - pd.Timedelta(days=1),
-        ),
+        ("one_period_earlier", period_label, *shifted(1, period_unit)),
+        ("one_block_earlier", "one whole block earlier", *shifted(block_periods, coarsest_grain)),
     ]
+
+    def identity(start: pd.Timestamp, end: pd.Timestamp) -> Tuple[pd.Timestamp, pd.Timestamp]:
+        # Two blocks are the same block when they hold the same whole periods
+        # at the coarsest grain — the grain the target is measured at. Raw
+        # dates are not that test: Jan 30 - Feb 29 and Feb 1 - 29 both snap to
+        # February, and counting it twice let one neighbour vote twice.
+        snapped = snap_window(start, end, coarsest_grain)
+        return (start, end) if snapped is None else (snapped.first_start, snapped.last_start)
+
     out: List[Dict[str, Any]] = []
-    seen = {(ref_s, ref_e)}
+    seen = {identity(ref_s, ref_e)}
     for shift, label, start, end in candidates:
         alt: Dict[str, Any] = {"shift": shift, "label": label}
         note = None
@@ -990,13 +1029,14 @@ def _reference_alternatives(
                 )
                 out.append(alt)
                 continue
+            # Against the alternative's own length, which on a month grain
+            # is not the published block's (March has 31 days, April 30).
+            full_days = (end - start).days + 1
             start = floor
-            note = (
-                f"shortened to the loaded history: {(end - start).days + 1} of {length_days} days"
-            )
-        if (start, end) in seen:
+            note = f"shortened to the loaded history: {(end - start).days + 1} of {full_days} days"
+        if identity(start, end) in seen:
             continue
-        seen.add((start, end))
+        seen.add(identity(start, end))
         alt.update(
             reference_window={"start": str(start.date()), "end": str(end.date())},
             status="ok",
@@ -1036,8 +1076,12 @@ def _reference_sensitivity(
     `status` is `stable` when every alternative that could answer names the
     same top cause and the same gap direction as the published windows,
     `unstable` when any differs, `unavailable` when none could answer (with
-    the reasons). `gap_range` spans the published gap and every answered
-    alternative's. Rule 3: an alternative whose gap is not finite answers
+    the reasons). `compared` lists what that verdict is about
+    (`REFERENCE_SENSITIVITY_COMPARED`): when the published run ranked no cause
+    there is no top cause to compare, `top_cause_stable` stays null, and
+    `compared` is `["gap_sign"]` — a `stable` then says the gap's direction
+    survived and nothing about a cause. `gap_range` spans the published gap
+    and every answered alternative's. Rule 3: an alternative whose gap is not finite answers
     nothing — its `gap` is null and its status names why — and the published
     windows' own gap being undefined makes the whole field `unavailable`
     rather than a comparison against nothing.
@@ -1051,6 +1095,8 @@ def _reference_sensitivity(
         "top_cause": pub_top,
         "top_cause_stable": None,
         "gap_sign_stable": None,
+        # Empty until a verdict exists: `unavailable` compared nothing.
+        "compared": [],
         "gap_range": None,
         "alternatives": [],
         "reason": None,
@@ -1124,6 +1170,11 @@ def _reference_sensitivity(
         "status": "stable" if (top_stable is not False and sign_stable) else "unstable",
         "top_cause_stable": top_stable,
         "gap_sign_stable": sign_stable,
+        "compared": [
+            what
+            for what in REFERENCE_SENSITIVITY_COMPARED
+            if what != "top_cause" or top_stable is not None
+        ],
         "gap_range": [min(gaps), max(gaps)],
     }
 
