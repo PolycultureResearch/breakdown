@@ -3,7 +3,7 @@
 **A white paper on the models behind Bayesian metric trees, why each was chosen,
 and where each one stops being trustworthy.**
 
-> **Written:** 2026-08-04 · **Last updated:** 2026-09-30 ·
+> **Written:** 2026-08-04 · **Last updated:** 2026-10-06 ·
 > **Engine version:** 0.2.0
 >
 > **This is a living document.** The assessment in §3 and the improvements in §4
@@ -1688,6 +1688,13 @@ Tiao (1975) intervention analysis with its claim stated on the payload: the
 shift coincident with the date, whatever caused it, on a fit that saw the
 analysis window (`fit_window.extended_for`), with an interval that omits the
 forecast uncertainty 3.4/S16 will supply.
+**Correction (2026-10-06, roadmap C55):** as shipped, a `learn_from: window`
+step extended the fit through the analysis window on *every* RCA, whenever
+the step was dated, so a step from a year earlier trained the node on the
+anomaly it was being asked to explain; a step dated after the window did the
+same and was then dropped, with `extended_for` empty. The fit is now extended
+only when the analysis window contains the intervention, and `extended_for`
+names exactly the interventions that moved the fit's end.
 
 **Reference-window sensitivity** — `S23`, ✅ closed 2026-09-14. Named by the
 2026-08-29 grill as the weakest load-bearing assumption in the engine, and it
@@ -1709,8 +1716,14 @@ What shipped is the version this entry asked for and no more: a sensitivity
 band, not a wider interval. `run_rca` re-attributes the same analysis window
 over the same fits under two neighbouring blocks — the published one shifted
 back one period and back one whole block length, clamped to the readable
-history — and publishes `reference_sensitivity`: whether the first-ranked
-cause and the gap's direction survive both (`stable`), which changed and to
+history (**correction, 2026-10-06, roadmap C56:** as shipped the shifts were
+day arithmetic, so on a month-grain scope an April reference moved to March 1
+to 30, which holds no whole month, and single-month references always read
+`unavailable`; the blocks now move by whole periods of the coarsest grain and
+are deduplicated after snapping) — and publishes `reference_sensitivity`: whether the first-ranked
+cause and the gap's direction survive both (`stable`; when the run ranked no
+cause only the direction is compared, and `compared` says so — before C56 the
+verdict read as if a top cause had survived), which changed and to
 what when they do not (`unstable`), or that no neighbouring block fits inside
 the loaded data (`unavailable`, rendered everywhere as *unchecked*, never as
 fine). `gap_range` is kept out of `ci_95` deliberately: window choice is not
@@ -1816,6 +1829,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-10-06 | **Fourth hostile review acted on (roadmap C45–C64).** Two §4 entries carry dated corrections: S24's `learn_from: window` extended the fit on every RCA for any dated step, not only when the analysis window contained it (C55), and S23's alternative reference blocks were not whole periods on month grains while `stable` could be read as a surviving top cause when none was ranked (C56). Not a §3.2 weakness but worth stating here because it published a wrong number: a parent held at a value with no exact binary form (4.99) was not recognised as constant, and its coefficient was standardized against float noise into a contribution near 1e13 with `fit_quality: ok` (C45); "constant" is now one scale-relative test. No model changed. The review found the S25 Kalman marginal correct against an independent dense Gaussian. Its named weakest assumption — a coefficient learned before the window read as causal and still valid inside it, with a flat analysis-window level and no interval on `unexplained` — is §4's S14, S16 and S5, all still open. |
 | 2026-09-30 | **S25 shipped — the local level is integrated out of every NUTS fit.** A scalar Kalman filter computes the likelihood with the level marginalized (a `pm.Potential`, compiled on PyMC's numba backend); `trend` is recovered afterwards by forward-filtering backward-sampling with the same name and shape, so RCA and the posterior predictive check read it unchanged; the S3 replicates are drawn as `μ + trend + N(0, σ_obs²)` from the joint draws because there is no observed node any more. §2.1 now describes the computation and §2.2 says R̂/ESS are over the sampled parameters, not the recovered trend states. The acceptance test was that the posterior did not move: on six calibration worlds (twelve seeds per path) and the demo's four story-B nodes every parameter's mean and 94% HDI and the level at its first, middle and last period agree with the explicit latent within Monte-Carlo error, and a seeded test pins it. What moved is cost and geometry: story B's four fits 47.0s → 19.1s, the cold RCA 47.7s → 20.0s, `sessions` bulk ESS 460 → 2,072, and the divergences the explicit latent threw on `trials_started` (10), `trial_conversion_rate` (6) and most calibration worlds are gone. No §3.2 weakness changed status; the ADVI opt-in keeps the explicit latent its k̂ was measured against. |
 | 2026-09-30 | **S25 filed — integrate the local level out with a Kalman filter, designed and prototyped, not built.** Profiling a cold story-B RCA found one daily node (`sessions`, ~263 leapfrog steps per draw) was 70% of the wait, from the coupled non-centered level rather than from compute. §4 gains the item and its prototype measurements (same β, ~4× the ESS, zero divergences, the four fits 2.4× faster); nothing in §2 or §3 changes until it ships. |
 | 2026-09-21 | **S24 shipped — known, dated interventions as a declared step/pulse term.** A node's `interventions:` enter the fit as known 0/1 regressors on their own `beta_intervention_raw` axis, are dropped by name when unidentified, and appear on every RCA node as their own term in the gap (inside `unexplained`'s identity, outside `ranked_causes`); `learn_from: window` is the per-intervention Box–Tiao opt-in with its claim on the payload; `fit_start` is the per-node regime start. §4's table and §4.2 record the closure and the §4.4 measurement: an undeclared ~2-SD step inflates `σ_obs` 1.26× and β's interval 2.5×, and a co-stepping parent puts β at 0.94 against 0.5. The measurement also corrects the item's own rationale: on a clean synthetic step the S3 check stays `ok` (the level absorbs it by inflating `σ_trend` ~40×), so the check the design leaned on is not what a single step trips — the intervals are. No §3.2 weakness changed status; S24 was never listed there, because S3 already disclosed the misspecification and §2.5 already states within-window stationarity as assumed. |

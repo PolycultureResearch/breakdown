@@ -1080,3 +1080,49 @@ sibling — and now rests on its per-series argument alone; whether to trim
 instead is a policy decision recorded in that docstring, not taken here. The
 UI's tree-wide as-of anchor (the min `data_through`) is unchanged on purpose.
 
+## Grill 2026-10-05
+
+Roadmap C45–C64. The fourth hostile review ran against `1fd609f` and covered
+the 39 commits since the third: S23, S24, S25, the warm pass, the duckdb
+provider, per-metric windows, `sparse: true` and the C32 SQL roll-up. Three
+reviewers swept the engine, the boundary and service surface, and the
+frontend, docs and tests; the top findings were re-executed before being
+written down.
+
+**What it found.** Seven High, eleven Medium. The new statistics were sound:
+the S25 Kalman marginal matches a dense Gaussian to 1e-14 and C32's two
+roll-up paths agree. The defects were at the edges. A parent held at 4.99
+was not recognised as constant and was published as a cause at -1.6e13
+(C45). The duckdb provider loaded re-dated, all-zero or timezone-dependent
+data behind a green `/health` (C46–C48). And the old meta-defect was back
+between HTTP and MCP: the engine guard, the refusal mapping and the
+`sql`/`bind` redaction each stopped one surface short (C51, C52).
+
+**How it was fixed.** Six packages in parallel, split by file ownership, then
+merged into one branch. The invariant tests (C61) were rewritten against
+unfixed `main` with every catalogued violation marked as a strict expected
+failure, so each marker failed loudly once its fix merged and had to be
+deleted. That list is now empty and gone.
+
+**What the rewritten tests found on their own** (C64): a what-if that crashed
+with a `KeyError` when a co-parent of an affected formula node had no finite
+baseline, and a Metric tab that recomputed max R-hat over the recovered level
+states S25 deliberately excludes. Neither was in the review.
+
+**What the fixes changed for a tree author.** A CSV time column whose dates
+read day-first or month-first alike needs `bind.date_format`. A load in which
+every metric returns no rows is refused. The duckdb provider reads only
+inside `data_dir` unless `provider.allow_external_access: true`. A dimension
+holding a real value named `__other__` or `__null__` is refused on slice
+requests. With `BREAKDOWN_API_TOKEN` set, a caller who does not present it
+no longer receives `sql`/`bind` from `/metrics/{name}`, raw load errors, or
+metric names on `/health`.
+
+**Left open.** Canvas cards draw a `sparse: true` metric's filled periods as
+ordinary zeros, because `/series` has no per-point flag (C50's residual). A
+time column derived or renamed inside `bind.sql` gets a warning rather than
+the C46 refusal. The warehouse provider's `doctor` SQL check still passes on
+zero rows. Dropped interventions carry no machine-readable case, so the UI
+matches on the engine's reason sentence. The weakest load-bearing assumption
+the review named (a coefficient learned before the window read as causal and
+still valid inside it) is S14, S16 and S5, all still open.

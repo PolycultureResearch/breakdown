@@ -180,6 +180,13 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
 
 ## Reviews
 
+- [`grill_2026_10_05.md`](grill_2026_10_05.md) — the fourth hostile review, frozen
+  at `1fd609f` (39 commits after the third), scoped to what changed since it.
+  Seven high-severity findings: a parent held at 4.99 ranked the top cause at
+  -1.6e13 with `fit_quality: ok`, three ways the duckdb provider loads wrong
+  dates behind a green `/health`, a source node with a declared intervention
+  that never renders, `/metrics/{name}` serving the `bind` that `/dag` redacts,
+  and MCP tools bypassing the engine guard. No roadmap rows opened yet.
 - [`grill_2026_08_29.md`](grill_2026_08_29.md) — the third hostile review, frozen
   at `6531a02` (79 commits after the second). Seven high-severity findings, all
   but one the same shape the four rules exist to prevent: a policy honored in one
