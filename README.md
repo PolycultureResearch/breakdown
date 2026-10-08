@@ -91,8 +91,10 @@ applying the right decomposition to each:
 - whatever the modeled parents don't account for is reported as
   **`unexplained`** — a first-class finding, not a residual swept under a rug.
 
-The first analysis fits models on demand with exact MCMC and can take a minute
-or more per learned node; fits are cached, so everything after it is fast.
+The first analysis fits models on demand with a Monte Carlo Markov Chain, which
+takes anywhere from a few seconds to about a minute per learned node, depending
+on how much history it has. MCMC fits are cached so everything after it should
+be fast.
 
 Each piece is also addressable on its own when you want to inspect it:
 `POST /analyze/{name}` fits and returns one metric's posterior (trend,
