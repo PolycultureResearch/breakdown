@@ -415,7 +415,7 @@ Example response:
 
 Walks the ancestor DAG of `name` and attributes the change between a reference window and an analysis window to upstream metrics. Any probabilistic node in scope that hasn't been fit yet is fit on demand and its trace is cached (a second call is much faster). Those fits use **NUTS** unless you pass `?inference_method=advi`, and a cached fit is reused only when it is at least as good as the one your request would produce — a NUTS fit answers an `advi` request, but an approximation cached by someone else's triage run does not silently answer yours.
 
-Expect the first call on a cold cache to take a minute or more per learned node. That is the trade the default makes: mean-field ADVI fails its PSIS check on essentially every real node in this engine and moves point estimates by tens of percent, so exact sampling is what the numbers are worth. `?inference_method=advi` is there for a tree wide or fine-grained enough that NUTS is genuinely impractical; every node it fits then carries its k̂ and the warning that goes with it.
+Expect the first call on a cold cache to take a few seconds to about a minute per learned node, depending on how much history it has. That is the trade the default makes: mean-field ADVI fails its PSIS check on essentially every real node in this engine and moves point estimates by tens of percent, so exact sampling is what the numbers are worth. `?inference_method=advi` is there for a tree wide or fine-grained enough that NUTS is genuinely impractical; every node it fits then carries its k̂ and the warning that goes with it.
 
 Query parameters (`YYYY-MM-DD`): `analysis_start` and `analysis_end` are
 required; `reference_start` and `reference_end` are optional. Omitting both
@@ -597,7 +597,7 @@ See [model.md](model.md) for how to read `components`, `unexplained`, and the bo
 
 ## `GET /progress/{run_id}`
 
-RCA and simulation can spend a minute or more fitting ancestor models. Pass any
+RCA and simulation can spend a minute or more fitting ancestor models on a wide tree. Pass any
 opaque `run_id` you like to `POST /rca/{name}` or `POST /simulate` and poll this
 endpoint while the request is in flight to see what the engine is doing:
 
