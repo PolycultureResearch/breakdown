@@ -46,7 +46,7 @@ The breakdown UI is a single-page app served by FastAPI at `/ui`, in the spirit 
 
 ## Run progress
 
-RCA and what-if can spend a minute or more fitting ancestor models. Until
+RCA and what-if can spend a minute or more fitting ancestor models on a wide tree. Until
 2026-08-12 that was a spinner reading `Simulating — fitting 3 models…`, where
 the count was the **frontend's own guess** from walking `state.revAdj` against
 `/meta.fitted` — an estimate of work the server was about to do, with nothing

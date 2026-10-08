@@ -2630,7 +2630,7 @@ function wireAnalyzeNote() {
     note.textContent =
       method.value === "nuts"
         ? `${n.toLocaleString()} × 4 chains, after 1,000 discarded tuning steps `
-          + `— ${(n * 4).toLocaleString()} posterior draws. Expect a minute or more.`
+          + `— ${(n * 4).toLocaleString()} posterior draws. Expect a few seconds to about a minute.`
         : `20,000 optimization steps, then ${n.toLocaleString()} samples drawn `
           + `from the fitted approximation. Seconds.`;
     const openHint = document.querySelector('.hint[data-hint="draws"][aria-expanded="true"]');
@@ -5049,8 +5049,8 @@ function wireMethodNote(selId, noteId, what) {
   const paint = () => {
     note.textContent =
       sel.value === "nuts"
-        ? `Exact MCMC for every node this ${what} has to fit. A minute or more per learned node on a cold cache; cached fits are reused.`
-        : "Mean-field approximation — seconds instead of minutes, and measurably wrong on this model: it fails the PSIS k̂ check on nearly every real node and can move a published estimate by tens of percent. Each fitted node reports its k̂. Use it to triage a wide tree, not to quote a number.";
+        ? `Exact MCMC for every node this ${what} has to fit. A few seconds to about a minute per learned node on a cold cache, depending on how much history it has; cached fits are reused.`
+        : "Mean-field approximation — faster, and measurably wrong on this model: it fails the PSIS k̂ check on nearly every real node and can move a published estimate by tens of percent. Each fitted node reports its k̂. Use it to triage a wide tree, not to quote a number.";
     note.className = sel.value === "nuts" ? "control-note" : "control-note warn";
   };
   sel.addEventListener("change", paint);
