@@ -115,8 +115,12 @@ Three consequences to read the output by.
 Two knobs beside it. **`fit_start`** cuts one node's fit to whole periods on
 or after a date — the per-node form of `--start-date` — for a regime change
 you would rather not model at all; the default reference window will not start
-before it. **`learn_from: window`** is the opt-in exception for sizing a
-one-off from the event itself: that node's RCA fit is extended *through* the
+before it, and a reference you choose that does is settled before anything is
+fitted — a 422 when the node is the target, and otherwise that one node
+reporting `reference_before_fit_window` without a split while the rest of the
+tree answers. **`learn_from: window`** is the opt-in exception for sizing a
+one-off from the event itself: when the analysis window contains the
+intervention, that node's RCA fit is extended *through* the
 intervention's periods with the indicator in the design, which is Box and
 Tiao's (1975) intervention analysis and a different estimator from RCA's, with
 a different claim attached. The payload states it: `interventions[].claim`
@@ -125,6 +129,11 @@ anything else dated the same; `fit_window.extended_for` says the node's other
 coefficients were fitted on a window containing the anomaly; and the interval
 does not include forecast uncertainty about the regime it stepped from
 (roadmap 3.4/S16). It is per intervention and per node, never the default.
+The exception applies only to the analysis that contains the event: a
+`learn_from: window` step dated before the analysis window is already in
+history and is sized from history like any other, a step or pulse dated
+after it is dropped by name, and in neither case does the fit see the
+analysis window — `fit_window.extended_for` is empty exactly when it did not.
 
 A declared intervention enters the collinearity check beside the parents. A
 `flip` step and a `flip_comms` parent that is zero except at flips will be
@@ -295,14 +304,19 @@ Whichever block is used, it is one choice among neighbours, and the credible
 intervals never see that choice: the bootstrap resamples periods *inside* the
 two windows, so `ci_95` is silent about what a different reference would have
 said. The response therefore carries `reference_sensitivity` (roadmap S23): the
-same attribution re-run, over the same fits, under a block one period earlier
-and one whole block earlier, with a verdict — `stable` when the top-ranked
+same attribution re-run, over the same fits and without fitting anything,
+under a block one period earlier and one whole block earlier (whole periods
+of the scope's coarsest grain, so a monthly tree moves by calendar months),
+with a verdict — `stable` when the top-ranked
 cause and the gap's direction survive both, `unstable` when either changes
 (the alternatives say which, and what it became), `unavailable` when no
 neighbouring block fits inside the loaded history. Read `unstable` as "the
 answer depends on which weeks you call normal", which is a property of the
 data around the incident, not a fault in the engine; read `unavailable` as
-unchecked, never as fine. The `gap_range` beside it is a sensitivity band
+unchecked, never as fine. When the published run ranked no cause at all — a
+source metric, a gap too small to attribute — there is no top cause to
+survive anything: `top_cause_stable` is null, `compared` is `["gap_sign"]`,
+and a `stable` then speaks for the gap's direction alone. The `gap_range` beside it is a sensitivity band
 across the blocks tried, not an interval — it is deliberately kept out of
 `ci_95`, because window choice is not sampling error and widening the interval
 would misstate both.
@@ -377,6 +391,20 @@ posterior would be the prior restated. And it carries no information about
 how the metric moved, because it did not move. Dropping it therefore cannot
 change the posterior on the parents that were fitted; the only thing lost is
 a claim the data could not have supported.
+
+"Does not move" is judged relative to the series' own level, not as an exact
+zero: a series counts as constant when its whole range over the fit window
+(largest value minus smallest) is within one part in a billion of its largest
+magnitude. The exact test is the wrong one, because most decimals have no
+exact binary form: a price held at 4.99 has a computed standard deviation of
+about 1e-15 rather than 0, and standardizing by that turns rounding noise
+into a regressor. The relative test treats 4.99, 0.1 and 5.0 alike, and it
+leaves a small-valued series that really varies alone: a rate moving between
+0.0010 and 0.0012 has a relative range of 17%. The same test decides whether
+the node's own series has "no variance" (the `fit_failed` case above), and,
+for a formula node, whether there is any residual to model: an identity that
+holds to rounding has none, and its residual is measured against the metric's
+level rather than its own.
 
 The drop is never silent. The fit logs a warning naming the node, the parent
 and the window; the node carries `dropped_parents: [{parent, reason}]` on

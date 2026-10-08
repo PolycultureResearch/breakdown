@@ -15,13 +15,20 @@ label, so the frame drops straight into `_to_naive_dates` → `_floor_labels` �
 `_align_to_spine` like every other provider.
 """
 
+import functools
 import logging
 from types import ModuleType
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import pandas as pd
 
-from breakdown.data_fetch import MissingProviderExtra, SliceSelection, _extra_hint
+from breakdown.data_fetch import (
+    NULL_SLICE,
+    RESERVED_SLICE_LABELS,
+    MissingProviderExtra,
+    SliceSelection,
+    _extra_hint,
+)
 from breakdown.grains import GRAINS
 from breakdown.parser import BindingDimension, BindingSpec
 
@@ -91,7 +98,20 @@ _TRUNC = {
 # reference zone either way, since BigQuery's TIMESTAMP->DATE cast and
 # `TIMESTAMP_TRUNC` both default to UTC, so no bucket differs from what the
 # type-aware form would have produced.
+#
+# **DuckDB casts the bucket to DATE** (grill 2026-10-05 H4). A CSV column like
+# `2025-06-02T00:30:00Z` sniffs as TIMESTAMPTZ, and `DATE_TRUNC` on one returns
+# a TIMESTAMPTZ: the Python driver then hands back tz-aware datetimes, which
+# needs `pytz` (pandas 3 no longer installs it, so the fetch died on an import
+# error), and which `_to_naive_dates` would strip to whatever wall clock the
+# session zone gave it. The cast is taken in the session zone, and
+# `dbt_provider` pins that to UTC on every DuckDB connection it opens, so the
+# label is the UTC calendar date whatever `TZ` the process runs under. For a
+# DATE or naive TIMESTAMP column the cast changes nothing but the type.
 _TRUNC_OVERRIDES = {
+    ("duckdb", "day"): "CAST(DATE_TRUNC('DAY', {col}) AS DATE)",
+    ("duckdb", "week"): "CAST(DATE_TRUNC('WEEK', {col}) AS DATE)",
+    ("duckdb", "month"): "CAST(DATE_TRUNC('MONTH', {col}) AS DATE)",
     ("bigquery", "day"): "DATE_TRUNC(CAST({col} AS DATE), DAY)",
     ("bigquery", "week"): "DATE_TRUNC(CAST({col} AS DATE), ISOWEEK)",
     ("bigquery", "month"): "DATE_TRUNC(CAST({col} AS DATE), MONTH)",
@@ -111,6 +131,36 @@ def _require_sqlglot() -> ModuleType:
             _extra_hint("dbt", "dbt-bridge", "missing module 'sqlglot'")
         ) from e
     return sqlglot
+
+
+def _readable_parse_errors(build: Callable[..., str]) -> Callable[..., str]:
+    """Turn a sqlglot `ParseError` out of a builder into a sentence about the
+    binding (grill 2026-10-05 L2).
+
+    Every field of a binding is pasted into the statement as SQL, so a column
+    exported as `Order Date` or a relation named `orders-2025` is not a name to
+    the parser but two tokens, and what came back was `Failed to parse
+    'DATE_TRUNC('DAY', Order Date) AS "date"'` — true, and no use to somebody
+    who wrote `time_column: Order Date`. The remedy is always the same and is
+    not guessable from the error, so it is said here.
+    """
+
+    @functools.wraps(build)
+    def wrapped(bind: BindingSpec, *args: Any, **kwargs: Any) -> str:
+        sqlglot = _require_sqlglot()
+        try:
+            return build(bind, *args, **kwargs)
+        except sqlglot.errors.ParseError as e:
+            detail = str(e).splitlines()[0] if str(e) else type(e).__name__
+            raise UnsupportedBinding(
+                f"this binding does not compile to SQL ({detail}). Every field of a "
+                "binding is read as SQL, so a column or relation name holding "
+                "spaces, a hyphen or a leading digit must be quoted as an "
+                "identifier inside the YAML string, for example "
+                "`time_column: '\"Order Date\"'` or `relation: '\"orders-2025\"'`."
+            ) from e
+
+    return wrapped
 
 
 def _parse_dialect(dialect: str) -> Optional[str]:
@@ -279,6 +329,7 @@ def _dimension_join(dim: BindingDimension, fact_alias: str, dim_alias: str) -> O
     return f"{dim.join} AS {dim_alias} ON {fact_alias}.{dim.key} = {dim_alias}.{right}"
 
 
+@_readable_parse_errors
 def build_query(
     bind: BindingSpec,
     *,
@@ -384,6 +435,11 @@ def build_query(
 ROLLUP_OTHER_COL = "bd_other"
 ROLLUP_N_DISTINCT_COL = "bd_n_distinct"
 ROLLUP_N_FOLDED_COL = "bd_n_folded"
+# A real dimension value spelled like a label the engine reserves, or NULL when
+# there is none. Read off the *whole* set of distinct values rather than the
+# kept rows, so a reserved name is refused whether it would have been kept or
+# folded — which is what the client-side path, holding the whole frame, does.
+ROLLUP_RESERVED_COL = "bd_reserved"
 # `_select_slices` keeps the top_k by mean |value| with exact ties broken by
 # name. Two float sums of the same numbers in a different order can differ in
 # the last bit, and that must never decide which side folds a slice — so the
@@ -406,7 +462,7 @@ def _rolled_up(inner, selection: SliceSelection, *, ratio: bool, read, dialect: 
     `inner` yields one row per (bd_date, bd_slice) with `bd_value`, or with
     `bd_num`/`bd_den` for a ratio. The result is `[date, slice, value]` plus
     `bd_other` (1 on the fold rows, whose `slice` is NULL), and the constant
-    columns `bd_n_distinct` / `bd_n_folded`.
+    columns `bd_n_distinct` / `bd_n_folded` / `bd_reserved`.
 
     What it reproduces, and how (roadmap C32):
 
@@ -450,7 +506,7 @@ def _rolled_up(inner, selection: SliceSelection, *, ratio: bool, read, dialect: 
     volumes = "SELECT DISTINCT bd_slice, bd_volume FROM bd_rows"
     if selection.values is not None:
         pins = ", ".join(_sql_literal(v, read) for v in selection.values) or "NULL"
-        kept = f"COALESCE(CAST(bd_slice AS VARCHAR), {_sql_literal('__null__', read)}) IN ({pins})"
+        kept = f"COALESCE(CAST(bd_slice AS VARCHAR), {_sql_literal(NULL_SLICE, read)}) IN ({pins})"
         cut = "SELECT NULL AS bd_cut WHERE 1 = 0"
     else:
         k = max(int(selection.top_k), 1)
@@ -462,9 +518,12 @@ def _rolled_up(inner, selection: SliceSelection, *, ratio: bool, read, dialect: 
             "((SELECT MAX(bd_cut) FROM bd_cut) IS NULL OR "
             f"bd_volume >= (SELECT MAX(bd_cut) FROM bd_cut) * (1 - {_RANK_TOLERANCE!r}))"
         )
+    reserved = ", ".join(_sql_literal(v, read) for v in RESERVED_SLICE_LABELS)
     stats = (
         f"SELECT COUNT(*) AS {ROLLUP_N_DISTINCT_COL}, "
-        f"COALESCE(SUM(CASE WHEN {kept} THEN 0 ELSE 1 END), 0) AS {ROLLUP_N_FOLDED_COL} "
+        f"COALESCE(SUM(CASE WHEN {kept} THEN 0 ELSE 1 END), 0) AS {ROLLUP_N_FOLDED_COL}, "
+        f"MAX(CASE WHEN CAST(bd_slice AS VARCHAR) IN ({reserved}) "
+        f"THEN CAST(bd_slice AS VARCHAR) END) AS {ROLLUP_RESERVED_COL} "
         "FROM bd_volumes"
     )
     carried = "bd_num, bd_den" if ratio else "bd_value"
@@ -490,6 +549,7 @@ def _rolled_up(inner, selection: SliceSelection, *, ratio: bool, read, dialect: 
             f'{value_expr} AS "{VALUE_COL}"',
             f"(SELECT MAX({ROLLUP_N_DISTINCT_COL}) FROM bd_stats) AS {ROLLUP_N_DISTINCT_COL}",
             f"(SELECT MAX({ROLLUP_N_FOLDED_COL}) FROM bd_stats) AS {ROLLUP_N_FOLDED_COL}",
+            f"(SELECT MAX({ROLLUP_RESERVED_COL}) FROM bd_stats) AS {ROLLUP_RESERVED_COL}",
             dialect=read,
         )
         .from_("bd_labeled", dialect=read)
@@ -507,6 +567,7 @@ def _rolled_up(inner, selection: SliceSelection, *, ratio: bool, read, dialect: 
     return query.sql(dialect=dialect, pretty=True)
 
 
+@_readable_parse_errors
 def build_resolved_slice_query(
     bind: BindingSpec,
     *,
@@ -633,6 +694,7 @@ def build_resolved_slice_query(
 ABSENT = "__absent__"
 
 
+@_readable_parse_errors
 def build_entity_flow_query(
     bind: BindingSpec,
     *,
@@ -746,6 +808,7 @@ def build_entity_flow_query(
     )
 
 
+@_readable_parse_errors
 def build_multivalue_assertion(
     bind: BindingSpec,
     *,
@@ -787,6 +850,7 @@ def build_multivalue_assertion(
     )
 
 
+@_readable_parse_errors
 def build_grain_assertion(
     bind: BindingSpec,
     *,
@@ -827,6 +891,7 @@ def build_grain_assertion(
     return _bounded(query, bind, read, start_date, end_date).sql(dialect=dialect, pretty=True)
 
 
+@_readable_parse_errors
 def build_filter_probe(
     bind: BindingSpec,
     *,

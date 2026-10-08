@@ -46,7 +46,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from breakdown.data_fetch import rolled_in_sql, slice_rollup
+from breakdown.data_fetch import (
+    ReservedSliceValue,
+    reserved_slice_refusal,
+    rolled_in_sql,
+    slice_rollup,
+)
 from breakdown.engine.stats import (
     GAP_REL_EPS,
     MIN_CI_REPLICATES,
@@ -286,6 +291,18 @@ def _select_slices(
     kept = ranked[:top_k]
     folded = ranked[top_k:]
     return sorted(kept), sorted(folded) + provider_other
+
+
+def _refuse_real_other(wide: pd.DataFrame, rollup: Dict[str, Any], metric_name: str) -> None:
+    """Refuse a whole (un-rolled) frame that already holds an `__other__`.
+
+    `_select_slices` reads that column as a provider's own roll-up, which it
+    is only when the provider says it rolled up (`where: sql`). In a frame
+    fetched whole, it is a real dimension value somebody named `__other__`,
+    and folding it into the roll-up returned a 200 with that slice silently
+    gone (grill 2026-10-05 L1). Same sentence as the SQL path's refusal."""
+    if rollup.get("where") != "sql" and _OTHER in wide.columns:
+        raise ReservedSliceValue(reserved_slice_refusal(_OTHER, metric_name))
 
 
 def _n_values(folded: List[str], rollup: Optional[Dict[str, Any]]) -> int:
@@ -611,6 +628,7 @@ def slice_attribution(
     # cardinality gate then reads the provider's count, so a dimension that
     # would have been refused whole is refused off a frame of a dozen rows.
     rollup = slice_rollup(sliced) or {"where": "client"}
+    _refuse_real_other(wide, rollup, defn.name)
     if (
         kind == "rate"
         and weight_sliced is not None
@@ -921,7 +939,10 @@ def _window_aggregates(W: np.ndarray, R: np.ndarray) -> Tuple[np.ndarray, np.nda
         # reports the same case as `undefined_over_window`). The whole-window
         # case is refused upstream by name; a NaN here can therefore only be
         # a bootstrap replicate that resampled all-zero dates, and those are
-        # dropped by `_excess_fields`' finite filter rather than averaged.
+        # dropped rather than averaged — by `_excess_fields`' finite filter
+        # for the per-slice excess, and by `_mix_total`'s for the mix line
+        # (`_bennet` turns their NaN into 0.0, so that one filters on the
+        # shares themselves).
         s = np.where(total > 0, weight / total, np.nan)
         r = np.where(weight > 0, (W * R).sum(axis=-2) / weight, np.nan)
     return s, r
@@ -945,6 +966,52 @@ def _bennet(
     # A slice with no weight in either window (possible per bootstrap
     # replicate) genuinely contributes nothing.
     return np.nan_to_num(within), np.nan_to_num(mix)
+
+
+def _mix_total(
+    mix: np.ndarray,
+    mix_b: Optional[np.ndarray],
+    defined_b: Optional[np.ndarray],
+    scale: float,
+) -> Dict[str, Any]:
+    """The composition-effect line: `{estimate, ci_95, ci_status}`.
+
+    `estimate` is the exact `mix.sum()` of the observed windows in every case
+    (the C3 policy, and what the single-period branch always published); the
+    bootstrap supplies the interval only. It used to supply the point too, as
+    the replicate mean, so the one line on the panel that is an identity of
+    the rows above it did not equal their sum (grill 2026-10-05 L5).
+
+    `defined_b` marks the replicates in which both windows resampled some
+    weight. One that did not has NaN shares, and `_bennet` returns 0.0 for a
+    NaN term — right for a slice absent from both windows, wrong for a
+    replicate with no blend at all, whose "mix of zero" then sat in the
+    percentiles as if it had been measured. Those replicates are dropped
+    here, and the interval is withheld when too few survive: the posture
+    `_excess_fields` takes for the same replicates.
+
+    `ci_status` is the tree's vocabulary (`rca.run_rca`), so this block reads
+    the way a node's does: `nonfinite_bootstrap_replicates` covers both an
+    interval computed from the survivors and one withheld for want of them,
+    and `ci_95` says which.
+    """
+    out = {"estimate": float(mix.sum()), "ci_95": None, "ci_status": "degenerate_single_period"}
+    if mix_b is None or defined_b is None:
+        return out
+    draws = mix_b.sum(axis=1)[defined_b]
+    draws = draws[np.isfinite(draws)]
+    censored = draws.size < mix_b.shape[0]
+    if draws.size < MIN_CI_REPLICATES:
+        return {**out, "ci_status": "nonfinite_bootstrap_replicates"}
+    ci = sample_summary(draws, scale)["ci_95"]
+    status = (
+        "degenerate_bootstrap_spread"
+        if ci is None
+        else "nonfinite_bootstrap_replicates"
+        if censored
+        else "ok"
+    )
+    return {**out, "ci_95": ci, "ci_status": status}
 
 
 def _rate_attribution(
@@ -1069,7 +1136,7 @@ def _rate_attribution(
 
     if single_period:
         excess_b = None
-        mix_total = {"estimate": float(mix.sum()), "ci_95": None}
+        mix_total = _mix_total(mix, None, None, scale)
     else:
         ref_idx = block_bootstrap_indices(int(in_ref.sum()), N_BOOT, rng, block=block)
         an_idx = block_bootstrap_indices(int(in_an.sum()), N_BOOT, rng, block=block)
@@ -1080,7 +1147,8 @@ def _rate_attribution(
         within_b, mix_b = _bennet(s_ref_b, r_ref_b, s_an_b, r_an_b)
         s_bar_b = (s_ref_b + s_an_b) / 2.0
         excess_b = within_b - s_bar_b * within_b.sum(axis=1, keepdims=True)
-        mix_total = sample_summary(mix_b.sum(axis=1), scale)
+        defined_b = np.isfinite(s_ref_b).all(axis=1) & np.isfinite(s_an_b).all(axis=1)
+        mix_total = _mix_total(mix, mix_b, defined_b, scale)
 
     rows = []
     degenerate_spread = False

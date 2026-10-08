@@ -214,6 +214,74 @@ def _skip_rest(names: List[str], reason: str) -> List[CheckResult]:
     return [CheckResult.skip(name, reason) for name in names]
 
 
+def _nothing_to_check(
+    name: str, what: str, start: Optional[str], end: Optional[str], explicit: bool
+) -> CheckResult:
+    """The result for a check whose every query came back with zero rows.
+
+    Not a pass, whichever way it goes: `count(*) == count(distinct key)` holds
+    over no rows, and a query that returns nothing "runs", so for a release a
+    tree whose window missed its data altogether passed `grain claims hold`
+    and `metric sql runs` and then served a healthy-looking tree of zeros
+    (grill 2026-10-05 H3).
+
+    Which non-pass depends on whose window it was. A window the operator
+    *gave* (flags, or the BREAKDOWN_*_DATE pair the server reads) is the one
+    the server will load, and it holds nothing — that is a failure. With no
+    window given, doctor probed its own last seven days, and a tree over last
+    year's export, or a monthly mart mid-month, is simply not in them: the
+    check is skipped, saying so, with the command that would run it.
+    """
+    span = f"[{start}, {end}]" if start and end else "the relation"
+    if explicit:
+        return CheckResult.fail(
+            name,
+            f"{what} returned no rows over {span} — nothing was checked",
+            "The window holds no data for this tree, so a server started on it "
+            "would have nothing to load. Pass the dates your data actually covers:\n"
+            "breakdown doctor --tree <tree> --start-date YYYY-MM-DD --end-date YYYY-MM-DD\n"
+            "(and give `breakdown serve` the same pair).",
+        )
+    return CheckResult(
+        name,
+        "skip",
+        f"{what} returned no rows over the default probe window {span} — nothing was checked",
+        "No window was given, so doctor looked at the last 7 days only. Pass the "
+        "dates your data covers to run this check:\n"
+        "breakdown doctor --tree <tree> --start-date YYYY-MM-DD --end-date YYYY-MM-DD",
+    )
+
+
+class _counting_rows:
+    """Count the rows each of a fetcher's queries returns, for one block.
+
+    `fetch_metric` hands back the series *after* alignment, where an empty
+    result and a quiet one are the same run of zeros, so the only place the
+    difference still exists is the raw frame. Wrapping `_query` reads it there
+    without a second round-trip per metric; a fetcher with no `_query` (a test
+    double) yields no counts and the caller treats the result as unknown.
+    """
+
+    def __init__(self, fetcher):
+        self.fetcher = fetcher
+        self.counts: List[int] = []
+
+    def __enter__(self) -> List[int]:
+        inner = getattr(self.fetcher, "_query", None)
+        if inner is not None:
+
+            def counting(sql):
+                df = inner(sql)
+                self.counts.append(len(df))
+                return df
+
+            self.fetcher._query = counting
+        return self.counts
+
+    def __exit__(self, *exc) -> None:
+        self.fetcher.__dict__.pop("_query", None)
+
+
 def check_provider_extra(provider: str) -> Optional[CheckResult]:
     """Provider SDKs ship as extras, so "not installed" is a distinct failure
     from "installed and misconfigured". Report it first and by name — every
@@ -561,6 +629,7 @@ def check_dbt(
     config: MetricTreeConfig,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    explicit_window: Optional[bool] = None,
 ) -> List[CheckResult]:
     """Walk the `dbt` provider's chain: manifest -> profile -> connection ->
     bindings -> dimensions -> grain claims.
@@ -676,12 +745,18 @@ def check_dbt(
     results.append(CheckResult.ok("warehouse connection", f"{out.get('type')} reachable"))
 
     # 3–8. the bindings themselves — shared with the `duckdb` provider
-    results.extend(_check_bindings(config, bridged, "dbt", start_date, end_date))
+    results.extend(_check_bindings(config, bridged, "dbt", start_date, end_date, explicit_window))
     bridged.close()
     return results
 
 
-def check_duckdb(parser, tree_path: str, start_date: str, end_date: str) -> List[CheckResult]:
+def check_duckdb(
+    parser,
+    tree_path: str,
+    start_date: str,
+    end_date: str,
+    explicit_window: Optional[bool] = None,
+) -> List[CheckResult]:
     """Walk the `duckdb` provider's chain: data files -> the binding checks.
 
     Short by design. There is no manifest, profile or credential to prove, so
@@ -724,7 +799,9 @@ def check_duckdb(parser, tree_path: str, start_date: str, end_date: str) -> List
         results.append(CheckResult.fail("tree metrics bind", f"could not build fetcher: {e}"))
         results.extend(_skip_rest(_BINDING_CHECKS[1:], "no fetcher"))
         return results
-    results.extend(_check_bindings(config, fetcher, "duckdb", start_date, end_date))
+    results.extend(
+        _check_bindings(config, fetcher, "duckdb", start_date, end_date, explicit_window)
+    )
     fetcher.close()
     return results
 
@@ -735,6 +812,7 @@ def _check_bindings(
     provider_type: str,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    explicit_window: Optional[bool] = None,
 ) -> List[CheckResult]:
     """The checks a binding earns once there is a connection to run them on:
     tree metrics bind -> declared dimensions exist -> grain claims hold ->
@@ -746,11 +824,23 @@ def _check_bindings(
     asserted for a manifest binding and taken on trust for a hand-written one.
     `fetcher` is any `DbtDataFetcher`; `provider_type` decides which name a
     tree metric is looked up by (`provider_query_name`).
+
+    `explicit_window` says whether the dates are the operator's own (flags or
+    the environment pair) rather than doctor's seven-day default; it decides
+    whether a check that found no rows fails or is skipped
+    (`_nothing_to_check`). `run_doctor` passes it. Left None, a pair of dates
+    counts as explicit and their absence does not.
     """
     from breakdown.data_fetch import provider_query_name, sparse_kw
 
     results: List[CheckResult] = []
     remaining = list(_BINDING_CHECKS)
+    dated = start_date is not None and end_date is not None
+    probe_start, probe_end = _probe_window(start_date, end_date)
+    probe_explicit = dated if explicit_window is None else explicit_window
+    # The grain claim with no dates at all runs over the whole relation, and
+    # a relation with no rows anywhere is not a window that missed.
+    grain_explicit = True if not dated else probe_explicit
 
     def stop(result: CheckResult, reason: str) -> List[CheckResult]:
         results.append(result)
@@ -785,29 +875,71 @@ def _check_bindings(
         )
     )
 
-    # declared dimensions exist — otherwise the first slice click 500s
-    missing = []
+    # declared dimensions exist — otherwise the first slice click fails.
+    #
+    # Two halves, and for a release only the first was checked: that the
+    # dimension's `source` is a *key* on the binding, and that the sliced query
+    # it produces actually *runs*. A binding dimension with `column: regionn`
+    # has the key and no such column, so it passed here, passed `metric sql
+    # runs` (which fetches the unsliced series) and failed on the first
+    # `POST /rca/{name}/slices` (grill 2026-10-05 M7). So each declared
+    # dimension now gets one sliced fetch over the probe window, through the
+    # same `fetch_metric_sliced` the server calls — which also catches a
+    # dimension shape the generator refuses to compile (`UnsupportedBinding`).
+    missing, unrunnable, ran = [], [], 0
     for query_name, tree_name in wanted.items():
-        declared = next((m.dimensions for m in config.metrics if m.name == tree_name), {})
+        m = next((m for m in config.metrics if m.name == tree_name), None)
         available = fetcher.bindings[query_name].dimensions
-        for dim_name, spec in declared.items():
+        for dim_name, spec in (m.dimensions if m else {}).items():
+            where = f"{tree_name}.{dim_name} -> '{spec.source}'"
             if spec.source not in available:
-                missing.append(f"{tree_name}.{dim_name} -> '{spec.source}'")
-    if missing:
-        results.append(
-            CheckResult.fail(
-                "declared dimensions exist",
+                missing.append(where)
+                continue
+            try:
+                fetcher.fetch_metric_sliced(
+                    query_name, spec.source, probe_start, probe_end, grain=m.grain, kind=m.kind
+                )
+                ran += 1
+            except Exception as e:
+                unrunnable.append(f"{where} ({type(e).__name__}: {_first_lines(str(e), 2)})")
+    if missing or unrunnable:
+        parts = []
+        if missing:
+            parts.append(
                 f"{len(missing)} declared dimension(s) not on their binding: {missing[:5]}"
-                + (" …" if len(missing) > 5 else ""),
-                "A dimension's `source` must name one the binding exposes. "
-                "Without this check the failure is a 500 on the first slice.",
+                + (" …" if len(missing) > 5 else "")
             )
+        if unrunnable:
+            parts.append(
+                f"{len(unrunnable)} declared dimension(s) whose sliced query does not run: "
+                + "; ".join(unrunnable[:4])
+                + (" …" if len(unrunnable) > 4 else "")
+            )
+        remedies = []
+        if missing:
+            remedies.append("A dimension's `source` must name one the binding exposes.")
+        if unrunnable:
+            remedies.append(
+                "The binding exposes the dimension but the source refused the query "
+                "grouped by it: check that `bind.dimensions.<source>.column` names a "
+                "real column on the relation (for a `duckdb` tree, a header in the "
+                "file), spelled as the source spells it."
+            )
+        remedies.append("Without this check the failure arrives on the first slice.")
+        results.append(
+            CheckResult.fail("declared dimensions exist", "; ".join(parts), " ".join(remedies))
         )
     else:
-        results.append(CheckResult.ok("declared dimensions exist", "all declared slices resolve"))
+        results.append(
+            CheckResult.ok(
+                "declared dimensions exist",
+                "all declared slices resolve"
+                + (f", {ran} sliced query(ies) ran" + _over(probe_start, probe_end) if ran else ""),
+            )
+        )
 
     # the grain claim
-    fanned, errors = [], []
+    fanned, errors, no_rows = [], [], []
     for query_name in sorted(wanted):
         try:
             rows, distinct = fetcher.check_grain(
@@ -816,7 +948,11 @@ def _check_bindings(
         except Exception as e:
             errors.append(f"{query_name}: {type(e).__name__}")
             continue
-        if rows != distinct:
+        if rows == 0:
+            # `0 == 0` is not a grain claim that held; it is one that was
+            # never put to anything.
+            no_rows.append(query_name)
+        elif rows != distinct:
             fanned.append(f"{query_name} ({rows:,} rows / {distinct:,} distinct)")
     if fanned:
         results.append(
@@ -831,6 +967,31 @@ def _check_bindings(
         )
     elif errors:
         results.append(CheckResult.fail("grain claims hold", f"could not check: {errors[:4]}"))
+    elif wanted and len(no_rows) == len(wanted):
+        results.append(
+            _nothing_to_check(
+                "grain claims hold",
+                f"all {len(wanted)} relation(s)",
+                start_date,
+                end_date,
+                grain_explicit,
+            )
+        )
+    elif no_rows:
+        # Some relations had rows and held; the others were not checked, and
+        # the line says which rather than counting them in.
+        results.append(
+            CheckResult.warn(
+                "grain claims hold",
+                f"{len(wanted) - len(no_rows)} relation(s) one row per grain; "
+                f"{len(no_rows)} returned no rows and were not checked: {no_rows[:6]}"
+                + (" …" if len(no_rows) > 6 else "")
+                + _over(start_date, end_date),
+                "A metric with no rows in the window loads as an all-zero (or "
+                "undefined) series. Either the window misses its data — widen it "
+                "with --start-date/--end-date — or the relation or its filter is wrong.",
+            )
+        )
     else:
         # The assertion runs over the rows the node actually aggregates, so a
         # filtered relation is asserted *under its filter* (2.17 §3.4). Saying
@@ -851,19 +1012,23 @@ def _check_bindings(
     # every metric's generated query runs, through the full fetch path — the
     # grain claim selects only the key, so a misspelt `measure` or a
     # `time_column` the dialect cannot cast survives every check above it.
-    probe_start, probe_end = _probe_window(start_date, end_date)
-    failed = []
+    failed, returned_nothing = [], []
     for query_name, tree_name in sorted(wanted.items()):
         m = next(m for m in config.metrics if m.name == tree_name)
         try:
-            fetcher.fetch_metric(
-                query_name,
-                probe_start,
-                probe_end,
-                grain=m.grain,
-                kind=m.kind,
-                **sparse_kw(m.sparse),
-            )
+            with _counting_rows(fetcher) as counts:
+                fetcher.fetch_metric(
+                    query_name,
+                    probe_start,
+                    probe_end,
+                    grain=m.grain,
+                    kind=m.kind,
+                    **sparse_kw(m.sparse),
+                )
+            # The aligned frame cannot say this (an empty flow is filled to
+            # zeros across the window); the raw one can.
+            if counts and sum(counts) == 0:
+                returned_nothing.append(tree_name)
         except Exception as e:
             failed.append(f"{tree_name}: {_first_lines(str(e), 2)}")
     if failed:
@@ -876,6 +1041,32 @@ def _check_bindings(
                 "`GET /metrics/{name}/query` shows the generated statement once the "
                 "server is up; until then the binding's `measure`, `time_column` and "
                 "`numerator`/`denominator` are the columns to check.",
+            )
+        )
+    elif wanted and len(returned_nothing) == len(wanted):
+        # Every statement compiled and executed, which does prove the columns
+        # exist — and every one came back empty, which is the load the server
+        # would make. Not a pass.
+        results.append(
+            _nothing_to_check(
+                "metric sql runs",
+                f"all {len(wanted)} metric quer(ies) ran and",
+                probe_start,
+                probe_end,
+                probe_explicit,
+            )
+        )
+    elif returned_nothing:
+        results.append(
+            CheckResult.warn(
+                "metric sql runs",
+                f"{len(wanted)} metric(s) ran over [{probe_start}, {probe_end}]; "
+                f"{len(returned_nothing)} returned no rows: {returned_nothing[:6]}"
+                + (" …" if len(returned_nothing) > 6 else ""),
+                "A metric with no rows in the window loads as an all-zero (or "
+                "undefined) series, which RCA will read as a real collapse. Widen "
+                "the window with --start-date/--end-date if it misses the data; "
+                "otherwise check the metric's relation, `time_column` and filter.",
             )
         )
     else:
@@ -1342,9 +1533,9 @@ def run_doctor(
     elif provider == "local":
         results += check_local(tree.config)
     elif provider == "dbt":
-        results += check_dbt(tree.config, start_date, end_date)
+        results += check_dbt(tree.config, start_date, end_date, explicit_window)
     elif provider == "duckdb":
-        results += check_duckdb(tree.parser, tree_path, start_date, end_date)
+        results += check_duckdb(tree.parser, tree_path, start_date, end_date, explicit_window)
     elif provider == "none":
         # Cold-start tree: no connection to prove — readiness means every
         # belief the what-if engine needs is declared. Same check the server

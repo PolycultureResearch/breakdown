@@ -880,15 +880,22 @@ def test_local_leading_gap_fill_warns(monkeypatch, caplog):
 def test_empty_result_full_fill_draws_no_leading_warning(caplog):
     """ "A source returning no rows at all keeps the full fill for flows" is a
     decision already taken, not a leading gap — an all-quiet window has no
-    "before its first row". The provider that knows the result was empty warns
-    about that itself; this path must not second-guess it."""
+    "before its first row". What it draws instead is its own line, once, from
+    the alignment every provider shares (grill 2026-10-05 H3): this used to
+    assert silence here, on the grounds that "the provider that knows the
+    result was empty warns about that itself", and three of four did not."""
     import logging
 
     with caplog.at_level(logging.WARNING, logger="breakdown.data_fetch"):
         df = _wh_fetcher([]).fetch_metric("m", "2024-01-01", "2024-01-28", grain="week")
 
     assert df["m"].tolist() == [0.0, 0.0, 0.0, 0.0]
-    assert caplog.text == ""
+    assert df.attrs["source_rows"] == 0
+    assert "leading" not in caplog.text
+    assert [r.getMessage() for r in caplog.records if "returned no rows" in r.getMessage()] == [
+        r.getMessage() for r in caplog.records
+    ]
+    assert "'m' returned no rows for [2024-01-01, 2024-01-28]" in caplog.text
 
 
 def test_a_leading_gap_is_never_filled_for_a_stock_or_a_rate(caplog):

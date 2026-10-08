@@ -51,6 +51,11 @@ const NODE_STATUS = {
     short: "no aligned frame",
     explains: "This metric's series and its parents' share no whole period at its grain over the loaded window (for example, a monthly node whose daily parent covers no whole month), so there is nothing to measure and nothing was fitted. The reason names the metrics and the grain.",
   },
+  reference_before_fit_window: {
+    label: "not decomposed — reference window precedes this node's fit",
+    short: "reference before fit",
+    explains: "Its movement below is measured from the data and stands; what is missing is the decomposition. The reference window starts before the first period this node's model is fitted on (a declared `fit_start`, or the periods a lagged parent trims), so the model has no level there to compare against, and it was not fitted for this analysis. Move the reference window later, or the node's `fit_start` earlier.",
+  },
   undefined_over_window: {
     label: "no value — every period undefined",
     short: "undefined over window",
@@ -73,6 +78,69 @@ function nodeStatus(node) {
   );
 }
 
+/* Whether an RCA node has anything to put in an Attribution-detail block.
+
+   Both RCA surfaces used to ask `contributions.length || nodeStatus(node)`,
+   which was the whole answer until roadmap S24: a parentless node that
+   declares `interventions:` is fitted, comes back `status: "ok"` with
+   `contributions: []`, and carries its entire decomposition under the other
+   keys — the sized interventions, the ones the fit could not size, trend and
+   seasonal. `0 || null` dropped the block, and with it the intervention rows,
+   the component rows, `unexplained`, the "fit saw the analysis window" chip
+   and the `claim` sentence, while the engine had attributed most of the gap to
+   the declared step (grill 2026-10-05 H5). One predicate, here, so the live
+   tab, the export and the canvas badge cannot each grow their own idea of
+   "nothing to show". A term the engine can attach to a node goes in this list
+   in the same change that adds the row for it. */
+function rcaNodeHasDetail(node) {
+  if (!node) return false;
+  if (nodeStatus(node)) return true;
+  const some = (a) => Array.isArray(a) && a.length > 0;
+  const comps = node.components;
+  return (
+    some(node.contributions) ||
+    some(node.interventions) ||
+    some(node.dropped_interventions) ||
+    some(node.dropped_parents) ||
+    !!(comps && typeof comps === "object" && Object.values(comps).some((c) => c != null))
+  );
+}
+
+/* The two empty states of the Root cause tab, each printed only when it is
+   true. "No upstream causes — target is a source metric." used to be the
+   fallback for any empty ranking, including a source target whose gap the
+   engine had just attributed to a declared step: a sentence about the tree
+   read as a sentence about the gap. `isSource` is the caller's reading of the
+   tree (the payload does not say whether a node has parents, only whether
+   anything was attributed to them); null means the caller could not tell, and
+   then nothing is claimed about it. */
+function rankedCausesEmptyNote(res, isSource) {
+  const target = ((res && res.nodes) || {})[res && res.target] || {};
+  const ivs = Array.isArray(target.interventions) ? target.interventions : [];
+  const why =
+    isSource === true
+      ? "the target is a source metric, so there is no upstream metric to rank"
+      : isSource === false
+      ? "nothing was attributed to the target's parents"
+      : "no upstream metric was attributed";
+  if (ivs.length) {
+    return (
+      `No ranked causes — ${why}. That is not the same as nothing explaining the gap: ` +
+      `the engine sized the declared intervention${ivs.length === 1 ? "" : "s"} ` +
+      `${ivs.map((iv) => iv.name).join(", ")} on this metric, and a declared intervention is ` +
+      "a term in the gap, never a ranked cause. See Attribution detail."
+    );
+  }
+  if (rcaNodeHasDetail(target)) {
+    return `No ranked causes — ${why}. What the engine did attribute on this metric is under Attribution detail.`;
+  }
+  return `No ranked causes — ${why}.`;
+}
+
+const ATTRIBUTION_EMPTY_NOTE =
+  "Nothing to decompose: no metric in scope has a parent, a declared intervention " +
+  "or a fitted component for its gap to be attributed to.";
+
 /* `ci_status` is the interval's own health, independent of the node's status.
    All four values are surfaced: rendering nothing for three of them and a note
    for the fourth reads as "interval checked and fine" when it means "not
@@ -89,6 +157,10 @@ const CI_STATUS_NOTE = {
   nonfinite_bootstrap_replicates: {
     text: "intervals withheld: non-finite bootstrap replicates",
     why: "Enough bootstrap replicates came out non-finite (a resampled denominator mean landing on zero) that an interval was withheld entirely, or computed only from the replicates that survived. Point estimates are unaffected: they are the exact Shapley values, never bootstrap means.",
+  },
+  nonfinite_posterior: {
+    text: "terms withheld: non-finite posterior",
+    why: "This node's fitted posterior holds a non-finite value in at least one term: a parent's coefficient, the trend or seasonal component, or a declared intervention. That term is shown as \u2014 with no estimate, share or interval, and the node's unexplained remainder is withheld with it, because a remainder computed around a missing term would quietly treat that term as zero. The other terms stand.",
   },
   degenerate_bootstrap_spread: {
     text: "intervals withheld: the resampling cannot move",
@@ -194,6 +266,131 @@ function fitQualityNote(node) {
       "It is not 'ok' — the engine flagged this fit, and a newer version of the " +
       "UI would explain it. Treat numbers resting on it as qualified.",
   };
+}
+
+/* ---------- the Metric tab's diagnostics row, in this file's words ----------
+   The diagnostics row prints one short phrase per check and, unlike the RCA
+   header chips, prints the *pass* too. Those phrases were written inline in
+   `renderPosterior` (grill 2026-10-05 L9), against the 2026-08-31 agreement
+   and with the result that agreement predicts: `PPC_NOTE` says "the model
+   cannot generate this node's own data" and the row beside it said "cannot
+   generate this data"; `moderate` was "reproduces its own data imperfectly"
+   in one and "fits imperfectly" in the other. Each helper returns
+   `{subject, word, cls}` — the renderer supplies only the markup — and the
+   flagged words are *derived from* the note tables rather than copied beside
+   them, so there is one wording to edit. An unknown status keeps the
+   verbatim fallback, under a subject that does not presume which way it
+   points. */
+const KHAT_BAND = {
+  ok: "close to the posterior",
+  suspect: "measurably off",
+  unusable: "not usable",
+};
+
+/* The band a k̂ landed in, with S22's "the landing was not decisive" beside
+   it. A k̂ with no status is "band not reported" — `String(undefined)` used
+   to print the word "undefined" as a band. */
+function khatBandText(dx) {
+  const st = dx && dx.khat_status;
+  const band = !st ? "band not reported" : KHAT_BAND[st] || String(st);
+  return `${band}${dx && dx.khat_borderline ? ", band unresolved at this error" : ""}`;
+}
+
+function khatBandClass(dx) {
+  return dx && dx.khat_status === "ok" && !dx.khat_borderline ? "ok" : "warn";
+}
+
+function collinDiagBit(status) {
+  if (!status) return null;
+  if (status === "ok") return { subject: "parents", word: "separable", cls: "ok" };
+  const note = COLLIN_NOTE[status];
+  // "⚠ parents collinear — the split …" → "collinear".
+  const m = note && /^⚠\s*parents\s+(.+?)\s+—/.exec(note.text);
+  if (m) return { subject: "parents", word: m[1], cls: "warn" };
+  return { subject: "collinearity", word: String(status), cls: "warn" };
+}
+
+function ppcDiagBit(status) {
+  if (!status) return null;
+  if (status === "ok") return { subject: "model", word: "reproduces its data", cls: "ok" };
+  const note = PPC_NOTE[status];
+  // "⚠ the model cannot generate this node's own data" → the predicate.
+  const m = note && /^⚠\s*the model\s+(.+)$/.exec(note.text);
+  if (m) return { subject: "model", word: m[1], cls: "warn" };
+  return { subject: "model check", word: String(status), cls: "warn" };
+}
+
+/* The engine's `fit_quality` verdict as the Metric tab's own block: the same
+   causes `fitQualityNote` names, plus the k̂ figure this surface can see.
+   Moved here from `renderPosterior` for the reason above. Returns HTML ("" for
+   a fit with no verdict), built only from escaped strings.
+
+   One branch is new. An ADVI fit whose k̂ was fine and whose posterior
+   predictive check was `severe` used to be explained by the ELBO sentence —
+   the residual branch — which names a cause that did not happen; the S3
+   comment this block carried made the NUTS side conditional for exactly that
+   reason and stopped there. `severe` is checked for both samplers now, after
+   the k̂ causes, which are the more specific finding when both apply. */
+function fitVerdictDiagHtml(dx) {
+  if (!dx || !dx.fit_quality) return "";
+  if (dx.fit_quality === "ok") {
+    return `<div class="diag">Engine fit check: <span class="ok">ok</span>.</div>`;
+  }
+  if (dx.fit_quality !== "suspect") {
+    // Unknown verdict: shown verbatim rather than swallowed into silence,
+    // which would read as "nothing to report".
+    return `<div class="diag">Engine fit check: <span class="warn">${esc(String(dx.fit_quality))}</span>.</div>`;
+  }
+  const advi = dx.method === "advi" || dx.method === "fullrank_advi";
+  let cause;
+  if (advi && (dx.khat_status === "unusable" || dx.khat_status === "suspect")) {
+    cause = `Its PSIS k̂ is ${khatFigure(dx) || "above the threshold"}: the approximation sits away from the posterior it approximates, so its credible intervals are not a measurement of the real ones. Re-run this metric with NUTS.`;
+  } else if (advi && dx.khat_borderline) {
+    // Roadmap S22. Without this branch a borderline-`ok` fit would be
+    // explained by the ELBO sentence below — an explanation of a check that
+    // passed, offered for a failure it did not cause.
+    cause = `Its PSIS k̂ is ${khatFigure(dx) || "close to a band edge"}, which is nearer the band edge than its own Monte-Carlo error: the check cannot say which side of the threshold this approximation is on. Re-run this metric with NUTS for anything that turns on it.`;
+  } else if (dx.ppc_status === "severe") {
+    // Roadmap S3: on a NUTS fit this is the only thing that can set
+    // `suspect`. One wording with the RCA chip's tooltip.
+    cause = fitQualityNote({ fit_quality: "suspect", ppc_status: "severe" }).why;
+  } else if (advi) {
+    cause = "The ADVI objective (the ELBO) had not settled by the end of optimization, so the approximation may not have converged on anything.";
+  } else {
+    cause = "One of R̂, the divergence count or the effective sample size crossed the engine's threshold.";
+  }
+  return `<div class="diag"><span class="warn">⚠ The engine flagged this fit as suspect.</span>
+      ${esc(cause)}
+      Numbers derived from this fit — coefficients, intervals, and any RCA contribution through this node — inherit that.</div>`;
+}
+
+/* The header chip for each list of engine warning sentences an RCA node can
+   carry. The sentences themselves are the engine's and print verbatim (hover
+   on the live tab, in full in the export); these are only the chips that say
+   a list is non-empty. They were string literals at both render sites, and
+   the two had already drifted: the export said "contradicts declared
+   expectation", the live header "contradicts expectation". */
+const NODE_WARNING_CHIP = {
+  sign_warnings: "⚠ learned sign contradicts declared expectation",
+  seasonality_warnings: "⚠ seasonality unidentifiable from fitted history",
+  likelihood_warnings: "⚠ zero-inflated fit window — intervals approximate",
+};
+
+/* The chip for one of those lists, or null when the node carries none. */
+function nodeWarningChip(node, field) {
+  const list = node && node[field];
+  return Array.isArray(list) && list.length ? NODE_WARNING_CHIP[field] : null;
+}
+
+/* A fit whose posterior predictive band could not be built: the PPC panel's
+   one verdict-bearing state. `reason` is the server's. Returns HTML. */
+function ppcBandUncheckedHtml(reason) {
+  return (
+    "This fit was <strong>not checked</strong> against its own posterior predictive " +
+    `distribution: ${esc(reason || "no reason given")}. That is the absence of a ` +
+    "check, not a clean bill of health — if this node's likelihood is wrong for its " +
+    "data, nothing here will say so."
+  );
 }
 
 function ciStatusNote(status) {
@@ -488,8 +685,25 @@ function ppcNote(status) {
 function ppcStatText(node) {
   const s = ((node.ppc || {}).statistics || []).filter((e) => e.status !== "ok")[0];
   if (!s) return "";
+  const num = (v) => (typeof v === "number" && Number.isFinite(v) ? Number(v.toPrecision(3)).toString() : null);
   const p = typeof s.p_value === "number" && Number.isFinite(s.p_value) ? s.p_value.toFixed(3) : null;
-  return ` (${s.statistic}${p ? `, p ${p}` : ""})`;
+  // The two numbers the p-value compares: what the data shows, and what the
+  // model's own replicates average. Either missing, neither is printed — one
+  // side of a comparison is not a comparison.
+  const obs = num(s.observed), rep = num(s.replicated_mean);
+  const versus = obs !== null && rep !== null ? `: observed ${obs}, replicates average ${rep}` : "";
+  return ` (${s.statistic}${versus}${p ? `, p ${p}` : ""})`;
+}
+
+/* Roadmap S24: a posterior predictive check on a node that declares
+   interventions was run *given* them. The replicates come from a mean
+   function that already contains the declared steps, so a pass says the model
+   reproduces the data around the steps, not that the data shows them. Empty
+   for a node that declares none, or an engine too old to say. */
+function ppcConditionedText(node) {
+  const names = ((node || {}).ppc || {}).conditioned_on_interventions;
+  if (!Array.isArray(names) || !names.length) return "";
+  return ` · checked given the declared intervention${names.length === 1 ? "" : "s"} ${names.join(", ")}`;
 }
 
 function ppcStatSuffix(node) {
@@ -654,6 +868,10 @@ const DROPPED_PARENT_WHY =
   "but it is not a measured zero either. If this parent moved between the two " +
   "windows, that movement is in the unexplained row.";
 
+/* The one label for a dropped parent's row: the Metric tab's coefficient
+   table, the live RCA table and the export. */
+const DROPPED_PARENT_LABEL = "not fitted — did not vary over the fit window";
+
 /* The note for a node that dropped a parent, or null when nothing was dropped.
    `names` and `reasons` are the engine's own words; `text` is the chip. */
 function droppedParentsNote(node) {
@@ -679,7 +897,7 @@ function droppedParentRowsHtml(node, nCols) {
   return dropped
     .map(
       (d) =>
-        `<tr class="dim"><td title="${esc(`${d.reason}\n\n${DROPPED_PARENT_WHY}`)}"><code>${esc(d.parent)}</code> — not fitted: did not vary over the fit window</td>${dash.repeat(Math.max(nCols - 1, 0))}</tr>`,
+        `<tr class="dim"><td title="${esc(`${d.reason}\n\n${DROPPED_PARENT_WHY}`)}"><code>${esc(d.parent)}</code>, ${esc(DROPPED_PARENT_LABEL)}</td>${dash.repeat(Math.max(nCols - 1, 0))}</tr>`,
     )
     .join("");
 }
@@ -738,6 +956,21 @@ const INTERVENTION_CI_NOTE = {
   },
 };
 
+/* The note for one intervention's `ci_status`, or null when there is nothing
+   to say (`ok`, or no status). The bare `INTERVENTION_CI_NOTE[x]` this
+   replaces returned undefined for a value this build has never heard of and
+   rendered nothing — a row with an em dash where its interval should be and
+   no word on why, which is the silence `ciStatusNote` was written to end. */
+function interventionCiNote(status) {
+  if (!status || status === "ok") return null;
+  return (
+    INTERVENTION_CI_NOTE[status] || {
+      text: `interval flagged: ${status}`,
+      why: "This build does not recognise that status on a declared intervention, so it is shown verbatim. It is not 'ok' — the engine flagged something about this row's estimate or interval that a newer version of the UI would explain.",
+    }
+  );
+}
+
 /* The sentence for a `learn_from: window` intervention, from the engine's own
    `claim` — printed verbatim wherever the row appears, because it is the one
    thing about this number the reader must not lose. */
@@ -747,15 +980,47 @@ function interventionClaim(iv) {
 
 /* One row per fitted intervention, for the single-level (5-column) table. A
    posterior node is the only kind that carries them and is never two-level. */
+/* `window_delta` is the multiplier behind an intervention's row: the share of
+   the analysis window's periods it was in force for, minus the reference
+   window's. The estimate is the fitted step size times this, so a step that
+   was already on for the whole reference contributes nothing however large it
+   is, and the row has to say which of the two it is looking at. Silent when
+   the engine does not report it. */
+function interventionWindowDeltaText(iv) {
+  const d = iv && iv.window_delta;
+  if (typeof d !== "number" || !Number.isFinite(d)) return "";
+  const pctOf = `${Math.round(Math.abs(d) * 100)}%`;
+  if (d === 0) return " · in force for the same share of both windows";
+  return ` · in force for ${pctOf} ${d > 0 ? "more" : "less"} of the analysis window than the reference`;
+}
+
+/* The two numbers behind a rate slice's `within` and `mix` cells: the slice's
+   own rate in each window, and its share of the denominator in each. Either
+   end missing (a slice with no denominator in one window has no rate there)
+   and the pair is not printed: one end is not a movement. */
+function sliceRateMoveText(row) {
+  const a = row && row.rate_reference, b = row && row.rate_analysis;
+  if (typeof a !== "number" || typeof b !== "number" || !Number.isFinite(a) || !Number.isFinite(b)) return "";
+  return ` (its rate went ${Number(a.toPrecision(4))} → ${Number(b.toPrecision(4))})`;
+}
+function sliceShareMoveText(row) {
+  const a = row && row.baseline_share, b = row && row.share_analysis;
+  if (typeof a !== "number" || typeof b !== "number" || !Number.isFinite(a) || !Number.isFinite(b)) return "";
+  return ` (its share of the denominator went ${(a * 100).toFixed(1)}% → ${(b * 100).toFixed(1)}%)`;
+}
+
 function interventionRowsHtml(node, nCols, shareOf, ciCell) {
   const ivs = node && node.interventions;
   if (!Array.isArray(ivs) || !ivs.length || nCols !== 5) return "";
   return ivs
     .map((iv) => {
-      const note = INTERVENTION_CI_NOTE[iv.ci_status];
+      const note = interventionCiNote(iv.ci_status);
       const claim = interventionClaim(iv);
       const title = [INTERVENTION_WHY, note ? note.why : "", claim].filter(Boolean).join("\n\n");
-      const tag = claim ? " · fit saw this window" : note ? ` · ${note.text}` : "";
+      // Both, when both apply. The claim tag used to win, so a
+      // `learn_from: window` row whose interval had collapsed showed "fit saw
+      // this window" and an unexplained em dash.
+      const tag = `${interventionWindowDeltaText(iv)}${claim ? " · fit saw this window" : ""}${note ? ` · ${note.text}` : ""}`;
       const est = iv.estimate == null ? "—" : fmt(iv.estimate);
       const share = iv.estimate == null ? "—" : shareOf(iv.estimate, node.gap);
       return `<tr class="intervention-row"><td title="${esc(title)}"><code>${esc(iv.name)}</code> <span class="dim">— ${esc(declaredInterventionLabel(iv).replace(`${iv.name} — `, ""))}${esc(tag)}</span></td>
@@ -772,22 +1037,73 @@ function interventionRowsHtml(node, nCols, shareOf, ciCell) {
    declared step missing from the table reads as "no effect", when the fact is
    "not fitted" — no instance inside the fit window (the flip is in the
    analysis window, which RCA's fit never sees), or on for every period of it. */
-const DROPPED_INTERVENTION_WHY =
-  "This declared change had no instance inside the window the model was fitted on, " +
-  "or was on for every period of it, so its size could not be learned and it was " +
-  "left out of the fit. If the analysis window contains it, its effect is in the " +
-  "unexplained row or in the parents that moved with it. That is not a measured " +
-  "zero: nothing was estimated.";
+/* The two ways are not one, and the engine says which (`model.py`
+   `_intervention_columns` writes a different `reason` for each because they
+   have different remedies). Every surface used to say "outside the fit
+   window" for both — which, for a regime that was on for the *whole* fit
+   window, is the opposite of the fact (grill 2026-10-05 L8). The payload
+   carries no code for the case, only the sentence, so the sentence is what is
+   matched; one this build cannot place gets the neutral label and is printed
+   in full beside it, never guessed at. */
+const DROPPED_INTERVENTION_CASE = {
+  no_instance: {
+    match: "no instance inside the fit window",
+    short: "no instance inside the fit window",
+    why:
+      "This declared change had no instance inside the window the model was fitted " +
+      "on, so its size could not be learned and it was left out of the fit. If the " +
+      "analysis window contains it, its effect is in the unexplained row or in the " +
+      "parents that moved with it. That is not a measured zero: nothing was estimated.",
+  },
+  always_on: {
+    match: "on for every period of the fit window",
+    short: "on for every period of the fit window",
+    why:
+      "This declared change was already on for every period of the window the model " +
+      "was fitted on, so its column is the intercept's and its coefficient is not " +
+      "identified; it was left out of the fit. The fit saw only the regime with the " +
+      "change on, so that level is in the intercept. Nothing was estimated for the " +
+      "change itself, which is not a measured zero. A regime that began before the " +
+      "fit window is what `fit_start` declares, not an intervention.",
+  },
+};
+
+const DROPPED_INTERVENTION_UNKNOWN = {
+  short: "for a reason this build does not recognise",
+  why:
+    "The engine left this declared change out of the fit and gave the reason shown. " +
+    "This build does not recognise that reason, so it is printed verbatim rather than " +
+    "summarised. Nothing was estimated for it: that is not a measured zero.",
+};
+
+function droppedInterventionCase(d) {
+  const reason = d && typeof d.reason === "string" ? d.reason : "";
+  return (
+    Object.values(DROPPED_INTERVENTION_CASE).find((c) => reason.includes(c.match)) ||
+    DROPPED_INTERVENTION_UNKNOWN
+  );
+}
+
+/* "not fitted — on for every period of the fit window": the one label for a
+   dropped intervention's row, on the Metric tab's coefficient table, the live
+   RCA table and the export. */
+function droppedInterventionLabel(d) {
+  return `not fitted — ${droppedInterventionCase(d).short}`;
+}
 
 function droppedInterventionsNote(node) {
   const dropped = node && node.dropped_interventions;
   if (!Array.isArray(dropped) || !dropped.length) return null;
   const names = dropped.map((d) => d.intervention);
+  const cases = [...new Set(dropped.map(droppedInterventionCase))];
+  // One case: the chip names it. Mixed: the chip says only "not fitted" and
+  // each row carries its own.
+  const how = cases.length === 1 ? ` — ${cases[0].short}` : "";
   return {
     names,
-    text: `⚠ declared intervention${names.length === 1 ? "" : "s"} ${names.join(", ")} not fitted — outside the fit window`,
+    text: `⚠ declared intervention${names.length === 1 ? "" : "s"} ${names.join(", ")} not fitted${how}`,
     cls: "sign-flag",
-    why: DROPPED_INTERVENTION_WHY,
+    why: cases.map((c) => c.why).join("\n\n"),
     reasons: dropped.map((d) => d.reason).join("\n"),
   };
 }
@@ -799,7 +1115,7 @@ function droppedInterventionRowsHtml(node, nCols) {
   return dropped
     .map(
       (d) =>
-        `<tr class="dim"><td title="${esc(`${d.reason}\n\n${DROPPED_INTERVENTION_WHY}`)}"><code>${esc(d.intervention)}</code> — declared ${esc(d.kind)} ${esc(d.date)}, not fitted: outside the fit window</td>${dash.repeat(Math.max(nCols - 1, 0))}</tr>`,
+        `<tr class="dim"><td title="${esc(`${d.reason}\n\n${droppedInterventionCase(d).why}`)}"><code>${esc(d.intervention)}</code> — declared ${esc(d.kind)} ${esc(d.date)}, ${esc(droppedInterventionLabel(d))}</td>${dash.repeat(Math.max(nCols - 1, 0))}</tr>`,
     )
     .join("");
 }
@@ -892,7 +1208,7 @@ function windowsHeadlineHtml(res) {
 const RCA_CAVEATS = [
   "Ranked causes are a triage order, not evidence: the score walks the tree multiplying each edge's share of its child's gap. Read it as where to look next, and read the attribution tables for what was actually measured.",
   "Changes are window-mean differences at each node's grain. Formula edges are exact Shapley attributions; probabilistic edges multiply a fitted posterior by the parent's window delta, so they are fitted associations, not experiments.",
-  "Intervals are 95% credible intervals combining the coefficient posterior with a moving-block bootstrap of the window rows. Where one is withheld the table says so; the point estimates are unaffected.",
+  "Intervals are 95% credible intervals combining the coefficient posterior with a moving-block bootstrap of the window rows — except on a declared intervention's row, where the interval is the coefficient's posterior alone: the dates it was on are facts, not samples, so there is nothing to resample. Where an interval is withheld the table says so; the point estimates are unaffected.",
 ];
 
 /* Map a MOVEMENT direction ("up"/"down") to a COLOR direction through the
@@ -945,6 +1261,334 @@ function gapLineParts(name, gap) {
   return { cls: d ? goodDir(name, d) : "", sign: d === "up" ? "+" : "" };
 }
 
+/* ---------- the tree-wide data edge ----------
+   The oldest known `data_through` across the tree: the as-of anchor the node
+   cards default to and the "data through" line the export prints. `/meta`
+   deliberately emits `null` for a metric whose edge is unknown (so "we do not
+   know when this ends" is not the same absence as "no such metric"), and a
+   bare string-min over the values loses to it: `null < "2024-06-28"` is true
+   in JavaScript (null coerces to 0), `"2024-06-20" < null` is false, so
+   `["2024-06-20", null, "2024-06-28"]` reduced to "2024-06-28" and the lagging
+   edge was the one thing dropped. The export filtered and the boot path did
+   not — the same policy on one side of the file only — so both go through
+   here. Returns null when no edge is known; the caller chooses the fallback
+   and must not print one as if it were measured. */
+function treeDataEdge(meta) {
+  const through = meta && meta.data_through;
+  if (!through || typeof through !== "object") return null;
+  const known = Object.values(through).filter((d) => typeof d === "string" && d);
+  return known.length ? known.reduce((a, b) => (a < b ? a : b)) : null;
+}
+
+/* ---------- a metric's own range, and what was filled inside it (GitHub #112) ----------
+   `/meta` carries three facts about how much of the loaded window a metric
+   really has, and until grill 2026-10-05 (M8) no line of this UI read any of
+   them — while MCP `get_tree` worded all three for an agent:
+
+   - `sparse_fills[name]` — `{first_row, last_row, leading, interior, trailing,
+     whole_window, filled}`: periods with no source row that the load filled
+     with zero because the metric declares `sparse: true`. `data_through` for
+     such a metric reports the window's end *by declaration*, so the "lags
+     window end" chip can never fire on it, and a feed that went stale three
+     weeks ago draws as three weeks of real zeros and an RCA of −100%.
+     `last_row` (the label of the last period the source returned a row for) is
+     the true edge, and it is what the reader is shown.
+   - `short_series[grain].trailing|leading.short[name]` — `{ends|starts,
+     periods}` against that edge's `reach`: the metric stops before, or starts
+     after, the other metrics at its grain.
+   - `data_from[name]` — the first period the metric has, which may be later
+     than the loaded window's start even when every sibling agrees with it.
+
+   The sentences reuse the MCP docstring's wording (`mcp/server.py`
+   `get_tree`) so a person and an agent are told the same thing. Everything
+   here reads `meta` only and never coerces: a count that is not a finite
+   number is not printed as one. */
+const SPARSE_FILL_WHY =
+  "This metric declares `sparse: true`, so periods with no source row were filled " +
+  "with zero by that declaration. Those zeros are the tree's own statement that " +
+  "nothing happened, not observations, and a run of them at the tail is what a " +
+  "stale feed on such a metric would also look like.";
+
+const SHORT_SERIES_WHY =
+  "Every other metric keeps its own range; an analysis that reads this metric — it, " +
+  "or a child of it — cannot reach past its edge. The metric named is a source to " +
+  "widen or repair, not a finding about the business.";
+
+const DATA_FROM_WHY =
+  "This metric has no period before that date. Nothing was filled in front of it: " +
+  "an analysis that reads it — it, or a child of it — cannot start earlier, and the " +
+  "periods before it are absent, not zero.";
+
+/* A finite, non-negative count, or null. `Number(null)` is 0 and `null > 0` is
+   false, so an absent count must never reach arithmetic or a template. */
+function fillCount(v) {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
+}
+
+function isoDateOrNull(v) {
+  return typeof v === "string" && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : null;
+}
+
+/* The period-start label one period after `iso` at `grain` — where a trailing
+   fill begins, given the last period that had a row. Null on anything it
+   cannot parse or a grain it does not know. */
+function nextPeriodStart(iso, grain) {
+  const d = isoDateOrNull(iso);
+  if (!d) return null;
+  const t = new Date(`${d}T00:00:00Z`);
+  if (Number.isNaN(t.getTime())) return null;
+  if (grain === "day") t.setUTCDate(t.getUTCDate() + 1);
+  else if (grain === "week") t.setUTCDate(t.getUTCDate() + 7);
+  else if (grain === "month") t.setUTCMonth(t.getUTCMonth() + 1, 1);
+  else return null;
+  return t.toISOString().slice(0, 10);
+}
+
+/* The first whole period at `grain` starting on or after `iso`: the earliest
+   label a series at that grain *could* carry inside a window starting there.
+   A weekly metric in a window that opens on a Wednesday starts the following
+   Monday by construction, and calling that "starts late" would put a chip on
+   every weekly node of every such tree. */
+function firstWholePeriodStart(iso, grain) {
+  const d = isoDateOrNull(iso);
+  if (!d) return null;
+  const t = new Date(`${d}T00:00:00Z`);
+  if (Number.isNaN(t.getTime())) return null;
+  if (grain === "week") t.setUTCDate(t.getUTCDate() + ((8 - t.getUTCDay()) % 7)); // Sun=0 → Monday
+  else if (grain === "month") {
+    if (t.getUTCDate() !== 1) t.setUTCMonth(t.getUTCMonth() + 1, 1);
+  } else if (grain !== "day") return null;
+  return t.toISOString().slice(0, 10);
+}
+
+function periodsPhrase(n, grain) {
+  const unit = grain === "day" || grain === "week" || grain === "month" ? `${grain} ` : "";
+  return n === null ? `${unit}periods` : `${n} ${unit}period${n === 1 ? "" : "s"}`;
+}
+
+/* The sparse-fill disclosure for one metric, or null when nothing was filled
+   (the engine only publishes a record where something was). `analysisEnd`,
+   when given, is the end of the analysis window an RCA node was measured
+   over: `inWindow` then says whether that window reaches into the trailing
+   fill, which is the case that turns a quiet (or dead) feed into a measured
+   collapse. `tail` is true when the *end* of the series is declared zeros —
+   the stale-feed lookalike — and is what makes the note a warning rather
+   than a muted fact. */
+function sparseFillNote(meta, name, analysisEnd) {
+  const rec = meta && meta.sparse_fills && meta.sparse_fills[name];
+  if (!rec || typeof rec !== "object") return null;
+  const grain = (meta.grains && meta.grains[name]) || null;
+  const filled = fillCount(rec.filled);
+  const leading = fillCount(rec.leading);
+  const interior = fillCount(rec.interior);
+  const trailing = fillCount(rec.trailing);
+  const whole = fillCount(rec.whole_window);
+  const lastRow = isoDateOrNull(rec.last_row);
+  const firstRow = isoDateOrNull(rec.first_row);
+  if (filled === 0) return null;
+  const noRows = (whole !== null && whole > 0) || (!lastRow && !firstRow);
+  const tail = noRows || (trailing !== null && trailing > 0);
+  const edges = [
+    leading ? `${leading} before the first source row${firstRow ? ` (${firstRow})` : ""}` : "",
+    interior ? `${interior} between source rows` : "",
+    trailing ? `${trailing} after the last source row${lastRow ? ` (${lastRow})` : ""}` : "",
+  ].filter(Boolean);
+  let text, detail;
+  if (noRows) {
+    text = `⚠ sparse: the source returned no rows — ${
+      filled === null ? "every period is" : `all ${periodsPhrase(filled, grain)} are`
+    } a zero by declaration`;
+    detail =
+      "The source returned no rows at all for the loaded window, so every value this " +
+      "metric shows is a declared zero and none is an observation. There is no last " +
+      "source row to date its freshness by.";
+  } else {
+    text = `${tail ? "⚠ " : ""}sparse: ${filled === null ? "some periods" : periodsPhrase(filled, grain)} zero-filled by declaration${
+      tail ? ` — last source row ${lastRow || "unknown"}` : ""
+    }`;
+    detail =
+      `${filled === null ? "Some periods" : periodsPhrase(filled, grain)} had no source row and ` +
+      `${filled === 1 ? "was" : "were"} filled with zero by declaration` +
+      `${edges.length ? ` (${edges.join(", ")})` : ""}.` +
+      (tail
+        ? ` The last period with a source row starts ${lastRow || "on an unknown date"}; that, ` +
+          "not the window's end, is where this metric's observed data stops."
+        : "");
+  }
+  const fillStart = noRows ? null : nextPeriodStart(lastRow, grain);
+  const end = isoDateOrNull(analysisEnd);
+  // Unknown (no window given, or no way to place the fill) is null, never false.
+  const inWindow = !end ? null : noRows ? true : !tail ? false : fillStart ? end >= fillStart : null;
+  if (inWindow) {
+    detail +=
+      ` The analysis window (through ${end}) ${noRows ? "is made of" : "reaches into"} those ` +
+      "declared zeros, so part of the movement measured here is the declaration, not the business.";
+  }
+  return {
+    kind: "sparse",
+    text,
+    short: noRows
+      ? "⚠ sparse: no source rows"
+      : tail
+      ? `⚠ sparse tail: last source row ${lastRow || "unknown"}`
+      : "sparse: zero-filled by declaration",
+    detail,
+    why: SPARSE_FILL_WHY,
+    cls: tail ? "sign-flag" : "dim",
+    edge: "through",
+    tail,
+    inWindow,
+    lastRow,
+    filled,
+  };
+}
+
+/* The short-series disclosures for one metric: at most one per edge. Scans
+   every grain rather than trusting `meta.grains[name]`, so a record filed
+   under a grain this build did not expect is still found. */
+function shortSeriesNotes(meta, name) {
+  const all = meta && meta.short_series;
+  if (!all || typeof all !== "object") return [];
+  const out = [];
+  Object.entries(all).forEach(([grain, rec]) => {
+    if (!rec || typeof rec !== "object") return;
+    const t = rec.trailing && rec.trailing.short && rec.trailing.short[name];
+    if (t) {
+      const n = fillCount(t.periods);
+      const reach = isoDateOrNull(rec.trailing.reach);
+      out.push({
+        kind: "short",
+        text: `⚠ series ends ${isoDateOrNull(t.ends) || "early"} — ${periodsPhrase(n, grain)} short of its grain's reach${reach ? ` (${reach})` : ""}`,
+        short: `⚠ series ends ${isoDateOrNull(t.ends) || "early"}`,
+        detail: "",
+        why: SHORT_SERIES_WHY,
+        cls: "sign-flag",
+        edge: "through",
+      });
+    }
+    const l = rec.leading && rec.leading.short && rec.leading.short[name];
+    if (l) {
+      const n = fillCount(l.periods);
+      const reach = isoDateOrNull(rec.leading.reach);
+      out.push({
+        kind: "short",
+        text: `⚠ series starts ${isoDateOrNull(l.starts) || "late"} — ${periodsPhrase(n, grain)} after the earliest series at its grain${reach ? ` (${reach})` : ""}`,
+        short: `⚠ series starts ${isoDateOrNull(l.starts) || "late"}`,
+        detail: "",
+        why: SHORT_SERIES_WHY,
+        cls: "sign-flag",
+        edge: "from",
+      });
+    }
+  });
+  return out;
+}
+
+/* `data_from` later than the loaded window allows for, or null. Only said
+   when `short_series` has not already said it about the same edge. */
+function dataFromNote(meta, name) {
+  const from = isoDateOrNull(meta && meta.data_from && meta.data_from[name]);
+  const start = isoDateOrNull(meta && meta.date_start);
+  if (!from || !start) return null;
+  const grain = (meta.grains && meta.grains[name]) || "day";
+  const earliest = firstWholePeriodStart(start, grain);
+  if (!earliest || from <= earliest) return null;
+  return {
+    kind: "from",
+    text: `⚠ series starts ${from} — later than the loaded window (${start})`,
+    short: `⚠ series starts ${from}`,
+    detail: "",
+    why: DATA_FROM_WHY,
+    cls: "sign-flag",
+    edge: "from",
+  };
+}
+
+/* Every range disclosure for one metric, in one list — what the Metric tab's
+   freshness rows, the RCA node header and the export each render, so none of
+   the three can carry a fact the others lack. */
+function seriesRangeNotes(meta, name, analysisEnd) {
+  const notes = [];
+  const sparse = sparseFillNote(meta, name, analysisEnd);
+  if (sparse) notes.push(sparse);
+  const short = shortSeriesNotes(meta, name);
+  notes.push(...short);
+  if (!short.some((n) => n.edge === "from")) {
+    const from = dataFromNote(meta, name);
+    if (from) notes.push(from);
+  }
+  return notes;
+}
+
+/* The same list for a node of an RCA result, placed against the analysis
+   window that node was actually measured over (its own snapped one where the
+   grain changed it). */
+function rcaNodeRangeNotes(meta, res, name) {
+  const node = ((res && res.nodes) || {})[name] || {};
+  const ew = node.effective_windows && node.effective_windows.analysis;
+  const end = (ew && ew.end) || (res && res.analysis_window && res.analysis_window.end) || null;
+  return seriesRangeNotes(meta, name, end);
+}
+
+/* The chip form (live surfaces): the sentence on hover. */
+function seriesRangeChipsHtml(notes, sep) {
+  return notes
+    .map(
+      (n) =>
+        `${sep}<span class="${n.cls}" title="${esc([n.detail, n.why].filter(Boolean).join("\n\n"))}">${esc(n.text)}</span>`,
+    )
+    .join("");
+}
+
+/* The flag form, for a row that *names* a metric without being its block — a
+   ranked cause, a parent in a child's contributions table. Warnings only. A
+   plain source metric has no Attribution-detail block of its own, so for the
+   metric most likely to be sparse (an event feed, a source by construction)
+   these rows are the only place an RCA mentions it. */
+function seriesRangeFlagsHtml(notes) {
+  return notes
+    .filter((n) => n.cls === "sign-flag")
+    .map(
+      (n) =>
+        ` <span class="cause-flag" title="${esc([n.text, n.detail, n.why].filter(Boolean).join("\n\n"))}">${esc(n.short)}</span>`,
+    )
+    .join("");
+}
+
+/* The printed form, for the export, which has no hover: one paragraph per
+   warning, optionally naming the metric it is about. Returns the inner HTML
+   of each paragraph; the caller wraps it in its own caveat markup. */
+function seriesRangeParagraphs(notes, name) {
+  return notes
+    .filter((n) => n.cls === "sign-flag")
+    .map(
+      (n) =>
+        `${name ? `<code>${esc(name)}</code>: ` : ""}<strong>${esc((n.detail ? n.short : n.text).replace(/^⚠\s*/, ""))}.</strong> ${esc([n.detail, n.why].filter(Boolean).join(" "))}`,
+    );
+}
+
+/* The tree-wide count for the header's context row: how many metrics end in
+   declared zeros. Null when none do — leading and interior fills are not a
+   freshness question and get no chip up there. */
+function sparseTailsSummary(meta) {
+  const fills = meta && meta.sparse_fills;
+  if (!fills || typeof fills !== "object") return null;
+  const names = Object.keys(fills).filter((name) => {
+    const n = sparseFillNote(meta, name);
+    return n && n.tail;
+  });
+  if (!names.length) return null;
+  return {
+    names,
+    text: `${names.length} sparse tail${names.length === 1 ? "" : "s"} zero-filled`,
+    title:
+      `${names.join(", ")}: declared \`sparse: true\`, and the periods after ` +
+      `${names.length === 1 ? "its" : "each one's"} last source row were filled with zero by ` +
+      "that declaration. Their cards and analyses show those zeros as values; a stale feed " +
+      "would look identical. Each metric's own tab names its last source row.",
+  };
+}
+
 /* ---------- reference-window sensitivity (roadmap S23) ----------
    Every RCA number is a contrast of two window means, and the bootstrap only
    resamples periods *inside* those windows. The engine re-runs the attribution
@@ -954,10 +1598,16 @@ function gapLineParts(name, gap) {
    rule for an agent. `gap_range` is a sensitivity band, never an interval —
    no surface may render it as one or add it to a `ci_95`. */
 const REFERENCE_SENSITIVITY_NOTE = {
+  // `stable` has no fixed sentence any more (grill 2026-10-05 M4). The engine
+  // answers `stable` when the gap's direction held and the top cause did not
+  // *change* — which includes a run with no top cause at all
+  // (`top_cause_stable: null`) and one where a single block of two answered.
+  // The old sentence claimed "the top cause and the gap's direction are the
+  // same under each neighbouring block" for all of them. `stableSummary`
+  // builds it from the two booleans and the count of blocks that answered.
   stable: {
     label: "Survives a moved reference window",
-    explains:
-      "The top cause and the gap's direction are the same under each neighbouring reference block the engine tried.",
+    explains: "",
   },
   unstable: {
     label: "Depends on the reference window",
@@ -978,10 +1628,107 @@ function fmtWindowRange(w) {
 /* One line per alternative block: where it was, and what it said. A block
    that could not answer says so with the engine's reason — "not checked" is
    never allowed to read as "checked and fine". */
+/* Why one alternative block gave no answer. `unavailable`: the block could not
+   be attributed at all (it does not fit the loaded history, or the engine
+   refused it). `gap_unavailable`: it was attributed, and the target has no
+   finite gap under it. A status this build cannot name is printed verbatim —
+   it is still not `ok`. */
+const REFERENCE_ALT_STATUS = {
+  unavailable: "not checked",
+  gap_unavailable: "attributed, but the target has no gap under this block",
+};
+
+function referenceAltStatusText(status) {
+  return REFERENCE_ALT_STATUS[status] || `not checked (${status == null ? "no status given" : status})`;
+}
+
+/* How many neighbouring blocks answered, out of how many were tried — from
+   `alternatives[]`, never assumed. Null when the payload lists none. */
+function referenceBlocksAnswered(rs) {
+  const alts = Array.isArray(rs && rs.alternatives) ? rs.alternatives.filter(Boolean) : [];
+  if (!alts.length) return null;
+  return { answered: alts.filter((a) => a.status === "ok").length, tried: alts.length };
+}
+
+function referenceBlocksPhrase(rs) {
+  const b = referenceBlocksAnswered(rs);
+  if (!b) return "";
+  const blocks = `neighbouring reference block${b.tried === 1 ? "" : "s"}`;
+  if (b.answered === b.tried) {
+    return b.tried === 1 ? `the one ${blocks} the engine tried` : `${b.tried === 2 ? "both" : `all ${b.tried}`} ${blocks} the engine tried`;
+  }
+  if (b.answered === 0) return `the ${b.tried} ${blocks} the engine tried, none of which answered`;
+  // "the same under 1 of 2" would read as "and different under the other".
+  return `the ${b.answered === 1 ? "one" : b.answered} that answered of the ${b.tried} ${blocks} the engine tried`;
+}
+
+/* The sentence for the blocks that gave no answer, or "". Its own sentence so
+   "not checked" is never a subordinate clause of "the same". */
+function referenceBlocksUnanswered(rs) {
+  const b = referenceBlocksAnswered(rs);
+  if (!b || b.answered === b.tried || b.answered === 0) return "";
+  const n = b.tried - b.answered;
+  return ` The other${n === 1 ? " block gave" : ` ${n} gave`} no answer, so nothing is claimed about ${n === 1 ? "it" : "them"}.`;
+}
+
+/* The `stable` sentence, claiming only what the two booleans support.
+   `top_cause_stable: null` means the published run ranked no cause, so there
+   was nothing to compare: the direction is all that was checked, and the
+   label says so rather than borrowing the ranking's. */
+function stableSummary(rs) {
+  const under = referenceBlocksPhrase(rs);
+  const scope = under ? ` under ${under}` : " under the neighbouring reference blocks the engine tried";
+  const rest = referenceBlocksUnanswered(rs);
+  const top = rs.top_cause_stable;
+  const sign = rs.gap_sign_stable;
+  // `compared` is the engine saying which of the two it actually checked
+  // (grill 2026-10-05 M4). Where it is present it decides; a payload from an
+  // engine too old to send it falls back to reading `top_cause_stable`.
+  const compared = Array.isArray(rs.compared) ? rs.compared : null;
+  const topCompared = compared ? compared.includes("top_cause") : top !== null;
+  if (top === true && sign === true && topCompared) {
+    return {
+      label: "Survives a moved reference window",
+      summary: `The top cause and the gap's direction are the same${scope}.${rest}`,
+    };
+  }
+  // Strictly null, or left out of `compared`: that is the engine saying "no
+  // top cause". A field that is simply absent is not that statement and
+  // falls through.
+  if (sign === true && (compared ? !topCompared : top === null)) {
+    return {
+      label: "Gap direction survives a moved reference window",
+      summary:
+        `The gap's direction is the same${scope}. The published run ranked no cause, so there ` +
+        `was no top cause to compare: this says nothing about a ranking.${rest}`,
+    };
+  }
+  // `stable` with neither boolean confirming it: a newer engine, or a payload
+  // this build misreads. Say what was reported and claim nothing more.
+  const facts = referenceFacts(rs);
+  return {
+    label: "Reported stable under a moved reference window",
+    summary:
+      `The engine reports this answer as stable${scope}` +
+      `${facts ? ` (${facts})` : ", without saying what it compared"}.${rest}`,
+  };
+}
+
+/* The two booleans in words, for a status this build cannot name. */
+function referenceFacts(rs) {
+  const word = (v, same, changed) => (v === true ? same : v === false ? changed : null);
+  return [
+    word(rs.top_cause_stable, "top cause unchanged", "top cause changes"),
+    word(rs.gap_sign_stable, "gap direction unchanged", "gap direction changes"),
+  ]
+    .filter(Boolean)
+    .join(", ");
+}
+
 function referenceSensitivityDetails(rs, fmtNum) {
-  return (rs.alternatives || []).map((a) => {
+  return (rs.alternatives || []).filter(Boolean).map((a) => {
     const where = `${a.label}${a.reference_window ? ` (${fmtWindowRange(a.reference_window)})` : ""}`;
-    if (a.status !== "ok") return `${where}: not checked — ${a.reason || "no answer"}`;
+    if (a.status !== "ok") return `${where}: ${referenceAltStatusText(a.status)} — ${a.reason || "no reason given"}`;
     const parts = [];
     if (rs.top_cause != null) {
       parts.push(
@@ -1002,20 +1749,50 @@ function referenceSensitivityDetails(rs, fmtNum) {
 function referenceSensitivityNote(res, fmtNum) {
   const rs = res && res.reference_sensitivity;
   if (!rs) return null;
-  const entry = REFERENCE_SENSITIVITY_NOTE[rs.status] || REFERENCE_SENSITIVITY_NOTE.unavailable;
-  let summary = entry.explains;
-  if (rs.status === "unstable") {
+  const known = REFERENCE_SENSITIVITY_NOTE[rs.status];
+  let label, summary;
+  if (!known) {
+    // A status this build cannot name is shown verbatim, the way every other
+    // table in this file does it. It used to fall through to the
+    // `unavailable` entry and render as "not checked" — a specific claim
+    // about what the engine did, made on behalf of a value nobody here read.
+    const facts = referenceFacts(rs);
+    const under = referenceBlocksPhrase(rs);
+    label = `Reference sensitivity: ${rs.status == null ? "no status given" : rs.status}`;
+    summary =
+      "This build does not recognise that reference-sensitivity status, so it is shown " +
+      "verbatim. It is not a verdict that the answer survives a moved reference window." +
+      `${rs.reason ? ` The engine's reason: ${rs.reason}.` : ""}` +
+      `${facts ? ` What the engine reported${under ? ` under ${under}` : ""}: ${facts}.` : ""}` +
+      referenceBlocksUnanswered(rs);
+  } else if (rs.status === "stable") {
+    ({ label, summary } = stableSummary(rs));
+  } else if (rs.status === "unstable") {
     const what = [];
     if (rs.top_cause_stable === false) what.push("the top cause changes");
     if (rs.gap_sign_stable === false) what.push("the gap changes direction");
-    summary = `Moving the reference block: ${what.join(" and ") || "the answer changes"} — read the published ranking as one reading among several, not the finding.`;
-  } else if (rs.status === "unavailable" && rs.reason) {
-    summary = `${entry.explains} ${rs.reason}.`;
+    const under = referenceBlocksPhrase(rs);
+    label = known.label;
+    summary =
+      `Moving the reference block: ${what.join(" and ") || "the answer changes"} — read the published ranking as one reading among several, not the finding.` +
+      `${under ? ` Compared against ${under}.` : ""}${referenceBlocksUnanswered(rs)}`;
+  } else {
+    label = known.label;
+    summary = rs.reason ? `${known.explains} ${rs.reason}.` : known.explains;
   }
-  const range = rs.gap_range
-    ? `Gap across the blocks tried: ${fmtNum(rs.gap_range[0])} to ${fmtNum(rs.gap_range[1])} — a sensitivity band, not an interval.`
-    : "";
-  return { status: rs.status, label: entry.label, summary, range, details: referenceSensitivityDetails(rs, fmtNum) };
+  const gr = rs.gap_range;
+  const range =
+    Array.isArray(gr) && gr.length === 2 && gr.every((v) => typeof v === "number" && Number.isFinite(v))
+      ? `Gap across the blocks tried: ${fmtNum(gr[0])} to ${fmtNum(gr[1])} — a sensitivity band, not an interval.`
+      : "";
+  return {
+    status: rs.status,
+    known: !!known,
+    label,
+    summary,
+    range,
+    details: referenceSensitivityDetails(rs, fmtNum),
+  };
 }
 
 /* The block for the live Root cause tab and the export. `cls.warn` is the
@@ -1027,9 +1804,11 @@ function referenceSensitivityHtml(res, cls) {
   if (!n) return "";
   const esc = cls.esc;
   const klass = n.status === "stable" ? cls.ok : cls.warn;
+  // An unknown status takes the caveat channel and the "not said" mark: it
+  // may be good news, and this build cannot tell.
   const mark = n.status === "stable" ? "✓" : n.status === "unstable" ? "⚠" : "◌";
   const details = n.details.length
     ? `<br><span class="sens-details">${n.details.map((d) => esc(d)).join("<br>")}</span>`
     : "";
-  return `<p class="${klass} sens-${esc(n.status)}">${mark} <strong>${esc(n.label)}.</strong> ${esc(n.summary)}${n.range ? ` ${esc(n.range)}` : ""}${details}</p>`;
+  return `<p class="${klass} sens-${n.known ? esc(n.status) : "unknown"}">${mark} <strong>${esc(n.label)}.</strong> ${esc(n.summary)}${n.range ? ` ${esc(n.range)}` : ""}${details}</p>`;
 }

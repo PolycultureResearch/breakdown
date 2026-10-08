@@ -54,7 +54,10 @@ the node's fit through the analysis window (roadmap S24; `how_to_read` carries a
 static clause on what an intervention is — a term in the gap that is neither a
 parent nor model structure, and not in `ranked_causes` — and one line per node
 where a `claim`, an `indicator_unchanged` zero or a dropped intervention changes
-what may be said; `get_tree` and `explain_metric` list the declarations), and a
+what may be said; the static clause also says an intervention's `ci_95` is the
+step size's posterior alone, with no window resampling in it, so its width is
+not comparable with a contribution's, and names the three `ci_status` values
+that null one; `get_tree` and `explain_metric` list the declarations), and a
 node whose parents move together with its
 `collinearity_status` and `collinearity_warnings`. That last one is the
 warning most specific to how an assistant reads a tree: it says the node's
@@ -75,6 +78,16 @@ direction survive moving the reference window to a neighbouring block — with
 its `alternatives` intact, because a verdict of `unstable` without the block
 that changed the answer leaves the agent nothing to say about *what* changed;
 `how_to_read` adds that `gap_range` is a sensitivity band, never an interval.
+Its `compared` list says what the verdict is about: `["gap_sign"]` alone means
+the published run ranked no cause, so a `stable` there speaks for the gap's
+direction and must not be narrated as a top cause surviving.
+
+A `slice_metric` result carries `rollup` — which side folded the values outside
+`top_k` into `__other__`, the data source's query (`where: sql`, with
+`n_distinct` and `n_folded`) or the engine after a whole fetch (`where:
+client`, with the `reason`). Its `how_to_read` says the one thing an assistant
+needs about it: the numbers are the same either way, so `where` and `reason`
+are plumbing and never a caveat on the result.
 
 `get_tree` carries `short_series` when, and only when, some metric falls
 short of its grain's reach at either end (`{grain: {trailing | leading:
@@ -126,6 +139,32 @@ the SDK hand the text to the caller rather than keeping it in the server log.
 Genuine bugs are the other case and stay deliberately terse — `Error
 executing tool run_rca` with the traceback in the server's log, because there
 is nothing there for an assistant to fix.
+
+**A tool refuses exactly what the HTTP route refuses, in the same words.**
+Whatever `POST /rca`, `/simulate` or `/rca/{name}/slices` would answer with a
+422 — a window with no whole period at a metric's grain, a parent whose series
+does not overlap its child's, a node with too little history, a sampler that
+failed, a sliced query the data source rejected — the matching tool returns as
+an anticipated failure carrying the same sentence. (Through v0.2.0 the tools
+recognized fewer error classes than the routes, so some of these arrived as
+the bare `Error executing tool run_whatif`.) A failed sliced query names the
+metric and the dimension and includes the data source's own message.
+
+**One refusal is about the moment, not the request.** Engine work cannot be
+interrupted, so when a client gives up on a long `run_rca` the analysis keeps
+running on the server until it finishes. A call that arrives on the same tree
+meanwhile, from any client or from the HTTP API (where it is a 409), is
+refused rather than started beside it:
+
+```
+Error executing tool run_rca: Tree 'revenue' is still finishing an analysis
+whose caller went away (engine threads cannot be cancelled). Retry in a
+moment, once it completes. Nothing was run for this call; the same call will
+work once the earlier analysis finishes.
+```
+
+The retry is cheap when it lands: the abandoned run's fits are cached, so the
+repeated call is the fast path.
 
 ## Connecting
 
@@ -297,7 +336,12 @@ reproducing by hand:
 `/mcp` runs whole analyses, so exposing it off loopback without a gate hands
 anyone who finds the URL your tree and its data. Set `BREAKDOWN_API_TOKEN`
 and `/mcp` requires `Authorization: Bearer <token>`. That one variable gates
-this endpoint and nothing else, which is the case it was built for. See
+this endpoint and no other route, which is the case it was built for (on the
+routes it leaves open it hides the query text, raw load errors and `/health`'s
+metric names from callers who do not present it). Because every MCP caller has
+presented the token whenever one is set, the tools carry what those routes
+withhold: `list_trees` shows a failed tree's own error message, and a failed
+`slice_metric` the data source's. See
 [Authentication](deploying.md#authentication) for gating the rest of the API
 too.
 

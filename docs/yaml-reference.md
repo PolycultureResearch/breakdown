@@ -51,6 +51,7 @@ provider:
   type: mock           # mock | local | cloud | dbt | warehouse | duckdb | none
   project_path: "..."  # required for type: local and type: dbt
   data_dir: "..."      # required for type: duckdb: a folder of .csv/.parquet exports (relative to the tree file)
+  allow_external_access: false  # type: duckdb only: true lets bindings read outside data_dir (other folders, https://, s3://)
   target: "..."        # optional for type: dbt (defaults to the profile's target)
   profiles_dir: "..."  # optional for type: dbt (defaults to $DBT_PROFILES_DIR, then ~/.dbt)
   environment_id: "..."  # required for type: cloud
@@ -318,13 +319,93 @@ the node's `name`, since there is no manifest to reconcile `source` against.
 series; `bind.sql` is a relation the binding aggregates), and handing one to
 the other would produce a wrong shape rather than an error. **A folder that is
 missing, empty, or holds two files with one stem** (`orders.csv` beside
-`orders.parquet`) is refused by name at first use.
+`orders.parquet`) is refused by name at first use, and by `breakdown check`
+before that.
+
+**Names.** `relation` is the file's stem exactly as the folder shows it, and
+breakdown quotes it for you, so `orders-2025.csv`, `2025_orders.csv` and
+`Orders Export.csv` bind as `relation: orders-2025`, `relation: 2025_orders`
+and `relation: Orders Export`. Columns are different: every column field of a
+binding (`time_column`, `measure`, `grain_key`, a dimension's `column`, …) is
+read as SQL, so a header with a space in it has to be quoted as an identifier
+inside the YAML string. An unquoted one is refused at parse with the line to
+write:
+
+```yaml
+provider:
+  type: duckdb
+  data_dir: ./exports
+
+metrics:
+  - name: units
+    source: exports.orders.units
+    bind:
+      relation: Orders Export
+      grain_key: order_id
+      time_column: '"Order Date"'
+      agg: sum
+      measure: '"Unit Qty"'
+```
+
+**Dates, and `date_format`.** A CSV has no types. `2025-01-31` (year first,
+with or without a time) can only be read one way, and so can a column where
+some day is above 12 (`13/01/2025` settles that the day comes first). But a
+monthly export of `01/01/2025 … 12/01/2025` reads as twelve months or as the
+first twelve days of January, and nothing in the file says which. breakdown
+inspects the **text** of each binding's `time_column`. The dates are ambiguous
+when no day or month field ever exceeds 12, or when the year has two digits.
+breakdown then **refuses the load** and prints the line to add, rather than let
+the CSV reader pick one silently:
+
+```yaml
+provider:
+  type: duckdb
+  data_dir: ./exports
+
+metrics:
+  - name: revenue
+    source: exports.rev.revenue
+    grain: month
+    bind:
+      relation: rev
+      grain_key: id
+      time_column: month
+      date_format: '%m/%d/%Y'      # month first; '%d/%m/%Y' is day first
+      agg: sum
+      measure: revenue
+```
+
+`date_format` is a strptime-style format (`%Y %m %d %H %M %S %y`, and the rest
+of [DuckDB's specifiers](https://duckdb.org/docs/sql/functions/dateformat)).
+Once declared, the column is read as text and **every non-empty value must
+match it**: a row that does not is refused by file, column and value, never
+dropped. It applies to the binding's `time_column` when that is a plain column
+of a data file the binding reads (through `relation`, or a table named in
+`bind.sql`); for a time column that `bind.sql` derives or renames, parse it
+there with `strptime()`. A Parquet file stores a typed date and needs nothing;
+declaring a format on one is refused. `date_format` is a `duckdb` field and is
+refused under every other provider.
+
+**Time zones.** Timestamps with an offset or a `Z` are bucketed by their **UTC**
+calendar date, whatever time zone the server process runs in. A column that
+means local wall-clock time should be exported without an offset (or as a
+plain date), which no zone touches.
+
+**The folder is a boundary.** By default the connection can read only the
+files inside `data_dir`: a `relation` or `bind.sql` that names another path, an
+`https://` URL or an `s3://` object is refused, and tree SQL cannot switch that
+off. A tree that reads from object storage or a second folder on purpose says
+so with `allow_external_access: true` under `provider:`, which lifts the
+restriction for that tree and logs a warning at load. See
+[the trust model](deploying.md#the-duckdb-provider-what-a-tree-file-can-read).
 
 The files are the artifact, so this provider is **never wrapped in the
 snapshot cache** (see [Snapshots](deploying.md#snapshots-fetch-once-refit-forever)):
-re-export the CSV and the next start reads it. Moving to a live source later
-is a `provider:` change; each `bind:` stays as written, reviewed for dialect
-differences.
+re-export the CSV and the next start reads it. **A file that changes while the
+server is running is not picked up**: the series were read at startup, so a
+slice requested after the change is refused, naming the file, until the server
+is restarted. Moving to a live source later is a `provider:` change; each
+`bind:` stays as written, reviewed for dialect differences.
 
 For `local`, `cloud` and `dbt`, the metric queried from the semantic layer is the last segment of `source` (e.g., `source: jaffle_shop.metrics.revenue` queries the metric `revenue`); the result is exposed in the tree under `name`. For `warehouse`, each metric carries its own `sql` (see the `metrics` table) and is keyed by `name`; for `duckdb`, each carries its own `bind:` and is likewise keyed by `name`. The data window defaults to `2024-01-01`–`2024-04-09` and is set with `--start-date` / `--end-date` (or the `BREAKDOWN_START_DATE` / `BREAKDOWN_END_DATE` / `BREAKDOWN_TREE` environment variables).
 
@@ -342,7 +423,7 @@ Each metric entry supports the following fields:
 | `kind` | string | Temporal aggregation kind: `flow` (default, sums over time), `stock` (a point-in-time level, takes the last value), or `rate` (a ratio, never auto-aggregated). See [Grains](#grains). |
 | `sparse` | bool | `kind: flow` only. The source emits a row only when something happened (an event count, a comms log), so a period with no row inside the loaded window **is a zero**, at every edge — including the trailing run, which is otherwise trimmed as "not loaded yet". Refused on a stock, a rate, or a derived node. Every filled period is counted and named at load (`sparse_fills` on `/meta`, `/health` and MCP `get_tree`). See [Sparse sources](#sparse-sources-an-absent-period-is-a-zero). |
 | `sql` | string | For the `warehouse` provider: a SQL query returning columns `date` and `value`, with `:start_date` / `:end_date` named parameters, one row per period at the metric's `grain`. Refused under `duckdb` (use `bind.sql`); ignored by other providers. |
-| `bind` | dict | How this node gets its series, per node: a `relation` (a table, or a file stem under `duckdb`) **or** an inline `sql` relation, the `grain_key` that makes it one row per grain, its `time_column`, an `agg` (`sum` \| `count` \| `count_distinct` \| `ratio` \| `average` \| `last`) with `measure` — or `numerator` and `denominator` for `ratio` — and optional `dimensions` for slicing and `entity_key` / `entity_grain` for distinct counts. Under `dbt` it overrides what the manifest declares; under `duckdb` it is required on every fetched node. Mutually exclusive with `sql`. See [CSV or Parquet on-ramp](#csv-or-parquet-on-ramp-provider-duckdb) and the filter and distinct-count passages under [`provider`](#provider). |
+| `bind` | dict | How this node gets its series, per node: a `relation` (a table, or a file stem under `duckdb`) **or** an inline `sql` relation, an optional `date_format` for a CSV time column (`duckdb` only), the `grain_key` that makes it one row per grain, its `time_column`, an `agg` (`sum` \| `count` \| `count_distinct` \| `ratio` \| `average` \| `last`) with `measure` — or `numerator` and `denominator` for `ratio` — and optional `dimensions` for slicing and `entity_key` / `entity_grain` for distinct counts. Under `dbt` it overrides what the manifest declares; under `duckdb` it is required on every fetched node. Mutually exclusive with `sql`. See [CSV or Parquet on-ramp](#csv-or-parquet-on-ramp-provider-duckdb) and the filter and distinct-count passages under [`provider`](#provider). |
 | `description` | string | Optional human-readable description |
 | `parents` | list | Names of metrics that causally influence this one |
 | `formula` | string | Arithmetic expression over parent names (e.g., `"order_count * average_order_value"`). Enables Shapley attribution. |
@@ -536,9 +617,9 @@ Rules the parser enforces: `name` is an identifier and is unique among the node'
 
 **What you get back.** The fit's `interventions` list (snapped dates, the axis of the summary's `beta_intervention_raw[i]` rows) and `dropped_interventions` — the ones whose indicator was constant over the fit window (no instance inside it, or on for every period of it), each with a reason saying where the effect went — on `POST /analyze/{name}`, `GET /metrics/{name}`, every RCA node, `explain_metric` and `run_rca`. On an RCA node each fitted intervention reports `estimate`, `ci_95`, `ci_status`, `prob_same_direction` and `window_delta` — the fraction of the analysis window it was on minus the fraction of the reference window — and enters the identity `unexplained = gap − Σ contributions − trend − seasonal − Σ interventions`. It is **not** in `ranked_causes` (it is not a metric to drill into) and not in `components` (trend and seasonal are nobody's fault; a flip is somebody's decision). The posterior predictive check runs on the mean function *with* the steps, so a pass is evidence about the residual regime, not about the steps, whose size the model was told; `ppc.conditioned_on_interventions` names them. See [`docs/model.md`](model.md#declared-interventions-a-step-the-author-dates-and-the-model-sizes).
 
-**`learn_from: history` (default) vs `window`.** RCA fits every node on data strictly before the analysis window, so an intervention with no instance in that history — a flip that happens only inside the window you are analysing — is a constant column and is **dropped by name**; its effect is then in `unexplained` or in the parents that moved with it, which is the finding RCA exists to report. `learn_from: window` is the opt-in exception for sizing a one-off from the event itself (Box and Tiao's intervention analysis): that node's RCA fit is extended *through* the intervention's periods — the analysis window's end for a `step`, `until` for a `pulse` — with the indicator in the design matrix. Three things follow, each stated on the payload: the estimate is the shift coincident with the date, not separable from anything else dated the same (`interventions[].claim`); the node's other coefficients were fitted on a window containing the anomaly (`fit_window.extended_for`); and the interval does not include forecast uncertainty about the regime it stepped from (roadmap 3.4/S16). It is per intervention and per node, never tree-wide.
+**`learn_from: history` (default) vs `window`.** RCA fits every node on data strictly before the analysis window, so an intervention with no instance in that history — a flip that happens only inside the window you are analysing — is a constant column and is **dropped by name**; its effect is then in `unexplained` or in the parents that moved with it, which is the finding RCA exists to report. `learn_from: window` is the opt-in exception for sizing a one-off from the event itself (Box and Tiao's intervention analysis): when the analysis window contains the intervention, that node's RCA fit is extended *through* its periods — the analysis window's end for a `step`, `until` for a `pulse` — with the indicator in the design matrix. Outside that analysis the declaration changes nothing: a `step` dated before the analysis window is already in history and is sized from history, and a `step` or `pulse` dated after it has no instance to learn from and is dropped by name, with the fit ending before the analysis window as usual. Three things follow, each stated on the payload: the estimate is the shift coincident with the date, not separable from anything else dated the same (`interventions[].claim`); the node's other coefficients were fitted on a window containing the anomaly (`fit_window.extended_for`); and the interval does not include forecast uncertainty about the regime it stepped from (roadmap 3.4/S16). It is per intervention and per node, never tree-wide.
 
-**`fit_start`.** The cheaper remedy when you do not want to model the old regime at all: the node's fit uses only whole periods starting on or after the date, and the default RCA reference window will not start before it. Everything else in the tree keeps its history. The engine refuses a fit this leaves shorter than 10 periods, with the message naming `fit_start` as the cause.
+**`fit_start`.** The cheaper remedy when you do not want to model the old regime at all: the node's fit uses only whole periods starting on or after the date, and the default RCA reference window will not start before it. A reference you pass explicitly that starts earlier is refused before any fit when the node is the RCA target (a 422 naming `fit_start` and the earliest start that works); on an ancestor, that node alone reports `status: "reference_before_fit_window"` and the rest of the analysis runs. Everything else in the tree keeps its history. The engine refuses a fit this leaves shorter than 10 periods, with the message naming `fit_start` as the cause.
 
 ## Grains
 
@@ -596,8 +677,11 @@ labeled by period start.
   zero days, which is indistinguishable from a real collapse, and RCA will
   happily name it as the root cause.
 - **A query returning no rows at all** keeps the full zero spine for flows and
-  draws no leading warning. An all-quiet window is a legitimate flow series, and
-  the provider that knows the result was empty says so itself.
+  draws no leading warning. An all-quiet window is a legitimate flow series, so
+  it is warned about by name (`returned no rows for [start, end]`) rather than
+  refused. When **every** fetched metric returns no rows, the window has missed
+  the data, and the tree is refused at load with the remedy: pass
+  `--start-date` / `--end-date` matching the dates the source holds.
 
 **Sparse sources: an absent period is a zero.** <a id="sparse-sources-an-absent-period-is-a-zero"></a>
 The trailing rule above is the right default and the wrong answer for one kind

@@ -85,7 +85,7 @@ variables:
 
 | Variable | Effect |
 |---|---|
-| `BREAKDOWN_API_TOKEN` | The secret itself. Set alone, it gates only `/mcp`. Every JSON data route stays open. This is the default behavior and is unchanged. |
+| `BREAKDOWN_API_TOKEN` | The secret itself. Set alone, it gates only `/mcp`; every JSON data route stays open, with the [redactions below](#what-a-token-hides-on-routes-that-stay-open) applied to callers who do not present it. |
 | `BREAKDOWN_REQUIRE_AUTH` | Extends the same bearer check to every route except a small allow-list. Requires `BREAKDOWN_API_TOKEN`. |
 
 Callers present it as a standard bearer header:
@@ -152,9 +152,32 @@ probe passes. The `status` field is where the truth is; read the body, not the
 code. This is the same design that keeps a provider outage from looking like a
 dead container, and it costs exactly this one confusing case.
 
-**Query redaction, independent of the flag.** Whenever `BREAKDOWN_API_TOKEN` is
-set and a caller does not present it, `GET /dag` returns each node's `sql` and
-`bind` as `null` rather than their real contents. `/dag` has to stay reachable
+### What a token hides on routes that stay open
+
+One condition decides all of it: **a token is configured and the request does
+not present it.** That holds for an unauthenticated caller of an open data
+route in token-only mode, and for any caller of `/health` or `/manifest` under
+`BREAKDOWN_REQUIRE_AUTH`. With no token set (the laptop default) nothing below
+is hidden from anyone, and a request that presents the token always gets the
+full response.
+
+| What | Where | Without the token |
+|---|---|---|
+| A definition's `sql` and `bind` | `GET /dag`, `GET /metrics/{name}` | `null` |
+| The generated query | `GET /metrics/{name}/query` | 403 |
+| A tree's raw load or parse error | the 503 on every data route, `load_error` on `GET /trees` and `POST /trees/{id}/load`, `discovery_error` on `GET /trees` | its classification (`parse_error`, `data_load_error`, `discovery_error`) in a sentence; the server's path to the tree is replaced by `<path>` |
+| The driver's message on a failed slice query | the 422 from `POST /rca/{name}/slices` | omitted; the metric, dimension and error class remain |
+| Metric names | `GET /health` | `null`, with counts under `withheld` ([below](#what-the-open-routes-carry)) |
+
+The raw error is hidden because it is the provider's or the parser's own text:
+on a failed load it quotes the generated SQL and names the file it could not
+read. The MCP tools sit behind the token whenever one is set, so they always
+carry the full text.
+
+**Query redaction.** Whenever `BREAKDOWN_API_TOKEN` is
+set and a caller does not present it, `GET /dag` and `GET /metrics/{name}`
+return a node's `sql` and `bind` as `null` rather than their real contents.
+`/dag` has to stay reachable
 for the unauthenticated UI to draw anything, but those two blocks are the only
 parts of a definition that are infrastructure rather than modeling. `sql` is the
 metric's whole statement, and `bind` carries the fully-qualified table name plus
@@ -168,7 +191,28 @@ token set (the laptop default) nothing is redacted.
 there would be indistinguishable from a provider that legitimately has no
 query. (Through v0.1.1 that route had no gate at all, handing out the exact
 statement `/dag` had just redacted; the UI's *show query* panel now needs the
-token wherever the redaction is in force.)
+token wherever the redaction is in force. And through v0.2.0
+`GET /metrics/{name}` returned `bind` whole to the caller `/dag` had redacted
+it for.)
+
+### What the open routes carry
+
+`/health` and `/manifest` stay open under `BREAKDOWN_REQUIRE_AUTH`, so they
+follow one rule: **nothing that names the tree's metrics, and no raw error
+text, reaches a caller who has not presented a configured token.**
+
+- `/manifest` carries deployment identity only (version, demo labels, the
+  default tree's id, title, provider, metric count and state), for every
+  caller.
+- `/health` always carries `status`, `provider`, `metrics` (a count), `state`
+  and `data_through`, so a monitor needs no credentials to see a degraded or
+  stale serve. Its four fields that name metrics (`data_through_bounded_by`,
+  `short_series`, `sparse_fills`, `no_nonzero_data`) are `null` without the
+  token, and `withheld` gives the number of metrics each would have named. A
+  monitor that wants the names sends the bearer header.
+- A degraded `/health` or `/manifest` carries `error_kind` and a generic
+  sentence, never the exception text, for every caller including one with the
+  token. A liveness body should not vary with who asks.
 
 **What this is not.** One shared secret, no per-user identity, no audit trail,
 and no revocation short of rotating the value and restarting. It is a down
@@ -198,8 +242,9 @@ The [`compose.yaml`](../compose.yaml) mounts `./tree.yml` read-only at `/config/
 > variables unset means the whole API is open to whatever can reach the host.
 > That is a choice, and it should be a deliberate one. See
 > [Authentication](#authentication) for exactly what each level gates: the token
-> alone gates `/mcp`, redacts `sql`/`bind` from `/dag` and gates
-> `/metrics/{name}/query`; `BREAKDOWN_REQUIRE_AUTH`
+> alone gates `/mcp`, redacts `sql`/`bind` from `/dag` and
+> `/metrics/{name}`, gates `/metrics/{name}/query` and replaces raw load errors
+> with their classification; `BREAKDOWN_REQUIRE_AUTH`
 > extends the bearer check to every route but `/`, `/health` and `/ui`.
 > A non-loopback bind with neither variable set is permitted but logged
 > loudly at startup, naming exactly what is reachable.
@@ -216,8 +261,8 @@ The [`compose.yaml`](../compose.yaml) mounts `./tree.yml` read-only at `/config/
 Three things differ from a laptop run:
 
 - **Credentials must be headless.** The Databricks CLI OAuth `profile:` flow opens a browser, which a container can't. Use `token: ${DATABRICKS_TOKEN}` in the tree's provider block instead (see [`provider`](yaml-reference.md#provider) for `${VAR}` interpolation). If you must reuse a profile, mount both `~/.databrickscfg` and `~/.databricks/token-cache.json` read-only into the container.
-- **Startup failures degrade, not crash.** If the provider is unreachable (bad token, warehouse down), the server still starts: `GET /health` returns `{"status": "degraded", "error": …}`, data endpoints return 503, and the UI shows the error with a pointer to `breakdown doctor`. Fix the config and restart. There is no crash-loop to debug through.
-- **A healthy serve can still be stale.** `GET /health` also carries `data_through`, the date the loaded data runs through (the earliest metric's last covered date, so a frozen feed shows), `data_through_bounded_by` (which metric holds it there), and `short_series` (every metric that stops before its grain's reach, and by how much). A serve that has been up for a week on data that ends a week ago answers `ok` — point your monitor at `data_through` as well as `status` if that matters to you. Since per-metric windows a frozen feed bounds only the analyses that read it; the other metrics keep their range, and the as-of date stays at the earliest edge so the monitor still sees the feed stop.
+- **Startup failures degrade, not crash.** If the provider is unreachable (bad token, warehouse down), the server still starts: `GET /health` returns `{"status": "degraded", "error": …}`, data endpoints return 503, and the UI shows the error with a pointer to `breakdown doctor`. (With a token configured, a caller who does not present it sees the error's classification rather than the provider's message; the message is in the server log.) Fix the config and restart. There is no crash-loop to debug through.
+- **A healthy serve can still be stale.** `GET /health` also carries `data_through`, the date the loaded data runs through (the earliest metric's last covered date, so a frozen feed shows), `data_through_bounded_by` (which metric holds it there), `short_series` (every metric that stops before its grain's reach, and by how much) and `no_nonzero_data` (every metric whose loaded series is zero or undefined throughout, which is what a window that misses the data looks like). `data_through` is `null` when no metric has a value at all, never the end of the window you asked for. A serve that has been up for a week on data that ends a week ago answers `ok` — point your monitor at `data_through` as well as `status` if that matters to you. Since per-metric windows a frozen feed bounds only the analyses that read it; the other metrics keep their range, and the as-of date stays at the earliest edge so the monitor still sees the feed stop.
 - **The port is published, so the API is exposed.** The compose file passes the access-control variables through, but it cannot set them. If you export nothing, nothing is gated. See [Authentication](#authentication) above.
 
 ---
@@ -231,6 +276,20 @@ uv run breakdown doctor --tree path/to/my_tree.yml
 ```
 
 It walks the provider's auth chain step by step (tree parses → env vars set → CLI/profile/token valid → connection opens → every metric's query actually runs) and prints `[PASS]`/`[FAIL]` per step with copy-paste remediation for each failure. Exit code is non-zero if anything failed. A `[WARN]` is a result worth reading, not a failure, and does not change the exit code. Probes run over the last 7 days by default; override with `--start-date`/`--end-date`.
+
+**Pass the window your data covers.** A check that finds no rows has checked
+nothing, and says so instead of passing. For the `dbt` and `duckdb` providers,
+`grain claims hold` and `metric sql runs` **fail** when every relation is
+empty over a window you gave (a server started on that window would have
+nothing to load), are **skipped** with the command to run when the empty
+window was doctor's own 7-day default, and **warn**, naming the metrics, when
+some relations have rows and others do not:
+
+```
+[SKIP] grain claims hold — all 2 relation(s) returned no rows over the default probe window [2026-09-29, 2026-10-06] — nothing was checked
+       No window was given, so doctor looked at the last 7 days only. Pass the dates your data covers to run this check:
+       breakdown doctor --tree <tree> --start-date YYYY-MM-DD --end-date YYYY-MM-DD
+```
 
 Two mode-specific checks ride along. A cold-start tree (`provider: none`) gets its declarations validated instead of a connection probe. And when you pass an explicit `--start-date`/`--end-date` window, the doctor adds two reports: fit readiness, each metric's whole-period count against the 10-period fit minimum, which is the graduation check for a tree [moving from cold start to fitted mode](yaml-reference.md#cold-start-mode-what-if-with-no-data); and history headroom, whether the provider has history before your `--start-date`. Breakdown trains on everything you load, so an earlier start date strengthens every fit (and the default RCA reference windows) at no cost beyond fetch time.
 
@@ -248,7 +307,10 @@ For the `dbt` provider, `doctor` walks manifest → profile → connection →
 bindings → dimensions → grain claims → filters → entity grain → metric SQL
 runs, in the order a failure cascades. The middle three are the ones that pay
 for themselves. A declared dimension that does not exist becomes a startup
-failure rather than a 500 on the first *slice by* click. The grain claim
+failure rather than an error on the first *slice by* click: the check confirms
+the dimension is on the binding and then runs one sliced query per declared
+dimension over the probe window, so a `column:` the relation does not have
+fails here, with the source's own message. The grain claim
 (`count(*)` vs `count(distinct grain_key)`) catches a relation that is not one
 row per grain, the silent fan-out that multiplies every aggregate over it,
 which neither MetricFlow nor Cube checks. And `filters narrow` counts
@@ -262,6 +324,38 @@ after: `data files` (the folder exists, and which relation each file became)
 and then exactly the binding checks above, run by the same code. A
 hand-exported CSV with a duplicated `order_id` fails `grain claims hold` the
 way a fact table would.
+
+### The `duckdb` provider: what a tree file can read
+
+A `bind.sql` is SQL, and a `relation` may be a table function, so a tree file
+under `provider: duckdb` is code that runs inside the server. What that code
+can reach is bounded:
+
+- **Only `data_dir`, by default.** The connection is opened with DuckDB's
+  `allowed_directories` set to the resolved `data_dir`, `enable_external_access`
+  off, and the configuration locked, in that order. A binding that names a file
+  elsewhere on disk (`read_csv_auto('/etc/…')`, a `../` path), an `https://`
+  URL or an `s3://` object is refused with a message naming the folder, and no
+  SQL in the tree can turn the restriction off.
+- **`allow_external_access: true` lifts it, per tree.** Set it under
+  `provider:` for a tree that reads object storage or another folder on
+  purpose. The server logs a warning at load naming the folder that is no
+  longer a boundary. With it on, the tree file can read any local file the
+  server process can, and reach any network address it can: treat such a tree
+  as trusted exactly as far as the process is, and do not turn it on for a
+  directory of trees that several people can write to.
+- **What is not bounded either way.** Request parameters never reach SQL as
+  text (dates are parsed, dimensions are looked up in the declared set, pinned
+  slice values are bound as literals), so the tree file is the whole surface. A
+  tree can still read every file *inside* `data_dir`, including ones no binding
+  was meant to expose, so keep the folder to the exports the tree serves. The
+  other providers run the tree's SQL on your warehouse under the credentials
+  you configured; their boundary is that role's grants, not anything here.
+
+A data file that is rewritten or removed while the server runs is not reloaded.
+The series were fetched at startup; a slice requested afterwards is refused
+(`422`, naming the file) until the server restarts, because slices read from
+the new file would not sum to the totals read from the old one.
 
 ```
 [PASS] grain claims hold  — 12 relation(s) one row per grain, 3 under a filter
@@ -296,8 +390,9 @@ the same functions, so a failure here prints the sentence the server log would
 have carried: the path resolves (a directory holds at least one `*.yml`), each
 tree parses (schema, DAG rules, `${VAR}` references), `--default-tree` names a
 discovered tree, and the pre-fetch load checks pass (the provider's extra is
-installed, a `warehouse` tree has `sql` on every fetched metric, a cold-start
-tree declares every belief it needs). One `[PASS]` or `[FAIL]` line per tree,
+installed, a `warehouse` tree has `sql` on every fetched metric, a `duckdb`
+tree's `data_dir` exists and holds at least one export, a cold-start tree
+declares every belief it needs). One `[PASS]` or `[FAIL]` line per tree,
 non-zero exit if any tree would be refused, and no connection is opened, so it
 runs anywhere the YAML does, credentials or not.
 
@@ -306,8 +401,9 @@ runs anywhere the YAML does, credentials or not.
 [FAIL] tree 'aov' — ValueError: Rate 'aov' (grain 'week') declares dimension 'addon_presence' with weight 'orders' at grain 'day'. …
 ```
 
-What it cannot see is anything that needs data: window coverage, a short
-series bounding the analyses that read it, identity checks on fetched formula
+What it cannot see is anything that needs data: window coverage (a window
+that misses the data entirely is refused at load, not here), an ambiguous date
+format in a CSV, a short series bounding the analyses that read it, identity checks on fetched formula
 nodes, fit readiness. A clean `check` means the tree will parse and start; `doctor` with
 an explicit window is the tool that proves it will serve. An unanswered rate
 denominator is reported as a `[WARN]` here because `serve` starts on it, while
@@ -325,9 +421,9 @@ uv run breakdown serve --tree my_tree.yml --no-snapshots   # always hit the prov
 uv run breakdown serve --tree my_tree.yml --snapshot-dir /somewhere/writable
 ```
 
-**The `duckdb` provider is never wrapped.** Its CSV / Parquet files already are the committed artifact, and a snapshot is keyed without a content hash, so caching them would freeze an edited or re-exported file at whatever it said the first time and serve that silently. Reading the files again is free; `doctor` reports no snapshot store for such a tree, because the server reads none.
+**The `duckdb` provider is never wrapped.** Its CSV / Parquet files already are the committed artifact, and a snapshot is keyed without a content hash, so caching them would freeze an edited or re-exported file at whatever it said the first time and serve that silently. Reading the files again is free; `doctor` reports no snapshot store for such a tree, because the server reads none. The files are read at startup, though: one that changes under a running server is detected (size and modification time) and slices are refused until a restart, rather than mixed with the totals already loaded.
 
-A snapshot freezes what the provider returned at fetch time. If the warehouse backfills late-arriving data, run `--refresh` once to pick it up. `BREAKDOWN_REFRESH=1` is the environment-variable form, for a scheduled refresh that has no command line to edit. In Docker, `compose.yaml` mounts `./snapshots` and sets `BREAKDOWN_SNAPSHOT_DIR` (the default tree-adjacent location is unwritable there because `/config` is read-only). An unwritable snapshot directory is never fatal; the server logs one warning and runs uncached.
+A fetch that returns no rows is never stored: the frame would be the spine's fill, and replayed on the next start it would look like data the source had returned. A snapshot freezes what the provider returned at fetch time. If the warehouse backfills late-arriving data, run `--refresh` once to pick it up. `BREAKDOWN_REFRESH=1` is the environment-variable form, for a scheduled refresh that has no command line to edit. In Docker, `compose.yaml` mounts `./snapshots` and sets `BREAKDOWN_SNAPSHOT_DIR` (the default tree-adjacent location is unwritable there because `/config` is read-only). An unwritable snapshot directory is never fatal; the server logs one warning and runs uncached.
 
 **If your metric restates, the snapshot key cannot tell.** The key is
 `(metric, grain, kind, window)` with no content hash, so a series whose *past*
@@ -370,7 +466,7 @@ breakdown serve --tree tree.yml --warm latest
 ```
 
 It is off by default, because it spends CPU at every boot on fits a laptop
-session may never open. Three things make it safe to leave on for a shared
+session may never open. Five things make it safe to leave on for a shared
 instance:
 
 - **It never makes a person wait for the whole warm.** The tree's lock is taken
@@ -380,7 +476,20 @@ instance:
   as its oldest entries. If `BREAKDOWN_MAX_TRACE_BYTES` has no room for them,
   the warm stops and logs it.
 - **It is visible.** `GET /meta` reports its progress under `warm`
-  ([API reference](api-reference.md#get-meta)).
+  ([API reference](api-reference.md#get-meta)), and it always ends in a
+  status: a single fit that cannot be made is recorded and skipped, and an
+  error the warm did not expect ends it as `failed` with the error named and
+  the traceback in the log.
+- **It runs one fit at a time, however many trees are loaded.** Each tree has
+  its own warm, and they take turns: a directory of eight trees warms with one
+  sampler's worth of memory, not eight.
+- **It does not hold up a restart.** Shutdown stops the warm before its next
+  fit and abandons the one in flight instead of waiting for it. A Python
+  thread cannot be interrupted, so that fit is not stopped: it runs on a
+  daemon thread that ends with the process, and its result (a cache entry in
+  a process that is exiting) is discarded. The bound on exit is therefore the
+  server's own shutdown, not the length of a fit. An analysis a *person*
+  requested is different: that thread is still waited for.
 
 A fit depends only on the analysis window's start date, never on the
 reference window, so a warmed default analysis stays a cache hit if the
@@ -403,8 +512,8 @@ container or a scheduled job uses. The flag wins where both are set.
 | `BREAKDOWN_PORT` | `--port` | `9090` | Listen port |
 | `BREAKDOWN_SNAPSHOT_DIR` | `--snapshot-dir` / `--no-snapshots` | `.breakdown/snapshots` beside the tree | Parquet snapshot cache; `off` disables it |
 | `BREAKDOWN_REFRESH` | `--refresh` | unset | Skip snapshot reads for one pass and refetch, still writing |
-| `BREAKDOWN_API_TOKEN` | (none) | unset | Bearer token. Alone it gates `/mcp` and redacts `sql`/`bind` from `/dag` |
-| `BREAKDOWN_REQUIRE_AUTH` | (none) | unset | Gate every route but `/`, `/health`, `/ui`. Needs `BREAKDOWN_API_TOKEN` |
+| `BREAKDOWN_API_TOKEN` | (none) | unset | Bearer token. Alone it gates `/mcp` and hides `sql`/`bind`, raw load errors and `/health`'s metric names from callers who do not present it; see [What a token hides](#what-a-token-hides-on-routes-that-stay-open) |
+| `BREAKDOWN_REQUIRE_AUTH` | (none) | unset | Gate every route but `/`, `/health`, `/manifest`, `/ui`. Needs `BREAKDOWN_API_TOKEN` |
 | `BREAKDOWN_PUBLIC_URL` | (none) | `http://127.0.0.1:$BREAKDOWN_PORT` | Base URL for MCP `report_url` deep links, when the server is reached at anything else |
 | `BREAKDOWN_MAX_TRACE_BYTES` | (none) | `536870912` (512 MiB) | Byte budget for the fitted-model cache; `0` disables the byte bound |
 | `BREAKDOWN_SLICE_ROLLUP` | (none) | `sql` | `sql` lets the `dbt` provider fold `top_k` in its query; `client` fetches every sliced frame whole (and snapshots it) — see [Snapshots](#snapshots-fetch-once-refit-forever) |

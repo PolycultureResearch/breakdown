@@ -20,10 +20,15 @@ from starlette.datastructures import State
 from breakdown import __version__
 from breakdown.api.trees import (
     MAX_CACHED_TRACES,
+    EngineBusy,
+    SliceQueryFailed,
     TraceStore,
     TreeState,
+    WarmGate,
     discover_trees,
+    guarded,
     parse_tree,
+    refusal_message,
     resolve_default,
 )
 from breakdown.data_fetch import (
@@ -143,35 +148,26 @@ OptionalIsoDate = Annotated[Optional[str], AfterValidator(_iso_date)]
 MAX_PROGRESS_ENTRIES = 64
 
 
-class EngineBusy(Exception):
-    """A cancelled request's engine thread is still finishing on this tree.
+def _unprocessable(exc: Exception) -> HTTPException:
+    """The 422 for an engine or provider refusal; a crash is re-raised as it was.
 
-    The asyncio `tree.lock` released when its coroutine was cancelled (a
-    middleware timeout, a shutdown, a client disconnect on Starlette versions
-    that cancel), but threads are not cancellable and the orphan runs on. A
-    second engine run beside it is the OOM rule 2 exists to prevent — two
-    NUTS working sets on a 2 GB box — so the guard refuses with a 409 and a
-    retry hint instead (roadmap C41).
+    `except (ValueError, RuntimeError)` was written out at each analysis route
+    (roadmap C38), which is how one of them (`/rca/{name}/slices`) kept the
+    older `except ValueError` and `/analyze/{name}` kept none at all, and why
+    PyMC's `ParallelSamplingError` — neither class — escaped every one of them
+    as a 500 (grill 2026-10-05 M7, L3). The judgement is
+    `trees.refusal_message`, shared with the MCP tools; each route now says
+    `except Exception as e: raise _unprocessable(e)` and cannot disagree with
+    its neighbour about what a refusal is.
+
+    Anything that is not a refusal comes back out unchanged: an
+    `HTTPException` a guard raised, `EngineBusy` on its way to the 409
+    handler, or a genuine crash on its way to a 500 and the log.
     """
-
-
-def _guarded(tree, fn, *args, **kwargs):
-    """Run one engine call under the tree's thread-side guard (roadmap C41).
-
-    Non-blocking on purpose: the per-tree asyncio lock already serializes the
-    ordinary flow, so any contention here means an orphaned run. Blocking
-    would quietly queue engine work the caller believes it owns the lock for.
-    """
-    if not tree.engine_guard.acquire(blocking=False):
-        raise EngineBusy(
-            f"Tree '{tree.id}' is still finishing an analysis whose caller "
-            "went away (engine threads cannot be cancelled). Retry in a "
-            "moment, once it completes."
-        )
-    try:
-        return fn(*args, **kwargs)
-    finally:
-        tree.engine_guard.release()
+    detail = refusal_message(exc)
+    if detail is None:
+        raise exc
+    return HTTPException(status_code=422, detail=detail)
 
 
 def _progress_reporter(state, run_id: Optional[str], stage: str):
@@ -227,10 +223,12 @@ def _tree(request: Request) -> TreeState:
     tree_id = request.path_params.get("tree_id")
     if not trees:
         # Nothing was discovered at all — a 503 with the reason, not a 404
-        # that reads as "you asked for the wrong tree".
+        # that reads as "you asked for the wrong tree". The reason quotes the
+        # `--tree` path, so it follows the same gate as a tree's `load_error`.
+        reason = _startup_error_text(request, state.startup_error, state.startup_error_kind)
         raise HTTPException(
             status_code=503,
-            detail=f"breakdown started without a metric tree: {state.startup_error}. "
+            detail=f"breakdown started without a metric tree: {reason} "
             "Check the --tree path and restart.",
         )
     tid = tree_id or state.default_tree
@@ -273,22 +271,105 @@ async def _ensure_loaded(tree: TreeState) -> None:
     _start_warm(tree)
 
 
-def _require_ready(tree: TreeState) -> None:
+def _sees_protected(request: Request) -> bool:
+    """Whether this caller may read what `BREAKDOWN_API_TOKEN` protects.
+
+    **The one predicate behind every redaction in this file** — the `sql` /
+    `bind` blocks of a definition, a tree's raw `load_error`, the driver's
+    message on a failed slice query, and the metric names on the routes auth
+    leaves open. True when no token is configured (the laptop default: there
+    is nothing to protect anything *with*, and every route behaves as it did
+    before a token existed) or when the request presents it.
+
+    It was written inline in `GET /dag` and nowhere else, which is how
+    `GET /metrics/{name}` came to hand out the same `bind` block `/dag` had
+    just nulled, and how every data route's 503 came to carry the generated
+    SQL and the absolute tree path that C43 had scrubbed from `/health`
+    (grill 2026-10-05 H6). A new field that is infrastructure rather than
+    modelling asks this function; it does not re-derive the condition.
+
+    Under `BREAKDOWN_REQUIRE_AUTH` the middleware has already refused an
+    unauthenticated caller on every route but the open ones, so there this
+    only ever answers False on `/health` and `/manifest`.
+    """
+    token = os.environ.get("BREAKDOWN_API_TOKEN")
+    return not token or _presents_token(request, token)
+
+
+# What a caller who may not read the raw error is told instead: the stable
+# classification `/health` already publishes (roadmap C43), worded for one
+# tree rather than for "the default tree". Never the exception text.
+_REDACTED_LOAD_ERROR = {
+    "parse_error": "the tree's YAML failed to parse",
+    "data_load_error": (
+        "the tree parsed but its data failed to load (a provider credential, an "
+        "unreachable source, a bad window, or a query the source refused)"
+    ),
+    "auth_config_error": (
+        "authentication is misconfigured: BREAKDOWN_REQUIRE_AUTH is set without BREAKDOWN_API_TOKEN"
+    ),
+    "discovery_error": "no metric tree could be discovered at the configured --tree path",
+    None: "startup failed",
+}
+_REDACTED_LOAD_ERROR_WHERE = (
+    "The full diagnostic is in the server log, and in this response for a "
+    "request that presents BREAKDOWN_API_TOKEN."
+)
+
+
+def _redacted_error(kind: Optional[str]) -> str:
+    """The classification of a startup or load error, in a sentence."""
+    summary = _REDACTED_LOAD_ERROR.get(kind, _REDACTED_LOAD_ERROR[None])
+    return f"{kind or 'error'}: {summary}. {_REDACTED_LOAD_ERROR_WHERE}"
+
+
+def _load_error_text(tree: TreeState, reveal: bool) -> Optional[str]:
+    """A tree's `load_error` as a caller may read it; None when there is none.
+
+    The raw text is a driver's or the parser's own message — on a failed load
+    it quotes the generated SQL fragment and names the file it could not
+    read — so a caller who may not see `sql`/`bind` (`reveal` False) gets the
+    classification and a sentence saying where the rest is.
+    """
+    if tree.load_error is None:
+        return None
+    return tree.load_error if reveal else _redacted_error(tree.load_error_kind)
+
+
+def _startup_error_text(request: Request, text: Optional[str], kind: Optional[str]) -> str:
+    """The process-level startup error (auth, discovery) on the same terms."""
+    if _sees_protected(request) or kind == "auth_config_error":
+        # The auth sentence is our own constant and names no path or secret;
+        # it is also the one an unauthenticated operator most needs verbatim.
+        return f"{text}."
+    return _redacted_error(kind)
+
+
+def _require_ready(tree: TreeState, request: Request) -> None:
     """503 on data endpoints while a tree is serving degraded (its parse or
-    its data load failed); the detail carries the original error."""
+    its data load failed).
+
+    The detail carries the original error for a caller who may read it, and
+    its classification otherwise (`_load_error_text`). This 503 is on every
+    data route, all of them open in token-only mode, and for a release it
+    carried the raw driver error — generated SQL and the server's absolute
+    path to the tree — past the token that hides the same SQL on `/dag`.
+    """
     if tree.load_error is not None:
+        reveal = _sees_protected(request)
         raise HTTPException(
             status_code=503,
-            detail=f"Tree '{tree.id}' started without data: {tree.load_error}. "
-            f"Run `breakdown doctor --tree {tree.path}` to diagnose.",
+            detail=f"Tree '{tree.id}' started without data: "
+            f"{_load_error_text(tree, reveal).rstrip('.')}. "
+            f"Run `breakdown doctor --tree {tree.path if reveal else '<path>'}` to diagnose.",
         )
 
 
-def _require_data(tree: TreeState) -> None:
+def _require_data(tree: TreeState, request: Request) -> None:
     """422 on time-series endpoints for a cold-start tree (`provider: none`).
     A stated mode, not an error: the tree deliberately has no data, so
     analyses that consume history cannot exist — only /simulate can."""
-    _require_ready(tree)
+    _require_ready(tree, request)
     if tree.data is None:
         raise HTTPException(
             status_code=422,
@@ -608,6 +689,11 @@ async def lifespan(app: FastAPI):
     # backstop — an entry's size scales with the loaded window, so a count
     # alone bounds nothing.
     app.state.trace_store = TraceStore()
+    # The other process-wide bound: one background warm fit at a time across
+    # every tree, and the flag that stops the warm at shutdown (`WarmGate`).
+    # Rebuilt per lifespan, like the store, and because its asyncio lock
+    # belongs to this run's event loop.
+    app.state.warm_gate = WarmGate()
     # A *discovery* failure (`--tree` pointing at nothing) has no tree to hang
     # itself on, so it stays global; a per-tree parse or load failure lands on
     # that tree's `load_error`, and `app.state.startup_error` reads the default
@@ -693,6 +779,12 @@ async def lifespan(app: FastAPI):
         async with mcp.session_manager.run():
             yield
     finally:
+        # Flag first, then cancel: a warm between two fits reads the flag and
+        # starts nothing; one inside a fit is cancelled where it awaits. The
+        # fit's *thread* cannot be interrupted — it is a daemon thread for
+        # exactly that reason (`_in_daemon_thread`), so it is abandoned
+        # rather than joined and does not hold the process open.
+        app.state.warm_gate.stopping = True
         for tree in app.state.trees.values():
             for task in (tree.earliest_task, tree.warm_task):
                 if task is not None and not task.done():
@@ -775,10 +867,95 @@ def _start_warm(tree: TreeState) -> None:
     if tree.warm_task is not None and not tree.warm_task.done():
         return
     tree.warm = {"mode": "latest", "status": "planning"}
-    tree.warm_task = asyncio.create_task(_warm_latest(tree))
+    tree.warm_task = asyncio.create_task(_warm_latest(tree, app.state.warm_gate))
 
 
-async def _warm_latest(tree: TreeState) -> None:
+#: How long the warm waits before retrying a step that found the tree's engine
+#: guard held by an orphaned run (`EngineBusy`): the first wait, then doubling
+#: to the ceiling, in seconds. An orphan is a real analysis finishing, so the
+#: wait is on the scale of a fit, not of a network retry.
+_WARM_BUSY_BACKOFF = (1.0, 30.0)
+
+
+class _WarmStopped(Exception):
+    """The shutdown flag was seen between two warm steps. Internal to the warm."""
+
+
+def _in_daemon_thread(fn, *args) -> "asyncio.Future":
+    """Run `fn(*args)` on a **daemon** thread and return an awaitable for it.
+
+    The warm's stand-in for `asyncio.to_thread`, and the difference is the
+    whole point: `to_thread` uses the loop's default executor, whose worker
+    threads are joined twice on the way out — by `loop.shutdown_default_executor`
+    and again by `concurrent.futures`' exit hook — so one background fit in
+    flight held `docker stop` for the length of that fit. Measured 7.5s against
+    an 8s stub; a real fit is minutes, which ends in SIGKILL (grill 2026-10-05
+    M5). A daemon thread is joined by nobody.
+
+    **What this does and does not bound.** A Python thread cannot be
+    interrupted, so the fit is abandoned, not stopped: shutdown no longer
+    waits for it, and it dies with the interpreter. Its sampler child
+    processes are `multiprocessing` daemons, which the parent terminates at
+    exit. Nothing is lost that mattered — a warm fit is by definition one
+    nobody asked for, and its only output is a cache entry in a process that
+    is going away. A fit a *person* requested still runs on the default
+    executor and is still waited for; that is C41's orphan, not this.
+
+    A result arriving after its awaiter was cancelled, or after the loop
+    closed, is dropped.
+    """
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future = loop.create_future()
+
+    def deliver(result, exc) -> None:
+        if future.cancelled():
+            return
+        if exc is not None:
+            future.set_exception(exc)
+        else:
+            future.set_result(result)
+
+    def run() -> None:
+        try:
+            result, exc = fn(*args), None
+        except BaseException as e:  # noqa: BLE001 - handed to the awaiter, whatever it is
+            result, exc = None, e
+        try:
+            loop.call_soon_threadsafe(deliver, result, exc)
+        except RuntimeError:  # the loop closed under us: the process is exiting
+            pass
+
+    threading.Thread(target=run, name="breakdown-warm", daemon=True).start()
+    return future
+
+
+async def _warm_step(tree: TreeState, gate: WarmGate, step):
+    """Await one warm step, waiting out an orphaned engine run.
+
+    `EngineBusy` means a cancelled request's thread still holds this tree's
+    guard (roadmap C41). The step did not run, so it is retried after a
+    backoff rather than counted — the first edition recorded it under
+    `failed` and moved on, which reported a fit as attempted that never
+    started and left the default analysis cold for the whole process. The
+    locks are released while it waits, so nothing queues behind the retry.
+    """
+    delay, ceiling = _WARM_BUSY_BACKOFF
+    while True:
+        if gate.stopping:
+            raise _WarmStopped()
+        try:
+            return await step()
+        except EngineBusy:
+            logger.info(
+                "warm: tree '%s' is finishing an orphaned analysis; retrying in %.0fs",
+                tree.id,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, ceiling)
+
+
+async def _warm_latest(tree: TreeState, gate: WarmGate) -> None:
     """Fit what each metric's default analysis needs, one node at a time.
 
     **The lock is taken per fit, never for the whole warm.** `asyncio.Lock`
@@ -788,23 +965,42 @@ async def _warm_latest(tree: TreeState) -> None:
     queues behind it, and a fit the request made itself is not made twice:
     each node re-checks the cache under the lock before fitting.
 
+    **One warm fit at a time in the whole process** (`WarmGate.lock`, taken
+    outside the tree's own): every tree has its own task and its own lock,
+    so without it N loaded trees are N concurrent samplers.
+
     Fits go in as the cache's *oldest* entries (`TraceView.put_oldest`), so a
     warm never evicts a fit somebody asked for. When the budget is too small to
     keep a warm fit at all, the warm stops and says so rather than churning.
 
-    Failure-soft like `_discover_earliest`: one unfittable node is recorded and
-    skipped, and nothing here can take the tree down.
+    **It always ends in a status.** One unfittable node — a refusal, in
+    `refusal_message`'s sense, which includes a failed sampler — is recorded
+    under `failed` and skipped. Anything else is a defect in the warm or the
+    engine: it is logged with its traceback and the status becomes `failed`
+    with the error's class and message. Before that handler existed a
+    `KeyError` ended the task silently and `/meta` went on reporting
+    `status: running, done: 0` for the life of the process. Nothing here can
+    take the tree down.
     """
-    dag, data = tree.parser.dag, tree.data
     try:
+        await _warm_run(tree, gate)
+    except (asyncio.CancelledError, _WarmStopped) as e:
+        tree.warm = {**tree.warm, "status": "cancelled"}
+        if isinstance(e, asyncio.CancelledError):
+            raise
+    except Exception as e:  # noqa: BLE001 - a warm must never break serving, or die unseen
+        logger.exception("warm: tree '%s' failed", tree.id)
+        tree.warm = {**tree.warm, "status": "failed", "error": f"{type(e).__name__}: {e}"}
+
+
+async def _warm_run(tree: TreeState, gate: WarmGate) -> None:
+    dag, data = tree.parser.dag, tree.data
+
+    async def plan():
         async with tree.lock:
-            fits, windows = await asyncio.to_thread(
-                _guarded, tree, plan_warm_fits, dag, data, tree.traces
-            )
-    except Exception as e:  # noqa: BLE001 - a warm must never break serving
-        logger.warning("warm: planning failed for tree '%s': %s", tree.id, e)
-        tree.warm = {"mode": "latest", "status": "failed", "error": str(e)}
-        return
+            return await _in_daemon_thread(guarded, tree, plan_warm_fits, dag, data, tree.traces)
+
+    fits, windows = await _warm_step(tree, gate, plan)
     total = len(fits)
     logger.info("warm: tree '%s' — %d fit(s) for %d default analyses", tree.id, total, len(windows))
     done, failed = 0, {}
@@ -818,29 +1014,42 @@ async def _warm_latest(tree: TreeState) -> None:
     }
     for fit_spec in fits:
         key = (fit_spec.node, fit_spec.fit_end)
-        try:
-            async with tree.lock:
-                cached = tree.traces.get(key)
-                if cached is None or not cached_fit_is_usable(cached, "nuts"):
-                    fit = await asyncio.to_thread(
-                        _guarded, tree, fit_rca_node, dag, data, fit_spec.node, fit_spec.fit_end
+
+        async def fit_one(key=key, fit_spec=fit_spec) -> bool:
+            """Fit `key` unless it is already cached; False when the cache
+            had no room to keep it."""
+            async with gate.lock:
+                async with tree.lock:
+                    cached = tree.traces.get(key)
+                    if cached is not None and cached_fit_is_usable(cached, "nuts"):
+                        return True
+                    fit = await _in_daemon_thread(
+                        guarded, tree, fit_rca_node, dag, data, fit_spec.node, fit_spec.fit_end
                     )
                     tree.traces.put_oldest(key, fit)
-                    if key not in tree.traces:
-                        logger.warning(
-                            "warm: tree '%s' stopped after %d of %d fits — the trace "
-                            "cache budget (BREAKDOWN_MAX_TRACE_BYTES) has no room left "
-                            "for a fit nobody has asked for yet.",
-                            tree.id,
-                            done,
-                            total,
-                        )
-                        tree.warm = {**tree.warm, "status": "stopped_cache_full", "done": done}
-                        return
-        except asyncio.CancelledError:
+                    return key in tree.traces
+
+        try:
+            kept = await _warm_step(tree, gate, fit_one)
+        except (asyncio.CancelledError, _WarmStopped):
             raise
-        except (ValueError, RuntimeError, EngineBusy) as e:
-            failed[f"{fit_spec.node}@{fit_spec.fit_end}"] = str(e)
+        except Exception as e:  # noqa: BLE001 - sorted into refusal or crash just below
+            reason = refusal_message(e)
+            if reason is None:
+                raise  # not a refusal: `_warm_latest` logs it and says `failed`
+            failed[f"{fit_spec.node}@{fit_spec.fit_end}"] = reason
+            kept = True
+        if not kept:
+            logger.warning(
+                "warm: tree '%s' stopped after %d of %d fits — the trace "
+                "cache budget (BREAKDOWN_MAX_TRACE_BYTES) has no room left "
+                "for a fit nobody has asked for yet.",
+                tree.id,
+                done,
+                total,
+            )
+            tree.warm = {**tree.warm, "status": "stopped_cache_full", "done": done}
+            return
         done += 1
         tree.warm = {**tree.warm, "done": done, "failed": dict(failed)}
     tree.warm = {**tree.warm, "status": "done"}
@@ -1044,12 +1253,14 @@ async def root():
 _HEALTH_ERROR_TEXT = {
     "parse_error": (
         "The default tree failed to parse. The full diagnostic is in the "
-        "server log and on GET /trees."
+        "server log and on GET /trees (to a request presenting "
+        "BREAKDOWN_API_TOKEN, when one is set)."
     ),
     "data_load_error": (
         "The default tree parsed but its data failed to load (a provider "
         "credential, an unreachable source, or a bad window). The full "
-        "diagnostic is in the server log and on GET /trees; run "
+        "diagnostic is in the server log and on GET /trees (to a request "
+        "presenting BREAKDOWN_API_TOKEN, when one is set); run "
         "`breakdown doctor --tree <path>` to diagnose the provider."
     ),
     "auth_config_error": (
@@ -1076,8 +1287,10 @@ async def health(request: Request):
         # orchestrator to poll unauthenticated — and the raw text was leaking
         # the tree's SQL on a parse failure and provider hostnames and
         # usernames on a connection failure, through the one route auth
-        # leaves open. The full diagnostic stays in the server log and on
-        # the auth-gated `GET /trees` card.
+        # leaves open. The full diagnostic stays in the server log, and on
+        # the `GET /trees` card for a caller who presents the token
+        # (`_load_error_text`). Not offered here even to that caller: a
+        # liveness body should be the same body for everyone.
         kind = state.startup_error_kind
         return {
             "status": "degraded",
@@ -1101,24 +1314,66 @@ async def health(request: Request):
     # fresh while it sat frozen. `null` when nothing has been fetched (a lazily
     # loaded tree before its first request, or `provider: none`), never a date
     # invented from the requested window (rule 1); `state` says which.
-    # `short_series` is the load-time record of which metrics fall short of
-    # their grain's reach, verbatim from `/meta`: metric names, ISO dates and
-    # counts, none of which is the SQL, hostname or exception text this open
-    # route must not carry (C43).
+    #
+    # That promise had a hole exactly where it mattered (grill 2026-10-05 H3):
+    # a window that misses the data altogether loads every flow as a run of
+    # filled zeros reaching the *requested* end date, and this route answered
+    # `ok` with that date. `_data_through` now takes only series with at least
+    # one non-zero value as evidence of an edge, so a load in which no metric
+    # was observed reports `null` here and names them in `no_nonzero_data`.
+    # (The loader refuses an all-empty load outright; this is what the open
+    # route says for a partly empty one, and for any load built another way.)
     through = _data_through(data) if data is not None else None
-    return {
+    body = {
         "status": "ok",
         "provider": parser.config.provider.type,
         "metrics": len(parser.config.metrics),
         "state": tree.state,
         "data_through": str(through.date()) if through is not None else None,
+    }
+    # `short_series` is the load-time record of which metrics fall short of
+    # their grain's reach, verbatim from `/meta`, and `sparse_fills` which
+    # sparse metrics had periods filled by declaration (#112): metric names,
+    # ISO dates and counts — none of which is the SQL, hostname or exception
+    # text C43 keeps off this route, but all of which is *the tree*.
+    #
+    # **One policy for the routes auth leaves open** (grill 2026-10-05 L12):
+    # `/health` and `/manifest` carry nothing that names the tree's metrics to
+    # a caller who has not presented a configured token. `/manifest` always
+    # held to that — its card is stripped to identity — while this route grew
+    # three name-bearing fields, and under BREAKDOWN_REQUIRE_AUTH it was the
+    # one place an unauthenticated caller could read them. With a token set
+    # and not presented, the three fields (and `no_nonzero_data`) are `null`
+    # and `withheld` carries their counts, so a monitor still sees *that* a
+    # feed is short and still has `data_through` to alert on. With no token
+    # configured nothing is protected anywhere and the names stay, as before.
+    detail = {
         "data_through_bounded_by": _data_through_bounded_by(data) if data is not None else [],
         "short_series": dict(data.short_series) if data is not None else {},
-        # Same standing as `short_series`: which sparse metrics had periods
-        # filled by declaration, and how many (#112). Metric names, dates and
-        # counts only.
         "sparse_fills": dict(data.sparse_fills) if data is not None else {},
+        "no_nonzero_data": _unobserved(data) if data is not None else [],
     }
+    if _sees_protected(request):
+        body.update(detail)
+    else:
+        body.update({key: None for key in detail})
+        body["withheld"] = {
+            "data_through_bounded_by": len(detail["data_through_bounded_by"]),
+            "short_series": len(_short_series_metrics(detail["short_series"])),
+            "sparse_fills": len(detail["sparse_fills"]),
+            "no_nonzero_data": len(detail["no_nonzero_data"]),
+        }
+    return body
+
+
+def _short_series_metrics(short_series: Dict[str, Any]) -> set:
+    """The metric names inside `/meta`'s `short_series` record:
+    `{grain: {trailing|leading: {reach, short: {metric: {...}}}}}`."""
+    names = set()
+    for edges in short_series.values():
+        for edge in (edges or {}).values():
+            names.update((edge or {}).get("short", {}))
+    return names
 
 
 @app.get("/manifest")
@@ -1149,7 +1404,10 @@ async def manifest(request: Request):
         body["error"] = _HEALTH_ERROR_TEXT.get(kind, _HEALTH_ERROR_TEXT[None])
         return body
     body["status"] = "ok"
-    card = _tree_card(state.trees[state.default_tree])
+    # Identity only, for every caller: the same open-route policy `/health`
+    # states (no metric names, no raw error without the token), held here by
+    # never copying those keys at all.
+    card = _tree_card(state.trees[state.default_tree], reveal_errors=False)
     body["default_tree"] = {
         key: card[key] for key in ("id", "title", "provider", "metric_count", "state")
     }
@@ -1185,9 +1443,48 @@ def _data_through(data) -> Optional[pd.Timestamp]:
     (#112) an analysis that does not read the shortest series may run past
     this date; the anchor stays conservative on purpose, and
     `_data_through_bounded_by` says which metric holds it there.
+
+    A series with no observation (`_unobserved`) has no edge to offer: its
+    last period is the requested window's, filled, and counting it would
+    publish a date nothing was read through. Such an edge is the window's end
+    — the latest any series can have — so leaving it out moves this min only
+    when *no* metric was observed, which is exactly when it must be None.
     """
-    edges = [e for e in (data.data_through(n) for n in data.grain_of) if e is not None]
+    unobserved = set(_unobserved(data))
+    edges = [
+        e
+        for e in (data.data_through(n) for n in data.grain_of if n not in unobserved)
+        if e is not None
+    ]
     return min(edges) if edges else None
+
+
+def _unobserved(data) -> List[str]:
+    """Metrics whose loaded series holds no evidence that anything was read:
+    every period zero or undefined.
+
+    That is what an empty result looks like once the boundary has aligned it
+    — a flow is filled to zero across the whole requested window
+    (`_align_to_spine`), a `sparse: true` flow by declaration
+    (`sparse_fills[m].whole_window`) — and from the series alone it cannot be
+    told from a source that really did return a row of zeros every period.
+    Both are the same fact for the one question asked here, "through what
+    date do we have data": a run of zeros to the end of the *requested*
+    window says where the request ended, not where the data does. A derived
+    node is included on the same terms; its series is its parents'.
+
+    Read from the per-grain frames in one vectorized pass each, because
+    `/health` is polled and must stay cheap on a 100-metric tree.
+    """
+    out = []
+    for frame in data.frames.values():
+        cols = [c for c in frame.columns if c in data.grain_of]
+        if not cols or not len(frame):
+            continue
+        values = frame[cols].apply(pd.to_numeric, errors="coerce")
+        blank = (values.isna() | (values == 0)).all(axis=0)
+        out.extend(name for name, is_blank in blank.items() if is_blank)
+    return sorted(out)
 
 
 def _data_through_bounded_by(data) -> List[str]:
@@ -1244,9 +1541,16 @@ def _goal_progress(tree: TreeState) -> Optional[Dict[str, Any]]:
     }
 
 
-def _tree_card(tree: TreeState) -> Dict[str, Any]:
+def _tree_card(tree: TreeState, *, reveal_errors: bool) -> Dict[str, Any]:
     """One row of the index: what `GET /trees` can say from parsed YAML alone,
-    plus progress when this tree happens to be loaded already."""
+    plus progress when this tree happens to be loaded already.
+
+    `reveal_errors` is required rather than defaulted so that a new caller has
+    to decide: True puts the raw `load_error` on the card (a driver's or the
+    parser's own text, which can quote generated SQL and server paths), False
+    its classification. HTTP callers pass `_sees_protected(request)`; the MCP
+    tool passes True, because `/mcp` sits behind the token whenever one is set.
+    """
     meta = tree.meta
     goal = meta.goal if meta else None
     return {
@@ -1262,7 +1566,12 @@ def _tree_card(tree: TreeState) -> Dict[str, Any]:
         # keeps the lazy index honest: `progress: null` with `not_loaded` is
         # "we haven't looked", which must not render as a zero.
         "state": tree.state,
-        "load_error": tree.load_error,
+        # The raw text or, for a caller who may not read it, the
+        # classification in a sentence; `load_error_kind` is the same
+        # classification as a stable token (`parse_error` |
+        # `data_load_error`), `null` on a tree with no error.
+        "load_error": _load_error_text(tree, reveal_errors),
+        "load_error_kind": tree.load_error_kind if tree.load_error is not None else None,
         "progress": _goal_progress(tree),
     }
 
@@ -1274,14 +1583,23 @@ async def list_trees(request: Request):
     round-trips, and this endpoint has to be instant on a cold process for the
     lazy loading below it to be worth anything."""
     state = request.app.state
+    reveal = _sees_protected(request)
+    discovery_error = state.discovery_error
+    if discovery_error is not None and not reveal:
+        discovery_error = _startup_error_text(request, discovery_error, "discovery_error")
     return {
         "default": state.default_tree,
-        "trees": [_tree_card(t) for t in state.trees.values()],
+        "trees": [_tree_card(t, reveal_errors=reveal) for t in state.trees.values()],
         # The discovery failure's full text lives here, not on /health
-        # (roadmap C43): with zero trees there is no card to carry it, this
-        # route is auth-gated whenever auth is configured, and the UI's
-        # degraded banner reads the index anyway.
-        "discovery_error": state.discovery_error,
+        # (roadmap C43): with zero trees there is no card to carry it, and
+        # the UI's degraded banner reads the index anyway. This comment used
+        # to say the route "is auth-gated whenever auth is configured", which
+        # is true only under BREAKDOWN_REQUIRE_AUTH: with a token alone the
+        # middleware gates `/mcp` and nothing else, so this route is open and
+        # was handing the raw text — a driver error quoting generated SQL, the
+        # server's absolute path to the tree — to anyone (grill 2026-10-05
+        # H6). It is gated here instead, on the same predicate as `sql`/`bind`.
+        "discovery_error": discovery_error,
     }
 
 
@@ -1292,7 +1610,7 @@ async def load_tree_endpoint(tree_id: str, request: Request):
     lock rather than starting a second one."""
     tree = _tree(request)
     await _ensure_loaded(tree)
-    return _tree_card(tree)
+    return _tree_card(tree, reveal_errors=_sees_protected(request))
 
 
 @router.get("/meta")
@@ -1301,7 +1619,7 @@ async def get_meta(request: Request):
     `mode` tells the UI which surface to boot: "fitted" (data-backed) or
     "cold_start" (no data provider — what-if over declared beliefs only)."""
     tree = await _loaded_tree(request)
-    _require_ready(tree)
+    _require_ready(tree, request)
     parser = tree.parser
     data = tree.data
     if data is None:
@@ -1385,9 +1703,10 @@ async def get_meta(request: Request):
         "fitted": sorted({name for (name, _) in list(tree.traces)}),
         # The background warm of each metric's default analysis (roadmap 3.10),
         # `{}` when BREAKDOWN_WARM is off: `status` (planning | running | done
-        # | failed | stopped_cache_full), `done`/`total` fits, the default
-        # window per target it warmed, and any fit that failed, by
-        # `node@fit_end`.
+        # | failed | stopped_cache_full | cancelled), `done`/`total` fits, the
+        # default window per target it warmed, and any fit that failed, by
+        # `node@fit_end`. `failed` (the status) carries `error`, the class and
+        # message of what stopped the warm; `cancelled` is a shutdown.
         "warm": dict(tree.warm),
     }
 
@@ -1399,35 +1718,54 @@ async def get_meta(request: Request):
 _SENSITIVE_DEFINITION_FIELDS = ("sql", "bind")
 
 
+def _definition_payload(definition, request: Request) -> Dict[str, Any]:
+    """A `MetricDefinition` as this caller may read it — **the only way a
+    definition leaves this module.**
+
+    When `BREAKDOWN_API_TOKEN` is set and the caller doesn't present it, the
+    `sql` and `bind` blocks are redacted to null: on a deployment that
+    bothered to configure a token, "the graph is public" should not also mean
+    "our fully-qualified table names and filter logic are public". Redacted
+    to `null` rather than dropped, so a client reading `def.sql` sees an
+    absent query rather than a KeyError. Unset (the laptop default) behaves
+    exactly as before.
+
+    This was a loop inside `GET /dag`. `GET /metrics/{name}` serialized the
+    same model with a bare `model_dump()` one screen down and returned the
+    whole `bind` — relation, columns, dimensions, filter — to the caller
+    `/dag` had just redacted it from and `/metrics/{name}/query` had just
+    refused with a 403: the third door on one secret, after C31 closed the
+    second (grill 2026-10-05 H6). `tests/test_service_surface.py` fails on a
+    `model_dump()` of a definition anywhere in `api/` or `mcp/` that does not
+    come through here.
+    """
+    payload = definition.model_dump()
+    if not _sees_protected(request):
+        for key in _SENSITIVE_DEFINITION_FIELDS:
+            if key in payload:
+                payload[key] = None
+    return payload
+
+
 @router.get("/dag")
 async def get_dag(request: Request):
     """The tree's shape and every node's definition.
 
-    When `BREAKDOWN_API_TOKEN` is set and the caller doesn't present it, the
-    `sql` and `bind` blocks are redacted to null. `/dag` is open by design —
-    the UI is unauthenticated and needs the shape to draw anything — but on a
-    deployment that bothered to configure a token, "the graph is public" should
-    not also mean "our fully-qualified table names and filter logic are
-    public". Redacted to `null` rather than dropped, so a client reading
-    `def.sql` sees an absent query rather than a KeyError. Unset (the laptop
-    default) behaves exactly as before. `GET /metrics/{name}/query` refuses
-    under the same condition (roadmap C31) — an earlier edition of this
-    docstring pointed callers there while that route had no gate at all,
-    which was grill H2.
+    `/dag` is open by design — the UI is unauthenticated and needs the shape
+    to draw anything — so each definition goes out through
+    `_definition_payload`, which nulls `sql` and `bind` for a caller who has
+    not presented a configured token. `GET /metrics/{name}` redacts through
+    the same helper, and `GET /metrics/{name}/query` refuses under the same
+    condition (roadmap C31) — an earlier edition of this docstring pointed
+    callers there while that route had no gate at all, which was grill H2.
     """
     tree = _tree(request)
-    _require_ready(tree)
+    _require_ready(tree, request)
     parser = tree.parser
-    token = os.environ.get("BREAKDOWN_API_TOKEN")
-    redact = bool(token) and not _presents_token(request, token)
-    nodes = []
-    for name, attrs in parser.dag.nodes(data=True):
-        definition = attrs["definition"].model_dump()
-        if redact:
-            for key in _SENSITIVE_DEFINITION_FIELDS:
-                if key in definition:
-                    definition[key] = None
-        nodes.append([name, definition])
+    nodes = [
+        [name, _definition_payload(attrs["definition"], request)]
+        for name, attrs in parser.dag.nodes(data=True)
+    ]
     return {"nodes": nodes, "edges": [list(e) for e in parser.dag.edges()]}
 
 
@@ -1437,7 +1775,7 @@ async def get_series(request: Request):
     grains mean there is no single shared date axis: each metric carries its
     own period-start dates. NaN -> null for valid JSON."""
     tree = await _loaded_tree(request)
-    _require_data(tree)
+    _require_data(tree, request)
     parser = tree.parser
     data = tree.data
     metrics = {}
@@ -1483,9 +1821,8 @@ async def get_metric_query(name: str, request: Request, dimension: Optional[str]
     # endpoints give rather than an AttributeError. Provenance is *more* useful
     # when things are broken, but it still needs a tree that loaded.
     tree = await _loaded_tree(request)
-    _require_ready(tree)
-    token = os.environ.get("BREAKDOWN_API_TOKEN")
-    if token and not _presents_token(request, token):
+    _require_ready(tree, request)
+    if not _sees_protected(request):
         raise HTTPException(
             status_code=403,
             detail=(
@@ -1583,7 +1920,7 @@ async def get_metric_query(name: str, request: Request, dimension: Optional[str]
 @router.get("/metrics/{name}")
 async def get_metric(name: str, request: Request):
     tree = await _loaded_tree(request)
-    _require_ready(tree)
+    _require_ready(tree, request)
     parser = tree.parser
     data = tree.data
     traces = tree.traces
@@ -1666,7 +2003,8 @@ async def get_metric(name: str, request: Request):
         }
 
     return {
-        "definition": metric.model_dump(),
+        # Redacted on the same terms as `/dag` (grill 2026-10-05 H6).
+        "definition": _definition_payload(metric, request),
         "inference_method": inference_method,
         "fit_end": fit_end,
         "fit_window": fit_window,
@@ -1704,7 +2042,7 @@ async def get_metric_ppc(name: str, request: Request):
     - `band` — the arrays, all of length `band.n_periods`.
     """
     tree = await _loaded_tree(request)
-    _require_ready(tree)
+    _require_ready(tree, request)
     metric = tree.parser.get_metric(name)
     if not metric:
         raise HTTPException(status_code=404, detail=f"Metric '{name}' not found")
@@ -1759,7 +2097,7 @@ async def analyze_metric(
     ),
 ):
     tree = await _loaded_tree(request)
-    _require_data(tree)
+    _require_data(tree, request)
     parser = tree.parser
     data = tree.data
 
@@ -1783,7 +2121,7 @@ async def analyze_metric(
             if report:
                 report({"stage": "fitting", "metric": name, "current": 1, "total": 1})
             fit = await asyncio.to_thread(
-                _guarded,
+                guarded,
                 tree,
                 fit_metric,
                 parser.dag,
@@ -1797,6 +2135,12 @@ async def analyze_metric(
                 random_seed=FIT_RANDOM_SEED,
             )
             _remember_fit(tree.traces, (name, fit_end), fit)
+    # The one analysis route that had no refusal handler at all: a node with
+    # too little history, or a `fit_end` before its data, raised `ValueError`
+    # out of `fit_metric` and answered 500 with the diagnosis thrown away,
+    # while /rca and /simulate turned the same error into a 422 (roadmap C38).
+    except Exception as e:  # noqa: BLE001 - `_unprocessable` re-raises a crash
+        raise _unprocessable(e)
     finally:
         if run_id:
             state.progress.pop(run_id, None)
@@ -1837,7 +2181,7 @@ async def get_shapley(
     ] = None,
 ):
     tree = await _loaded_tree(request)
-    _require_data(tree)
+    _require_data(tree, request)
     parser = tree.parser
     data = tree.data
 
@@ -1853,7 +2197,7 @@ async def get_shapley(
     try:
         async with tree.lock:
             result = await asyncio.to_thread(
-                _guarded,
+                guarded,
                 tree,
                 shapley_attribution,
                 parser.dag,
@@ -1869,8 +2213,8 @@ async def get_shapley(
     # names the remedy — and it surfaced as an unhandled 500 with the
     # diagnostic thrown away, while a neighbouring loader wraps the identical
     # call in `except (ValueError, RuntimeError, KeyError)`.
-    except (ValueError, RuntimeError) as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:  # noqa: BLE001 - `_unprocessable` re-raises a crash
+        raise _unprocessable(e)
 
     return result
 
@@ -1907,7 +2251,7 @@ async def root_cause_analysis(
     ),
 ):
     tree = await _loaded_tree(request)
-    _require_data(tree)
+    _require_data(tree, request)
     parser = tree.parser
     data = tree.data
 
@@ -1926,7 +2270,7 @@ async def root_cause_analysis(
             # run_rca adds any traces it fits on demand to this tree's cache.
             try:
                 result = await asyncio.to_thread(
-                    _guarded,
+                    guarded,
                     tree,
                     run_rca,
                     parser.dag,
@@ -1940,11 +2284,13 @@ async def root_cause_analysis(
                     inference_method=inference_method,
                     progress=report,
                 )
-            # RuntimeError too (roadmap C38): grain-join and PyMC sampling
-            # failures subclass it, and both are named diagnoses the caller
-            # can act on, not server faults.
-            except (ValueError, RuntimeError) as e:
-                raise HTTPException(status_code=422, detail=str(e))
+            # RuntimeError too (roadmap C38): grain-join and most PyMC
+            # sampling failures subclass it, and both are named diagnoses the
+            # caller can act on, not server faults. "Most": a chain that dies
+            # in a multi-process run raises `ParallelSamplingError`, which
+            # subclasses neither, so the judgement is `refusal_message`'s.
+            except Exception as e:  # noqa: BLE001 - `_unprocessable` re-raises a crash
+                raise _unprocessable(e)
     finally:
         if run_id:
             state.progress.pop(run_id, None)
@@ -2138,12 +2484,27 @@ def _run_slice(
         )
     if rollup_reason is not None:
         selection = None
-    sliced = _fetch_sliced_cached(tree, parser, defn, spec.source, span_start, span_end, selection)
-    weight_sliced = None
-    if weight_defn is not None:
-        weight_sliced = _fetch_sliced_cached(
-            tree, parser, weight_defn, spec.source, span_start, span_end, selection
+    # The provider's own refusals pass through as they are — `SliceNotSupported`
+    # and `ValueError` are worded for the caller. Anything else raised by the
+    # fetch is the *source* objecting to the sliced query (a `column:` the
+    # relation does not have is a `BinderException`, a shape the generator
+    # cannot compile an `UnsupportedBinding`), and only this call site knows
+    # which dimension it was about. It used to leave as a bare 500 on the
+    # first slice click (grill 2026-10-05 M7).
+    try:
+        sliced = _fetch_sliced_cached(
+            tree, parser, defn, spec.source, span_start, span_end, selection
         )
+        weight_sliced = None
+        if weight_defn is not None:
+            weight_sliced = _fetch_sliced_cached(
+                tree, parser, weight_defn, spec.source, span_start, span_end, selection
+            )
+    except (SliceNotSupported, ValueError):
+        raise
+    except Exception as e:  # noqa: BLE001 - a driver's error has no common base class
+        logger.warning("Sliced query failed for '%s' by '%s': %s", defn.name, dimension, e)
+        raise SliceQueryFailed(defn.name, dimension, spec.source, e) from e
     # Whether these slices are expected to sum comes from the binding, not from
     # the residual they produce — see `BaseDataFetcher.slice_additivity`.
     additivity = tree.fetcher.slice_additivity(
@@ -2223,7 +2584,7 @@ async def slice_metric_gap(
     matches the metric's own timeline, not a lag-shifted one).
     """
     tree = await _loaded_tree(request)
-    _require_data(tree)
+    _require_data(tree, request)
     parser = tree.parser
     data = tree.data
 
@@ -2239,7 +2600,7 @@ async def slice_metric_gap(
     async with tree.lock:
         try:
             result = await asyncio.to_thread(
-                _guarded,
+                guarded,
                 tree,
                 _run_slice,
                 tree,
@@ -2252,10 +2613,18 @@ async def slice_metric_gap(
                 analysis_start,
                 analysis_end,
             )
-        except SliceNotSupported as e:
-            raise HTTPException(status_code=422, detail=str(e))
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e))
+        except SliceQueryFailed as e:
+            # The dimension and the error class for everyone; the driver's
+            # message — which quotes the generated SQL — only for a caller
+            # who may read `sql`/`bind` (`_sees_protected`).
+            raise HTTPException(
+                status_code=422, detail=str(e) if _sees_protected(request) else e.public
+            )
+        # Every other refusal, `RuntimeError` included (roadmap C38): this
+        # route caught `ValueError` and `SliceNotSupported` only, one release
+        # after its three neighbours learned the rest.
+        except Exception as e:  # noqa: BLE001 - `_unprocessable` re-raises a crash
+            raise _unprocessable(e)
 
     return result
 
@@ -2279,7 +2648,7 @@ async def simulate(
     ),
 ):
     tree = await _loaded_tree(request)
-    _require_ready(tree)
+    _require_ready(tree, request)
     parser = tree.parser
     data = tree.data
 
@@ -2292,7 +2661,7 @@ async def simulate(
             # run_scenario adds any traces it fits on demand to this tree's cache.
             try:
                 result = await asyncio.to_thread(
-                    _guarded,
+                    guarded,
                     tree,
                     run_scenario,
                     parser.dag,
@@ -2302,11 +2671,11 @@ async def simulate(
                     inference_method=inference_method,
                     progress=report,
                 )
-            # RuntimeError too (roadmap C38): grain-join and PyMC sampling
-            # failures subclass it, and both are named diagnoses the caller
-            # can act on, not server faults.
-            except (ValueError, RuntimeError) as e:
-                raise HTTPException(status_code=422, detail=str(e))
+            # Refusals — `ValueError`, `RuntimeError` (roadmap C38), a failed
+            # sampler — are named diagnoses the caller can act on, not server
+            # faults; see `_unprocessable`.
+            except Exception as e:  # noqa: BLE001 - `_unprocessable` re-raises a crash
+                raise _unprocessable(e)
     finally:
         if run_id:
             state.progress.pop(run_id, None)

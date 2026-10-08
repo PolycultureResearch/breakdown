@@ -17,27 +17,33 @@ Design: `knowledge/semantic_layer_connectivity_design.md` §5.
 import logging
 import os
 import re
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 import yaml
 
 from breakdown.data_fetch import (
+    OTHER_SLICE,
     SLICE_ROLLUP,
     BaseDataFetcher,
     MissingProviderExtra,
+    ReservedSliceValue,
     SliceNotSupported,
     SliceSelection,
     _align_to_spine,
     _floor_labels,
     _require_module,
     _to_naive_dates,
+    label_slices,
+    reserved_slice_refusal,
 )
 from breakdown.dbt_bridge import bridge_project
 from breakdown.dbt_sql import (
     ROLLUP_N_DISTINCT_COL,
     ROLLUP_N_FOLDED_COL,
     ROLLUP_OTHER_COL,
+    ROLLUP_RESERVED_COL,
+    _require_sqlglot,
     build_entity_flow_query,
     build_filter_probe,
     build_grain_assertion,
@@ -250,7 +256,30 @@ def _connect_duckdb(out: Dict[str, Any]) -> Any:
         raise MissingProviderExtra(
             "provider type 'dbt' with a duckdb target needs duckdb: pip install duckdb"
         ) from e
-    return duckdb.connect(out.get("path") or ":memory:", read_only=bool(out.get("path")))
+    con = duckdb.connect(out.get("path") or ":memory:", read_only=bool(out.get("path")))
+    _pin_utc(con)
+    return con
+
+
+def _pin_utc(con: Any) -> None:
+    """Pin a DuckDB session to UTC (grill 2026-10-05 H4).
+
+    DuckDB's session zone defaults to the process's, so a TIMESTAMPTZ column —
+    which is what `read_csv_auto` makes of `2025-06-02T00:30:00Z` — was
+    truncated and window-bounded in whatever `TZ` the server happened to start
+    under: the same file, tree and window gave 11 orders in UTC, 1 in Los
+    Angeles and 10 in Tokyo. An instant has one calendar date only relative to
+    a zone, and the zone the answer depends on has to be one the tree's author
+    can know, so it is UTC on every connection this module opens. A column
+    that means local time should be stored as a DATE or a naive timestamp,
+    which no zone touches.
+
+    `SET GLOBAL`, not `SET`: `DbtDataFetcher._cursor` calls `con.cursor()`,
+    which in DuckDB's Python client is a *new session* on the same database
+    and inherits only the global value. A plain `SET` pinned the connection
+    nothing ever queries through.
+    """
+    con.execute("SET GLOBAL TimeZone = 'UTC'")
 
 
 def _connect_postgres(out: Dict[str, Any]) -> Any:
@@ -365,11 +394,19 @@ class DbtDataFetcher(BaseDataFetcher):
         connect: Callable[[], Any],
         *,
         dialect: str = "",
+        changed_files: Optional[Callable[[], List[str]]] = None,
+        explain_error: Optional[Callable[[Exception], Optional[Exception]]] = None,
     ):
         self.bindings = dict(bindings)
         self._connect = connect
         self.dialect = dialect
         self._conn: Any = None
+        # Two things only a file-backed source has, handed in rather than
+        # subclassed (see `fetcher_from_data_dir`): which of its files changed
+        # since they were first read, and a better sentence for an error the
+        # engine underneath words for somebody else.
+        self._changed_files = changed_files
+        self._explain_error = explain_error
         # Last statement per (metric, kind of query). The hook 2.11 reads to
         # show a user what produced a number; principle 3 in one dict.
         self.last_sql: Dict[str, str] = {}
@@ -391,8 +428,41 @@ class DbtDataFetcher(BaseDataFetcher):
         try:
             cursor.execute(sql)
             return _frame(cursor)
+        except Exception as e:
+            better = self._explain_error(e) if self._explain_error else None
+            if better is None:
+                raise
+            raise better from e
         finally:
             cursor.close()
+
+    # -- staleness --
+
+    def changed_files(self) -> List[str]:
+        """Names of the data files rewritten or removed since they were
+        loaded; always empty for a warehouse. Two `stat` calls per file."""
+        return list(self._changed_files()) if self._changed_files else []
+
+    def _refuse_stale_files(self, what: str) -> None:
+        """Refuse an analysis-time read once a data file has changed under
+        the running server (grill 2026-10-05 M9).
+
+        The totals an analysis is reconciled against were fetched at load and
+        held in `tree.data`; the views re-read the files on every query. After
+        a rewrite the two describe different files, the slices stop summing to
+        the total, and the reconciliation said "the dimension does not cleanly
+        partition it" — the wrong cause, stated confidently. Refused rather
+        than reloaded: a reload here would change the totals under every
+        cached fit and analysis without anybody having asked for it.
+        """
+        changed = self.changed_files()
+        if changed:
+            raise DataFilesChanged(
+                f"Data file(s) {', '.join(changed)} changed after this tree was "
+                f"loaded (size or modification time differs), so {what} read now "
+                "would not add up to the totals loaded at startup. Restart "
+                "`breakdown serve` to load the new file; nothing was reloaded."
+            )
 
     # -- bindings --
 
@@ -512,6 +582,7 @@ class DbtDataFetcher(BaseDataFetcher):
         selection: Optional[SliceSelection] = None,
     ) -> pd.DataFrame:
         bind = self.binding(metric_name)
+        self._refuse_stale_files(f"the slices of '{metric_name}'")
         if dimension_source not in bind.dimensions:
             raise SliceNotSupported(
                 f"The binding for '{metric_name}' declares no dimension "
@@ -559,9 +630,12 @@ class DbtDataFetcher(BaseDataFetcher):
         df = self._query(sql)
         missing = {"date", "slice", "value"} - set(df.columns)
         if selection is not None:
-            missing |= {ROLLUP_OTHER_COL, ROLLUP_N_DISTINCT_COL, ROLLUP_N_FOLDED_COL} - set(
-                df.columns
-            )
+            missing |= {
+                ROLLUP_OTHER_COL,
+                ROLLUP_N_DISTINCT_COL,
+                ROLLUP_N_FOLDED_COL,
+                ROLLUP_RESERVED_COL,
+            } - set(df.columns)
         if missing:
             raise RuntimeError(
                 f"Sliced query for '{metric_name}' is missing {sorted(missing)}; "
@@ -576,17 +650,27 @@ class DbtDataFetcher(BaseDataFetcher):
             n_distinct = int(df[ROLLUP_N_DISTINCT_COL].iloc[0]) if len(df) else 0
             n_folded = int(df[ROLLUP_N_FOLDED_COL].iloc[0]) if len(df) else 0
             rollup = {"where": "sql", "n_distinct": n_distinct, "n_folded": n_folded}
+            # A real value spelled like a reserved label, anywhere among the
+            # distinct values — kept or folded — is refused before the fold
+            # rows are given that label (grill 2026-10-05 L1). It used to
+            # collide with them and surface as "more than one row per (date,
+            # slice)", which sent the reader looking for a fan-out.
+            reserved = df[ROLLUP_RESERVED_COL].iloc[0] if len(df) else None
+            if reserved is not None and not pd.isna(reserved):
+                raise ReservedSliceValue(reserved_slice_refusal(str(reserved), metric_name))
             df = df[["date", "slice", "value"]].copy()
-            df.loc[other.to_numpy(), "slice"] = "__other__"
+            labels = label_slices(df["slice"], metric_name)
+            labels[other.to_numpy()] = OTHER_SLICE
+            df["slice"] = labels
         else:
             # Built directly rather than through `_sliced_long`, which finds its
             # date column by looking for `metric_time` — a MetricFlow name this
             # provider never produces, because it names the column itself.
             df = df[["date", "slice", "value"]].copy()
+            df["slice"] = label_slices(df["slice"], metric_name)
         df["date"] = pd.to_datetime(df["date"])
         df = _to_naive_dates(df, metric_name)
         df = _floor_labels(df, metric_name, grain)
-        df["slice"] = df["slice"].map(lambda v: "__null__" if pd.isna(v) else str(v))
         df["value"] = df["value"].astype(float)
         df = df.sort_values(["date", "slice"]).reset_index(drop=True)
         if rollup is not None:
@@ -693,6 +777,7 @@ class DbtDataFetcher(BaseDataFetcher):
         window, and which one is the author's `resolve` choice, not ours.
         """
         bind = self.binding(metric_name)
+        self._refuse_stale_files(f"the entity flows of '{metric_name}'")
         sql = build_entity_flow_query(
             bind,
             dimension=dimension_source,
@@ -833,25 +918,485 @@ def list_data_files(data_dir: str) -> Dict[str, str]:
     return tables
 
 
-def open_data_dir(data_dir: str) -> Any:
+class DataFilesChanged(ValueError):
+    """A data file was rewritten or removed after the tree loaded from it.
+
+    A `ValueError` so the slice route's existing 422 mapping carries the
+    sentence — which names the file and the remedy — to the reader."""
+
+
+class AmbiguousDateFormat(RuntimeError):
+    """A CSV time column whose dates read as day-first or month-first alike,
+    with no `date_format` declared to settle it."""
+
+
+class DateFormatMismatch(RuntimeError):
+    """A declared `date_format` that some value of the time column, or the
+    column's own type, does not match."""
+
+
+class OutsideDataDir(RuntimeError):
+    """A query reached for a file or URL outside the confined `data_dir`."""
+
+
+def _sql_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _sql_identifier(name: str) -> str:
+    """A DuckDB identifier, quoted. A stem is whatever the file was called, so
+    `a"b.csv` reaches here, and unescaped it ended the identifier early and
+    took `CREATE VIEW` — and with it every metric in the tree — down."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+_BARE_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_QUOTED_IDENTIFIER = re.compile(r'"((?:[^"]|"")+)"\Z')
+
+
+def _identifier_name(expr: Optional[str]) -> Optional[str]:
+    """The name `expr` refers to when it is a lone identifier, bare or
+    double-quoted; None when it is an expression (or absent)."""
+    token = (expr or "").strip()
+    if _BARE_IDENTIFIER.match(token):
+        return token
+    quoted = _QUOTED_IDENTIFIER.match(token)
+    return quoted.group(1).replace('""', '"') if quoted else None
+
+
+def _fingerprint(path: str) -> Optional[Tuple[int, int]]:
+    """`(size, mtime_ns)`, or None when the file is not there."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return st.st_size, st.st_mtime_ns
+
+
+# How a slashed, dotted or dashed numeric date begins: two short fields, then
+# the year. A year-first value (`2025-01-02`) does not match — its first field
+# is four digits — which is the point: ISO order is the one nobody reverses.
+_NUMERIC_DATE = r"^\s*(\d{1,2})([/.\-])(\d{1,2})([/.\-])(\d{2,4})(?:\D|$)"
+_NUMERIC_DATE_RE = re.compile(_NUMERIC_DATE)
+_TIME_SUFFIX = re.compile(r"([ T])(\d{1,2}):(\d{2})(:\d{2})?")
+
+
+def _suggested_formats(sample: str) -> Tuple[str, str]:
+    """`(month-first, day-first)` strptime formats shaped like `sample`."""
+    m = _NUMERIC_DATE_RE.match(sample)
+    if m is None:  # pragma: no cover - the caller matched the same pattern in SQL
+        return "%m/%d/%Y", "%d/%m/%Y"
+    sep1, sep2, year = m.group(2), m.group(4), m.group(5)
+    y = "%Y" if len(year) == 4 else "%y"
+    rest = _TIME_SUFFIX.match(sample[m.end(5) :])
+    clock = f"{rest.group(1)}%H:%M{':%S' if rest.group(4) else ''}" if rest else ""
+    return f"%m{sep1}%d{sep2}{y}{clock}", f"%d{sep1}%m{sep2}{y}{clock}"
+
+
+class DataDir:
+    """The folder behind the `duckdb` provider: its connection, and what the
+    files looked like when that connection was first opened.
+
+    Four things happen at `connect`, in an order that matters:
+
+    1. **Fingerprint** every file (size, mtime) before reading any, so a file
+       rewritten *during* the load is as stale as one rewritten after it.
+    2. **Pin UTC** (`_pin_utc`), then **confine** the connection to `data_dir`
+       unless `allow_external_access` says otherwise: `allowed_directories`
+       first — it cannot be widened once external access is off —, then
+       `enable_external_access = false`.
+    3. **Settle every time column's date format** (`_time_column_plan`) and
+       create one view per file, reading a governed column as text and parsing
+       it with the declared format.
+    4. **Lock the configuration**, last, so nothing a tree's SQL can say
+       reopens what step 2 closed.
+
+    Not a fetcher: `fetcher_from_data_dir` hands its three methods to the one
+    `DbtDataFetcher` every bound provider uses.
+    """
+
+    def __init__(
+        self,
+        data_dir: str,
+        bindings: Optional[Dict[str, BindingSpec]] = None,
+        *,
+        allow_external_access: bool = False,
+    ):
+        self.data_dir = data_dir
+        self.bindings = dict(bindings or {})
+        self.allow_external_access = allow_external_access
+        # {file name: (size, mtime_ns)} as of the first `connect`. Bounded by
+        # the number of files in one folder; never grows after load.
+        self._loaded: Optional[Dict[str, Optional[Tuple[int, int]]]] = None
+
+    # -- staleness (M9) --
+
+    def changed_files(self) -> List[str]:
+        if self._loaded is None:
+            return []
+        return [
+            name
+            for name, was in self._loaded.items()
+            if _fingerprint(os.path.join(self.data_dir, name)) != was
+        ]
+
+    # -- confinement (M10) --
+
+    def explain_error(self, exc: Exception) -> Optional[Exception]:
+        """DuckDB's refusal of a path outside `data_dir`, in the tree author's
+        terms. Its own wording ("file system operations are disabled by
+        configuration") names a configuration the author never wrote."""
+        text = str(exc)
+        if self.allow_external_access or "disabled by configuration" not in text:
+            return None
+        return OutsideDataDir(
+            f"The duckdb provider reads only the files inside its `data_dir` "
+            f"({self.data_dir}), and this query reached outside it: "
+            f"{text.splitlines()[0]}. Move the file into `data_dir` and bind it "
+            "by its stem, or set `allow_external_access: true` under `provider:` "
+            "if this tree reads another folder, https:// or s3:// on purpose."
+        )
+
+    # -- the connection --
+
+    def connect(self) -> Any:
+        duckdb = _require_module("duckdb", "duckdb", "duckdb")
+        tables = list_data_files(self.data_dir)
+        if self._loaded is None:
+            # First connection only: a reconnect must not quietly re-baseline
+            # against a file the loaded totals never saw.
+            self._loaded = {
+                name: _fingerprint(os.path.join(self.data_dir, name)) for name in tables.values()
+            }
+        con = duckdb.connect()
+        _pin_utc(con)
+        if not self.allow_external_access:
+            con.execute(f"SET allowed_directories = [{_sql_string(self.data_dir)}]")
+            con.execute("SET enable_external_access = false")
+        try:
+            plan = self._time_column_plan(con, tables)
+            for stem, name in tables.items():
+                con.execute(
+                    f"CREATE VIEW {_sql_identifier(stem)} AS "
+                    + self._view_select(name, plan.get(stem, {}))
+                )
+            if not self.allow_external_access:
+                con.execute("SET lock_configuration = true")
+        except Exception:
+            con.close()
+            raise
+        return con
+
+    def _reader(self, name: str, *, options: str = "") -> str:
+        function = DATA_FILE_READERS[os.path.splitext(name)[1].lower()]
+        return f"{function}({_sql_string(os.path.join(self.data_dir, name))}{options})"
+
+    def _raw_text(self, name: str) -> str:
+        """The file with every column as the text that is in it. For a CSV
+        that is the bytes between the delimiters, before any type was sniffed;
+        Parquet is typed at rest, so its own reader is already the answer."""
+        if name.lower().endswith(".csv"):
+            return self._reader(name, options=", all_varchar = true")
+        return self._reader(name)
+
+    def _view_select(self, name: str, formats: Dict[str, str]) -> str:
+        """`SELECT *`, with each column that has a declared format read as text
+        and parsed by `strptime` — which raises on a value that does not match,
+        so a row that arrives later in the wrong shape is an error at the query
+        and never a NULL that drops out of the window."""
+        if not formats:
+            return f"SELECT * FROM {self._reader(name)}"
+        replaced = ", ".join(
+            f"strptime({_sql_identifier(col)}, {_sql_string(fmt)}) AS {_sql_identifier(col)}"
+            for col, fmt in formats.items()
+        )
+        options = ""
+        if name.lower().endswith(".csv"):
+            types = ", ".join(f"{_sql_string(col)}: 'VARCHAR'" for col in formats)
+            options = f", types = {{{types}}}"
+        return f"SELECT * REPLACE ({replaced}) FROM {self._reader(name, options=options)}"
+
+    # -- date formats (H2) --
+
+    def _stems_read(self, bind: BindingSpec, tables: Dict[str, str]) -> List[str]:
+        """The data files a binding reads, by stem.
+
+        A `relation` is one name. A `bind.sql` is parsed for the tables it
+        names; a statement that does not parse reads nothing as far as this is
+        concerned, and fails on its own terms when it runs.
+        """
+        by_lower = {stem.lower(): stem for stem in tables}
+        if bind.relation is not None:
+            name = _identifier_name(bind.relation)
+            stem = by_lower.get(name.lower()) if name else None
+            return [stem] if stem else []
+        sqlglot = _require_sqlglot()
+        try:
+            parsed = sqlglot.parse_one(bind.sql, read="duckdb")
+        except Exception:
+            return []
+        named = {t.name.lower() for t in parsed.find_all(sqlglot.exp.Table) if not t.db}
+        return [stem for low, stem in by_lower.items() if low in named]
+
+    def _time_column_plan(self, con: Any, tables: Dict[str, str]) -> Dict[str, Dict[str, str]]:
+        """`{stem: {column: date_format}}` for the views to apply — after
+        refusing any time column whose dates nothing settles.
+
+        **How ambiguity is decided** (grill 2026-10-05 H2). `read_csv_auto`
+        picks a date format by trying candidates against a sample, and for a
+        monthly export `01/01/2025 … 12/01/2025` both `%d/%m/%Y` and
+        `%m/%d/%Y` parse every row; it took day-first, and twelve months
+        became the first twelve days of January with no word said. The type
+        DuckDB reports afterwards (`DATE`) carries none of that, so the type is
+        not what is inspected. The **raw text** is: the column is re-read with
+        every value as a string (`all_varchar`), and each value that begins
+        like a numeric date with the year last (`_NUMERIC_DATE`) gives up its
+        first two fields. The column is ambiguous when
+
+        * neither field ever exceeds 12 — nothing in the file distinguishes a
+          day from a month — or
+        * the year has fewer than four digits, where `01/02/03` has three
+          readings and a 13 in any field rules out only one of them.
+
+        Year-first text (`2025-01-31`, `2025/01/31`, with or without a time) is
+        ISO order and never ambiguous; so is anything with a month name. A
+        column that *is* settled by its own values (a `13/01/2025` somewhere)
+        is left to DuckDB, which either reads it that way or fails to type it
+        and says so. Parquet stores a typed DATE/TIMESTAMP and is not text to
+        misread.
+
+        A **declared** `date_format` skips the question: the column is read as
+        text and every non-empty value must parse with it, checked here — once,
+        over the whole file — so the refusal names the file and a value rather
+        than surfacing as a conversion error in the middle of a fit.
+
+        Which column: the binding's `time_column` when it is a plain column
+        name, in every file the binding reads that has a column by that name.
+        A time *expression*, or a `bind.sql` that renames or derives its time
+        column, is not something this can trace; every other date-typed column
+        of a file some binding reads is therefore scanned too and, when
+        ambiguous, **warned** about by name. Warned, not refused, because no
+        binding is known to use it and `date_format` could not fix it.
+        """
+        # (stem, lowercased column) -> {"format": ..., "metrics": [...]}
+        governed: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        columns_of: Dict[str, Dict[str, Tuple[str, str]]] = {}
+        read_by_a_binding: List[str] = []
+
+        def columns(stem: str) -> Dict[str, Tuple[str, str]]:
+            if stem not in columns_of:
+                rows = con.execute(
+                    f"DESCRIBE SELECT * FROM {self._reader(tables[stem])}"
+                ).fetchall()
+                columns_of[stem] = {r[0].lower(): (r[0], str(r[1]).upper()) for r in rows}
+            return columns_of[stem]
+
+        for metric, bind in self.bindings.items():
+            stems = self._stems_read(bind, tables)
+            read_by_a_binding.extend(s for s in stems if s not in read_by_a_binding)
+            column = _identifier_name(bind.time_column)
+            applied = False
+            for stem in stems if column else []:
+                if column.lower() not in columns(stem):
+                    continue
+                applied = True
+                entry = governed.setdefault((stem, column.lower()), {"format": None, "metrics": []})
+                entry["metrics"].append(metric)
+                if bind.date_format is None:
+                    continue
+                if entry["format"] not in (None, bind.date_format):
+                    raise DateFormatMismatch(
+                        f"Metrics {entry['metrics']} read time column '{column}' of "
+                        f"data file '{tables[stem]}' with two different `date_format`s "
+                        f"({entry['format']!r} and {bind.date_format!r}). One column "
+                        "has one format; declare the same one on each binding."
+                    )
+                entry["format"] = bind.date_format
+            if bind.date_format is not None and not applied:
+                raise DateFormatMismatch(
+                    f"Metric '{metric}' declares `date_format: {bind.date_format!r}`, "
+                    f"but its time column ({bind.time_column!r}) is not a plain column "
+                    f"of a data file the binding reads (files: {sorted(tables.values())}). "
+                    "`date_format` parses a file's own column; for a derived or renamed "
+                    "time column, parse it in `bind.sql` with strptime(<column>, '<format>') "
+                    "and drop `date_format`."
+                )
+
+        plan: Dict[str, Dict[str, str]] = {}
+        for (stem, low), entry in governed.items():
+            name = tables[stem]
+            column, sql_type = columns(stem)[low]
+            if entry["format"] is not None:
+                self._check_declared_format(con, name, column, sql_type, entry)
+                plan.setdefault(stem, {})[column] = entry["format"]
+            elif name.lower().endswith(".csv"):
+                found = self._ambiguous_dates(con, name, column)
+                if found is not None:
+                    sample, why = found
+                    month_first, day_first = _suggested_formats(sample)
+                    raise AmbiguousDateFormat(
+                        f"Data file '{name}' in {self.data_dir}: time column '{column}' "
+                        f"holds dates such as '{sample}' that read as month-first or "
+                        f"day-first alike, and {why}. DuckDB would pick one without "
+                        "saying which, and the wrong pick moves every row to another "
+                        "month. Declare the format on the binding of "
+                        f"{', '.join(repr(m) for m in entry['metrics'])}:\n"
+                        "    bind:\n"
+                        f"      date_format: '{month_first}'    # month first; "
+                        f"day first is '{day_first}'"
+                    )
+
+        for stem in read_by_a_binding:
+            name = tables[stem]
+            if not name.lower().endswith(".csv"):
+                continue
+            for low, (column, sql_type) in columns(stem).items():
+                if (stem, low) in governed or not sql_type.startswith(("DATE", "TIME")):
+                    continue
+                found = self._ambiguous_dates(con, name, column)
+                if found is not None:
+                    logger.warning(
+                        "Data file '%s': column '%s' holds dates such as '%s' that read "
+                        "as month-first or day-first alike (%s), and DuckDB read it as "
+                        "%s without saying which. It is not the plain `time_column` of "
+                        "any binding, so it is not refused; if a `bind.sql` or a time "
+                        "expression uses it, read it as text and parse it there with "
+                        "strptime().",
+                        name,
+                        column,
+                        found[0],
+                        found[1],
+                        sql_type,
+                    )
+        return plan
+
+    def _ambiguous_dates(self, con: Any, name: str, column: str) -> Optional[Tuple[str, str]]:
+        """`(sample value, why)` when the raw text of a CSV column is
+        ambiguous between day-first and month-first; None when it is not."""
+        col = _sql_identifier(column)
+        row = con.execute(
+            "SELECT COUNT(*) FILTER (WHERE p.a <> ''), "
+            "MAX(TRY_CAST(NULLIF(p.a, '') AS INTEGER)), "
+            "MAX(TRY_CAST(NULLIF(p.b, '') AS INTEGER)), "
+            "MIN(LENGTH(NULLIF(p.y, ''))), "
+            "MIN(raw) FILTER (WHERE p.a <> '') "
+            f"FROM (SELECT {col} AS raw, regexp_extract({col}, {_sql_string(_NUMERIC_DATE)}, "
+            f"['a', 's1', 'b', 's2', 'y']) AS p FROM {self._raw_text(name)})"
+        ).fetchone()
+        n, max_a, max_b, min_year, sample = row
+        if not n:
+            return None
+        if min_year is not None and min_year < 4:
+            return str(sample), "the year has fewer than four digits, so even its place is a guess"
+        if (max_a or 0) <= 12 and (max_b or 0) <= 12:
+            return str(sample), "no value in the file has a day above 12 to settle it"
+        return None
+
+    def _check_declared_format(
+        self, con: Any, name: str, column: str, sql_type: str, entry: Dict[str, Any]
+    ) -> None:
+        fmt = entry["format"]
+        whom = ", ".join(repr(m) for m in entry["metrics"])
+        if not name.lower().endswith(".csv") and sql_type != "VARCHAR":
+            raise DateFormatMismatch(
+                f"Metric(s) {whom} declare `date_format: {fmt!r}` for column "
+                f"'{column}' of '{name}', which is already stored as {sql_type}. "
+                "A typed column has no text to parse; drop `date_format`."
+            )
+        col = _sql_identifier(column)
+        bad = f"{col} IS NOT NULL AND try_strptime({col}, {_sql_string(fmt)}) IS NULL"
+        try:
+            n_bad, sample, n = con.execute(
+                f"SELECT COUNT(*) FILTER (WHERE {bad}), MIN({col}) FILTER (WHERE {bad}), "
+                f"COUNT({col}) FROM {self._raw_text(name)}"
+            ).fetchone()
+        except Exception as e:
+            raise DateFormatMismatch(
+                f"`date_format: {fmt!r}` (metric(s) {whom}) could not be applied to "
+                f"column '{column}' of '{name}': {str(e).splitlines()[0]}"
+            ) from e
+        if n_bad:
+            raise DateFormatMismatch(
+                f"Data file '{name}' in {self.data_dir}: {n_bad} of {n} value(s) in time "
+                f"column '{column}' do not match the declared `date_format: {fmt!r}` "
+                f"(metric(s) {whom}), for example '{sample}'. A row that does not parse "
+                "is refused rather than dropped; fix the format or the file."
+            )
+
+
+def open_data_dir(
+    data_dir: str,
+    bindings: Optional[Dict[str, BindingSpec]] = None,
+    *,
+    allow_external_access: bool = False,
+) -> Any:
     """An in-memory DuckDB connection with one view per export in `data_dir`.
 
     In memory on purpose: the files are the source of truth and nothing is
     written beside them. The `duckdb` module is imported here, at the point of
     use, so a base install can parse a `duckdb` tree and fail with the extra
-    to install rather than an ImportError.
+    to install rather than an ImportError. See `DataDir.connect` for what the
+    connection is pinned and confined to.
     """
-    duckdb = _require_module("duckdb", "duckdb", "duckdb")
-    tables = list_data_files(data_dir)
-    con = duckdb.connect()
-    for stem, name in tables.items():
-        reader = DATA_FILE_READERS[os.path.splitext(name)[1].lower()]
-        path = os.path.join(data_dir, name).replace("'", "''")
-        con.execute(f"CREATE VIEW \"{stem}\" AS SELECT * FROM {reader}('{path}')")
-    return con
+    return DataDir(data_dir, bindings, allow_external_access=allow_external_access).connect()
 
 
-def fetcher_from_data_dir(data_dir: str, bindings: Dict[str, BindingSpec]) -> DbtDataFetcher:
+def _quoted_file_relations(
+    bindings: Dict[str, BindingSpec], tables: Dict[str, str]
+) -> Dict[str, BindingSpec]:
+    """Bindings with every relation that *is* a data-file stem quoted as an
+    identifier (grill 2026-10-05 L2).
+
+    `list_data_files` advertises the stem as the relation name, and a stem is
+    whatever the export was called: `orders-2025`, `2025_orders` and
+    `Orders Export` are all ordinary, and none is a SQL identifier unquoted —
+    the first two died in the SQL parser and the third never got past the tree
+    parser. The author wrote the name the folder shows; quoting it is this
+    provider's job. An exact, case-sensitive match only: anything else is the
+    author's own SQL and is left as written.
+    """
+
+    def quote(relation: Optional[str], where: str) -> Optional[str]:
+        if relation is None:
+            return None
+        if relation in tables:
+            return _sql_identifier(relation)
+        if any(c.isspace() for c in relation) and _identifier_name(relation) is None:
+            raise RuntimeError(
+                f"{where} names relation '{relation}', which is not a data file in "
+                f"`data_dir` (have: {sorted(tables)}) and is not one SQL name either. "
+                "Use a file's stem exactly as listed, or `bind.sql` for a query."
+            )
+        return relation
+
+    out: Dict[str, BindingSpec] = {}
+    for metric, bind in bindings.items():
+        update: Dict[str, Any] = {"relation": quote(bind.relation, f"Metric '{metric}'")}
+        if bind.entity_grain is not None and bind.entity_grain.relation is not None:
+            update["entity_grain"] = bind.entity_grain.model_copy(
+                update={
+                    "relation": quote(
+                        bind.entity_grain.relation, f"Metric '{metric}' (`entity_grain`)"
+                    )
+                }
+            )
+        if any(d.join is not None for d in bind.dimensions.values()):
+            update["dimensions"] = {
+                key: d.model_copy(
+                    update={"join": quote(d.join, f"Metric '{metric}' (dimension '{key}')")}
+                )
+                for key, d in bind.dimensions.items()
+            }
+        out[metric] = bind.model_copy(update=update)
+    return out
+
+
+def fetcher_from_data_dir(
+    data_dir: str,
+    bindings: Dict[str, BindingSpec],
+    *,
+    allow_external_access: bool = False,
+) -> DbtDataFetcher:
     """Build the `duckdb` provider's fetcher: the same `DbtDataFetcher` that
     serves the `dbt` provider, with the tree's own `bind:` blocks as the whole
     binding set and a connection over the exports in `data_dir`.
@@ -860,7 +1405,34 @@ def fetcher_from_data_dir(data_dir: str, bindings: Dict[str, BindingSpec]) -> Db
     claim `doctor` asserts, declared dimensions, `agg: ratio` decomposition,
     the SQL provenance surface — is `DbtDataFetcher`'s already, and a second
     class would be the "same policy, different file" defect the four rules
-    exist to prevent. `connect` stays a zero-argument callable so the fetcher
-    constructs without touching the folder.
+    exist to prevent. What a folder has and a warehouse does not (files that
+    change under the server, a boundary to stay inside) lives on `DataDir`
+    and is handed in as callables. `connect` stays a zero-argument callable so
+    the fetcher constructs without opening a file.
+
+    The folder is *listed* here, failure-soft, so relations can be quoted
+    before the first statement is built; a folder that is not there is still
+    reported by `connect`, by name, at the first fetch.
     """
-    return DbtDataFetcher(bindings, connect=lambda: open_data_dir(data_dir), dialect="duckdb")
+    if allow_external_access:
+        logger.warning(
+            "duckdb provider: `allow_external_access: true` — the connection over %s "
+            "is NOT confined to that folder. A `relation` or `bind.sql` in this tree "
+            "can read any local file this process can, and any https:// or s3:// "
+            "path. Leave it off unless the tree file is as trusted as the server.",
+            data_dir,
+        )
+    try:
+        tables = list_data_files(data_dir)
+    except RuntimeError:
+        tables = {}
+    if tables:
+        bindings = _quoted_file_relations(bindings, tables)
+    source = DataDir(data_dir, bindings, allow_external_access=allow_external_access)
+    return DbtDataFetcher(
+        bindings,
+        connect=source.connect,
+        dialect="duckdb",
+        changed_files=source.changed_files,
+        explain_error=source.explain_error,
+    )

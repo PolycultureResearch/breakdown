@@ -62,6 +62,10 @@ lets the rest of the tree through, with the reason in `status_reason`:
   undefined, so the node has no value there to compare (roadmap 1.11c). A rate
   aggregates as `Σnumerator / Σdenominator`, so a window merely *containing*
   undefined periods is still fine; this is the case where nothing survives.
+- `"reference_before_fit_window"` — the reference window starts before the
+  first period the node's own fit trains on (its `fit_start`, then its lag
+  trim). Decided in the plan, so the node is never fitted; when it is the
+  **target**, that raises before any fit.
 
 `unexplained` is accompanied by `unexplained_status`, which says what the
 number is: `"measured"` (the node's own fetched series was compared against
@@ -127,6 +131,32 @@ from breakdown.parser import _SIMPLE_RATIO
 _MAX_SHOWN_DATES = 5
 
 
+def sampling_failures() -> Tuple[type, ...]:
+    """The exception types a failed fit raises, for the engine's fit call sites.
+
+    `ValueError` is `fit_metric`'s own refusal (a flat series, a window too
+    short) and `RuntimeError` covers PyMC's `SamplingError`, a model that
+    fails to initialize (roadmap C38). The third is the one that was missing
+    (grill 2026-10-05 L3): a chain that dies inside a *multi-process* NUTS run
+    surfaces as `pymc.sampling.parallel.ParallelSamplingError`, which
+    subclasses neither, so C38's "a sampling failure degrades to `fit_failed`"
+    held only when the chains ran in one process.
+
+    A function rather than a module constant, called in the `except` clause:
+    the clause is evaluated only once something is propagating, by which time
+    the fit has imported PyMC, so this module still imports without it. Caught
+    by name and looked up defensively, because the class is not part of PyMC's
+    documented API and has no public alias; if it moves, the two builtins
+    still stand and nothing here breaks.
+    """
+    types: Tuple[type, ...] = (ValueError, RuntimeError)
+    try:
+        from pymc.sampling.parallel import ParallelSamplingError
+    except Exception:  # noqa: BLE001 - any import failure means "not available"
+        return types
+    return (*types, ParallelSamplingError)
+
+
 class NonFiniteAttribution(ValueError):
     """A formula node's decomposition is not a finite number over these windows.
 
@@ -148,6 +178,27 @@ def _reference_alignment(dag: nx.DiGraph, target: str) -> Tuple[bool, str]:
     week_align = any(dag.nodes[n]["definition"].seasonality for n in scope)
     coarsest_grain = coarsest(fit_grain(dag, n) for n in scope)
     return week_align, coarsest_grain
+
+
+def _first_fitted_period(frame: pd.DataFrame, defn) -> Optional[pd.Timestamp]:
+    """The first period a fit of this node trains on, or None when no period
+    survives (the fit then refuses on its own, by name).
+
+    The same two cuts `fit_metric` makes at the front of the window, in the
+    same order: whole periods *starting* on or after the node's `fit_start`
+    (roadmap S24), then the leading max-lag rows a lagged regression cannot
+    use. A reference window may not start before this — the trend delta reads
+    the fitted states over the reference — so every check of "is the reference
+    inside the fitted period" goes through here, rather than through
+    `fit_start` in one place and the lag in another (grill 2026-10-05 M2).
+    """
+    dates = pd.DatetimeIndex(pd.to_datetime(frame["date"])).sort_values()
+    if defn.fit_start is not None:
+        dates = dates[dates >= pd.Timestamp(defn.fit_start)]
+    max_lag = max((defn.lags or {}).values(), default=0)
+    if len(dates) <= max_lag:
+        return None
+    return dates[max_lag]
 
 
 def _earliest_readable_reference(dag: nx.DiGraph, data, target: str) -> pd.Timestamp:
@@ -182,9 +233,15 @@ def _earliest_readable_reference(dag: nx.DiGraph, data, target: str) -> pd.Times
         floor = max(floor, shift_periods(pd.Timestamp(frame["date"].min()), max_lag, grain))
         # Roadmap S24: a node's `fit_start` cuts its fit window, and the
         # reference must lie inside the fitted period — so the default block
-        # may not start before it either.
+        # may not start before it either. The lag trim comes *after* that cut,
+        # so the floor is the first fitted period, not `fit_start` itself: a
+        # lagged node with a `fit_start` used to be handed a default reference
+        # that `run_rca` then refused.
         if defn.fit_start is not None:
             floor = max(floor, pd.Timestamp(defn.fit_start))
+            first_fitted = _first_fitted_period(frame, defn)
+            if first_fitted is not None:
+                floor = max(floor, first_fitted)
     return floor
 
 
@@ -923,15 +980,30 @@ def shapley_attribution(
 # length and composition and asks whether a single week's drift changes the
 # answer; one whole block earlier is the same-length block that shares no
 # period with the published one — the coarsest neighbour that still means
-# "the regime before the departure". Both are re-attributions over cached
-# fits: no alternative ever fits a node (the fit window is all history before
-# `analysis_start`, independent of the reference), so the added cost is the
+# "the regime before the departure". Both are re-attributions over the
+# published run's own fits: no alternative ever fits a node (the fit window is
+# all history before `analysis_start`, independent of the reference, and
+# `allow_fitting=False` holds it to that), so the added cost is the
 # bootstrap and the Shapley games again, bounded by the count here — rule 4's
 # cap is on the games themselves, one level down.
 REFERENCE_SENSITIVITY_SHIFTS: Tuple[str, ...] = ("one_period_earlier", "one_block_earlier")
 
 # Every top-level status the field can carry, in one place for the renderers.
 REFERENCE_SENSITIVITY_STATUSES = ("stable", "unstable", "unavailable")
+
+# …and every status one entry of `alternatives` can carry. A separate tuple
+# because it is a separate field with a separate vocabulary: `ok` (the block
+# answered), `unavailable` (no readable history for it, or the engine refused
+# the block; `reason` carries the refusal) and `gap_unavailable` (it ran, and
+# the target has no finite gap under it). The third was emitted and declared
+# nowhere until grill 2026-10-05 M4.
+REFERENCE_ALTERNATIVE_STATUSES = ("ok", "unavailable", "gap_unavailable")
+
+# What a `stable`/`unstable` verdict can be *about*, as `compared` lists it.
+# `top_cause` is absent from the list when the published run ranked no cause
+# (a source target, a negligible gap): the verdict is then about the gap's
+# direction alone, and a reader must not be told a top cause survived.
+REFERENCE_SENSITIVITY_COMPARED = ("top_cause", "gap_sign")
 
 
 def _reference_alternatives(
@@ -943,7 +1015,8 @@ def _reference_alternatives(
 ) -> List[Dict[str, Any]]:
     """The neighbouring reference blocks S23 re-attributes under.
 
-    Each is shifted back from the published block, clamped to the earliest
+    Each is shifted back from the published block by whole periods of the
+    scope's coarsest grain, clamped to the earliest
     date every node in scope can read (`_earliest_readable_reference`, the
     same floor the default window respects), and dropped — with the reason —
     when nothing readable is left. Per-node whole-period alignment is
@@ -951,26 +1024,50 @@ def _reference_alternatives(
     """
     ref_s = pd.Timestamp(reference_start).normalize()
     ref_e = pd.Timestamp(reference_end).normalize()
-    length_days = (ref_e - ref_s).days + 1
     floor = _earliest_readable_reference(dag, data, target)
     _, coarsest_grain = _reference_alignment(dag, target)
-    if coarsest_grain == "month":
-        period = pd.DateOffset(months=1)
-        period_label = "one month earlier"
-    else:
-        period = pd.Timedelta(days=7)
-        period_label = "one week earlier"
+    # Both shifts move the block by whole periods, through `shift_periods`,
+    # on its *exclusive* end — so April 1-30 one month earlier is March 1-31,
+    # not March 1-30. Day arithmetic (`- 30 days`, `- length_days`) is only
+    # whole-period arithmetic when every period is the same length, and a
+    # month is not: on a month-grain tree it produced blocks holding no whole
+    # month at all, so a single-month reference in a 30-day month or February
+    # always read `unavailable` (grill 2026-10-05 M4).
+    #
+    # "One period" is a week below month grain — a day-grain tree still moves
+    # by seven days, which keeps the weekday mix — and a month at it. "One
+    # block" is the smallest whole number of coarsest-grain periods that
+    # clears the published block, so the two share no period: exactly the
+    # block's own length when it is made of whole periods, and the next whole
+    # period up when it is not.
+    period_unit = "month" if coarsest_grain == "month" else "week"
+    period_label = f"one {period_unit} earlier"
+    end_excl = ref_e + pd.Timedelta(days=1)
+
+    def shifted(n: int, unit: str) -> Tuple[pd.Timestamp, pd.Timestamp]:
+        return (
+            shift_periods(ref_s, -n, unit),
+            shift_periods(end_excl, -n, unit) - pd.Timedelta(days=1),
+        )
+
+    block_periods = 1
+    while shift_periods(end_excl, -block_periods, coarsest_grain) > ref_s:
+        block_periods += 1
     candidates = [
-        ("one_period_earlier", period_label, ref_s - period, ref_e - period),
-        (
-            "one_block_earlier",
-            "one whole block earlier",
-            ref_s - pd.Timedelta(days=length_days),
-            ref_s - pd.Timedelta(days=1),
-        ),
+        ("one_period_earlier", period_label, *shifted(1, period_unit)),
+        ("one_block_earlier", "one whole block earlier", *shifted(block_periods, coarsest_grain)),
     ]
+
+    def identity(start: pd.Timestamp, end: pd.Timestamp) -> Tuple[pd.Timestamp, pd.Timestamp]:
+        # Two blocks are the same block when they hold the same whole periods
+        # at the coarsest grain — the grain the target is measured at. Raw
+        # dates are not that test: Jan 30 - Feb 29 and Feb 1 - 29 both snap to
+        # February, and counting it twice let one neighbour vote twice.
+        snapped = snap_window(start, end, coarsest_grain)
+        return (start, end) if snapped is None else (snapped.first_start, snapped.last_start)
+
     out: List[Dict[str, Any]] = []
-    seen = {(ref_s, ref_e)}
+    seen = {identity(ref_s, ref_e)}
     for shift, label, start, end in candidates:
         alt: Dict[str, Any] = {"shift": shift, "label": label}
         note = None
@@ -990,13 +1087,14 @@ def _reference_alternatives(
                 )
                 out.append(alt)
                 continue
+            # Against the alternative's own length, which on a month grain
+            # is not the published block's (March has 31 days, April 30).
+            full_days = (end - start).days + 1
             start = floor
-            note = (
-                f"shortened to the loaded history: {(end - start).days + 1} of {length_days} days"
-            )
-        if (start, end) in seen:
+            note = f"shortened to the loaded history: {(end - start).days + 1} of {full_days} days"
+        if identity(start, end) in seen:
             continue
-        seen.add((start, end))
+        seen.add(identity(start, end))
         alt.update(
             reference_window={"start": str(start.date()), "end": str(end.date())},
             status="ok",
@@ -1022,7 +1120,8 @@ def _gap_sign(gap: Optional[float], baseline: Optional[float], actual: Optional[
 def _reference_sensitivity(
     dag: nx.DiGraph,
     data,
-    traces: Dict[Tuple[str, Optional[str]], Any],
+    fits: Dict[Tuple[str, Optional[str]], Any],
+    fit_failures: Dict[str, str],
     target: str,
     result: Dict[str, Any],
     *,
@@ -1033,11 +1132,23 @@ def _reference_sensitivity(
 ) -> Dict[str, Any]:
     """Re-attribute under each alternative block and say what moved.
 
+    `fits` is the published run's own fits, keyed like the trace cache, and
+    `fit_failures` the nodes it could not fit. The alternatives attribute
+    over exactly those and are forbidden to fit (`allow_fitting=False`): they
+    used to be handed the caller's cache instead, so a node whose fit had
+    failed or been evicted was refitted once per alternative — up to tripling
+    the wall-clock under the tree's lock, against this section's own "never
+    fits" (grill 2026-10-05 L4).
+
     `status` is `stable` when every alternative that could answer names the
     same top cause and the same gap direction as the published windows,
     `unstable` when any differs, `unavailable` when none could answer (with
-    the reasons). `gap_range` spans the published gap and every answered
-    alternative's. Rule 3: an alternative whose gap is not finite answers
+    the reasons). `compared` lists what that verdict is about
+    (`REFERENCE_SENSITIVITY_COMPARED`): when the published run ranked no cause
+    there is no top cause to compare, `top_cause_stable` stays null, and
+    `compared` is `["gap_sign"]` — a `stable` then says the gap's direction
+    survived and nothing about a cause. `gap_range` spans the published gap
+    and every answered alternative's. Rule 3: an alternative whose gap is not finite answers
     nothing — its `gap` is null and its status names why — and the published
     windows' own gap being undefined makes the whole field `unavailable`
     rather than a comparison against nothing.
@@ -1051,6 +1162,8 @@ def _reference_sensitivity(
         "top_cause": pub_top,
         "top_cause_stable": None,
         "gap_sign_stable": None,
+        # Empty until a verdict exists: `unavailable` compared nothing.
+        "compared": [],
         "gap_range": None,
         "alternatives": [],
         "reason": None,
@@ -1075,7 +1188,7 @@ def _reference_sensitivity(
             alt_result = run_rca(
                 dag,
                 data,
-                traces,
+                fits,
                 target,
                 analysis_start=analysis_start,
                 analysis_end=analysis_end,
@@ -1084,6 +1197,8 @@ def _reference_sensitivity(
                 inference_method=inference_method,
                 draws=draws,
                 reference_sensitivity=False,
+                allow_fitting=False,
+                fit_failures=fit_failures,
             )
         except ValueError as e:
             # The engine's own refusal of that block (coverage, an undefined
@@ -1124,33 +1239,106 @@ def _reference_sensitivity(
         "status": "stable" if (top_stable is not False and sign_stable) else "unstable",
         "top_cause_stable": top_stable,
         "gap_sign_stable": sign_stable,
+        "compared": [
+            what
+            for what in REFERENCE_SENSITIVITY_COMPARED
+            if what != "top_cause" or top_stable is not None
+        ],
         "gap_range": [min(gaps), max(gaps)],
     }
 
 
-def _node_fit_end(defn, grain: str, analysis_start: str, snapped_an) -> str:
-    """The `fit_end` this node's RCA fit uses (roadmap S24, design §3.2).
+def _fit_extension(defn, grain: str, analysis_start: str, snapped_an) -> Tuple[str, List[str]]:
+    """The `fit_end` this node's RCA fit uses, and which declared
+    interventions pushed it past `analysis_start` (roadmap S24, design §3.2).
 
     `analysis_start` for every node — the fit-before-analysis rule — except a
-    node declaring a `learn_from: window` intervention, whose fit is extended
-    *through* that intervention's own periods so its coefficient can be
-    identified from the event itself: through the analysis window's last
-    whole period for a `step`, through `until` for a `pulse`. Never earlier
-    than `analysis_start`, so an intervention already inside history changes
-    nothing. The trace cache is keyed by this value, which is what lets a
-    node fitted on a different window from its ancestors coexist with them —
-    and why the exception is per node, never tree-wide.
+    node declaring a `learn_from: window` intervention *the analysis window
+    contains*, whose fit is extended through that intervention's own periods
+    so its coefficient can be identified from the event itself: through the
+    analysis window's last whole period for a `step`, through `until` for a
+    `pulse`.
+
+    "Contains" is the condition that was missing (grill 2026-10-05 M3). A
+    step extended the fit through the analysis window whatever its date, so a
+    flip declared a year before the window — fully inside history, sized from
+    history, with nothing left to learn from the window — still trained the
+    node's betas and level on the anomaly they were about to explain, on every
+    RCA. A step dated *after* the window did the same and was then dropped
+    for having no instance in the fit, leaving the extension disclosed
+    nowhere. So:
+
+    - a `step` extends only when its (grain-snapped) date falls inside the
+      analysis window's whole periods;
+    - a `pulse` extends only when it starts on or before the analysis
+      window's last whole period — one that begins after the window is not
+      this analysis's event — and, as before, only as far as its own `until`,
+      which changes nothing when that is already inside history.
+
+    The names returned are exactly the interventions whose own rule moved the
+    end, whether or not the fit then kept their column: `fit_window.
+    extended_for` publishes them, so no extension happens undisclosed.
+
+    The trace cache is keyed by the returned date, which is what lets a node
+    fitted on a different window from its ancestors coexist with them — and
+    why the exception is per node, never tree-wide.
     """
-    end = pd.Timestamp(analysis_start)
+    start = pd.Timestamp(analysis_start)
+    end = start
+    extended_for: List[str] = []
     for iv in defn.interventions:
         if iv.learn_from != "window":
             continue
+        dated = floor_period(pd.Timestamp(iv.date), grain)
         if iv.kind == "step":
+            if not (snapped_an.first_start <= dated <= snapped_an.last_start):
+                continue
             through = snapped_an.last_start
         else:
+            if dated > snapped_an.last_start:
+                continue
             through = floor_period(pd.Timestamp(iv.until or iv.date), grain)
-        end = max(end, next_start(through, grain))
-    return str(end.date())
+        candidate = next_start(through, grain)
+        if candidate > start:
+            extended_for.append(iv.name)
+        end = max(end, candidate)
+    return str(end.date()), extended_for
+
+
+def _node_fit_end(defn, grain: str, analysis_start: str, snapped_an) -> str:
+    """The `fit_end` half of `_fit_extension`: the trace-cache key."""
+    return _fit_extension(defn, grain, analysis_start, snapped_an)[0]
+
+
+def _reference_before_fit_reason(
+    node: str,
+    defn,
+    grain: str,
+    reference_start: str,
+    reference_end: str,
+    first_fitted: pd.Timestamp,
+) -> str:
+    """Why a reference window cannot be read against this node's fit, in the
+    terms the author can act on: which declaration moved the fit's start, and
+    the earliest reference start that works."""
+    max_lag = max((defn.lags or {}).values(), default=0)
+    causes = []
+    if defn.fit_start is not None:
+        causes.append(f"it declares `fit_start: {defn.fit_start}`")
+    if max_lag:
+        causes.append(
+            f"its longest parent lag ({max_lag} {grain}(s)) trims the periods before "
+            "the lagged parent has a value"
+        )
+    because = f" — {' and '.join(causes)}" if causes else ""
+    return (
+        f"The reference window [{reference_start}, {reference_end}] starts before "
+        f"the first {grain} '{node}' is fitted on ({first_fitted.date()}){because}. "
+        "The node's trend and seasonal terms have no fitted state before that "
+        "date, so its gap cannot be decomposed against this reference. Start "
+        f"the reference on or after {first_fitted.date()}"
+        + (", or move `fit_start` earlier." if defn.fit_start is not None else ".")
+    )
 
 
 class RcaFitPlan(NamedTuple):
@@ -1171,6 +1359,16 @@ class RcaFitPlan(NamedTuple):
     frame_failures: Dict[str, str]
     fit_ends: Dict[str, str]
     to_fit: List[str]
+    # The usable cached fits the plan found, by node, *held here* rather than
+    # left to be looked up again: `traces` is a bounded cache shared by every
+    # tree in the process, so a fit that was there when the plan was made can
+    # be gone by the time the attribution reads it (grill 2026-10-05 M1).
+    fits: Dict[str, Any]
+    # Nodes whose reference window starts before the first period their own
+    # fit trains on (`fit_start`, then the lag trim), each with the reason.
+    # Never fitted — there is nothing the fit could say about that reference
+    # — and reported as `reference_before_fit_window` (grill 2026-10-05 M2).
+    reference_before_fit: Dict[str, str]
 
 
 def plan_rca_fits(
@@ -1188,7 +1386,9 @@ def plan_rca_fits(
     """Resolve windows and list the fits `run_rca` would need, without fitting.
 
     Raises exactly what `run_rca` raises for an unanalysable target or window.
-    `to_fit` excludes nodes `traces` already holds a usable fit for.
+    `to_fit` excludes nodes `traces` already holds a usable fit for; those
+    fits are returned on the plan (`fits`), so the caller reads them from
+    there and never from `traces` again.
     """
     if target not in dag:
         raise ValueError(f"Metric '{target}' not found in the metric tree.")
@@ -1293,18 +1493,41 @@ def plan_rca_fits(
     # every node except one with a `learn_from: window` intervention, whose
     # fit runs through the event (see `_node_fit_end`) — and it is the cache
     # key here, at the fit and at the read, so the three cannot disagree.
+    #
+    # The reference must lie inside the period each fit trains on, and that is
+    # checked here too, for the reason coverage is: `_validate_coverage` knows
+    # the node's data range but not its `fit_start`, so an explicit reference
+    # starting before one used to pass every pre-fit check, pay for every fit
+    # in scope, and only then raise from inside the attribution loop — for a
+    # *non-target* node, ending an analysis the module promises one bad node
+    # cannot end (grill 2026-10-05 M2). The target's violation is refused now,
+    # before any fit; an ancestor's is recorded, never fitted, and reported
+    # with its own status.
     to_fit = []
     fit_ends: Dict[str, str] = {}
+    fits: Dict[str, Any] = {}
+    reference_before_fit: Dict[str, str] = {}
     for node in sorted(nodes_in_scope):
         defn = dag.nodes[node]["definition"]
         parents = list(dag.predecessors(node))
         if (not parents and not defn.interventions) or defn.formula:
             continue
-        if scoped[node][2] is None:
+        grain, frame, snapped_ref, snapped_an = scoped[node]
+        if snapped_ref is None:
             continue
-        fit_ends[node] = _node_fit_end(defn, scoped[node][0], analysis_start, scoped[node][3])
+        first_fitted = _first_fitted_period(frame, defn)
+        if first_fitted is not None and snapped_ref.first_start < first_fitted:
+            reason = _reference_before_fit_reason(
+                node, defn, grain, reference_start, reference_end, first_fitted
+            )
+            if node == target:
+                raise ValueError(reason + " Nothing was fitted.")
+            reference_before_fit[node] = reason
+            continue
+        fit_ends[node] = _node_fit_end(defn, grain, analysis_start, snapped_an)
         cached = traces.get((node, fit_ends[node]))
         if cached is not None and cached_fit_is_usable(cached, inference_method):
+            fits[node] = cached
             continue
         to_fit.append(node)
 
@@ -1318,6 +1541,8 @@ def plan_rca_fits(
         frame_failures,
         fit_ends,
         to_fit,
+        fits,
+        reference_before_fit,
     )
 
 
@@ -1361,6 +1586,8 @@ def run_rca(
     draws: int = NUTS_DRAWS,
     progress: Optional[ProgressFn] = None,
     reference_sensitivity: bool = True,
+    allow_fitting: bool = True,
+    fit_failures: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Attribute `target`'s window-over-window change to its ancestors.
 
@@ -1369,6 +1596,19 @@ def run_rca(
     strictly before `analysis_start` (so the anomaly window is excluded) and added
     to it. A full-window fit (`fit_end=None`) is never reused here — it is
     contaminated by the anomaly for attribution purposes.
+
+    `traces` is a **write-through cache, never this call's working memory**.
+    The fits a run needs are held in a local mapping from the moment they are
+    found or made until the call returns; `traces` is read once, in the plan,
+    and written once per new fit. The caller's mapping is allowed to be
+    bounded and shared (the API's is both), so a run must not depend on it
+    still holding what the run itself put there a moment ago.
+
+    `allow_fitting=False` attributes over the fits `traces` already holds and
+    makes none: a node with no usable fit there reports `fit_failed`, with the
+    reason from `fit_failures` (node -> reason, a previous run's failures)
+    when it has one. It is how the S23 alternatives run — over the published
+    run's fits, and nothing else.
 
     `inference_method` is `"nuts"` — exact MCMC — by default, because roadmap S2
     measured mean-field ADVI failing the PSIS k-hat check on essentially every
@@ -1394,7 +1634,7 @@ def run_rca(
 
     `reference_sensitivity` (roadmap S23) re-attributes the same analysis
     window under `REFERENCE_SENSITIVITY_SHIFTS` neighbouring reference blocks
-    — over the cached fits, never fitting — and publishes whether the top
+    — over this run's own fits, never fitting — and publishes whether the top
     cause and the gap's direction survive the move, as `reference_sensitivity`.
     It runs whether the reference was defaulted or chosen: a chosen block is
     no less one choice among neighbours, and the reader's question is the
@@ -1410,6 +1650,8 @@ def run_rca(
         frame_failures,
         fit_ends,
         to_fit,
+        fits,
+        reference_before_fit,
     ) = plan_rca_fits(
         dag,
         data,
@@ -1449,20 +1691,38 @@ def run_rca(
     # a node reaches this loop only when the cache held nothing usable for the
     # method asked for, so the fit being stored is never worse than the one it
     # replaces.
-    fit_failures: Dict[str, str] = {}
+    #
+    # `fits` (node -> FitResult) is where this run keeps what it will read:
+    # the plan's cached fits plus the ones made here. The write to `traces` is
+    # for the *next* caller. Reading it back below was a KeyError — an
+    # unhandled 500 — whenever the bounded, process-wide store evicted this
+    # run's own fit between the two loops: a scope with more fitted nodes
+    # than the byte budget holds, or another tree's analysis writing in
+    # between (grill 2026-10-05 M1).
+    known_failures = fit_failures or {}
+    fit_failures = {}
     for i, node in enumerate(to_fit, 1):
+        if not allow_fitting:
+            fit_failures[node] = known_failures.get(node) or (
+                f"'{node}' has no usable fit among the ones this run was given, and "
+                "this run does not fit (`allow_fitting=False`)."
+            )
+            continue
         _report(progress, stage="fitting", metric=node, current=i, total=len(to_fit))
         try:
             fit = fit_rca_node(
                 dag, data, node, fit_ends[node], inference_method=inference_method, draws=draws
             )
-        except (ValueError, RuntimeError) as e:
+        except sampling_failures() as e:
             # RuntimeError included (roadmap C38): PyMC's SamplingError — a
             # model that fails to initialize — subclasses it, and "one bad
             # node does not end the analysis" was false for exactly that
             # node until it degraded here like every other unfittable one.
+            # `ParallelSamplingError`, a chain dying in a multi-process run,
+            # subclasses neither and is named by `sampling_failures`.
             fit_failures[node] = str(e)
             continue
+        fits[node] = fit
         traces[(node, fit_ends[node])] = fit
 
     _report(progress, stage="attributing", total=len(to_fit))
@@ -1573,11 +1833,13 @@ def run_rca(
 
         # An unfittable node still reports its own movement — baseline, actual
         # and gap are read off the data, not the model. Only the attribution is
-        # missing, and only for this node.
-        if node in fit_failures:
+        # missing, and only for this node. The same holds for a node whose
+        # reference window precedes its fitted period: the plan never fitted
+        # it, and its measured movement stands.
+        if node in fit_failures or node in reference_before_fit:
             nodes_out[node] = _node_out(
-                status="fit_failed",
-                status_reason=fit_failures[node],
+                status="fit_failed" if node in fit_failures else "reference_before_fit_window",
+                status_reason=fit_failures.get(node) or reference_before_fit.get(node),
                 grain=grain,
                 effective_windows=effective_windows,
                 baseline=baseline,
@@ -1590,7 +1852,11 @@ def run_rca(
 
         contributions = []
         components = None
-        inference_method = None
+        # Not `inference_method`: that is this call's *requested* sampler, and
+        # rebinding it per node handed whatever the last node in scope
+        # happened to be fitted with (or None, after a formula node) to the
+        # S23 alternatives as the method to plan with.
+        node_inference_method = None
         fit_quality = None
         khat = None
         khat_se = None
@@ -1906,8 +2172,8 @@ def run_rca(
                 unexplained_status = "measured"
         else:
             attribution_method = "posterior"
-            fit = traces[(node, fit_ends[node])]
-            inference_method = fit.inference_method
+            fit = fits[node]
+            node_inference_method = fit.inference_method
             fit_quality = fit.diagnostics.get("fit_quality")
             khat = fit.diagnostics.get("khat")
             khat_se = fit.diagnostics.get("khat_se")
@@ -1929,16 +2195,15 @@ def run_rca(
             # Roadmap S24: `extended_for` names the `learn_from: window`
             # interventions whose declaration pushed this node's fit past
             # `analysis_start` — the fit saw the analysis window for this
-            # node, and the reader must know that when reading its β.
+            # node, and the reader must know that when reading its β. Read
+            # from the rule that set `fit_end`, not from the fit's surviving
+            # columns: an intervention that extended the window and was then
+            # dropped still extended it.
             fit_window = {
                 "start": str(fit.dates[0].date()),
                 "end": str(fit.dates[-1].date()),
                 "n_periods": int(len(fit.dates)),
-                "extended_for": [
-                    r["name"]
-                    for r in fit.interventions
-                    if r["learn_from"] == "window" and fit_ends[node] != analysis_start
-                ],
+                "extended_for": _fit_extension(defn, grain, analysis_start, snapped_an)[1],
             }
             seasonality_warnings = fit.diagnostics.get("seasonality_warnings")
             likelihood_warnings = fit.diagnostics.get("likelihood_warnings")
@@ -2004,11 +2269,29 @@ def run_rca(
 
             trend_samples = fit.trace.posterior["trend"].values.reshape(n_post, -1)
             if (t_ref < 0).any() or (t_ref >= trend_samples.shape[1]).any():
-                raise ValueError(
+                # A backstop: `plan_rca_fits` refuses this before any fit,
+                # from the same cuts the fit makes. Kept for a fit whose dates
+                # the plan could not predict, and degraded like every other
+                # per-node failure rather than raised mid-loop.
+                reason = (
                     f"Reference window [{reference_start}, {reference_end}] must lie "
                     f"inside the fitted period for '{node}' (grain '{grain}', "
                     f"{fit.dates[0].date()} to {fit.dates[-1].date()})."
                 )
+                if node == target:
+                    raise ValueError(reason)
+                nodes_out[node] = _node_out(
+                    status="reference_before_fit_window",
+                    status_reason=reason,
+                    grain=grain,
+                    effective_windows=effective_windows,
+                    baseline=baseline,
+                    actual=actual,
+                    gap=gap,
+                    relative_change=relative_change,
+                    **rate_fields,
+                )
+                continue
 
             # Trend: the analysis window is outside the fitted period (the fit
             # ends at analysis_start), and the random-walk forecast of a local
@@ -2046,6 +2329,12 @@ def run_rca(
             an_idx = block_bootstrap_indices(len(t_an), N_BOOT, rng, block=block)
 
             estimate_sum = 0.0
+            # Set when any term of this node's decomposition was withheld for
+            # a non-finite posterior — a coefficient, a component, a declared
+            # intervention. The node's `ci_status` names it and `unexplained`
+            # is withheld with it: a residual computed around a missing term
+            # would publish that term's whole effect as "unexplained".
+            withheld_nonfinite = False
             # The same degeneracy the formula path guards against (roadmap
             # C4a) reaches here through the parent's window means: a parent
             # constant over a window contributes no window-sampling
@@ -2092,20 +2381,34 @@ def run_rca(
                 # the same bootstrap replicate across parents.
                 delta_samples = rng.permutation(delta_samples)
                 samples = arr[:, i] * delta_samples[np.arange(n_post) % N_BOOT]
-                estimate = float(samples.mean())
-                estimate_sum += estimate
-                lo = float(np.percentile(samples, 2.5))
-                hi = float(np.percentile(samples, 97.5))
-                # Withheld only when the interval is flatly zero-width; a
-                # parent constant in one window still leaves the coefficient
-                # posterior varying, and that interval is understated (hence
-                # the node's `ci_status`) rather than absent.
-                degenerate = hi - lo <= DEGENERATE_CI_REL * ci_scale
+                # Through `sample_summary`, like every other posterior
+                # summary on this node (rule 3, grill 2026-10-05 L6): this
+                # was `samples.mean()` and two bare percentiles, so a
+                # non-finite coefficient draw — the parent windows are
+                # refused above, the posterior was not checked at all —
+                # reached the encoder as NaN. A non-finite summary is
+                # withheld whole: no estimate, no share, no interval, and the
+                # node's `ci_status` says why.
+                #
+                # The interval is otherwise withheld only when it is flatly
+                # zero-width; a parent constant in one window still leaves the
+                # coefficient posterior varying, and that interval is
+                # understated (hence the node's `ci_status`) rather than
+                # absent.
+                summary = sample_summary(samples, ci_scale)
+                estimate = summary["estimate"]
+                degenerate = summary["ci_95"] is None
+                if estimate is None:
+                    withheld_nonfinite = True
+                else:
+                    estimate_sum += estimate
                 contribution = {
                     "parent": p,
                     "estimate": estimate,
-                    "share_of_gap": share_of_gap(estimate, gap, ci_scale),
-                    "ci_95": None if degenerate else [lo, hi],
+                    "share_of_gap": (
+                        None if estimate is None else share_of_gap(estimate, gap, ci_scale)
+                    ),
+                    "ci_95": summary["ci_95"],
                     # `n_effective=N_BOOT`: `samples` is one value per posterior
                     # draw, but the window delta multiplying them takes only
                     # `N_BOOT` distinct values, so a NUTS fit's 4,000 draws do
@@ -2148,6 +2451,7 @@ def run_rca(
                     entry: Dict[str, Any] = {**record, "window_delta": window_delta}
                     iv_samples = arr_iv[:, j] * window_delta
                     if not np.isfinite(iv_samples).all():
+                        withheld_nonfinite = True
                         entry.update(
                             estimate=None,
                             share_of_gap=None,
@@ -2186,20 +2490,34 @@ def run_rca(
                         )
                     interventions_out.append(entry)
 
-            unexplained = (
-                gap
-                - estimate_sum
-                - sum(c["estimate"] for c in components.values())
-                - intervention_sum
-            )
-            # A probabilistic node is always fetched (there is no derived
-            # regression), so its residual is always a measurement.
-            unexplained_status = "measured"
-            # The beta_raw posterior still carries real uncertainty on a
-            # single-period window; the flag says the window-sampling
-            # component of the CI is absent.
+            # `sample_summary` withholds a non-finite trend or seasonal as
+            # `estimate: None`, and summing those was a TypeError — a 500 —
+            # on exactly the node that most needed a diagnostic.
+            component_estimates = [c["estimate"] for c in components.values()]
+            if any(e is None for e in component_estimates):
+                withheld_nonfinite = True
+            if withheld_nonfinite:
+                # Withheld, not computed around the gap: `gap − Σ(the terms
+                # that survived)` would hand the missing term's effect to
+                # `unexplained` and label it a measurement. Both keys null is
+                # `_node_out`'s "no residual"; `ci_status` is what names why.
+                unexplained = None
+                unexplained_status = None
+            else:
+                unexplained = gap - estimate_sum - sum(component_estimates) - intervention_sum
+                # A probabilistic node is always fetched (there is no derived
+                # regression), so its residual is always a measurement.
+                unexplained_status = "measured"
+            # Most specific cause first. `nonfinite_posterior` outranks the
+            # rest because it is the only one under which a *point estimate*
+            # is missing; the others qualify intervals. Then: the beta_raw
+            # posterior still carries real uncertainty on a single-period
+            # window, and the flag says the window-sampling component of the
+            # CI is absent.
             ci_status = (
-                "posterior_only_single_period"
+                "nonfinite_posterior"
+                if withheld_nonfinite
+                else "posterior_only_single_period"
                 if single_period
                 else "degenerate_bootstrap_spread"
                 if degenerate_inputs
@@ -2215,7 +2533,7 @@ def run_rca(
             gap=gap,
             relative_change=relative_change,
             attribution_method=attribution_method,
-            inference_method=inference_method,
+            inference_method=node_inference_method,
             fit_quality=fit_quality,
             khat=khat,
             khat_se=khat_se,
@@ -2258,7 +2576,8 @@ def run_rca(
         result["reference_sensitivity"] = _reference_sensitivity(
             dag,
             data,
-            traces,
+            {(node, fit_ends[node]): fit for node, fit in fits.items()},
+            fit_failures,
             target,
             result,
             analysis_start=analysis_start,

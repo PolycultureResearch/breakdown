@@ -1080,8 +1080,31 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     v == null || gap == null || Math.abs(gap) <= 1e-12 ? "—" : pct(v / gap);
   const num = (v) => `<td class="num">${v}</td>`;
 
-  const grainNote = (node) => {
+  // Grill M8: what a named metric's series really covers — declared zeros at
+  // its tail, a range shorter than the window. Under the parent's name in a
+  // table row, in the node's header line, and in full in its caveat block,
+  // because the report is read without `/meta` beside it.
+  const rangeNotesOf = (name) => rcaNodeRangeNotes(state.meta, res, name);
+  const parentRangeLine = (c) =>
+    rangeNotesOf(c.parent)
+      .filter((n) => n.cls === "sign-flag")
+      .map((n) => `<div class="meta">${esc(n.short)}</div>`)
+      .join("");
+  const rangeParagraphs = (name, node) =>
+    [
+      ...seriesRangeParagraphs(rangeNotesOf(name)),
+      // A parent with no section of its own (a plain source) is described
+      // here, under the child whose table is the only place it appears.
+      ...((node && node.contributions) || [])
+        .filter((c) => !rcaNodeHasDetail(res.nodes[c.parent]))
+        .flatMap((c) => seriesRangeParagraphs(rangeNotesOf(c.parent), c.parent)),
+    ]
+      .map((t) => `<p class="warn">⚠ ${t}</p>`)
+      .join("");
+
+  const grainNote = (node, name) => {
     const bits = [];
+    rangeNotesOf(name).forEach((n) => bits.push(n.text));
     // The fit window — all loaded history before the analysis window, never the
     // reference window. The live header has carried it since 2.14; the export
     // did not, so the one node flagged `⚠ suspect fit` shipped that verdict
@@ -1103,7 +1126,7 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     // drift.
     const kn = khatNote(node);
     if (kn) bits.push(`${kn.text}${khatFigure(node) ? ` (PSIS k̂ ${khatFigure(node)})` : ""}`);
-    if (node.sign_warnings && node.sign_warnings.length) bits.push("⚠ learned sign contradicts declared expectation");
+    if (nodeWarningChip(node, "sign_warnings")) bits.push(nodeWarningChip(node, "sign_warnings"));
     // Roadmap S4. The pair travels in the header line so a reader scanning the
     // export's sections sees which node's per-parent rows are not a ranking.
     const cn2 = collinearityNote(node.collinearity_status);
@@ -1112,8 +1135,8 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     // not reproduce its own history.
     const pn2 = ppcNote(node.ppc_status);
     if (pn2) bits.push(`${pn2.text}${ppcStatText(node)}`);
-    if (node.seasonality_warnings && node.seasonality_warnings.length) bits.push("⚠ seasonality unidentifiable from fitted history");
-    if (node.likelihood_warnings && node.likelihood_warnings.length) bits.push("⚠ zero-inflated fit window — intervals approximate");
+    if (nodeWarningChip(node, "seasonality_warnings")) bits.push(nodeWarningChip(node, "seasonality_warnings"));
+    if (nodeWarningChip(node, "likelihood_warnings")) bits.push(nodeWarningChip(node, "likelihood_warnings"));
     // Issue #113: which parents this node's table does not have a row for,
     // and that the absence is an exclusion rather than a zero.
     const dn2 = droppedParentsNote(node);
@@ -1225,7 +1248,7 @@ function buildRcaReportHtml(res, treePng, stripPng) {
 
   const order = [res.target, ...res.ranked_causes.map((c) => c.metric)];
   const blocks = order
-    .filter((name) => res.nodes[name] && (res.nodes[name].contributions.length || nodeStatus(res.nodes[name])))
+    .filter((name) => rcaNodeHasDetail(res.nodes[name]))
     .map((name) => {
       const node = res.nodes[name];
       const st = nodeStatus(node);
@@ -1238,6 +1261,7 @@ function buildRcaReportHtml(res, treePng, stripPng) {
           <h3><code>${esc(name)}</code> <span class="meta">${esc(st.label)}</span></h3>
           ${gapLine(node)}
           <p class="warn">⚠ ${esc(st.explains)}${node.status_reason ? ` <em>${esc(node.status_reason)}</em>` : ""}</p>
+          ${rangeParagraphs(name, node)}
         </section>`;
       }
       const twoLevel = node.contributions.some((c) => c.decomposition);
@@ -1252,18 +1276,18 @@ function buildRcaReportHtml(res, treePng, stripPng) {
         : "";
       let tables;
       if (twoLevel) {
-        const headRows = node.contributions.map((c) => `<tr><td><code>${esc(c.parent)}</code>${lagLine(c, node.grain)}</td>${num(fmt(c.decomposition.means.estimate))}${num(shareOf(c.decomposition.means.estimate, node.gap))}${num(ciCell(c.decomposition.means.ci_95))}</tr>`).join("");
+        const headRows = node.contributions.map((c) => `<tr><td><code>${esc(c.parent)}</code>${lagLine(c, node.grain)}${parentRangeLine(c)}</td>${num(fmt(c.decomposition.means.estimate))}${num(shareOf(c.decomposition.means.estimate, node.gap))}${num(ciCell(c.decomposition.means.ci_95))}</tr>`).join("");
         const interaction = node.interaction
           ? `<tr class="em"><td>co-movement shift</td>${num(fmt(node.interaction.estimate))}${num(shareOf(node.interaction.estimate, node.gap))}${num(ciCell(node.interaction.ci_95))}</tr>`
           : "";
-        const detRows = node.contributions.map((c) => `<tr><td><code>${esc(c.parent)}</code>${lagLine(c, node.grain)}</td>${num(fmt(c.decomposition.means.estimate))}${num(fmt(c.decomposition.comovement.estimate))}${num(fmt(c.estimate))}${num(ciCell(c.ci_95))}${num(pctDir(c.prob_same_direction, c.prob_same_direction_censored))}</tr>`).join("");
+        const detRows = node.contributions.map((c) => `<tr><td><code>${esc(c.parent)}</code>${lagLine(c, node.grain)}${parentRangeLine(c)}</td>${num(fmt(c.decomposition.means.estimate))}${num(fmt(c.decomposition.comovement.estimate))}${num(fmt(c.estimate))}${num(ciCell(c.ci_95))}${num(pctDir(c.prob_same_direction, c.prob_same_direction_censored))}</tr>`).join("");
         tables = `
           <h4>Headline — window-means bridge</h4>
           <table><tr><th>Driver</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th></tr>${headRows}${interaction}${unexpl}</table>
           <h4>Detailed — per-parent split (means + co-movement = total)</h4>
           <table><tr><th>Parent</th><th class="num">means</th><th class="num">co-movement</th><th class="num">total Δ</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>${detRows}</table>`;
       } else {
-        const rows = node.contributions.map((c) => `<tr><td><code>${esc(c.parent)}</code>${lagLine(c, node.grain)}</td>${num(fmt(c.estimate))}${num(c.share_of_gap == null ? "—" : pct(c.share_of_gap))}${num(ciCell(c.ci_95))}${num(pctDir(c.prob_same_direction, c.prob_same_direction_censored))}</tr>`).join("");
+        const rows = node.contributions.map((c) => `<tr><td><code>${esc(c.parent)}</code>${lagLine(c, node.grain)}${parentRangeLine(c)}</td>${num(fmt(c.estimate))}${num(c.share_of_gap == null ? "—" : pct(c.share_of_gap))}${num(ciCell(c.ci_95))}${num(pctDir(c.prob_same_direction, c.prob_same_direction_censored))}</tr>`).join("");
         // Same rows, same rule as the live table — via one function, so the two
         // cannot disagree about whether trend and seasonal are part of the sum.
         const comps = componentRowsHtml(node, 5, shareOf, ciCell);
@@ -1278,13 +1302,13 @@ function buildRcaReportHtml(res, treePng, stripPng) {
         const unexpl5 = ux
           ? `<tr class="dim"><td>${esc(ux.label)}</td>${num(fmt(node.unexplained))}${num(uxShare)}<td class="num">—</td><td class="num">—</td></tr>`
           : "";
-        tables = `<table><tr><th>Parent</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>${rows}${droppedRows}${ivRows}${droppedIvRows}${comps}${unexpl5}</table>`;
+        tables = `<table><tr><th>${node.contributions.length ? "Parent" : "Term"}</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>${rows}${droppedRows}${ivRows}${droppedIvRows}${comps}${unexpl5}</table>`;
       }
       const signWarn = (node.sign_warnings || []).map((w) => `<p class="warn">⚠ ${esc(w)}</p>`).join("");
       return `<section>
-        <h3><code>${esc(name)}</code> <span class="meta">${esc(attributionLabelForNode(node))}${grainNote(node)}</span></h3>
+        <h3><code>${esc(name)}</code> <span class="meta">${esc(attributionLabelForNode(node))}${grainNote(node, name)}</span></h3>
         ${gapLine(node)}
-        ${signWarn}${caveatBlock(node)}${tables}
+        ${signWarn}${rangeParagraphs(name, node)}${caveatBlock(node)}${tables}
       </section>`;
     })
     .join("");
@@ -1292,17 +1316,14 @@ function buildRcaReportHtml(res, treePng, stripPng) {
   const degraded = Object.entries(res.nodes).filter(([, n]) => nodeStatus(n));
 
   const ranked = res.ranked_causes
-    .map((c, i) => `<tr><td>${i + 1}</td><td><code>${esc(c.metric)}</code></td>${num(Number.isFinite(c.score) ? c.score.toFixed(2) : "—")}<td>via ${esc(c.via || "—")}</td></tr>`)
+    .map((c, i) => `<tr><td>${i + 1}</td><td><code>${esc(c.metric)}</code>${parentRangeLine({ parent: c.metric })}</td>${num(Number.isFinite(c.score) ? c.score.toFixed(2) : "—")}<td>via ${esc(c.via || "—")}</td></tr>`)
     .join("");
 
-  // `data_through` carries `null` for a metric whose data edge is unknown.
-  // Filter before the min: `null < "9999"` is `true` in JS (null coerces to 0),
-  // so an unknown edge would win the comparison and become the tree-wide anchor.
-  const dataThrough = state.meta && state.meta.data_through
-    ? Object.values(state.meta.data_through)
-        .filter((d) => typeof d === "string")
-        .reduce((a, b) => (a < b ? a : b), "9999")
-    : null;
+  // The oldest *known* edge — `data_through` carries `null` for a metric whose
+  // edge is unknown, and `treeDataEdge` says why that must be filtered first.
+  // (This used to seed its reduce with "9999" and print "data through 9999"
+  // when no edge was known at all; null prints nothing.)
+  const dataThrough = treeDataEdge(state.meta);
 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
@@ -1338,10 +1359,13 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     ? `<p class="warn">⚠ ${esc((nodeStatus(target) || {}).label || "not analyzed")} — ${esc(target.status_reason || "")}</p>`
     : `<div class="gap ${gapLineParts(res.target, target.gap).cls}">${gapLineParts(res.target, target.gap).sign}${fmt(target.gap)} (${signedPct(target.relative_change)})</div>
        ${nodeStatus(target) ? `<p class="warn">⚠ ${esc(nodeStatus(target).label)} — ${esc(target.status_reason || "")} The ranked causes below carry no information about this target: nothing was attributed to it.</p>` : ""}`}
+  ${rcaNodeHasDetail(target) ? "" : rangeParagraphs(res.target, null)}
   ${stripPng ? `<img src="${stripPng}" alt="target series with reference and analysis windows shaded">` : ""}
   ${treePng ? `<h3>Metric tree</h3><img src="${treePng}" alt="metric tree with RCA overlay">` : ""}
   <h3>Ranked causes <span class="meta">(triage heuristic, not rigorous multi-hop attribution)</span></h3>
-  <table><tr><th>#</th><th>Metric</th><th class="num">score</th><th>via</th></tr>${ranked}</table>
+  ${ranked
+    ? `<table><tr><th>#</th><th>Metric</th><th class="num">score</th><th>via</th></tr>${ranked}</table>`
+    : `<p class="meta">${esc(rankedCausesEmptyNote(res, isSourceMetric(res.target)))}</p>`}
   ${degraded.length
     ? `<p class="warn">⚠ ${degraded.length} of ${Object.keys(res.nodes).length} metrics in scope could not be analyzed, so this ranking is incomplete — nothing upstream of them was attributed. ${degraded
         .map(([n, node]) => `<code>${esc(n)}</code> (${esc(nodeStatus(node).short)})`)
@@ -1349,7 +1373,7 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     : ""}
   ${referenceSensitivityHtml(res, { fmt, esc, warn: "warn", ok: "meta" })}
   <h3 style="margin-top:24px">Attribution detail</h3>
-  ${blocks}
+  ${blocks || `<p class="meta">${esc(ATTRIBUTION_EMPTY_NOTE)}</p>`}
   <div class="footnote">
     <strong>Methods.</strong> Changes are window-mean differences at each node's grain, over the whole periods inside the
     requested windows. Formula (identity) nodes use exact symmetric per-period Shapley attribution — a window-means bridge
@@ -1358,7 +1382,8 @@ function buildRcaReportHtml(res, treePng, stripPng) {
     so its series is the formula) there is no measurement, which the row says instead of reading zero. Probabilistic nodes multiply the fitted <code>beta_raw</code>
     posterior (BSTS, fit strictly before the analysis window) by the parent's window delta, with trend and seasonal
     components reported separately.${samplerSentence} Intervals combine coefficient posteriors with a circular moving-block bootstrap of
-    the window rows; fits and bootstraps are seeded, so identical requests reproduce identical numbers. Full assumptions:
+    the window rows — except a declared intervention's, which is the coefficient's posterior alone, since the dates
+    it was on are facts and not samples; fits and bootstraps are seeded, so identical requests reproduce identical numbers. Full assumptions:
     docs/model.md in the <a href="https://github.com/PolycultureResearch/breakdown">breakdown</a> repository.
   </div>
 </body></html>`;
@@ -2431,6 +2456,22 @@ function renderMetricTab(name, data) {
     })
     .join(", ") || "<span style='color:var(--muted)'>none (source)</span>";
 
+  // The metric's own range against the loaded window, and what was filled
+  // inside it (grill M8): `sparse_fills`, `short_series` and `data_from` from
+  // `/meta`, worded in disclosures.js. Printed as lines under the date they
+  // qualify, not as hover-only chips — this row is where a reader decides
+  // whether the last value on the card is news.
+  const rangeNotes = seriesRangeNotes(state.meta, name);
+  const sparseNote = rangeNotes.find((n) => n.kind === "sparse");
+  const rangeRow = (edge) =>
+    rangeNotes
+      .filter((n) => n.edge === edge)
+      .map(
+        (n) =>
+          `<div class="range-note${n.cls === "sign-flag" ? " warn" : ""}" title="${esc(n.why)}">${esc(n.text)}${n.detail ? `<span class="range-detail">${esc(n.detail)}</span>` : ""}</div>`,
+      )
+      .join("");
+
   let html = `
     <div class="metric-title">
       <h2>${esc(name)}</h2>
@@ -2441,15 +2482,25 @@ function renderMetricTab(name, data) {
     <table class="kv">
       <tr><td>Source</td><td><code>${esc(def.source)}</code> <button class="linkish" data-query="${esc(name)}">show query</button></td></tr>
       <tr><td>Grain</td><td><code>${esc(grain)}</code> · ${esc(def.kind || "flow")}</td></tr>
+      ${rangeNotes.some((n) => n.edge === "from") && isoDateOrNull(state.meta.data_from && state.meta.data_from[name])
+        ? `<tr><td>Data from</td><td>${esc(state.meta.data_from[name])}${rangeRow("from")}</td></tr>`
+        : ""}
       ${state.meta.data_through && name in state.meta.data_through
         ? `<tr><td>Data through</td><td>${
             state.meta.data_through[name] === null
               ? '<span class="muted" title="This metric returned no rows the engine could date, so its freshness is unknown — which is not the same as fresh.">unknown</span>'
               : `${esc(state.meta.data_through[name])}${
+                  // On a sparse metric this date is the window's end *by
+                  // declaration*, not an observation — say so on the date
+                  // itself, since it is the one place the two look alike.
+                  sparseNote && sparseNote.tail ? ' <span class="muted">(by declaration)</span>' : ""
+                }${
                   state.meta.data_through[name] < state.meta.date_end
                     ? ' <span class="chip lag">lags window end</span>' : ""
                 }`
-          }</td></tr>`
+          }${rangeRow("through")}</td></tr>`
+        : rangeNotes.some((n) => n.edge === "through")
+        ? `<tr><td>Data through</td><td>${rangeRow("through")}</td></tr>`
         : ""}
       <tr><td>Parents</td><td>${parentChips}</td></tr>
       ${def.formula ? `<tr><td>Formula</td><td><code>${esc(def.formula)}</code>${
@@ -2690,7 +2741,7 @@ function renderPosterior(name, data) {
     (data.dropped_parents || []).forEach((d) => {
       rows += `<tr class="dim">
         <td title="${esc(`${d.reason}\n\n${DROPPED_PARENT_WHY}`)}"><code>${esc(d.parent)}</code></td>
-        <td colspan="2">not fitted — did not vary over the fit window</td>
+        <td colspan="2">${esc(DROPPED_PARENT_LABEL)}</td>
       </tr>`;
     });
   }
@@ -2713,8 +2764,8 @@ function renderPosterior(name, data) {
   });
   (data.dropped_interventions || []).forEach((d) => {
     rows += `<tr class="dim">
-      <td title="${esc(`${d.reason}\n\n${DROPPED_INTERVENTION_WHY}`)}"><code>${esc(d.intervention)}</code> <span class="dim">— declared ${esc(d.kind)} ${esc(d.date)}</span></td>
-      <td colspan="2">not fitted — outside the fit window</td>
+      <td title="${esc(`${d.reason}\n\n${droppedInterventionCase(d).why}`)}"><code>${esc(d.intervention)}</code> <span class="dim">— declared ${esc(d.kind)} ${esc(d.date)}</span></td>
+      <td colspan="2">${esc(droppedInterventionLabel(d))}</td>
     </tr>`;
   });
 
@@ -2773,10 +2824,17 @@ function renderPosterior(name, data) {
   // when it actually means "not checked". Say which one it is: the absence of
   // a convergence check is itself something the reader needs to know (UC4).
   const dx = data.diagnostics || {};
+  // The engine's own `max_rhat` is the figure `fit_quality` rests on: since
+  // S25 it leaves out the level states recovered after sampling, which were
+  // never sampled and so have no convergence to check. Recomputing the max
+  // from the summary table put those rows back in, and showed a different R̂
+  // (with its own "check convergence") beside a verdict that had passed
+  // (grill 2026-10-05). The table is the fallback for an engine too old to say.
   const rhats = Object.values(summary.r_hat || {}).filter((v) => v !== null && !Number.isNaN(v));
+  const engineRhat = typeof dx.max_rhat === "number" && Number.isFinite(dx.max_rhat) ? dx.max_rhat : null;
   const bits = [];
-  if (rhats.length) {
-    const worst = Math.max(...rhats);
+  if (engineRhat !== null || rhats.length) {
+    const worst = engineRhat !== null ? engineRhat : Math.max(...rhats);
     const cls = worst < 1.05 ? "ok" : "warn";
     // "R̂" ends in a combining circumflex, which eats a following plain space;
     // the explicit "=" keeps the number from colliding with the glyph.
@@ -2802,50 +2860,31 @@ function renderPosterior(name, data) {
   // word that says the landing was not decisive; printing the band alone
   // would be a verdict the number cannot support.
   if (typeof dx.khat === "number" && Number.isFinite(dx.khat)) {
-    const st = dx.khat_status;
-    const cls = st === "ok" && !dx.khat_borderline ? "ok" : "warn";
-    const band =
-      st === "ok" ? "close to the posterior"
-        : st === "suspect" ? "measurably off"
-        : st === "unusable" ? "not usable"
-        : esc(String(st));
-    const edge = dx.khat_borderline ? ", band unresolved at this error" : "";
-    bits.push(`PSIS k̂ = <span class="${cls}">${khatFigure(dx)}</span> (${band}${edge})`);
+    // The band's words are `KHAT_BAND` in disclosures.js, beside `KHAT_NOTE`.
+    bits.push(`PSIS k̂ = <span class="${khatBandClass(dx)}">${khatFigure(dx)}</span> (${esc(khatBandText(dx))})`);
   }
   // Roadmap S4, in the same row and for the same reason: this is a check of
   // the design rather than of the sampler, and its *pass* has to be visible or
   // the reader cannot tell a separable node from an unchecked one. `high` says
   // so here too — the full sentence is in `collinWarningHtml` above, this is
   // the one-line version that sits with the other verdicts.
-  if (dx.collinearity_status) {
+  // The words are `collinDiagBit`'s, derived from `COLLIN_NOTE`.
+  const collinBit = collinDiagBit(dx.collinearity_status);
+  if (collinBit) {
     const r = fmtCorr(dx.collinearity && dx.collinearity.max_abs_correlation);
-    if (dx.collinearity_status === "ok") {
-      bits.push(`parents <span class="ok">separable</span>${r ? ` (max |r| = ${r})` : ""}`);
-    } else if (dx.collinearity_status === "high" || dx.collinearity_status === "moderate") {
-      const word = dx.collinearity_status === "high" ? "collinear" : "partly collinear";
-      bits.push(`parents <span class="warn">${word}</span>${r ? ` (max |r| = ${r})` : ""}`);
-    } else {
-      bits.push(`collinearity <span class="warn">${esc(String(dx.collinearity_status))}</span>`);
-    }
+    bits.push(`${collinBit.subject} <span class="${collinBit.cls}">${esc(collinBit.word)}</span>${r ? ` (max |r| = ${r})` : ""}`);
   }
   // Roadmap S3, in the same row and for the same reason as S4 above: this
   // checks the *model* rather than the sampler or the design, and its pass has
   // to be visible or a validated node is indistinguishable from an unchecked
   // one. The worst statistic's p-value rides along so the verdict is a
   // measurement rather than an assertion.
-  if (dx.ppc_status) {
-    const worst = ((dx.ppc || {}).statistics || []).filter((e) => e.status !== "ok")[0];
-    const pTxt = worst && Number.isFinite(worst.p_value)
-      ? ` (${worst.statistic}, p = ${worst.p_value.toFixed(3)})`
-      : "";
-    if (dx.ppc_status === "ok") {
-      bits.push(`model <span class="ok">reproduces its data</span>`);
-    } else if (dx.ppc_status === "severe" || dx.ppc_status === "moderate") {
-      const word = dx.ppc_status === "severe" ? "cannot generate this data" : "fits imperfectly";
-      bits.push(`model <span class="warn">${word}</span>${pTxt}`);
-    } else {
-      bits.push(`model check <span class="warn">${esc(String(dx.ppc_status))}</span>`);
-    }
+  // The words are `ppcDiagBit`'s, derived from `PPC_NOTE` — this row used to
+  // say "cannot generate this data" beside a chip saying "cannot generate
+  // this node's own data" (grill L9).
+  const ppcBit = ppcDiagBit(dx.ppc_status);
+  if (ppcBit) {
+    bits.push(`${ppcBit.subject} <span class="${ppcBit.cls}">${esc(ppcBit.word)}</span>${ppcBit.cls === "ok" ? "" : ppcStatSuffix(dx)}${esc(ppcConditionedText(dx))}`);
   }
   // The engine's own verdict on the fit. It is computed for every fit — NUTS
   // thresholds R̂/divergences/ESS, ADVI checks the ELBO *and* PSIS k̂ — and
@@ -2853,35 +2892,9 @@ function renderPosterior(name, data) {
   // `suspect` looked exactly like one it was happy with. UC4's whole job is
   // telling a healthy fit from a broken one; a verdict the engine reached and
   // the screen withheld is the most expensive kind of silence here.
-  let verdict = "";
-  if (dx.fit_quality === "suspect") {
-    verdict = `<div class="diag"><span class="warn">⚠ The engine flagged this fit as suspect.</span>
-      ${dx.method === "advi" || dx.method === "fullrank_advi"
-        ? (dx.khat_status === "unusable" || dx.khat_status === "suspect"
-          ? `Its PSIS k̂ is ${esc(khatFigure(dx) || "above the threshold")}: the approximation sits away from the posterior it approximates, so its credible intervals are not a measurement of the real ones. Re-run this metric with NUTS.`
-          // Roadmap S22. Without this branch a borderline-`ok` fit would be
-          // explained by the ELBO sentence below — an explanation of a check
-          // that passed, offered for a failure it did not cause.
-          : dx.khat_borderline
-          ? `Its PSIS k̂ is ${esc(khatFigure(dx) || "close to a band edge")}, which is nearer the band edge than its own Monte-Carlo error: the check cannot say which side of the threshold this approximation is on. Re-run this metric with NUTS for anything that turns on it.`
-          : "The ADVI objective (the ELBO) had not settled by the end of optimization, so the approximation may not have converged on anything.")
-        // Roadmap S3 made this branch conditional. A `severe` posterior
-        // predictive check also sets `suspect`, and on a NUTS fit it is the
-        // *only* thing that can have — so the old unconditional sentence about
-        // R̂/divergences/ESS would have named a cause that did not happen. A
-        // correct payload explained by the wrong sentence is the fifth rule's
-        // failure, not a cosmetic one.
-        : dx.ppc_status === "severe"
-        ? "Series simulated from this model do not look like the series it was fitted on, so the likelihood is wrong for this metric — the sentences above say which summary failed. The sampler itself may well have converged; that is a different question from whether the model is right."
-        : "One of R̂, the divergence count or the effective sample size crossed the engine's threshold."}
-      Numbers derived from this fit — coefficients, intervals, and any RCA contribution through this node — inherit that.</div>`;
-  } else if (dx.fit_quality === "ok") {
-    verdict = `<div class="diag">Engine fit check: <span class="ok">ok</span>.</div>`;
-  } else if (dx.fit_quality) {
-    // Unknown verdict: shown verbatim rather than swallowed into silence,
-    // which would read as "nothing to report".
-    verdict = `<div class="diag">Engine fit check: <span class="warn">${esc(dx.fit_quality)}</span>.</div>`;
-  }
+  // The words — and the choice of which cause to name — are
+  // `fitVerdictDiagHtml`'s, in disclosures.js beside `fitQualityNote`.
+  const verdict = fitVerdictDiagHtml(dx);
 
   let diag = "";
   if (bits.length) {
@@ -2990,12 +3003,7 @@ async function renderPpcBand(name, data) {
 
   const band = res.band;
   if (!band) {
-    ppcPanelNote(
-      `This fit was <strong>not checked</strong> against its own posterior predictive `
-      + `distribution: ${esc(res.reason || "no reason given")}. That is the absence of a `
-      + `check, not a clean bill of health — if this node's likelihood is wrong for its `
-      + `data, nothing here will say so.`,
-    );
+    ppcPanelNote(ppcBandUncheckedHtml(res.reason));
     return;
   }
 
@@ -3289,9 +3297,13 @@ function applyRcaOverlay() {
       const tint = gd && goodClass(name, gd, "rca");
       if (tint) n.addClass(tint);
       // large-unexplained badge: dashed amber border + ◌ glyph on the card
+      // Gated on the shared predicate rather than `contributions.length`: a
+      // source node fitted for a declared intervention has an `unexplained`
+      // that can be large, and no parents (grill H5).
       if (
-        node.contributions.length &&
+        rcaNodeHasDetail(node) &&
         node.unexplained != null &&
+        node.gap != null &&
         Math.abs(node.gap) > 1e-9 &&
         Math.abs(node.unexplained / node.gap) > 0.35
       ) {
@@ -3454,6 +3466,14 @@ function highlightCause(causeName) {
    measured over — which, across a lagged edge, are shifted back by the lag.
    Slicing a lagged parent over the target's calendar window would compare the
    wrong periods and quietly answer a different question. */
+/* Whether `name` has no parents in the loaded tree — null when the tree does
+   not say, so a caller wording an empty state claims nothing it cannot see. */
+function isSourceMetric(name) {
+  const def = state.defs && state.defs[name];
+  if (!def) return null;
+  return !(def.parents || []).length;
+}
+
 function sliceWindowsFor(metric) {
   const res = state.rca;
   for (const node of Object.values(res.nodes)) {
@@ -3565,8 +3585,8 @@ function sliceResultHtml(metric) {
       const label = `<td>${sliceLabel(row.value)}${noise}${row.n_values ? ` <span class="dim">(${row.n_values})</span>` : ""}</td>`;
       return rate
         ? `<tr${lead}>${label}
-             <td class="num" title="the slice's own rate moved: ${esc(fmt(row.within))}">${fmtTight(row.within)}</td>
-             <td class="num" title="traffic moved between slices: ${esc(fmt(row.mix))}">${fmtTight(row.mix)}</td>
+             <td class="num" title="the slice's own rate moved: ${esc(fmt(row.within))}${esc(sliceRateMoveText(row))}">${fmtTight(row.within)}</td>
+             <td class="num" title="traffic moved between slices: ${esc(fmt(row.mix))}${esc(sliceShareMoveText(row))}">${fmtTight(row.mix)}</td>
              ${excessCell(row)}
            </tr>`
         : `<tr${lead}>${label}
@@ -3727,7 +3747,7 @@ function renderRcaTab() {
            <div class="sub">${fmt(target.baseline)} → ${fmt(target.actual)} (${windowBasisHtml(target)})</div>`;
     $("rca-results").innerHTML = `
       <div class="rca-card">
-        <div class="sub">${esc(res.target)} · ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)} vs ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}</div>
+        <div class="sub">${esc(res.target)} · ${esc(res.reference_window.start)} → ${esc(res.reference_window.end)} vs ${esc(res.analysis_window.start)} → ${esc(res.analysis_window.end)}${seriesRangeFlagsHtml(rcaNodeRangeNotes(state.meta, res, res.target))}</div>
         ${gapBlock}
         <p class="degraded-note"><strong>⚠ ${esc(targetStatus.label)}.</strong>
           ${esc(targetStatus.explains)}
@@ -3776,7 +3796,7 @@ function renderRcaTab() {
       return `
       <div class="cause-row${st ? " degraded" : ""}" data-metric="${esc(c.metric)}">
         <span class="cause-rank">${i + 1}</span>
-        <span class="cause-name">${esc(c.metric)}</span>${flag}
+        <span class="cause-name">${esc(c.metric)}</span>${flag}${seriesRangeFlagsHtml(rcaNodeRangeNotes(state.meta, res, c.metric))}
         <span class="cause-bar-wrap"><span class="cause-bar" style="width:${(100 * c.score) / maxScore}%"></span></span>
         <span class="cause-via">via ${esc(c.via || "—")}</span>
       </div>
@@ -3792,15 +3812,45 @@ function renderRcaTab() {
   const shareOf = (v, gap) =>
     v == null || gap == null || Math.abs(gap) <= 1e-12 ? "—" : pct(v / gap);
   const ciCell = (ci) => (ci ? `[${fmt(ci[0])}, ${fmt(ci[1])}]` : "—");
+  // A parent row names a metric whose series may end in declared zeros or
+  // stop short of the window (grill M8); the flag rides on the name.
+  const parentRangeFlags = (c) => seriesRangeFlagsHtml(rcaNodeRangeNotes(state.meta, res, c.parent));
+  const targetRangeNotes = rcaNodeRangeNotes(state.meta, res, res.target);
   const anyTwoLevel = order.some((name) => {
     const n = res.nodes[name];
     return n && n.contributions.some((c) => c.decomposition);
   });
   const blocks = order
-    .filter((name) => res.nodes[name] && (res.nodes[name].contributions.length || nodeStatus(res.nodes[name])))
+    .filter((name) => rcaNodeHasDetail(res.nodes[name]))
     .map((name) => {
       const node = res.nodes[name];
       const st = nodeStatus(node);
+      // Grill M8: what this node's series really covers. A `sparse: true`
+      // metric whose feed went quiet reads −100% here with nothing wrong in
+      // the payload, so the chip is in the header and — when the analysis
+      // window reaches into the declared zeros — the sentence is printed, not
+      // left to a hover. Degraded nodes get it too: a short series is the
+      // usual reason a node has no whole period to measure.
+      //
+      // The sentence is printed for this node's *parents* as well, where the
+      // parent has no block of its own: a sparse metric is a source by
+      // construction, a plain source gets no block, and so the child's table
+      // is the only place this analysis shows its collapse. (The target's own
+      // sentence is on the summary card.)
+      const rangeNotes = rcaNodeRangeNotes(state.meta, res, name);
+      const rangeChips = seriesRangeChipsHtml(rangeNotes, " · ");
+      const rangeLines = [
+        ...(name === res.target ? [] : [[name, rangeNotes]]),
+        ...(node.contributions || [])
+          .filter((c) => !rcaNodeHasDetail(res.nodes[c.parent]))
+          .map((c) => [c.parent, rcaNodeRangeNotes(state.meta, res, c.parent)]),
+      ]
+        .flatMap(([metric, notes]) =>
+          notes
+            .filter((n) => n.inWindow)
+            .map((n) => `<p class="degraded-note"><code>${esc(metric)}</code> — ${esc(n.short)}. ${esc(n.detail)}</p>`),
+        )
+        .join("");
       // A failed node gets a block of its own rather than being filtered out.
       // `attribution_method` is null on these, so the old code would have
       // labelled it "posterior" over an empty table — a node that could not be
@@ -3813,8 +3863,9 @@ function renderRcaTab() {
                 ${fmt(node.baseline)} → ${fmt(node.actual)} (${windowBasisHtml(node)})</p>`;
         return `
         <div class="attr-block degraded">
-          <h4>${esc(name)} <span class="method">· ${esc(st.label)}</span></h4>
+          <h4>${esc(name)} <span class="method">· ${esc(st.label)}${rangeChips}</span></h4>
           ${movement}
+          ${rangeLines}
           <p class="degraded-note">${esc(st.explains)}
             ${node.status_reason ? `<span class="degraded-reason">${esc(node.status_reason)}</span>` : ""}</p>
         </div>`;
@@ -3850,10 +3901,13 @@ function renderRcaTab() {
       const khatFlag = kn
         ? ` · <span class="${kn.cls}" title="${esc(kn.why + (khatFigure(node) ? `\n\nPSIS k̂ = ${khatFigure(node)}.` : "") + (node.khat_warnings && node.khat_warnings.length ? "\n\n" + node.khat_warnings.join("\n\n") : ""))}">${esc(kn.text)}${khatFigure(node) ? ` (k̂ ${khatFigure(node)})` : ""}</span>`
         : "";
-      const signNote =
-        node.sign_warnings && node.sign_warnings.length
-          ? ` · <span class="sign-flag" title="${esc(node.sign_warnings.join("\n\n"))}">⚠ learned sign contradicts expectation</span>`
+      // The chip labels are `NODE_WARNING_CHIP` in disclosures.js, shared
+      // with the export's header line.
+      const warningChip = (field) =>
+        nodeWarningChip(node, field)
+          ? ` · <span class="sign-flag" title="${esc(node[field].join("\n\n"))}">${esc(nodeWarningChip(node, field))}</span>`
           : "";
+      const signNote = warningChip("sign_warnings");
       // Roadmap S4, beside the sign flag and not folded into it: a contradicted
       // sign says the edge answers the wrong question, while this says the
       // *rows below* cannot be read one at a time. The warnings name the pair;
@@ -3883,14 +3937,8 @@ function renderRcaTab() {
       const fitNote = node.fit_window
         ? ` · fitted on ${node.fit_window.n_periods} ${esc(node.grain)}s (${esc(node.fit_window.start)} → ${esc(node.fit_window.end)})`
         : "";
-      const seasNote =
-        node.seasonality_warnings && node.seasonality_warnings.length
-          ? ` · <span class="sign-flag" title="${esc(node.seasonality_warnings.join("\n\n"))}">⚠ seasonality unidentifiable from fitted history</span>`
-          : "";
-      const zeroNote =
-        node.likelihood_warnings && node.likelihood_warnings.length
-          ? ` · <span class="sign-flag" title="${esc(node.likelihood_warnings.join("\n\n"))}">⚠ zero-inflated fit window — intervals approximate</span>`
-          : "";
+      const seasNote = warningChip("seasonality_warnings");
+      const zeroNote = warningChip("likelihood_warnings");
       // Issue #113: a parent the fit left out. The chip names it; the table
       // below keeps a labelled row for it, so its absence from the
       // contributions cannot read as "contributed nothing".
@@ -3922,7 +3970,7 @@ function renderRcaTab() {
           .map((c) => {
             const m = c.decomposition.means;
             return `<tr>
-              <td><code>${esc(c.parent)}</code>${lagChip(c, node.grain)}</td>
+              <td><code>${esc(c.parent)}</code>${lagChip(c, node.grain)}${parentRangeFlags(c)}</td>
               <td class="num">${fmt(m.estimate)}</td>
               <td class="num">${shareOf(m.estimate, node.gap)}</td>
               <td class="num">${ciCell(m.ci_95)}</td>
@@ -3944,7 +3992,7 @@ function renderRcaTab() {
         rows = node.contributions
           .map(
             (c) => `<tr>
-              <td><code>${esc(c.parent)}</code>${lagChip(c, node.grain)}</td>
+              <td><code>${esc(c.parent)}</code>${lagChip(c, node.grain)}${parentRangeFlags(c)}</td>
               <td class="num">${fmt(c.decomposition.means.estimate)}</td>
               <td class="num">${fmt(c.decomposition.comovement.estimate)}</td>
               <td class="num">${fmt(c.estimate)}</td>
@@ -3955,11 +4003,13 @@ function renderRcaTab() {
           .join("");
       } else {
         nCols = 5;
-        header = `<tr><th>Parent</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>`;
+        // "Parent" over a table whose only rows are a declared step and the
+        // trend would name a thing the node does not have.
+        header = `<tr><th>${node.contributions.length ? "Parent" : "Term"}</th><th class="num">Δ contribution</th><th class="num">share</th><th class="num">95% CI</th><th class="num">P(dir)</th></tr>`;
         rows = node.contributions
           .map(
             (c) => `<tr>
-              <td><code>${esc(c.parent)}</code>${lagChip(c, node.grain)}</td>
+              <td><code>${esc(c.parent)}</code>${lagChip(c, node.grain)}${parentRangeFlags(c)}</td>
               <td class="num">${fmt(c.estimate)}</td>
               <td class="num">${c.share_of_gap === null ? "—" : pct(c.share_of_gap)}</td>
               <td class="num">${ciCell(c.ci_95)}</td>
@@ -4004,7 +4054,8 @@ function renderRcaTab() {
       }
       return `
         <div class="attr-block">
-          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${fitNote2}${khatFlag}${signNote}${collinNote}${ppcNoteHtml}${seasNote}${zeroNote}${droppedNote}${interventionNote}${droppedIvNote}</span></h4>
+          <h4>${esc(name)} <span class="method">· ${method}${fitNote}${snapNote}${ciNote}${fitNote2}${khatFlag}${signNote}${collinNote}${ppcNoteHtml}${seasNote}${zeroNote}${droppedNote}${interventionNote}${droppedIvNote}${rangeChips}</span></h4>
+          ${rangeLines}
           <table class="data-table">
             ${header}
             ${rows}
@@ -4027,18 +4078,22 @@ function renderRcaTab() {
 
   $("rca-results").innerHTML = `
     <div class="rca-card">
-      <div class="sub">${esc(res.target)}</div>
+      <div class="sub">${esc(res.target)}${seriesRangeFlagsHtml(targetRangeNotes)}</div>
       <div class="gap-line ${targetGap.cls}">${targetGap.sign}${fmt(target.gap)} <span style="font-size:14px">(${signedPct(target.relative_change)})</span></div>
       <div class="windows">${windowsHeadlineHtml(res)}</div>
       <div id="rca-strip"></div>
       <div class="sub">${fmt(target.baseline)} → ${fmt(target.actual)} (${windowBasisHtml(target)})</div>
+      ${targetRangeNotes
+        .filter((n) => n.inWindow)
+        .map((n) => `<p class="degraded-note">${esc(n.short)}. ${esc(n.detail)}</p>`)
+        .join("")}
       ${windowNote}
       ${degradedNote}
     </div>
 
     <section>
       <h3>Ranked causes <span class="section-note">triage order, not evidence</span></h3>
-      ${causeRows || '<p class="placeholder">No upstream causes — target is a source metric.</p>'}
+      ${causeRows || `<p class="placeholder">${esc(rankedCausesEmptyNote(res, isSourceMetric(res.target)))}</p>`}
       ${referenceSensitivityHtml(res, { fmt, esc, warn: "degraded-note", ok: "sens-note" })}
     </section>
 
@@ -4047,7 +4102,7 @@ function renderRcaTab() {
         <h3>Attribution detail</h3>
         ${viewToggle}
       </div>
-      ${blocks || '<p class="placeholder">No attributable edges in scope.</p>'}
+      ${blocks || `<p class="placeholder">${esc(ATTRIBUTION_EMPTY_NOTE)}</p>`}
     </section>
     <div class="wf-caveats">${RCA_CAVEATS.map(esc).join("<br>")}</div>`;
 
@@ -4352,6 +4407,10 @@ async function renderAdjustPanel(name) {
       mean: vals.reduce((a, b) => a + b, 0) / vals.length,
     };
     hist.std = Math.sqrt(vals.reduce((a, v) => a + (v - hist.mean) ** 2, 0) / vals.length);
+    // A series held at 4.99 has a std of ~1e-15, not 0, and the 2σ band below
+    // would call every target outside it. Same relative test as the engine's
+    // `effectively_constant` (grill 2026-10-05 H1).
+    if (hist.max - hist.min <= 1e-9 * Math.max(Math.abs(hist.min), Math.abs(hist.max))) hist.std = 0;
     const inWin = data.time_series
       .filter((r) => {
         const d = String(r.date).slice(0, 10);
@@ -5355,9 +5414,10 @@ async function init() {
       state.trees = [];
     }
     if (!state.trees.length) {
-      // The index carries the discovery failure's real text (auth-gated where
-      // auth exists); /health deliberately carries only a classification
-      // (roadmap C43), so prefer the specific message when we can read it.
+      // The index carries the discovery failure's real text to a caller who
+      // may see it (no token configured, or one presented; otherwise it is the
+      // classification, grill 2026-10-05 H6); /health deliberately carries
+      // only a classification (roadmap C43), so prefer the index's message.
       showDegradedBanner(discoveryError || health.error || "No metric tree was discovered.");
       setStatus("No data loaded", "error");
       return;
@@ -5410,8 +5470,9 @@ async function init() {
     // Anchor headlines at the tree-wide data edge: the oldest data_through
     // across metrics. A source mart lagging the requested window then shows
     // its true last day instead of a zero-filled or half-loaded tail.
-    const edges = Object.values(state.meta.data_through || {});
-    state.asOf = edges.length ? edges.reduce((a, b) => (a < b ? a : b)) : state.meta.date_end;
+    // `treeDataEdge` skips the `null` an unknown edge is reported as — a bare
+    // min over the values let it knock out the lagging edge (grill L7).
+    state.asOf = treeDataEdge(state.meta) || state.meta.date_end;
     loadCardConfig();
     initControls();
     buildGraph();
@@ -5449,6 +5510,11 @@ async function init() {
             `has no data after ${state.asOf}, so cards anchor there.`,
         });
       }
+      // The edge chip above cannot see a `sparse: true` metric: its
+      // `data_through` is the window's end by declaration, so a feed that
+      // stopped weeks ago never lags. Its own chip, from `sparse_fills`.
+      const sparseTails = sparseTailsSummary(state.meta);
+      if (sparseTails) chips.push({ text: sparseTails.text, cls: "warn", title: sparseTails.title });
       setContext(chips);
       setStatus("");
       renderHistoryNudge();

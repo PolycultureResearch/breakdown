@@ -376,6 +376,81 @@ def test_the_rca_fit_end_is_analysis_start_unless_an_intervention_opts_out():
     ).dag.nodes["y"]["definition"]
     assert rca_mod._node_fit_end(early, "day", AN[0], snapped) == AN[0]
 
+    # …and so does a window-mode step already inside history (grill
+    # 2026-10-05 M3): this returned "2024-05-10", the analysis window's end.
+    early_step = Parser(
+        yaml_with(
+            "    interventions:\n      - {name: f, date: 2024-02-03, kind: step, learn_from: window}\n"
+        )
+    ).dag.nodes["y"]["definition"]
+    assert rca_mod._node_fit_end(early_step, "day", AN[0], snapped) == AN[0]
+
+
+def _window_mode(*entries):
+    block = "    interventions:\n" + "".join(
+        f"      - {{name: {name}, date: {date}, kind: {kind}{extra}, learn_from: window}}\n"
+        for name, date, kind, extra in entries
+    )
+    return Parser(yaml_with(block)).dag.nodes["y"]["definition"]
+
+
+@pytest.mark.parametrize(
+    "date, where",
+    [("2023-03-01", "long before"), ("2024-03-31", "the day before"), ("2024-05-10", "after")],
+)
+def test_a_window_mode_step_outside_the_analysis_window_does_not_extend_the_fit(date, where):
+    """Grill 2026-10-05 M3. `through = snapped_an.last_start` was
+    unconditional for a step, so a flip dated a year before the window — sized
+    from history, with nothing to learn from the window — still extended the
+    fit through the anomaly it was about to explain, on every RCA. One dated
+    after the window did the same and was then dropped, with `extended_for`
+    empty."""
+    from breakdown.grains import snap_window
+
+    snapped = snap_window(AN[0], AN[1], "day")
+    defn = _window_mode(("flip", date, "step", ""))
+    assert rca_mod._fit_extension(defn, "day", AN[0], snapped) == (AN[0], []), where
+
+
+def test_a_window_mode_step_extends_only_from_inside_the_analysis_window():
+    from breakdown.grains import snap_window
+
+    snapped = snap_window(AN[0], AN[1], "day")
+    for date in (AN[0], "2024-04-20", AN[1]):
+        defn = _window_mode(("flip", date, "step", ""))
+        assert rca_mod._fit_extension(defn, "day", AN[0], snapped) == ("2024-05-10", ["flip"])
+
+
+def test_a_window_mode_pulse_after_the_analysis_window_does_not_extend_the_fit():
+    """The pulse branch's analogue: a pulse that *begins* after the window
+    extended the fit through the window and on to its own `until`."""
+    from breakdown.grains import snap_window
+
+    snapped = snap_window(AN[0], AN[1], "day")
+    later = _window_mode(("sale", "2024-05-20", "pulse", ", until: 2024-05-22"))
+    assert rca_mod._fit_extension(later, "day", AN[0], snapped) == (AN[0], [])
+    # One that starts in history and runs into the window is this analysis's
+    # event, and still extends through its own last period.
+    straddling = _window_mode(("sale", "2024-03-30", "pulse", ", until: 2024-04-02"))
+    assert rca_mod._fit_extension(straddling, "day", AN[0], snapped) == ("2024-04-03", ["sale"])
+
+
+def test_extended_for_names_exactly_the_interventions_that_moved_the_fit_end():
+    """A historical window-mode step beside one inside the window: the fit is
+    extended, and only for the second. The old disclosure named every fitted
+    window-mode intervention whenever the end had moved at all."""
+    from breakdown.grains import snap_window
+
+    snapped = snap_window(AN[0], AN[1], "day")
+    defn = _window_mode(
+        ("old_flip", "2024-02-10", "step", ""),
+        ("new_flip", "2024-04-05", "step", ""),
+        ("blip", "2024-04-03", "pulse", ""),
+    )
+    fit_end, extended_for = rca_mod._fit_extension(defn, "day", AN[0], snapped)
+    assert fit_end == "2024-05-10"
+    assert extended_for == ["new_flip", "blip"]
+
 
 def test_the_rca_node_shape_carries_both_intervention_fields():
     record = rca_mod._node_out()

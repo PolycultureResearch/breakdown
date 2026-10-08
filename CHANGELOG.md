@@ -23,6 +23,55 @@ its notes never listed it at all.)
 
 ## [Unreleased]
 
+A fourth adversarial review ran against this cycle's tip, scoped to what
+changed since 0.2.0; every High and Medium finding was verified and fixed here
+(roadmap C45–C64). Several fixes refuse a tree or a request that loaded
+before, listed first.
+
+### Breaking changes for tree authors
+
+- **`duckdb`: an ambiguous CSV date column needs `bind.date_format` (C46).**
+  A time column whose values read as day-first or month-first alike (no field
+  above 12, or a two-digit year) is refused at load, with the file, the
+  column, a sample value and the YAML line to add. ISO dates and Parquet
+  date columns are unaffected. A declared format refuses any row that does
+  not match it.
+- **A load in which every fetched metric returns no rows is refused (C47).**
+  `NoDataInWindow`, with the remedy: pass `--start-date` / `--end-date`
+  covering the data. It used to serve zeros with `/health: ok`.
+- **`duckdb` reads only inside `data_dir` (C60).** A `relation` or `bind.sql`
+  that reads an absolute path, a `../` path, `https://` or `s3://` is refused
+  (`OutsideDataDir`). Set `provider.allow_external_access: true` to opt out;
+  a warning is logged when it is on.
+- **A dimension holding a real value named `__other__` or `__null__` is
+  refused on slice requests (C62),** in both roll-up modes, with the same
+  message. The tree still loads.
+- **`duckdb` timestamps with an offset now bucket by UTC date (C48).** This
+  changes numbers, not loading: a tree served under a non-UTC `TZ` with
+  tz-aware columns will see different daily totals.
+- **A formula node whose identity holds to float rounding is refused as
+  zero-variance on `/analyze` and what-if fits (C45).** It used to be fitted
+  to the rounding residue unless the residue was exactly 0.0.
+
+### Security
+
+- **`GET /metrics/{name}` redacts `sql` and `bind` on the same terms as
+  `GET /dag` (C51).** With `BREAKDOWN_API_TOKEN` set and not presented, both
+  come back `null`. One serializer now handles every `MetricDefinition`.
+- **A tree's raw load, parse or discovery error is withheld from callers who
+  do not present the token (C51).** Data-route 503s, `GET /trees` and
+  `POST /trees/{id}/load` carry the classification (`load_error_kind`:
+  `parse_error` or `data_load_error`) and a sentence; the raw text, which can
+  quote generated SQL and server paths, is in the log. With no token
+  configured, nothing changes.
+- **`GET /health` withholds metric names on the same terms (C51).**
+  `data_through_bounded_by`, `short_series`, `sparse_fills` and the new
+  `no_nonzero_data` are `null`, with counts under `withheld`. `status` and
+  `data_through` are never withheld.
+- **MCP analysis tools run inside the per-tree engine guard (C52).** A call
+  that arrives while an abandoned analysis is still finishing is refused with
+  a retryable message, where it used to start a second sampler beside it.
+
 ### Added
 
 - **`--warm latest` / `BREAKDOWN_WARM=latest`: the default analysis is fitted
@@ -151,6 +200,82 @@ its notes never listed it at all.)
   on pytensor's slow Python backend.
 ### Fixed
 
+- **A parent held at 4.99 was published as a cause at about -1.6e13 (C45).**
+  The constant-parent drop tested `std() == 0`, and a value with no exact
+  binary form has a std near 1e-15. "Constant" is now one scale-relative test
+  (`stats.effectively_constant`) shared by the drop, `_normalize`, the
+  formula residual and the what-if plausibility band, in the engine and the
+  UI.
+- **Every provider warns when a metric returns no rows, and an empty answer
+  is never stored as a snapshot (C47).** `breakdown doctor` no longer passes
+  `grain claims hold` or `metric sql runs` on zero rows: fail for an explicit
+  window, skip with the remedy over its default probe, warn when only some
+  metrics are empty. `GET /health` takes no data edge from a series with no
+  non-zero value and lists such metrics in `no_nonzero_data`.
+- **DuckDB sessions are pinned to UTC and buckets are DATEs (C48),** so the
+  same file gives the same numbers under any process `TZ`, and a tz-stamped
+  column no longer needs `pytz`.
+- **A source metric that declares `interventions` now renders (C49).** Its
+  Attribution detail block (intervention rows, trend and seasonal,
+  unexplained, the claim) was dropped on the Root cause tab and in the
+  export, and a source target read "No upstream causes".
+- **The UI shows `sparse_fills`, `short_series` and `data_from` (C50).** The
+  Metric tab says how many periods a `sparse: true` metric had zero-filled
+  and its last source row, a header chip counts sparse tails, and every RCA
+  surface and the export flag a metric whose series ends in declared zeros or
+  does not span the windows.
+- **MCP tools return the refusal text HTTP returns as a 422 (C52).**
+  `RuntimeError` refusals arrived as a bare `Error executing tool`. A failed
+  multi-process sampler (`ParallelSamplingError`) is a 422 or tool error with
+  its reason on every surface and a `fit_failed` node in RCA.
+  `POST /analyze/{name}` answers 422 for a fit refusal; it answered 500.
+- **An analysis no longer 500s when the trace cache evicts its own fit
+  (C53).** `run_rca` and `run_scenario` hold the fits they need for the call
+  and treat the cache as write-through. Reference-sensitivity alternatives
+  never fit.
+- **A reference window before a node's `fit_start` is settled before any fit
+  (C54):** a 422 for the target, a per-node `reference_before_fit_window`
+  status for an ancestor. It used to end the analysis after every fit was
+  paid for.
+- **A `learn_from: window` intervention extends the fit only when the
+  analysis window contains it (C55).** A historical step no longer trains the
+  node on the anomaly it is asked to explain. `fit_window.extended_for` names
+  exactly the interventions that moved the fit's end.
+- **Reference-sensitivity alternatives move by whole periods (C56).** An
+  April reference one month earlier is March 1 to 31, and identical snapped
+  blocks count once. New `reference_sensitivity.compared` says whether the
+  verdict covers the top cause, the gap's direction, or only the direction;
+  the UI and the MCP guide build their sentence from it.
+- **The background warm is bounded, visible and stoppable (C57).** One fit at
+  a time across all trees; a `failed` status with the error where the task
+  used to die at `running`; a retry when the tree is busy; new status
+  `cancelled`. Shutdown no longer waits for the in-flight warm fit, which is
+  abandoned.
+- **`POST /rca/{name}/slices` answers 422 naming the metric and dimension
+  when the source rejects the sliced query (C58),** where it answered 500.
+  `breakdown doctor` runs one sliced query per declared dimension.
+- **A slice after a data file changed under a running `duckdb` server is
+  refused by name until restart (C59),** where it used to disagree with the
+  loaded totals and blame the dimension.
+- **File stems such as `orders-2025`, `2025_orders` and `Orders Export` bind
+  as written (C62).** `breakdown check` fails a `duckdb` tree whose
+  `data_dir` is missing or empty. A file name containing `"` no longer
+  breaks startup.
+- **A rate's `mix_total.estimate` is the exact sum of the rows' mix, and it
+  carries a `ci_status` (C63).** Its interval excludes bootstrap replicates
+  that resampled no weight. A posterior node with a non-finite term withholds
+  that term and its `unexplained` under `ci_status: "nonfinite_posterior"`.
+- **A what-if no longer crashes when a co-parent of an affected formula node
+  has no finite baseline (C64).** It is refused by name. The Metric tab shows
+  the engine's `max_rhat`, the figure `fit_quality` rests on.
+- **Smaller UI corrections.** The as-of anchor ignores a metric whose data
+  edge is unknown. Intervention rows show every `ci_status` beside the "fit
+  saw this window" tag and say how much more of the analysis window the
+  intervention was in force for. A dropped intervention says whether it had
+  no instance in the fit window or was on throughout it. An ADVI fit flagged
+  for a severe posterior predictive check is no longer explained as an
+  unconverged ELBO.
+
 - **The slice `top_k` roll-up happens in the warehouse** (roadmap C32, #131).
   The `dbt` provider's sliced query now folds every value outside
   `top_k`/`values:` into `__other__` before the frame leaves the warehouse —
@@ -224,6 +349,18 @@ its notes never listed it at all.)
   reason that says so.
 
 ### Changed
+
+- **The project-invariant tests check each rule's property, not the spelling
+  of its guard (C61).** They read the AST and the running app, find every
+  route, MCP tool, payload field, cache, fill and subset enumeration from the
+  code, and add HTTP/MCP parity, token-redaction and repository-map checks.
+- **Metric tab wording.** Diagnostics wording moved into `disclosures.js`
+  and now matches the RCA chips: collinearity `moderate` reads "move
+  together" (was "partly collinear") and the PPC p-value prints as
+  "p 0.012" (was "p = 0.012").
+- **`alternatives[].status` values are declared** in
+  `REFERENCE_ALTERNATIVE_STATUSES`; on a week-grain scope a reference block
+  that is not whole weeks now moves back by whole weeks.
 
 - **NUTS fits integrate the local level out, and a cold RCA is about 2.4×
   faster (roadmap S25).** The level was sampled as one latent per period
