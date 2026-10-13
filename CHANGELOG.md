@@ -23,10 +23,18 @@ its notes never listed it at all.)
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-12
+
+This cycle's statistical work is reference-window sensitivity (S23), declared
+step and pulse interventions (S24) and a Kalman-marginalized local level
+(S25), which took the demo's slowest cold RCA from 47.0 s to 19.1 s. It also
+adds the `duckdb` provider over a folder of CSV / Parquet exports, per-metric windows,
+`sparse: true`, and a background warm of each metric's default analysis.
+
 A fourth adversarial review ran against this cycle's tip, scoped to what
 changed since 0.2.0; every High and Medium finding was verified and fixed here
-(roadmap C45–C64). Several fixes refuse a tree or a request that loaded
-before, listed first.
+(roadmap C45–C64). This is a **minor** bump under the pre-1.0 contract:
+several fixes refuse a tree or a request that loaded before, listed first.
 
 ### Breaking changes for tree authors
 
@@ -1165,4 +1173,5 @@ published` and uploads via Trusted Publishing. -->
 [0.1.1]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.1.1
 [0.1.0]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.1.0
 [0.2.0]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.2.0
-[Unreleased]: https://github.com/PolycultureResearch/breakdown/compare/v0.2.0...HEAD
+[0.3.0]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.3.0
+[Unreleased]: https://github.com/PolycultureResearch/breakdown/compare/v0.3.0...HEAD
