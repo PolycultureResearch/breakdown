@@ -46,6 +46,33 @@ seasonality explain the movement instead of a flexible trend absorbing it.
 Loosen it per metric with `trend: {sigma: ...}` when a node genuinely has fast
 level changes the parents don't capture.
 
+**A trend with a slope, per metric (opt-in).** A local level has no momentum:
+its forecast is its last fitted value, however steadily the metric has been
+climbing. For a metric that grows on its own — typically a source metric with
+no parents to carry the growth — declare `trend: {kind: local_linear}`. The
+trend then has two states, a level and a slope:
+
+```
+trend[t] = trend[t−1] + slope[t−1] + η[t],   η ~ Normal(0, σ_trend²)
+slope[t] = slope[t−1] + ζ[t],                ζ ~ Normal(0, σ_slope²)
+```
+
+`σ_slope ~ HalfNormal(0.001)` by default (the YAML `trend.slope_sigma`), tight
+enough that the slope behaves like a slowly revised constant drift;
+`slope_sigma: 0` makes it exactly constant. The slope before the first fitted
+period has a wide Normal(0, 0.1) prior, so the data sets it. Under NUTS both
+states are integrated out by a two-state Kalman filter and recovered
+afterwards, exactly as the level is; the fit keeps the per-period `trend` and
+the slope at the last fitted period.
+
+Two things change for a metric fitted this way. Its forecast is no longer
+flat — `k` periods past the fit it is `trend[last] + k · slope[last]` — and
+RCA's `components.trend` uses that forecast, so steady growth across the
+analysis window is reported as trend rather than left in `unexplained`. And
+the slope is one more place a child's movement can go instead of to a parent:
+on a metric whose parent grows with it, the slope and β compete for the same
+drift (limitation 3). That is why the local level stays the default.
+
 The three node types use this differently:
 
 - **Source metrics** (no parents): trend + seasonality only. Fitting one is
@@ -715,7 +742,10 @@ lumping them into `unexplained`:
   after the fit period (RCA fits strictly before it), and a random-walk local
   level forecasts flat at its last fitted state, so the analysis-window trend
   is `trend[last fitted day]`, compared against the reference-window mean of
-  the fitted trend.
+  the fitted trend. A metric declared `trend: {kind: local_linear}` forecasts
+  along its last fitted slope instead — `trend[last] + k · slope[last]`, `k`
+  periods past the fit — and the interval then carries the slope's posterior
+  uncertainty as well as the last level's.
 
   Its CI comes from the posterior of that last state, not from forward
   simulation of new steps. **That is an understatement, not a design note**
@@ -881,7 +911,10 @@ ship in every cold-start response.
    sharply identified in the common case. If a node genuinely has fast level
    changes its parents don't capture, loosen the prior for that node with
    `trend: {sigma: ...}` in the YAML, and watch for a β CI that straddles zero
-   as the sign that the trend is now competing with a parent. If the level
+   as the sign that the trend is now competing with a parent. The same
+   caution applies with more force to `trend: {kind: local_linear}`: a slope
+   explains steady growth directly, which is exactly what a growing parent
+   would otherwise be credited with. If the level
    change is a **known, dated step** rather than a wander — a price flip, a
    policy change — loosening the trend is the wrong knob: declare it as an
    [intervention](#declared-interventions-a-step-the-author-dates-and-the-model-sizes)
