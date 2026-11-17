@@ -181,6 +181,10 @@ class FitResult:
     # reader of `dates[0]` can tell "the data starts here" from "the author
     # said to start here". None when the node declares none.
     fit_start: Optional[str] = None
+    # Roadmap S8: the trend this fit carried, as `trend_kind` resolved it —
+    # `"level"` (flat forecast) or `"local_linear"` (the posterior then holds
+    # `trend_slope_end`, and `trend_at` extrapolates it).
+    trend_kind: str = "level"
 
 
 def scale_prior_params(distribution: str, params: Dict[str, Any], scale: float) -> Dict[str, Any]:
@@ -1854,6 +1858,213 @@ def _ffbs_local_level(
     return level
 
 
+# ---------------------------------------------------------------------------
+# Roadmap S8: a trend with a slope. The local linear trend
+#
+#     level[t] = level[t-1] + slope[t-1] + eta[t],   eta  ~ N(0, sigma_trend^2)
+#     slope[t] = slope[t-1] + zeta[t],               zeta ~ N(0, sigma_slope^2)
+#     level[-1] = 0,  slope[-1] ~ N(0, _SLOPE0_SD^2)
+#
+# is still linear and Gaussian, so the S25 machinery carries over with a
+# two-dimensional state: the same prediction-error decomposition, the same
+# backward sampler. `sigma_slope = 0` is the fixed-drift limit — the slope is
+# then one unknown constant, and the trend is a random walk with drift.
+#
+# The level's forecast under this trend is not flat: `k` periods past the last
+# fitted one it is `level[-1] + k * slope[-1]`. Every reader that projects the
+# trend beyond the fit goes through `trend_at`, so that is stated once.
+# ---------------------------------------------------------------------------
+
+TREND_LEVEL = "level"
+TREND_LOCAL_LINEAR = "local_linear"
+
+#: Prior sd of the slope before the first fitted period, in z-scored units per
+#: period. Wide on purpose: a series that climbs across its whole range over
+#: `T` periods has a slope near `3.5 / T`, so 0.1 covers any window of 35+
+#: periods without informing it, and the data identifies a constant drift
+#: sharply. The shrinkage S8 asks for is on the slope's *innovation*
+#: (`trend.slope_sigma`), not on the slope.
+_SLOPE0_SD = 0.1
+
+#: `trend.slope_sigma`'s default, for a node whose slope comes from the policy
+#: in `trend_kind` rather than from a `trend:` block. Kept equal to
+#: `TrendConfig.slope_sigma`'s default.
+_DEFAULT_SLOPE_SIGMA = 0.001
+
+
+def trend_kind(dag: nx.DiGraph, target: str) -> str:
+    """Which trend `target`'s fit carries: `"level"` or `"local_linear"`.
+
+    The one place that decision lives (roadmap S8). A kind the author declared
+    in the YAML (`trend.kind`) always wins. Where none is declared the answer
+    is the engine's default, which is the local level for every node today.
+
+    This takes the DAG, not just the definition, because the open question is
+    a default by *role*: the measured forecast bias sits on nodes with no
+    parents that are flows or stocks (a source has nothing to carry growth),
+    and not on rates or on nodes with a learned parent
+    (knowledge/innovation_rca_design.md §6.1). That policy is one line here —
+    `dag.in_degree(target) == 0 and defn.kind in ("flow", "stock")` — and is
+    deliberately not applied: the slope competes with a growing parent for the
+    same movement, and the default is a decision that has not been made.
+    """
+    defn: MetricDefinition = dag.nodes[target]["definition"]
+    if defn.trend is not None and defn.trend.kind is not None:
+        return defn.trend.kind
+    return TREND_LEVEL
+
+
+def _kalman_local_linear_loglik(
+    r: Any, sigma_trend: Any, sigma_slope: Any, sigma_obs: Any, slope0_sd: float = _SLOPE0_SD
+) -> Any:
+    """`log p(r | sigma_trend, sigma_slope, sigma_obs)`, level and slope integrated out.
+
+    The two-state counterpart of `_kalman_local_level_loglik`, with the 2x2
+    algebra written out in scalars so the scan stays a scalar recursion (the
+    reason the numba backend makes it fast). State mean `(a1, a2)` = (level,
+    slope), covariance `(P11, P12, P22)`:
+
+        predict   a1 += a2
+                  P11 += 2 P12 + P22 + sigma_trend^2;  P12 += P22;  P22 += sigma_slope^2
+        observe   v = r[t] - a1,  F = P11 + sigma_obs^2,  K = (P11, P12) / F
+        update    a += K v;  P11 *= o2 / F;  P12 *= o2 / F;  P22 -= P12_pred^2 / F
+
+    Started at `a = 0`, `P = diag(0, slope0_sd^2)`: the level starts at zero as
+    the local level does, and the slope before the first period carries its
+    prior. `sigma_slope` may be an exact zero (the fixed-drift limit).
+    """
+    import pytensor
+    import pytensor.tensor as pt
+
+    s2 = sigma_trend**2
+    q2 = sigma_slope**2
+    o2 = sigma_obs**2
+
+    def step(r_t, a1, a2, P11, P12, P22, s2, q2, o2):
+        a1 = a1 + a2
+        P11 = P11 + 2 * P12 + P22 + s2
+        P12 = P12 + P22
+        P22 = P22 + q2
+        F = P11 + o2
+        v = r_t - a1
+        K1 = P11 / F
+        K2 = P12 / F
+        return (
+            a1 + K1 * v,
+            a2 + K2 * v,
+            P11 * o2 / F,
+            P12 * o2 / F,
+            P22 - K2 * P12,
+            -0.5 * (pt.log(2 * np.pi * F) + v**2 / F),
+        )
+
+    zero = pt.zeros(())
+    kwargs = dict(
+        sequences=[r],
+        outputs_info=[zero, zero, zero, zero, pt.as_tensor(np.float64(slope0_sd) ** 2), None],
+        non_sequences=[s2, q2, o2],
+    )
+    if "return_updates" in inspect.signature(pytensor.scan).parameters:
+        *_, ll = pytensor.scan(step, return_updates=False, **kwargs)
+    else:  # pragma: no cover - older pytensor
+        (*_, ll), _ = pytensor.scan(step, **kwargs)
+    return ll.sum()
+
+
+def _ffbs_local_linear(
+    r: np.ndarray,
+    s2: np.ndarray,
+    q2: np.ndarray,
+    o2: np.ndarray,
+    rng: np.random.Generator,
+    slope0_sd: float = _SLOPE0_SD,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """One exact draw of `(level, slope) | r, theta` per posterior draw.
+
+    `r` is `(n_draws, T)`; `s2`/`q2`/`o2` are `(n_draws,)` variances. Returns
+    `(level, slope)`, both `(n_draws, T)`. The forward pass is the filter of
+    `_kalman_local_linear_loglik`; the backward pass draws the last state from
+    its filtered distribution and each earlier state from its conditional
+    given the one after it, as `_ffbs_local_level` does, with 2x2 algebra.
+
+    Under fixed drift (`q2 = 0`) the slope is constant, so the conditional of
+    `slope[t]` given `slope[t+1]` is a point mass and its covariance is
+    singular. The draw is taken through a Cholesky factor whose pivots are
+    clipped at zero, so that case yields the constant path rather than a NaN.
+    """
+    n, T = r.shape
+    m1 = np.empty((n, T))
+    m2 = np.empty((n, T))
+    f11 = np.empty((n, T))
+    f12 = np.empty((n, T))
+    f22 = np.empty((n, T))
+    a1 = np.zeros(n)
+    a2 = np.zeros(n)
+    P11 = np.zeros(n)
+    P12 = np.zeros(n)
+    P22 = np.full(n, float(slope0_sd) ** 2)
+    for t in range(T):
+        a1 = a1 + a2
+        P11 = P11 + 2 * P12 + P22 + s2
+        P12 = P12 + P22
+        P22 = P22 + q2
+        F = P11 + o2
+        v = r[:, t] - a1
+        K1 = P11 / F
+        K2 = P12 / F
+        a1 = a1 + K1 * v
+        a2 = a2 + K2 * v
+        P22 = P22 - K2 * P12
+        P11 = P11 * o2 / F
+        P12 = P12 * o2 / F
+        m1[:, t], m2[:, t] = a1, a2
+        f11[:, t], f12[:, t], f22[:, t] = P11, P12, P22
+
+    def draw(mean1, mean2, c11, c12, c22, z1, z2):
+        l11 = np.sqrt(np.maximum(c11, 0.0))
+        l21 = np.divide(c12, l11, out=np.zeros_like(c12), where=l11 > 0)
+        l22 = np.sqrt(np.maximum(c22 - l21**2, 0.0))
+        return mean1 + l11 * z1, mean2 + l21 * z1 + l22 * z2
+
+    z = rng.standard_normal((2, n, T))
+    level = np.empty((n, T))
+    slope = np.empty((n, T))
+    level[:, T - 1], slope[:, T - 1] = draw(
+        m1[:, T - 1],
+        m2[:, T - 1],
+        f11[:, T - 1],
+        f12[:, T - 1],
+        f22[:, T - 1],
+        z[0, :, T - 1],
+        z[1, :, T - 1],
+    )
+    for t in range(T - 2, -1, -1):
+        p11, p12, p22 = f11[:, t], f12[:, t], f22[:, t]
+        # A = P T' with T = [[1, 1], [0, 1]]; R = T P T' + Q is the one-step
+        # prediction covariance; J = A R^-1 is the backward gain.
+        a11, a12, a21, a22 = p11 + p12, p12, p12 + p22, p22
+        r11 = p11 + 2 * p12 + p22 + s2
+        r12 = p12 + p22
+        r22 = p22 + q2
+        det = r11 * r22 - r12**2
+        j11 = (a11 * r22 - a12 * r12) / det
+        j12 = (a12 * r11 - a11 * r12) / det
+        j21 = (a21 * r22 - a22 * r12) / det
+        j22 = (a22 * r11 - a21 * r12) / det
+        d1 = level[:, t + 1] - (m1[:, t] + m2[:, t])
+        d2 = slope[:, t + 1] - m2[:, t]
+        level[:, t], slope[:, t] = draw(
+            m1[:, t] + j11 * d1 + j12 * d2,
+            m2[:, t] + j21 * d1 + j22 * d2,
+            p11 - (j11 * a11 + j12 * a12),
+            p12 - (j11 * a21 + j12 * a22),
+            p22 - (j21 * a21 + j22 * a22),
+            z[0, :, t],
+            z[1, :, t],
+        )
+    return level, slope
+
+
 def _attach_recovered_level(
     trace: Any,
     y: np.ndarray,
@@ -1862,6 +2073,7 @@ def _attach_recovered_level(
     t: np.ndarray,
     X_iv: Optional[np.ndarray],
     random_seed: Optional[int],
+    kind: str = TREND_LEVEL,
 ) -> None:
     """Write `trend` into `trace.posterior` for a marginalized fit.
 
@@ -1870,25 +2082,99 @@ def _attach_recovered_level(
     RCA's trend delta (`rca.py`), the posterior predictive check, the UI's
     trend band — reads it unchanged. Seeded from the fit's `random_seed` on
     its own stream, so a seeded fit stays a pure function of its inputs.
+
+    Under a local linear trend (roadmap S8) the slope is recovered in the same
+    pass, and only its last state is kept, as `trend_slope_end` (`chain`,
+    `draw`): that is the one slope a forecast needs (`trend_at`), and a
+    per-period slope would be a second trend-sized array on every such trace
+    in a cache bounded in bytes.
     """
     import xarray as xr
 
     posterior = trace.posterior
     n_chain, n_draw = int(posterior.sizes["chain"]), int(posterior.sizes["draw"])
+    coords = {"chain": posterior["chain"].values, "draw": posterior["draw"].values}
     mu = _mean_function_draws(posterior, X, defn, t, X_iv)
     s2 = posterior["sigma_trend"].values.reshape(-1) ** 2
     o2 = posterior["sigma_obs"].values.reshape(-1) ** 2
     rng = np.random.default_rng(_seed_stream(random_seed, _LEVEL_STREAM))
-    level = _ffbs_local_level(y[None, :] - mu, s2, o2, rng)
+    if kind == TREND_LOCAL_LINEAR:
+        q2 = (
+            posterior["sigma_slope"].values.reshape(-1) ** 2
+            if "sigma_slope" in posterior
+            else np.zeros_like(s2)
+        )
+        level, slope = _ffbs_local_linear(y[None, :] - mu, s2, q2, o2, rng)
+        posterior["trend_slope_end"] = xr.DataArray(
+            slope[:, -1].reshape(n_chain, n_draw), dims=("chain", "draw"), coords=coords
+        )
+    else:
+        level = _ffbs_local_level(y[None, :] - mu, s2, o2, rng)
     posterior["trend"] = xr.DataArray(
         level.reshape(n_chain, n_draw, len(t)),
         dims=("chain", "draw", "trend_dim_0"),
-        coords={
-            "chain": posterior["chain"].values,
-            "draw": posterior["draw"].values,
-            "trend_dim_0": np.arange(len(t)),
-        },
+        coords={**coords, "trend_dim_0": np.arange(len(t))},
     )
+
+
+def trend_at(posterior: Any, t_idx: np.ndarray) -> np.ndarray:
+    """`(n_draws, len(t_idx))` trend at fitted-index positions, forecast included.
+
+    Inside the fitted period this is the fitted state. Past its end it is the
+    trend's *forecast mean path* given each draw's last state: flat for a local
+    level, and `trend[-1] + k * slope[-1]` for a local linear trend `k` periods
+    out (roadmap S8). No innovation noise is added — a caller that wants the
+    forecast's spread simulates the walk forward from here.
+
+    Every reader that looks past the fit calls this, so "what does the trend
+    do after the last fitted period" has one answer.
+    """
+    t_idx = np.asarray(t_idx)
+    n_draws = int(posterior.sizes["chain"] * posterior.sizes["draw"])
+    trend = posterior["trend"].values.reshape(n_draws, -1)
+    last = trend.shape[1] - 1
+    out = trend[:, np.minimum(t_idx, last)]
+    if "trend_slope_end" in posterior:
+        ahead = np.maximum(t_idx - last, 0)
+        out = out + posterior["trend_slope_end"].values.reshape(n_draws, 1) * ahead[None, :]
+    return out
+
+
+def simulate_trend_forward(
+    posterior: Any,
+    horizon: int,
+    rng: np.random.Generator,
+    draw_idx: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """`(n_draws, horizon)` trend over the `horizon` periods after the fit, simulated.
+
+    `trend_at` gives the forecast's mean path; this adds the innovations, so
+    the spread across draws is the trend's predictive uncertainty and widens
+    with the horizon. A local level walks on from its last state with
+    `sigma_trend` steps. A local linear trend (roadmap S8) also carries its
+    last slope forward — each step adds the slope entering it — and the slope
+    itself keeps walking with `sigma_slope` steps (not at all under fixed
+    drift), which is why its interval grows faster than the level's.
+
+    `draw_idx` selects a subset of the flattened `(chain, draw)` draws.
+    """
+    n_all = int(posterior.sizes["chain"] * posterior.sizes["draw"])
+    idx = np.arange(n_all) if draw_idx is None else np.asarray(draw_idx)
+
+    def flat(name: str) -> np.ndarray:
+        return posterior[name].values.reshape(n_all, -1)[idx]
+
+    steps = flat("sigma_trend") * rng.standard_normal((len(idx), horizon))
+    if "trend_slope_end" in posterior:
+        slope_end = flat("trend_slope_end")
+        if "sigma_slope" in posterior:
+            walk = np.cumsum(flat("sigma_slope") * rng.standard_normal((len(idx), horizon)), axis=1)
+            # The slope entering step k is the one that left step k - 1.
+            entering = slope_end + np.concatenate([np.zeros((len(idx), 1)), walk[:, :-1]], axis=1)
+        else:
+            entering = np.broadcast_to(slope_end, steps.shape)
+        steps = steps + entering
+    return flat("trend")[:, -1:] + np.cumsum(steps, axis=1)
 
 
 def intervention_record(iv: Any, grain: str) -> Dict[str, Any]:
@@ -2628,12 +2914,41 @@ def fit_metric(
     # latent. Same model either way — see `_level_is_marginalized`.
     marginalized = _level_is_marginalized(inference_method)
 
+    # Roadmap S8: which trend this node carries. One function decides.
+    kind = trend_kind(dag, target)
+
     with pm.Model() as model:
         trend_sigma_prior = defn.trend.sigma if defn.trend else 0.05
         sigma_trend = pm.HalfNormal("sigma_trend", trend_sigma_prior)
+        if kind == TREND_LOCAL_LINEAR:
+            # A slope innovation under a tight prior, so the slope shrinks
+            # toward a constant drift. `slope_sigma: 0` is that limit exactly:
+            # no `sigma_slope` variable, the innovation variance a literal 0.
+            slope_sigma_prior = defn.trend.slope_sigma if defn.trend else _DEFAULT_SLOPE_SIGMA
+            sigma_slope = (
+                pm.HalfNormal("sigma_slope", slope_sigma_prior)
+                if slope_sigma_prior > 0
+                else pt.zeros(())
+            )
         if not marginalized:
             trend_z = pm.Normal("trend_z", 0.0, 1.0, shape=len(y))
-            trend = pm.Deterministic("trend", pt.cumsum(sigma_trend * trend_z))
+            if kind == TREND_LOCAL_LINEAR:
+                # The explicit form of the same model, non-centered like the
+                # level: `slope_prev[t]` is the slope *entering* period `t`
+                # (`slope[t-1]`, starting from its prior draw), which is what
+                # `level[t]` adds — the timing the Kalman filter integrates.
+                slope0 = _SLOPE0_SD * pm.Normal("trend_slope0_z", 0.0, 1.0)
+                if slope_sigma_prior > 0:
+                    slope_z = pm.Normal("trend_slope_z", 0.0, 1.0, shape=len(y))
+                    slope = slope0 + pt.cumsum(sigma_slope * slope_z)
+                    slope_prev = pt.concatenate([slope0[None], slope[:-1]])
+                    pm.Deterministic("trend_slope_end", slope[-1])
+                else:
+                    slope_prev = slope0
+                    pm.Deterministic("trend_slope_end", slope0)
+                trend = pm.Deterministic("trend", pt.cumsum(slope_prev + sigma_trend * trend_z))
+            else:
+                trend = pm.Deterministic("trend", pt.cumsum(sigma_trend * trend_z))
         seasonal = _seasonal_component(defn.seasonality, t)
         regression = _regression_component(defn, fitted_parents, X, scale)
         intervention = _intervention_component(fitted_ivs, X_iv, y_std)
@@ -2644,9 +2959,12 @@ def fit_metric(
         if marginalized:
             # No observed node: the likelihood of `y` with the level summed
             # out enters as a potential on the residual the level must explain.
+            residual = pt.as_tensor(y) - mean_fn
             pm.Potential(
                 "level_marginal_loglik",
-                _kalman_local_level_loglik(pt.as_tensor(y) - mean_fn, sigma_trend, sigma_obs),
+                _kalman_local_linear_loglik(residual, sigma_trend, sigma_slope, sigma_obs)
+                if kind == TREND_LOCAL_LINEAR
+                else _kalman_local_level_loglik(residual, sigma_trend, sigma_obs),
             )
         else:
             pm.Normal("obs", mu=mean_fn + trend, sigma=sigma_obs, observed=y)
@@ -2689,7 +3007,7 @@ def fit_metric(
             )
             diagnostics = _nuts_diagnostics(trace, draws, chains, var_names=sampled)
             if marginalized:
-                _attach_recovered_level(trace, y, X, defn, t, X_iv, random_seed)
+                _attach_recovered_level(trace, y, X, defn, t, X_iv, random_seed, kind)
 
         # Roadmap S3, inside the model context because that is the only place
         # `sample_posterior_predictive` can run — and computed here for every
@@ -2838,4 +3156,5 @@ def fit_metric(
         interventions=intervention_records,
         dropped_interventions=dropped_interventions,
         fit_start=fit_start,
+        trend_kind=kind,
     )

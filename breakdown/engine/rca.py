@@ -87,6 +87,7 @@ from breakdown.engine.model import (
     fit_metric,
     intervention_indicator,
     seasonal_window_delta,
+    trend_at,
 )
 from breakdown.engine.progress import ProgressFn
 from breakdown.engine.progress import report as _report
@@ -2304,9 +2305,17 @@ def run_rca(
             # have fitted states of their own and are read as such. Clipping
             # to the last fitted index reproduces `trend[-1]` exactly for
             # every period beyond the fit, so the default path is unchanged.
-            t_an_fitted = np.minimum(t_an, trend_samples.shape[1] - 1)
+            #
+            # And one amendment (roadmap S8): a node fitted with a local
+            # linear trend does not forecast flat. Its level keeps moving at
+            # the last fitted slope, so the analysis-window trend is
+            # `trend[-1] + k * slope[-1]`, `k` periods past the fit.
+            # `trend_at` is the clip above plus that extrapolation, and is
+            # exactly the clip on a local-level fit. Reading such a node flat
+            # would hand its own momentum to `unexplained`.
             trend_delta = (
-                trend_samples[:, t_an_fitted].mean(axis=1) - trend_samples[:, t_ref].mean(axis=1)
+                trend_at(fit.trace.posterior, t_an).mean(axis=1)
+                - trend_samples[:, t_ref].mean(axis=1)
             ) * fit.y_std
             # The model always carries a local level, so `trend` is always a
             # term it estimated. Seasonality is declared per node, and a node

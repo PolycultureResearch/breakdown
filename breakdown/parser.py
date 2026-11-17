@@ -273,13 +273,36 @@ class Seasonality(BaseModel):
         return v
 
 
+#: The trend kinds a metric may declare (roadmap S8). `level` is the local
+#: level every fit has carried; `local_linear` adds a slope state.
+TREND_KINDS = ("level", "local_linear")
+
+
 class TrendConfig(BaseModel):
-    """Local-level (random-walk) trend configuration. `sigma` is the prior scale
-    on the per-step drift in z-scored space — the knob that controls how much
-    movement the trend is allowed to absorb before parents/seasonality must."""
+    """Trend configuration for one metric.
+
+    `sigma` is the prior scale on the level's per-step innovation in z-scored
+    space — the knob that controls how much movement the trend is allowed to
+    absorb before parents/seasonality must.
+
+    `kind` (roadmap S8) picks the trend's structure: `level` is a random walk,
+    whose forecast is flat; `local_linear` adds a slope state, so the level
+    carries momentum and its forecast keeps moving. Unset means "the engine's
+    default for this node" (`breakdown.engine.model.trend_kind`), which is
+    `level` today — kept distinct from an explicit `level` so a role-based
+    default can arrive later without overriding anyone's declared choice.
+
+    `slope_sigma` is the prior scale on the slope's per-step innovation, also
+    in z-scored space, and only means something under `local_linear`. Its
+    default is tight, so the slope shrinks toward a constant drift; `0` fixes
+    the slope innovation at exactly zero (a constant drift with a random-walk
+    level around it).
+    """
 
     type: str = "linear"
+    kind: Optional[str] = None
     sigma: float = 0.05
+    slope_sigma: float = 0.001
 
     @field_validator("type")
     @classmethod
@@ -288,12 +311,39 @@ class TrendConfig(BaseModel):
             raise ValueError(f"Unsupported trend type: {v}. Must be 'linear'.")
         return v
 
+    @field_validator("kind")
+    @classmethod
+    def validate_kind(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in TREND_KINDS:
+            raise ValueError(
+                f"Unsupported trend kind: {v!r}. Must be one of {', '.join(TREND_KINDS)}."
+            )
+        return v
+
     @field_validator("sigma")
     @classmethod
     def validate_sigma(cls, v: float) -> float:
         if v <= 0:
             raise ValueError("trend sigma must be > 0")
         return v
+
+    @field_validator("slope_sigma")
+    @classmethod
+    def validate_slope_sigma(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("trend slope_sigma must be >= 0 (0 fixes a constant drift)")
+        return v
+
+    @model_validator(mode="after")
+    def slope_sigma_needs_a_slope(self) -> "TrendConfig":
+        # Refuse rather than ignore: a `slope_sigma` on a trend with no slope
+        # would be read by nothing, and the author would believe it was.
+        if "slope_sigma" in self.model_fields_set and self.kind != "local_linear":
+            raise ValueError(
+                "trend slope_sigma is set but the trend has no slope: "
+                "add `kind: local_linear`, or remove slope_sigma."
+            )
+        return self
 
 
 INTERVENTION_KINDS = ("step", "pulse")

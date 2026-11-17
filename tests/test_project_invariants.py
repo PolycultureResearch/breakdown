@@ -1088,6 +1088,8 @@ def test_every_window_scaled_field_on_a_fit_is_metered_or_named():
         "interventions",
         "dropped_interventions",
         "fit_start",
+        # Roadmap S8: one word, the trend kind the fit carried.
+        "trend_kind",
         "y_mean",
         "y_std",
         "x_stds",
