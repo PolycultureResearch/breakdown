@@ -39,8 +39,21 @@ Null calibration (design doc §6.1) — every node over every anomaly-free
 window, ~500 fits and ~40 minutes, resumable from the CSV it appends to:
     uv run python knowledge/benchmarks/innovation_score.py null out.csv
     uv run python knowledge/benchmarks/innovation_score.py null-summary out.csv
+
+Trend experiments (roadmap S8). `--nodes a,b,c` restricts the null windows to
+those nodes (the planted rows are always scored). `--trend level|local_linear`
+forces that trend kind on every scored node, and `--slope-sigma X` sets the
+slope innovation's prior scale (`0` = fixed drift), both by editing the loaded
+definitions in memory — the tree file is not touched. One CSV per arm, then
+compare them side by side:
+    ... null level.csv --nodes sessions,signups --trend level
+    ... null llt.csv   --nodes sessions,signups --trend local_linear
+    ... null drift.csv --nodes sessions,signups --trend local_linear --slope-sigma 0
+    ... null-compare level=level.csv llt=llt.csv drift=drift.csv
 """
 
+import argparse
+import json
 import os
 import sys
 import time
@@ -70,6 +83,7 @@ from breakdown.grains import (  # noqa: E402
     snap_window,
     steps_between,
 )
+from breakdown.parser import TrendConfig  # noqa: E402
 
 # The planted anomalies, from fake_companies' white_cube.ground_truth.json
 # (demo/demos.yaml). `truth` is where each one *enters* this tree: the first
@@ -148,6 +162,24 @@ def load():
 
 def defn_of(dag, node):
     return dag.nodes[node]["definition"]
+
+
+def force_trend(dag, nodes, kind, slope_sigma):
+    """Force a trend kind on `nodes` (roadmap S8) by replacing each loaded
+    definition's `trend` in memory. The level's own `sigma` is kept, so the
+    arms differ in the slope and nothing else."""
+    if kind is None:
+        if slope_sigma is not None:
+            raise SystemExit("--slope-sigma needs --trend local_linear")
+        return
+    for n in nodes:
+        defn = defn_of(dag, n)
+        fields = {"kind": kind}
+        if defn.trend is not None:
+            fields["sigma"] = defn.trend.sigma
+        if slope_sigma is not None:
+            fields["slope_sigma"] = slope_sigma
+        defn.trend = TrendConfig(**fields)
 
 
 def node_windows(dag, data, target, ana):
@@ -234,15 +266,17 @@ def innovation(dag, data, fits, node, window):
     def draws(name):
         return post[name].values.reshape(n_all, -1)[idx]
 
-    # Normalized space: alpha + seasonal + a level simulated forward from its
-    # last fitted state (so the interval widens with the horizon — roadmap
-    # S16) + observation noise.
+    # Normalized space: alpha + seasonal + the trend simulated forward from
+    # its last fitted state (so the interval widens with the horizon — roadmap
+    # S16) + observation noise. The engine's `simulate_trend_forward` walks a
+    # local level on from its last state, and under a local linear trend
+    # (roadmap S8) also carries the last fitted slope forward.
     pred = draws("alpha") + M._seasonal_draws(post, defn.seasonality, t)[idx]
-    level_end = draws("trend")[:, -1:]
-    pred += level_end + np.cumsum(draws("sigma_trend") * rng.standard_normal((len(idx), h)), axis=1)
+    pred += M.simulate_trend_forward(post, h, rng, idx)
     noiseless = fit.y_mean + fit.y_std * pred
     pred = noiseless + fit.y_std * draws("sigma_obs") * rng.standard_normal((len(idx), h))
     beta_mean = {}
+    beta_post = {}
     if fit.parents:
         beta_raw = draws("beta_raw")
         fitted_rows = frame["date"].isin(fit.dates).to_numpy()
@@ -252,6 +286,10 @@ def innovation(dag, data, fits, node, window):
             pred += beta_raw[:, i : i + 1] * centred
             noiseless += beta_raw[:, i : i + 1] * centred
             beta_mean[p] = float(beta_raw[:, i].mean())
+            lo, hi = np.quantile(beta_raw[:, i], [0.03, 0.97])
+            beta_post[p] = dict(
+                mean=beta_mean[p], sd=float(beta_raw[:, i].std()), lo=float(lo), hi=float(hi)
+            )
 
     expected = noiseless.mean(axis=0)
     e = observed - expected
@@ -275,6 +313,16 @@ def innovation(dag, data, fits, node, window):
         "ppc_status": fit.diagnostics.get("ppc_status"),
         "beta_mean": beta_mean,
         "fit_quality": fit.diagnostics.get("fit_quality"),
+        # For the trend experiments: the coefficient posterior a slope might
+        # compete with, and the last fitted slope in business units a period.
+        "beta": json.dumps(beta_post) if beta_post else None,
+        "trend": fit.trend_kind,
+        "slope": (
+            float(draws("trend_slope_end").mean() * fit.y_std)
+            if "trend_slope_end" in post
+            else None
+        ),
+        "min_ess": fit.diagnostics.get("min_ess_bulk"),
     }
 
 
@@ -421,7 +469,8 @@ PLANTED = [
 ]
 HORIZON_DAYS = (1, 3, 7, 14, 28)  # 1 and 3 apply to day-grain nodes only
 NULL_FIELDS = (
-    "label node grain start horizon_days n z pit tail innovation pred_sd ppc_status status"
+    "label node grain start horizon_days n z pit tail innovation pred_sd ppc_status status "
+    "trend slope beta fit_seconds fit_quality min_ess"
 ).split()
 
 
@@ -445,11 +494,17 @@ def score_windows(dag, data, node, start, limit, label, writer):
         writer.writerow(row)
 
 
-def null_run(out_path):
+def null_run(out_path, only=None, trend=None, slope_sigma=None):
     import csv
 
     dag, data = load()
     nodes = list(nx.topological_sort(dag))
+    if only:
+        unknown = sorted(set(only) - set(nodes))
+        if unknown:
+            raise SystemExit(f"--nodes names metrics the tree does not have: {unknown}")
+        nodes = [n for n in nodes if n in only]
+    force_trend(dag, set(nodes) | {n for n, _ in PLANTED}, trend, slope_sigma)
     done = set()
     if os.path.exists(out_path):
         with open(out_path) as f:
@@ -517,13 +572,99 @@ def null_summary(out_path):
     print(pd.DataFrame(rows).to_string(index=False))
 
 
+def null_compare(specs):
+    """Arms side by side, per node and horizon: `name=path.csv` each. The
+    comparison roadmap S8's default turns on — bias (`mean_z`), calibration
+    (`sd_z`, `|z|>2`), predictive width (`pred_sd`) and cost (`fit_s`, counted
+    once per fit) — plus each learned coefficient's posterior and the planted
+    roots."""
+    arms = {}
+    for spec in specs:
+        name, _, path = spec.partition("=")
+        df = pd.read_csv(path, keep_default_na=False, na_values=[""])
+        arms[name] = df[df["status"] != "exact_identity"]
+    pd.set_option("display.width", 250)
+    pd.set_option("display.max_rows", 500)
+
+    def stats(frame):
+        z = frame["z"].dropna()
+        return {
+            "n": len(z),
+            "mean_z": z.mean(),
+            "sd_z": z.std(),
+            "|z|>2": (z.abs() > 2).mean(),
+            "pred_sd": frame["pred_sd"].mean(),
+            "fit_s": frame["fit_seconds"].mean() if "fit_seconds" in frame else np.nan,
+        }
+
+    for h in (7, 28):
+        rows = {}
+        for name, df in arms.items():
+            null = df[(df.label == "null") & (df.horizon_days == h)]
+            # `fit_seconds` is recorded on the first horizon a fit scores.
+            first = df[(df.label == "null") & df.get("fit_seconds", pd.Series(dtype=float)).notna()]
+            for node, g in null.groupby("node"):
+                st = stats(g)
+                if "fit_seconds" in df:
+                    st["fit_s"] = first[first.node == node]["fit_seconds"].mean()
+                rows[(node, name)] = st
+        print(f"\n=== null windows, {h}-day horizon")
+        print(pd.DataFrame(rows).T.round(3).to_string())
+
+    print("\n=== learned coefficients (beta_raw), mean over null fits of the posterior mean / sd")
+    rows = {}
+    for name, df in arms.items():
+        if "beta" not in df:
+            continue
+        fitted = df[(df.label == "null") & df["beta"].notna() & df["fit_seconds"].notna()]
+        for node, g in fitted.groupby("node"):
+            for parent in json.loads(g["beta"].iloc[0]):
+                posts = [json.loads(b)[parent] for b in g["beta"]]
+                rows[(f"{node} <- {parent}", name)] = {
+                    "fits": len(posts),
+                    "post_mean": np.mean([b["mean"] for b in posts]),
+                    "post_sd": np.mean([b["sd"] for b in posts]),
+                    "ci94_width": np.mean([b["hi"] - b["lo"] for b in posts]),
+                    "sd_of_means": np.std([b["mean"] for b in posts]),
+                    "ci_excludes_0": np.mean([b["lo"] > 0 or b["hi"] < 0 for b in posts]),
+                }
+    if rows:
+        print(pd.DataFrame(rows).T.to_string(float_format=lambda v: f"{v:.4g}"))
+
+    print("\n=== planted roots at onset: z, and clean windows on the same node as extreme")
+    rows = {}
+    for name, df in arms.items():
+        null = df[df.label == "null"]
+        for _, r in df[(df.label == "planted") & df["z"].notna()].iterrows():
+            ref = null[(null.node == r.node) & (null.horizon_days == r.horizon_days)]["z"].dropna()
+            rows[(r.node, r.start, int(r.horizon_days), name)] = {
+                "z": round(r.z, 2),
+                "pred_sd": r.pred_sd,
+                "z/null_sd": round(r.z / ref.std(), 2) if len(ref) > 2 else None,
+                "null_as_extreme": f"{(ref.abs() >= abs(r.z)).sum()}/{len(ref)}",
+            }
+    out = pd.DataFrame(rows).T
+    print(out[out.index.get_level_values(2).isin([7, 28])].sort_index().to_string())
+
+
 def main():
-    if sys.argv[1:2] == ["null"]:
-        return null_run(sys.argv[2])
-    if sys.argv[1:2] == ["null-summary"]:
-        return null_summary(sys.argv[2])
-    names = sys.argv[1:] or list(STORIES)
+    cli = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    cli.add_argument("args", nargs="*")
+    cli.add_argument("--nodes", help="null: comma-separated nodes to restrict the null windows to")
+    cli.add_argument("--trend", choices=("level", "local_linear"), help="force this trend kind")
+    cli.add_argument("--slope-sigma", type=float, help="with --trend local_linear; 0 = fixed drift")
+    opts = cli.parse_args()
+    argv = opts.args
+    if argv[:1] == ["null"]:
+        only = set(opts.nodes.split(",")) if opts.nodes else None
+        return null_run(argv[1], only, opts.trend, opts.slope_sigma)
+    if argv[:1] == ["null-summary"]:
+        return null_summary(argv[1])
+    if argv[:1] == ["null-compare"]:
+        return null_compare(argv[1:])
+    names = argv or list(STORIES)
     dag, data = load()
+    force_trend(dag, list(dag.nodes), opts.trend, opts.slope_sigma)
     fits = {}
     results = {n: run_story(n, dag, data, fits) for n in names}
     print("\n=== summary: rank of the planted root cause")
