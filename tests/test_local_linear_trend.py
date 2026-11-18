@@ -455,3 +455,26 @@ def test_rca_reads_a_sloped_trend_along_its_forecast_not_flat():
     assert lo < 4.2 < hi and abs(sloped["estimate"] - 4.2) < 1.0, sloped
     flat = trend_component("")
     assert flat["estimate"] < 3.2, flat
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("slope_sigma", ["0.001", "0"])
+def test_advi_carries_the_same_trend_as_an_explicit_latent(slope_sigma):
+    """The ADVI opt-in keeps explicit latents (roadmap S25), so the slope has
+    an explicit form too rather than a refusal: the posterior holds `trend`
+    and `trend_slope_end` under the names and dims the NUTS path writes, and
+    readers past the fit work on it unchanged. Whether mean-field ADVI
+    *approximates* this posterior well is what its k-hat reports, and is not
+    asserted here."""
+    dag, frame = _s8_world(f"    trend: {{kind: local_linear, slope_sigma: {slope_sigma}}}")
+    fit = fit_metric(dag, frame, "y", draws=200, inference_method="advi", random_seed=2)
+    post = fit.trace.posterior
+    assert fit.trend_kind == "local_linear"
+    assert post["trend"].dims == ("chain", "draw", "trend_dim_0")
+    assert post["trend_slope_end"].dims == ("chain", "draw")
+    assert ("trend_slope_z" in post) == (slope_sigma != "0")
+    ahead = trend_at(post, np.array([len(frame) - 1, len(frame) + 9]))
+    assert np.isfinite(ahead).all()
+    slope = post["trend_slope_end"].values.reshape(-1)
+    assert np.allclose(ahead[:, 1] - ahead[:, 0], 10 * slope)
+    assert "khat" in fit.diagnostics
