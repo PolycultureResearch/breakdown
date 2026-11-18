@@ -20,6 +20,7 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
+from breakdown.engine.compile_cache import ensure_safe_compile_cache
 from breakdown.engine.stats import effectively_constant
 from breakdown.formula import eval_formula
 from breakdown.grains import ensure_grained, fit_grain, floor_period, next_start
@@ -348,7 +349,13 @@ def preload_forkserver_modules() -> None:
     import multiprocessing
 
     try:
-        multiprocessing.set_forkserver_preload(["__main__", "pymc"])
+        # The second module hardens the numba compile cache inside the
+        # forkserver, so every chain forked from it is hardened too. Without
+        # it the chains still run correctly, with their cache turned off
+        # (`compile_cache`, point 3).
+        multiprocessing.set_forkserver_preload(
+            ["__main__", "pymc", "breakdown.engine.compile_cache_preload"]
+        )
     except Exception:  # pragma: no cover - diagnostics only
         logger.debug("forkserver preload could not be set", exc_info=True)
 
@@ -371,6 +378,8 @@ def warm_inference_imports() -> None:
         import arviz  # noqa: F401
         import pymc  # noqa: F401
         import pytensor.tensor  # noqa: F401
+
+        ensure_safe_compile_cache()
     except Exception:  # pragma: no cover - diagnostics only
         logger.debug("inference import warm-up failed; first fit will pay for it", exc_info=True)
 
@@ -2973,6 +2982,11 @@ def fit_metric(
     """
     import pymc as pm
     import pytensor.tensor as pt
+
+    # Before anything is compiled: two cached functions written by different
+    # processes can otherwise share a symbol name, and the second one loaded
+    # silently runs the first one's code (see `compile_cache`).
+    ensure_safe_compile_cache()
 
     if inference_method not in ("nuts", "advi", "fullrank_advi"):
         raise ValueError(

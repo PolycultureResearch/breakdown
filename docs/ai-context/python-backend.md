@@ -32,6 +32,7 @@ breakdown/
     slices.py      # slice_attribution() — dimensional slicing of one metric's gap (pure, no I/O)
     simulate.py    # run_scenario() — do-operator what-if; fitted (posterior draws) or cold start (data=None)
     progress.py    # report() — advisory progress callbacks; swallows callback exceptions
+    compile_cache.py  # ensure_safe_compile_cache() — unique numba function ids + own cache dir
   api/
     main.py        # FastAPI app — routes, lifespan, the bearer-token gate, per-tree state wiring (composition moved to loading.py, roadmap grill M9)
     trees.py       # TreeState (one per tree) + the process-wide TraceStore, discovery
@@ -748,6 +749,22 @@ Three decisions are load-bearing:
 `nb_overdispersion ~ HalfNormal(1)` is the count's extra coefficient of variation: `Var = mu + nb_overdispersion^2 * mu^2`, PyMC's `alpha = 1 / (nb_overdispersion^2 + 1e-6)`. `_zero_inflation_warnings` is skipped for the count (zeros are in its support; the PPC's `min` speaks instead) and kept for the mean-scaled Gaussian.
 
 Not built: a zero-inflated variant, a variance proportional to the mean squared, and any surface beyond the fit's diagnostics (the RCA node payload, MCP shaping and the UI do not name the likelihood).
+
+#### The compile cache: one fit must never run another fit's code (`engine/compile_cache.py`)
+
+PyTensor compiles on its numba backend from generated source, so every function is called `numba_funcified_fgraph`, `elemwise`, `subtensor` and so on. numba keeps same-named functions apart in compiled code with a `v<uid>` tag in the symbol name, and `uid` is a counter that starts at 1 in every process. PyTensor caches the compiled code on disk under a key built from the graph, which does not contain the uid. Two processes that each compile a different graph first therefore write two cache entries whose symbols have the same name; a process that loads both gets one definition (the symbols are `linkonce_odr`, first loaded wins) and the second function runs the first one's code. A second tag in the name is built from a Python set and depends on the string hash seed, so two writers agree on it about 1 time in 80 by chance and always under a fixed `PYTHONHASHSEED`.
+
+Measured on 0.3.0 from an empty cache with a fixed hash seed: process 1 fits node A, process 2 fits node B, process 3 fits A then B and returns **A's posterior for B exactly**, R-hat 1.00, no divergences. With models of different shape it is an `IndexError` in a compiled node or a non-finite posterior. `tests/test_compile_cache.py` is that scenario.
+
+`ensure_safe_compile_cache()` runs at the top of `fit_metric` and in `warm_inference_imports`, once per process:
+
+1. numba's `FunctionIdentity._unique_ids` counter is replaced by an iterator of random 128-bit ints (`uuid4`, so a forked chain cannot repeat its parent's or a sibling's next id). This is the fix PyTensor ships from 2.38.3 as `_RandomUidIter`; the lock is on 2.38.2. On a PyTensor that already replaced the counter this step is skipped and the other two still run, because **upgrading PyTensor does not clean a cache**: measured, 2.38.3 reading a cache 2.38.2 wrote returns the wrong function exactly as 2.38.2 does.
+2. `pytensor.link.numba.cache.NUMBA_CACHE_PATH` is pointed at `<base_compiledir>/numba-unique-ids`. Entries in PyTensor's own `numba/` were written with low uids, by older versions or other programs, and two of those can still collide inside this process.
+3. `numba__cache=False` is appended to `PYTENSOR_FLAGS` in `os.environ`, with `BREAKDOWN_NUMBA_CACHE_HARDENED=1` beside it, for Python processes started from this one that never import the module (a `spawn` child, a forkserver without the preload). A child that does import it sees the marker, knows the `False` is ours and not the user's, and hardens itself. `preload_forkserver_modules` preloads `breakdown.engine.compile_cache_preload` so forkserver chains take that path.
+
+If step 1 raises (a numba that has moved the counter), the cache is turned off for the process with a warning. A user's own `numba__cache=False` is left alone. Both touch private attributes of numba and PyTensor, which is why the fallback exists. Raising the PyTensor floor to 2.38.3 would make step 1 redundant and cover chain processes natively; steps 2 and 3 are still what keep old entries from being read. This is process-wide state; the thing protected is a symbol table every compiled function in the process shares.
+
+Not addressed here: a seeded fit can differ in the last digits between a cold and a warm cache (the linked-in copy of a callee is re-optimized under fastmath), which is a separate upstream behavior and small.
 
 #### The sampler budget is defined once, here (roadmap C27)
 
