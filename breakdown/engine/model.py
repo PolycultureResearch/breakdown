@@ -1965,6 +1965,18 @@ def _nb_alpha(overdispersion: Any) -> Any:
     return 1.0 / (overdispersion**2 + 1e-6)
 
 
+#: `mean_scaled_gaussian` is refused on a series with this share of exact zeros
+#: or more. Measured, not assumed: over White Cube's 32 clean weeks, in the fit
+#: windows where `contraction_mrr` was zero in half or more of its periods (24
+#: of them) the 7-day surprise score's sd was 3.1 against the default's 1.8,
+#: with one week at 14 sd. A variance that shrinks with the mean makes a zero
+#: most likely under a level of zero, so the level is pulled down onto the zero
+#: periods and the next non-zero one lands far outside the forecast. Below a
+#: half it measured no worse than the default on any node (`expansion_mrr`,
+#: `direct_conversions`, `reactivations`), so the line is not drawn lower;
+#: between a quarter and a half the default's `likelihood_warnings` still fires.
+_MEAN_SCALED_MAX_ZERO_SHARE = 0.5
+
 #: The noise parameter each likelihood samples, by name in the posterior.
 LIKELIHOOD_NOISE_PARAM = {
     "gaussian": "sigma_obs",
@@ -2020,6 +2032,18 @@ def _check_likelihood_support(likelihood: str, raw: np.ndarray, target: str) -> 
             "takes signed values), or declare it on the non-negative series this "
             "one is built from."
         )
+    if likelihood == "mean_scaled_gaussian":
+        zero_share = float((raw == 0.0).mean())
+        if zero_share >= _MEAN_SCALED_MAX_ZERO_SHARE:
+            raise ValueError(
+                f"'{target}' declares `likelihood: mean_scaled_gaussian`, but "
+                f"{zero_share:.0%} of its {raw.size} fitted periods are exactly zero. "
+                "A variance that shrinks with the mean pulls the fitted level onto "
+                "the zero periods, which measured worse than the default on a series "
+                "that is zero half the time. Drop the `likelihood` (the default "
+                "discloses the zeros in `likelihood_warnings`), or declare "
+                "`negative_binomial` if the metric is a whole-number count."
+            )
     if likelihood == "negative_binomial":
         fractional = np.abs(raw - np.rint(raw)) > 1e-6 * np.maximum(1.0, np.abs(raw))
         if fractional.any():
@@ -2866,6 +2890,15 @@ def fit_metric(
                 # Roadmap S25: the Kalman scan needs the numba backend; under
                 # the default C backend it is ~3x slower than the latent it
                 # replaced (see `_kalman_local_level_loglik`).
+                #
+                # A declared non-Gaussian likelihood (roadmap S20) stays on the
+                # default backend for now. numba was measured 1.4-1.5x faster
+                # for its explicit latent too (White Cube `sessions`, 772
+                # days: 63-75s against 45-47s, same seed), but it is not the
+                # same sampler run: on the planted count world of
+                # `tests/test_likelihoods.py` the divergence count went from 8
+                # to 21 and `fit_quality` to "suspect". Adopting it wants that
+                # understood first, and is the cheapest speed-up left here.
                 **({"compile_kwargs": {"mode": "NUMBA"}} if marginalized else {}),
             )
             diagnostics = _nuts_diagnostics(trace, draws, chains, var_names=sampled)

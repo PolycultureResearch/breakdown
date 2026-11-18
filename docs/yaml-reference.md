@@ -666,18 +666,23 @@ What to know before declaring one:
 - **The series must fit the declaration.** `negative_binomial` refuses a
   series with fractional values (naming `mean_scaled_gaussian` as the remedy)
   and both alternatives refuse one with negative values. Nothing is rounded
-  or clipped to make it fit.
+  or clipped to make it fit. `mean_scaled_gaussian` also refuses a series
+  that is exactly zero in half or more of its fitted periods: on such a
+  series it measured worse than the default, because the fitted level is
+  pulled down onto the zero periods.
 - **Not on formula nodes.** A formula node's fit is on the signed residual of
   its identity. Declare the likelihood on the fetched parents.
 - **How to tell whether a metric needs one.** Fit it and read
   [`ppc_status`](model.md#can-the-model-generate-its-own-data). A count or
   currency flow that fails on `min` or `resid_max` under the default is the
   usual candidate. Declare the alternative, refit, and read the check again.
-- **Not yet covered:** a `mean_scaled_gaussian` node can still put a little
-  probability below zero where its level is close to zero, noise that grows
-  in proportion to the level itself (a constant percentage, typical of spend)
-  has no option, and there is no zero-inflated variant for a metric with more
-  zeros than its counts explain. See
+- **Not yet covered:** currency that is zero in half its periods or more (a
+  few large events a week) has no option and stays on the default; a
+  `mean_scaled_gaussian` node can still put a little probability below zero
+  where its level is close to zero; noise that grows in proportion to the
+  level itself (a constant percentage, typical of spend) has no option; and
+  there is no zero-inflated variant for a count with more zeros than its
+  level explains. See
   [model.md limitation 7](model.md#assumptions-and-limitations-to-keep-in-mind).
 
 ## Grains

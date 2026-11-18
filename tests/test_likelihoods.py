@@ -172,13 +172,27 @@ def test_gaussian_draws_are_the_constant_variance_model():
 def test_a_series_outside_the_likelihoods_support_is_refused_by_name():
     _check_likelihood_support("gaussian", np.array([-3.0, 0.5]), "y")
     _check_likelihood_support("negative_binomial", np.array([0.0, 3.0, 12.0]), "y")
-    _check_likelihood_support("mean_scaled_gaussian", np.array([0.0, 3.5]), "y")
+    _check_likelihood_support("mean_scaled_gaussian", np.array([0.0, 3.5, 2.5]), "y")
     with pytest.raises(ValueError, match="not whole numbers") as e:
         _check_likelihood_support("negative_binomial", np.array([0.0, 3.5, 12.0]), "y")
     assert "mean_scaled_gaussian" in str(e.value)  # the remedy
     for name in ("negative_binomial", "mean_scaled_gaussian"):
         with pytest.raises(ValueError, match="non-negative"):
             _check_likelihood_support(name, np.array([4.0, -1.0]), "y")
+
+
+def test_mean_scaled_gaussian_refuses_a_mostly_zero_series():
+    """Measured on the demo's `contraction_mrr`: where half or more of the
+    fitted periods are exact zeros this likelihood is worse than the default,
+    so it is refused with the remedy rather than left to mislead. A count
+    takes the same series."""
+    raw = np.array([0.0, 0.0, 17.0, 0.0, 34.5, 12.0, 0.0, 29.0])  # 50% zeros
+    with pytest.raises(ValueError, match="exactly zero") as e:
+        _check_likelihood_support("mean_scaled_gaussian", raw, "y")
+    assert "negative_binomial" in str(e.value) and "Drop the `likelihood`" in str(e.value)
+    _check_likelihood_support("negative_binomial", np.rint(raw), "y")
+    # Three zeros in eight is under the share and passes.
+    _check_likelihood_support("mean_scaled_gaussian", np.array([0.0] * 3 + [5.5] * 5), "y")
 
 
 def test_a_fractional_series_is_refused_before_any_sampling():
@@ -270,6 +284,35 @@ def test_the_count_interval_covers_where_the_gaussians_does_not(growing_count):
     # And the Gaussian's own check says so, on the same statistics.
     assert gaussian.diagnostics["ppc_status"] == "severe"
     assert ppc_p(gaussian, "resid_max") < 0.02 and ppc_p(nb, "resid_max") > 0.10
+
+
+@pytest.mark.slow
+def test_a_currency_flow_built_from_events_is_covered_by_the_mean_scaled_gaussian():
+    """Events of 12.50 each at a rate that grows 12-fold: `Var = 12.5 * mean`,
+    not whole numbers, so a count likelihood does not apply. The mean-scaled
+    Gaussian recovers the noise at the mean level and covers evenly across
+    the window; the default over-covers early and under-covers late."""
+    n = 180
+    rng = np.random.default_rng(31)
+    mu = 60.0 * np.exp(np.linspace(0, np.log(12), n))
+    y = 12.5 * rng.poisson(mu / 12.5)
+    data = frame(y=y)
+    gaussian = fit_metric(Parser(tree()).dag, data, "y", draws=300, random_seed=1)
+    scaled = fit_metric(
+        Parser(tree("mean_scaled_gaussian")).dag, data, "y", draws=300, random_seed=1
+    )
+    third = n // 3
+    assert coverage(gaussian, 0, third) == 1.0 and coverage(gaussian, n - third, n) <= 0.92
+    assert 0.93 <= coverage(scaled, 0, third) <= 0.99
+    assert 0.93 <= coverage(scaled, n - third, n) <= 0.99
+    assert gaussian.diagnostics["ppc_status"] == "severe"
+    assert scaled.diagnostics["ppc_status"] == "ok"
+    # `sigma_obs` is the noise sd at the series' mean level, in normalized units.
+    sd_at_mean = scaled.trace.posterior["sigma_obs"].values.ravel() * scaled.y_std
+    lo, hi = np.quantile(sd_at_mean, [0.03, 0.97])
+    assert lo < np.sqrt(12.5 * y.mean()) < hi, (lo, hi)
+    assert scaled.diagnostics["likelihood"] == "mean_scaled_gaussian"
+    assert scaled.diagnostics["level"] == "explicit_latent"
 
 
 @pytest.fixture(scope="module")

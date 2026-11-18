@@ -488,7 +488,12 @@ of the series' average, which matters only when the level sits at zero for
 a long run. There is no zero-inflated variant, so a count with more zeros
 than its level explains will show it on the `min` check. A
 `mean_scaled_gaussian` node is still Gaussian and can put a little
-probability below zero where its level is near zero. Noise that grows in
+probability below zero where its level is near zero. It is refused outright
+on a series that is exactly zero in half or more of its fitted periods: a
+variance that shrinks with the mean makes zero periods most likely under a
+level of zero, the level follows them down, and on the demo's
+`contraction_mrr` the result in those windows was measurably worse than the
+default. Such a series stays on the default, with its `likelihood_warnings`. Noise that grows in
 proportion to the level itself, typical of spend, is not offered.
 
 ## Can the model generate its own data?
