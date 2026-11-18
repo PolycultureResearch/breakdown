@@ -747,6 +747,28 @@ or two of account, the account goes in this file under the row's ID.
 
 **Why:** A seasonal business has months-long true-zero windows between cycles, and a Gaussian fit to a series that is exactly zero for a third of its length puts mass on negative counts and mis-states the variance everywhere else. Distinct from [C4](#horizon-0--correctness-numbers-the-engine-cant-defend), which the same series also triggers: C4 is a degenerate *bootstrap* over a constant window, this is a misspecified *likelihood*. Fixing either alone leaves the other. Raised by Northern Nights (2026-08-11); MVP-first discipline applies — a named few, not a modeling language
 
+**2026-11-17, first half built; status unchanged (○).** A per-node `likelihood` (`gaussian` default, `negative_binomial`, `mean_scaled_gaussian`) on an identity link, so `beta_raw` and the trend and seasonal components stay additive and `rca.py` / `simulate.py` are untouched. A non-Gaussian node keeps the explicit latent level and says so (`diagnostics["level"]`).
+
+*Diagnosis first* (Gaussian residuals on the seven White Cube flows the null run in `innovation_rca_design.md` §6.1 found over-confident): not heavy tails and not zeros. The fitted level grew 2 to 11 times over the fit history (top tercile against bottom) and the residual sd grew with it, so one `sigma_obs` is 1.2 to 1.5 times too narrow in the last third of the window. Scaling residuals by sqrt(level) evens the sd across the window on six of seven and takes the excess kurtosis from 1.1-3.0 to 0.1-1.0 on the five of those that had any (`trials_started` had none); `marketing_spend` wants the level itself (variance power 2.1). A Student-t was not built. `trials_started` is binomial thinning of `signups` (residual variance 0.52 of the mean), under a Poisson, so a negative binomial is the wrong family for it: fitted anyway as a check, its PPC was `severe` in 31 of 32 windows.
+
+*Measured* (32 clean weekly windows, 7-day horizon, sd of z about the node's own mean so the forecast bias S8 owns is kept apart; Gaussian then the declared likelihood):
+
+| Node | Likelihood | sd z | PPC `ok` windows | Median fit |
+|---|---|---|---|---|
+| `reactivations` | negative binomial | 1.56 to 0.94 | 6 to 32 | 2.6s to 11.1s |
+| `direct_conversions` | negative binomial | 1.54 to 1.12 | 0 to 30 | 2.7s to 10.7s |
+| `sessions` | negative binomial | 1.17 to 1.05 | 30 to 31 | 9.5s to 51s |
+| `trials_started` | mean-scaled Gaussian | 1.19 to 1.03 | 0 to 29 | 7.5s to 14.1s |
+| `expansion_mrr` | mean-scaled Gaussian | 1.26 to 0.96 | 0 to 0 (`min`: zeros) | 2.8s to 9.0s |
+| `marketing_spend` | mean-scaled Gaussian | 1.36 to 1.31 | 0 to 0 | 5.5s to 30s |
+| `contraction_mrr` | mean-scaled Gaussian | 1.86 to 2.87 | 0 to 0 | 2.9s to 10.8s |
+
+Mean z does not move (0.34 to 1.00 on the six positive ones), so `|z| > 2` on the five nodes that improved falls only from 15.0% to 10.7%, and from 10.6% to 6.3% once each node's mean is removed. Fit times were taken on a heavily loaded machine; read the ratios, about 4 to 5 times.
+
+*What that decided.* `mean_scaled_gaussian` is refused on a series that is exactly zero in half or more of its fitted periods: `contraction_mrr` got worse there (sd 3.1 against 1.8 in those 24 windows) because a variance that shrinks with the mean pulls the level onto the zeros.
+
+*Still open, which is why the row is:* the zero-inflated variant the row names (no White Cube series has structural zeros to diagnose one against; a planted off-season fitted with the plain negative binomial did pass its PPC); currency that is zero half the time (`contraction_mrr`, a compound Poisson, wants a Tweedie-type likelihood); noise proportional to the level (`marketing_spend`); the RCA payload, MCP shaping and UI do not name a node's likelihood; `likelihood_warnings` and limitation 7 stay because the default is still Gaussian; the explicit latent's cost (numba measured 1.4-1.5x faster for it and is not adopted yet); and no demo tree declares a likelihood.
+
 
 ## S21
 
