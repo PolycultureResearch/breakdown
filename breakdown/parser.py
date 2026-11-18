@@ -296,6 +296,19 @@ class TrendConfig(BaseModel):
         return v
 
 
+#: The observation models a node may declare (roadmap S20). A named few, not a
+#: modeling language:
+#:
+#: - `gaussian`: constant noise around the mean. The default, and the only one
+#:   whose local level the NUTS fit integrates out exactly.
+#: - `negative_binomial`: whole-number counts. Variance `mu + mu^2 / phi`, so
+#:   it grows with the level and is never below a Poisson's; no mass below zero.
+#: - `mean_scaled_gaussian`: Gaussian noise whose variance is proportional to
+#:   the mean, with the proportion learned. For a non-negative quantity in any
+#:   unit whose scatter grows with its level: currency built from discrete
+#:   events, or a count less dispersed than a Poisson.
+LIKELIHOODS = ("gaussian", "negative_binomial", "mean_scaled_gaussian")
+
 INTERVENTION_KINDS = ("step", "pulse")
 INTERVENTION_LEARN_MODES = ("history", "window")
 
@@ -997,6 +1010,14 @@ class MetricDefinition(BaseModel):
     # `--start-date`. `_enforce_fit_length` refuses a window this leaves too
     # short, with the same message as every other short fit.
     fit_start: Optional[datetime.date] = None
+    # The observation model (roadmap S20): how the node's periods scatter
+    # around the fitted mean. One of `LIKELIHOODS`, declared per node like
+    # `kind`; the default is the constant-variance Gaussian every node had
+    # before the field existed, so an undeclared node's fit does not move.
+    # The alternatives keep the same additive mean, so every coefficient and
+    # component reads as before; only the noise changes. See
+    # `engine.model.fit_metric`.
+    likelihood: str = "gaussian"
     # Cold-start declarations (trees with no data provider). `baseline` is the
     # asserted operating point of a source/probabilistic node (formula nodes
     # derive theirs from parents — declaring one is rejected); `plausible` is
@@ -1056,6 +1077,34 @@ class MetricDefinition(BaseModel):
         if v not in ("flow", "stock", "rate"):
             raise ValueError(f"kind must be one of ['flow', 'stock', 'rate'], got '{v}'")
         return v
+
+    @model_validator(mode="after")
+    def check_likelihood(self) -> "MetricDefinition":
+        """Roadmap S20: a named few, each refused where it cannot mean anything."""
+        if self.likelihood not in LIKELIHOODS:
+            raise ValueError(
+                f"Metric '{self.name}': likelihood must be one of {list(LIKELIHOODS)}, "
+                f"got '{self.likelihood}'"
+            )
+        if self.likelihood == "gaussian":
+            return self
+        if self.formula:
+            raise ValueError(
+                f"Metric '{self.name}' declares `likelihood: {self.likelihood}` on a "
+                "formula node. A formula node's fit is on the residual "
+                "`observed - formula(parents)`, which is signed and centred on zero, "
+                "so a likelihood for a non-negative quantity does not apply to it. "
+                "Declare the likelihood on the fetched parents whose noise it "
+                "describes, or drop it."
+            )
+        if self.likelihood == "negative_binomial" and self.kind == "rate":
+            raise ValueError(
+                f"Metric '{self.name}' declares `likelihood: negative_binomial` with "
+                "`kind: rate`. A negative binomial is a distribution over whole-number "
+                "counts and a rate is a ratio of two of them. Declare it on the count "
+                "the rate is built from, or drop it."
+            )
+        return self
 
     @model_validator(mode="after")
     def check_sparse_is_a_flow(self) -> "MetricDefinition":

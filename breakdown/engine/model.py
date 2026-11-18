@@ -181,6 +181,10 @@ class FitResult:
     # reader of `dates[0]` can tell "the data starts here" from "the author
     # said to start here". None when the node declares none.
     fit_start: Optional[str] = None
+    # Roadmap S20: the observation model the node was fitted with (one of
+    # `parser.LIKELIHOODS`). Anything that rebuilds a predictive distribution
+    # from the trace reads this and draws through `observation_draws`.
+    likelihood: str = "gaussian"
 
 
 def scale_prior_params(distribution: str, params: Dict[str, Any], scale: float) -> Dict[str, Any]:
@@ -1649,6 +1653,9 @@ def _posterior_predictive_draws(
     random_seed: Optional[int] = None,
     X_iv: Optional[np.ndarray] = None,
     marginalized: bool = False,
+    likelihood: str = "gaussian",
+    y_mean: float = 0.0,
+    y_std: float = 1.0,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[str]]:
     """Replicated series and the matching mean function, for S3.
 
@@ -1660,7 +1667,8 @@ def _posterior_predictive_draws(
     from, so the replicate is drawn directly as `mu + N(0, sigma_obs^2)` from
     the joint draws — `mu` including the recovered `trend` — which is exactly
     what the observed node's distribution is. The four statistics and their
-    bands do not move.
+    bands do not move. A non-Gaussian node (roadmap S20) draws through
+    `observation_draws` on every sampler.
 
     Two things are load-bearing here. The posterior is thinned to
     `_PPC_DRAWS` *before* the replicates are drawn — a 4-chain, 1000-draw
@@ -1695,6 +1703,14 @@ def _posterior_predictive_draws(
             rng = np.random.default_rng(_seed_stream(random_seed, _PPC_STREAM))
             sigma_obs = post["sigma_obs"].values.reshape(-1, 1)
             y_rep = mu + sigma_obs * rng.standard_normal(mu.shape)
+        elif likelihood != "gaussian":
+            # Roadmap S20: drawn from the declared likelihood in numpy rather
+            # than through the graph, on every sampler, so the replicates come
+            # back in the normalized units the statistics below are computed
+            # in (the count's observed node is on the raw scale).
+            rng = np.random.default_rng(_seed_stream(random_seed, _PPC_STREAM))
+            noise = post[LIKELIHOOD_NOISE_PARAM[likelihood]].values.reshape(-1, 1)
+            y_rep = observation_draws(likelihood, mu, noise, y_mean, y_std, rng)
         else:
             pp = pm.sample_posterior_predictive(
                 thinned,
@@ -1753,20 +1769,21 @@ def _seed_stream(random_seed: Optional[int], stream: int) -> np.random.SeedSeque
     return np.random.SeedSequence([int(random_seed), stream])
 
 
-def _level_is_marginalized(inference_method: str) -> bool:
+def _level_is_marginalized(inference_method: str, likelihood: str = "gaussian") -> bool:
     """Whether this fit integrates the local level out of the sampled model.
 
     The dispatch is by **likelihood**, not by node: the Kalman filter is exact
-    only for a Gaussian observation model, which is every node today (white
-    paper §2.1). Roadmap S20's count likelihoods would end that, and a
-    non-Gaussian node would keep the explicit latent — this is the one place
-    that decision lives.
+    only for a Gaussian observation model with a variance that does not depend
+    on the level. Roadmap S20's alternatives (`parser.LIKELIHOODS`) end that —
+    a count has no Gaussian innovation, and a variance that scales with the
+    mean depends on the state being integrated out — so a node that declares
+    one keeps the explicit latent. This is the one place that decision lives.
 
     NUTS only. The ADVI variants keep the explicit per-period latent because
     their PSIS k-hat (S2) was measured against that parameterization, and the
     benchmark that retired them as a default is a statement about it.
     """
-    return inference_method == "nuts"
+    return inference_method == "nuts" and likelihood == "gaussian"
 
 
 def _kalman_local_level_loglik(r: Any, sigma_trend: Any, sigma_obs: Any) -> Any:
@@ -1889,6 +1906,130 @@ def _attach_recovered_level(
             "trend_dim_0": np.arange(len(t)),
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Roadmap S20: observation models other than the constant-variance Gaussian.
+#
+# The mean is the same additive mean on every path,
+#
+#     E[y[t]] = y_mean + y_std * (alpha + trend[t] + seasonal[t] + (X @ beta)[t] + ...)
+#
+# an **identity link**, not a log link. That is the decision that keeps this
+# change inside the observation model: `alpha`, `trend`, `beta` and `beta_raw`
+# mean exactly what they mean on a Gaussian node (additive, in the units they
+# always had), so RCA's trend and seasonal deltas, `beta_raw x delta-parent`
+# attribution, what-if propagation and the UI trend band read the trace
+# unchanged. A log link would make every one of them multiplicative. What the
+# identity link costs is that the mean has to be kept positive by hand
+# (`_positive_mean`), which matters only for a series that sits at zero for
+# long runs; that case is the zero-inflated half of S20 and is not built here.
+# ---------------------------------------------------------------------------
+
+#: Scale of the soft floor that keeps a non-Gaussian mean positive, as a share
+#: of the fitted series' mean. `s * softplus(mu / s)` is `mu` to within 0.1% of
+#: `s` once `mu > 7 s`, so at 2% of the mean it leaves the mean function alone
+#: everywhere except where the level has been driven to zero.
+_MEAN_FLOOR_SHARE = 0.02
+
+
+def _positive_mean(mu_raw: Any, y_mean: float, xp: Any = np) -> Any:
+    """`mu_raw` (raw units) softly floored above zero. `xp` is numpy or
+    `pytensor.tensor`, so the fitted graph and the numpy replicates share one
+    definition and cannot disagree about the mean."""
+    s = _MEAN_FLOOR_SHARE * y_mean
+    soft = np.logaddexp(0.0, mu_raw / s) if xp is np else xp.softplus(mu_raw / s)
+    return s * soft + 1e-6 * s
+
+
+def _mean_scaled_sigma(sigma_obs: Any, mu_raw: Any, y_mean: float, xp: Any = np) -> Any:
+    """Per-period noise sd of `mean_scaled_gaussian`, in normalized units:
+    `sigma_obs` at the series' mean level, scaled by `sqrt(mean / y_mean)`.
+
+    The floor is added to both sides of the ratio so the sd is bounded away
+    from zero. Without it a level driven to zero under a run of exact zeros
+    has unbounded density there, and the fit collapses onto the run.
+    """
+    s = _MEAN_FLOOR_SHARE * y_mean
+    return sigma_obs * xp.sqrt((_positive_mean(mu_raw, y_mean, xp) + s) / (y_mean + s))
+
+
+def _nb_alpha(overdispersion: Any) -> Any:
+    """PyMC's negative-binomial `alpha` from the sampled `nb_overdispersion`.
+
+    `Var[y] = mu + overdispersion^2 * mu^2`: the parameter is the coefficient
+    of variation the count has *beyond* a Poisson's, so 0 is a Poisson and the
+    HalfNormal(1) prior is weakly informative on a scale a reader can check.
+    The 1e-6 keeps `alpha` finite at the Poisson limit.
+    """
+    return 1.0 / (overdispersion**2 + 1e-6)
+
+
+#: The noise parameter each likelihood samples, by name in the posterior.
+LIKELIHOOD_NOISE_PARAM = {
+    "gaussian": "sigma_obs",
+    "mean_scaled_gaussian": "sigma_obs",
+    "negative_binomial": "nb_overdispersion",
+}
+
+
+def observation_draws(
+    likelihood: str,
+    mu: np.ndarray,
+    noise: np.ndarray,
+    y_mean: float,
+    y_std: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """One observation per element of `mu`, drawn from the node's likelihood.
+
+    `mu` is the `(n_draws, n_periods)` mean in **normalized** units (level
+    included) and `noise` the `(n_draws, 1)` draws of
+    `LIKELIHOOD_NOISE_PARAM[likelihood]`. Returns normalized units too, so
+    the posterior predictive check, its band, and any forecast built outside
+    the engine (`knowledge/benchmarks/innovation_score.py`) share one
+    definition of what the fitted model says an observation looks like.
+    """
+    if likelihood == "gaussian":
+        return mu + noise * rng.standard_normal(mu.shape)
+    mu_raw = y_mean + y_std * mu
+    if likelihood == "mean_scaled_gaussian":
+        return mu + _mean_scaled_sigma(noise, mu_raw, y_mean) * rng.standard_normal(mu.shape)
+    if likelihood == "negative_binomial":
+        # Gamma-Poisson mixture: the same distribution as PyMC's (mu, alpha).
+        alpha = _nb_alpha(noise)
+        lam = rng.gamma(shape=alpha, scale=_positive_mean(mu_raw, y_mean) / alpha)
+        return (rng.poisson(lam) - y_mean) / y_std
+    raise ValueError(f"Unknown likelihood '{likelihood}'")
+
+
+def _check_likelihood_support(likelihood: str, raw: np.ndarray, target: str) -> None:
+    """Refuse a series the declared likelihood has no density for, by name.
+
+    Rule 1 applied to the observation model: rounding a fractional series to
+    fit a count likelihood, or clipping a negative one, would be a silent
+    substitute for the data.
+    """
+    if likelihood == "gaussian":
+        return
+    if (raw < 0).any():
+        raise ValueError(
+            f"'{target}' declares `likelihood: {likelihood}`, which is for a "
+            f"non-negative quantity, but the fitted series goes down to "
+            f"{float(raw.min()):g}. Drop the `likelihood` (the default Gaussian "
+            "takes signed values), or declare it on the non-negative series this "
+            "one is built from."
+        )
+    if likelihood == "negative_binomial":
+        fractional = np.abs(raw - np.rint(raw)) > 1e-6 * np.maximum(1.0, np.abs(raw))
+        if fractional.any():
+            raise ValueError(
+                f"'{target}' declares `likelihood: negative_binomial`, a distribution "
+                f"over whole-number counts, but {int(fractional.sum())} of its "
+                f"{raw.size} fitted periods are not whole numbers. For a non-negative "
+                "quantity in other units (currency, hours) whose noise grows with "
+                "its level, declare `likelihood: mean_scaled_gaussian` instead."
+            )
 
 
 def intervention_record(iv: Any, grain: str) -> Dict[str, Any]:
@@ -2576,8 +2717,13 @@ def fit_metric(
     # the *raw* series (normalization moves the zeros), warned at fit time,
     # and carried on the payload as `likelihood_warnings` so the reader of the
     # number sees it, not only the reader of the log.
-    likelihood_warnings = _zero_inflation_warnings(
-        data[target].to_numpy(dtype=float), target, grain
+    # A negative binomial has zeros in its support, so the Gaussian's warning
+    # does not apply to it; the posterior predictive check on `min` is what
+    # speaks if the zeros are more than the count model generates.
+    likelihood_warnings = (
+        []
+        if defn.likelihood == "negative_binomial"
+        else _zero_inflation_warnings(data[target].to_numpy(dtype=float), target, grain)
     )
 
     # Seasonality periods are in grain steps; a period the data can't cover
@@ -2626,7 +2772,21 @@ def fit_metric(
     # Roadmap S25: on the NUTS path the level is integrated out by a Kalman
     # filter and recovered after sampling; the ADVI variants keep the explicit
     # latent. Same model either way — see `_level_is_marginalized`.
-    marginalized = _level_is_marginalized(inference_method)
+    # Roadmap S20: a declared non-Gaussian likelihood keeps the explicit latent
+    # on every sampler, and is refused here if the series is outside its support.
+    likelihood = defn.likelihood
+    marginalized = _level_is_marginalized(inference_method, likelihood)
+    if likelihood != "gaussian":
+        if defn.formula and parents:
+            raise ValueError(
+                f"'{target}' declares `likelihood: {likelihood}` on a formula node, "
+                "whose fit is on a signed residual. Drop the `likelihood`."
+            )
+        # The fetched values themselves, not `y * y_std + y_mean`: the round
+        # trip through normalization turns an exact 0 into -8.9e-16, which is
+        # outside a count's support. The lag trim drops leading rows only.
+        y_raw = data[target].to_numpy(dtype=float)[len(data) - len(y) :]
+        _check_likelihood_support(likelihood, y_raw, target)
 
     with pm.Model() as model:
         trend_sigma_prior = defn.trend.sigma if defn.trend else 0.05
@@ -2639,7 +2799,8 @@ def fit_metric(
         intervention = _intervention_component(fitted_ivs, X_iv, y_std)
 
         alpha = pm.Normal("alpha", mu=0, sigma=1.0)
-        sigma_obs = pm.HalfNormal("sigma_obs", 1.0)
+        if likelihood != "negative_binomial":
+            sigma_obs = pm.HalfNormal("sigma_obs", 1.0)
         mean_fn = alpha + seasonal + regression + intervention
         if marginalized:
             # No observed node: the likelihood of `y` with the level summed
@@ -2648,8 +2809,28 @@ def fit_metric(
                 "level_marginal_loglik",
                 _kalman_local_level_loglik(pt.as_tensor(y) - mean_fn, sigma_trend, sigma_obs),
             )
-        else:
+        elif likelihood == "gaussian":
             pm.Normal("obs", mu=mean_fn + trend, sigma=sigma_obs, observed=y)
+        elif likelihood == "mean_scaled_gaussian":
+            # Same mean, same units; the sd grows with sqrt(mean).
+            mu_raw = y_mean + y_std * (mean_fn + trend)
+            pm.Normal(
+                "obs",
+                mu=mean_fn + trend,
+                sigma=_mean_scaled_sigma(sigma_obs, mu_raw, y_mean, pt),
+                observed=y,
+            )
+        else:
+            # Counts live on the raw scale; the mean is the same additive mean
+            # mapped back to it (identity link, see the S20 block above).
+            mu_raw = y_mean + y_std * (mean_fn + trend)
+            nb_overdispersion = pm.HalfNormal("nb_overdispersion", 1.0)
+            pm.NegativeBinomial(
+                "obs",
+                mu=_positive_mean(mu_raw, y_mean, pt),
+                alpha=_nb_alpha(nb_overdispersion),
+                observed=np.rint(y_raw).astype("int64"),
+            )
         # What NUTS actually samples — the set R-hat and ESS are computed over
         # (roadmap S25 §2.3 item 4). Read before `trend` is attached, and by
         # name, so a recovered state can never count as a sampled parameter.
@@ -2696,7 +2877,17 @@ def fit_metric(
         # method, because misspecification is a property of the model, not of
         # how its posterior was approximated.
         y_rep, mu_draws, ppc_reason = _posterior_predictive_draws(
-            pm, trace, X, defn, t, random_seed=random_seed, X_iv=X_iv, marginalized=marginalized
+            pm,
+            trace,
+            X,
+            defn,
+            t,
+            random_seed=random_seed,
+            X_iv=X_iv,
+            marginalized=marginalized,
+            likelihood=likelihood,
+            y_mean=y_mean,
+            y_std=y_std,
         )
 
     ppc, ppc_warnings = (
@@ -2723,6 +2914,14 @@ def fit_metric(
         diagnostics["seasonality_warnings"] = seasonality_warnings
     if likelihood_warnings:
         diagnostics["likelihood_warnings"] = likelihood_warnings
+    if likelihood != "gaussian":
+        # Roadmap S20. Only on a node that declared one, so a Gaussian fit's
+        # diagnostics are what they were. `level` says which of the two
+        # computations of the same local level this fit used: the declared
+        # likelihood rules out the exact Kalman marginalization, so the level
+        # was sampled as an explicit per-period latent, which is slower.
+        diagnostics["likelihood"] = likelihood
+        diagnostics["level"] = "explicit_latent"
 
     # Roadmap S4. `collinearity_status` rides along whenever there was
     # something to check — including `"ok"`, which is the point: on a node with
@@ -2838,4 +3037,5 @@ def fit_metric(
         interventions=intervention_records,
         dropped_interventions=dropped_interventions,
         fit_start=fit_start,
+        likelihood=likelihood,
     )
