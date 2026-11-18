@@ -748,7 +748,9 @@ def test_warm_inference_imports_preloads_pymc_into_the_forkserver():
     result = subprocess.run(
         [sys.executable, "-c", probe], capture_output=True, text=True, check=True
     )
-    assert result.stdout.strip() == "__main__,pymc"
+    # The third hardens the numba compile cache inside the forkserver, so the
+    # chains forked from it are hardened too (`engine/compile_cache.py`).
+    assert result.stdout.strip() == "__main__,pymc,breakdown.engine.compile_cache_preload"
 
 
 def test_lifespan_warms_the_inference_stack_in_the_background():
