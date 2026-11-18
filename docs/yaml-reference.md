@@ -662,7 +662,8 @@ What to know before declaring one:
   the alternatives sample it period by period. Expect a weekly node to take a
   few seconds longer and a daily node with two years of history to take
   several times as long. The fit reports `likelihood` and
-  `level: "explicit_latent"` in its diagnostics.
+  `level: "explicit_latent"` in its diagnostics. With
+  `trend: {kind: local_linear}` the slope is sampled period by period too.
 - **The series must fit the declaration.** `negative_binomial` refuses a
   series with fractional values (naming `mean_scaled_gaussian` as the remedy)
   and both alternatives refuse one with negative values. Nothing is rounded

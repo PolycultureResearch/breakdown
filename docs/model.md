@@ -516,7 +516,11 @@ would have made each of them multiplicative.
 Gaussian fit needs constant Gaussian noise, so a node that declares a
 likelihood samples one trend state per period instead. The fit says so
 (`level: "explicit_latent"` beside `likelihood` in its diagnostics) and is
-slower, most of all on a long daily series.
+slower, most of all on a long daily series. A node that also declares
+`trend: {kind: local_linear}` samples its slope the same way, one state per
+period beside the level's; it is the same trend with a slope, not a fallback
+to a level, and that one fit runs with smaller sampler steps
+(`target_accept` 0.97) because two stacked walks diverge at the usual 0.9.
 
 **What it does not do.** The mean is kept above zero by a soft floor at 2%
 of the series' average, which matters only when the level sits at zero for
