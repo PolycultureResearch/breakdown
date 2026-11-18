@@ -26,6 +26,7 @@ from breakdown.engine.model import (
     observation_draws,
 )
 from breakdown.engine.rca import run_rca
+from breakdown.engine.simulate import Intervention, ScenarioRequest, run_scenario
 from breakdown.parser import LIKELIHOODS, Parser
 
 
@@ -334,3 +335,33 @@ def test_rca_reads_a_count_node_with_a_parent_as_it_reads_a_gaussian_one():
     assert count["estimate"] == pytest.approx(gauss["estimate"], rel=0.15)
     assert count["estimate"] == pytest.approx(truth, rel=0.35)
     assert out["negative_binomial"]["gap"] == out[None]["gap"]
+
+
+@pytest.mark.slow
+def test_a_what_if_propagates_through_a_count_node_additively():
+    """The same property read by the other consumer of `beta_raw`: a lever on
+    the parent moves the count by `beta_raw x delta`, in the count's units."""
+    n = 130
+    rng = np.random.default_rng(23)
+    x = 100.0 + rng.normal(0, 12.0, n)
+    data = frame(x=x, y=nb_counts(rng, 0.4 * x, 0.15))
+    traces = {}
+    result = run_scenario(
+        Parser(tree("negative_binomial", parents=True)).dag,
+        data,
+        traces,
+        ScenarioRequest(
+            baseline_start="2024-01-01",
+            baseline_end="2024-05-09",
+            interventions=[Intervention(metric="x", mode="delta", value=50.0)],
+        ),
+        draws=300,
+    )
+    json.dumps(result, allow_nan=False)  # rule 3
+    y = result["nodes"]["y"]
+    assert y["status"] == "affected"
+    (fit,) = traces.values()
+    assert fit.likelihood == "negative_binomial"
+    beta_raw = float(fit.trace.posterior["beta_raw"].values.mean())
+    assert y["delta"]["estimate"] == pytest.approx(beta_raw * 50.0, rel=0.02)
+    assert y["delta"]["estimate"] == pytest.approx(0.4 * 50.0, rel=0.35)
