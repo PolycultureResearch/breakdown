@@ -73,6 +73,14 @@ the slope is one more place a child's movement can go instead of to a parent:
 on a metric whose parent grows with it, the slope and β compete for the same
 drift (limitation 3). That is why the local level stays the default.
 
+What it costs, measured on the White Cube demo tree (32 clean weekly windows
+per metric; `knowledge/innovation_rca_design.md` §6.2): a fit with a slope
+takes two to three times as long, and the slope's own scale is the
+slowest-mixing parameter in it, so check `fit_quality` and the ESS. It fixed
+the forecast bias on a growing stock and reduced it on growing source flows.
+On rates it made the forecast worse, by extrapolating a drift that did not
+continue — do not declare it on a rate without a reason.
+
 The three node types use this differently:
 
 - **Source metrics** (no parents): trend + seasonality only. Fitting one is
