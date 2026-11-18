@@ -294,7 +294,9 @@ def test_marginalized_local_linear_trend_samples_the_same_posterior(monkeypatch)
 
     dag, frame = _s8_world()
     new = fit_metric(dag, frame, "y", draws=500, random_seed=3)
-    monkeypatch.setattr(model, "_level_is_marginalized", lambda method: False)
+    monkeypatch.setattr(
+        model, "_level_is_marginalized", lambda method, likelihood="gaussian": False
+    )
     old = fit_metric(dag, frame, "y", draws=500, random_seed=3)
 
     assert new.trend_kind == old.trend_kind == "local_linear"
@@ -478,3 +480,64 @@ def test_advi_carries_the_same_trend_as_an_explicit_latent(slope_sigma):
     slope = post["trend_slope_end"].values.reshape(-1)
     assert np.allclose(ahead[:, 1] - ahead[:, 0], 10 * slope)
     assert "khat" in fit.diagnostics
+
+
+# --- with a declared likelihood (roadmap S20) --------------------------------
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("likelihood", ["negative_binomial", "mean_scaled_gaussian"])
+def test_a_slope_under_a_declared_likelihood_is_an_explicit_latent(likelihood):
+    """A non-Gaussian node cannot have its trend integrated out (the Kalman
+    filter is exact only for a constant-variance Gaussian), so under NUTS it
+    samples the level explicitly. With `kind: local_linear` it must sample the
+    *slope* explicitly too, and never fall back to a level without saying so.
+
+    A count climbing 0.6 a period with planted overdispersion 0.3 (for the
+    count) or noise growing with the square root of its level (for the
+    mean-scaled Gaussian): the last slope covers the planted drift and
+    excludes zero, the noise parameter covers what was planted, and the
+    forecast keeps climbing."""
+    rng = np.random.default_rng(20)
+    n, drift, h = 120, 0.6, 12
+    mu = 20.0 + drift * np.arange(n)
+    if likelihood == "negative_binomial":
+        overdispersion = 0.3
+        shape = 1.0 / overdispersion**2
+        y = rng.poisson(rng.gamma(shape, mu / shape)).astype(float)
+    else:
+        y = np.maximum(mu + 1.5 * np.sqrt(mu) * rng.standard_normal(n), 0.5)
+    frame = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=n), "y": y})
+    dag = Parser(
+        "metrics:\n  - name: y\n    source: dbt.metric.y\n"
+        f"    likelihood: {likelihood}\n    trend: {{kind: local_linear}}\n"
+    ).dag
+
+    fit = fit_metric(dag, frame, "y", draws=500, random_seed=1)
+    post = fit.trace.posterior
+    assert (fit.trend_kind, fit.likelihood) == ("local_linear", likelihood)
+    # The slope was sampled, not recovered, and not dropped.
+    assert {"trend_z", "trend_slope_z", "trend_slope0_z", "sigma_slope"} <= set(post.data_vars)
+    assert post["trend_slope_end"].dims == ("chain", "draw")
+
+    slope = post["trend_slope_end"].values.reshape(-1) * fit.y_std
+    lo, hi = np.quantile(slope, [0.03, 0.97])
+    assert 0.0 < lo < drift < hi, (lo, hi)
+    assert abs(np.median(slope) - drift) < 0.1, np.median(slope)
+
+    if likelihood == "negative_binomial":
+        lo, hi = np.quantile(post["nb_overdispersion"].values, [0.03, 0.97])
+        assert lo < 0.3 < hi and hi - lo < 0.25, (lo, hi)
+    else:
+        # `sigma_obs` is the sd at the series' mean level, in normalized
+        # units; against the noise this one seeded series actually realized.
+        realized = np.std((y - mu) / np.sqrt(mu)) * np.sqrt(fit.y_mean) / fit.y_std
+        lo, hi = np.quantile(post["sigma_obs"].values, [0.03, 0.97])
+        assert lo < realized < hi, (lo, realized, hi)
+
+    ahead = fit.y_mean + fit.y_std * (
+        post["alpha"].values.reshape(-1, 1) + trend_at(post, np.array([n - 1 + h]))
+    )
+    truth = 20.0 + drift * (n - 1 + h)
+    assert abs(ahead.mean() - truth) < 0.1 * truth, (ahead.mean(), truth)
+    assert fit.diagnostics["ppc_status"] != "unavailable"

@@ -27,6 +27,15 @@ y[t] = α + trend[t] + seasonal[t] + regression[t] + intervention[t] + ε[t]
 | `intervention[t]` | `Σₖ δₖ · 1ₖ[t]` over the metric's declared `interventions` — a known 0/1 column per dated step or pulse, on its own coefficient axis | from each entry's `prior`, in the metric's own units (the column is not z-scored), else Normal(0, 1) in normalized space |
 | `ε[t]` | observation noise | sd ~ HalfNormal(1) |
 
+**The noise term can be declared per metric.** `ε[t]` above is the default:
+Gaussian, with one standard deviation for the whole fitted history. A metric
+may declare [`likelihood`](yaml-reference.md#likelihood) to replace it with a
+negative binomial (whole-number counts) or a Gaussian whose variance is
+proportional to the mean. Both keep the mean on the left exactly as written,
+on the same additive scale, so `α`, `trend`, `β` and every coefficient read
+as they do on a Gaussian node; what changes is that the noise grows with the
+level. See [the observation model](#the-observation-model-noise-that-grows-with-the-level).
+
 **How the trend is computed depends on the sampler, and the model does not.**
 Under NUTS (the default) the level is **integrated out**: a Kalman filter
 computes the likelihood with every possible level path summed over, NUTS
@@ -468,6 +477,59 @@ but varied over the fit, which is the bootstrap degeneracy under
 `ci_status: "degenerate_bootstrap_spread"` below: there the coefficient
 exists and the interval on its contribution is withheld; here there is no
 coefficient at all.
+
+## The observation model: noise that grows with the level
+
+One noise level for a whole history is the wrong model for a count or a
+currency flow on a business that has grown. A metric that averaged 5 a week
+two years ago and averages 40 now scatters by about 2 then and about 6 now.
+A single standard deviation fitted to both lands between them: the intervals
+are too wide for the early periods and too narrow for the recent ones. An
+analysis window is almost always recent, so the practical effect is
+over-confidence about the present. The fit still converges, and the
+posterior predictive check often catches it on `min` or `resid_max`.
+
+A metric can declare a different noise model with
+[`likelihood`](yaml-reference.md#likelihood):
+
+- **`negative_binomial`** for whole-number counts. The variance is
+  `mean + (overdispersion x mean)^2`, where `nb_overdispersion` is the one
+  noise parameter the fit learns: 0 is a Poisson, 0.3 means the count's
+  standard deviation exceeds a Poisson's by 30% of its mean when the mean is
+  large. It cannot generate a negative count, and zeros are ordinary values.
+- **`mean_scaled_gaussian`** for a non-negative quantity in any unit. The
+  noise is Gaussian with variance proportional to the mean; `sigma_obs` is
+  its standard deviation at the series' average level. Use it for currency
+  made of discrete events (upgrades, refunds) and for counts that are less
+  dispersed than a Poisson, which a negative binomial cannot represent. A
+  count that is a share of its parent is the usual case: trials out of
+  signups scatter binomially, below the Poisson floor.
+
+**Both keep the mean additive** (an identity link, not a log link). The
+fitted mean is still `α + trend + seasonal + Σ βᵢ·xᵢ`, in the metric's own
+units, so `beta_raw` is still "units of this metric per unit of the parent"
+and RCA's `beta_raw × Δparent` attribution, the trend and seasonal
+components and what-if propagation need no reinterpretation. A log link
+would have made each of them multiplicative.
+
+**What it costs.** The exact shortcut that integrates the trend out of a
+Gaussian fit needs constant Gaussian noise, so a node that declares a
+likelihood samples one trend state per period instead. The fit says so
+(`level: "explicit_latent"` beside `likelihood` in its diagnostics) and is
+slower, most of all on a long daily series.
+
+**What it does not do.** The mean is kept above zero by a soft floor at 2%
+of the series' average, which matters only when the level sits at zero for
+a long run. There is no zero-inflated variant, so a count with more zeros
+than its level explains will show it on the `min` check. A
+`mean_scaled_gaussian` node is still Gaussian and can put a little
+probability below zero where its level is near zero. It is refused outright
+on a series that is exactly zero in half or more of its fitted periods: a
+variance that shrinks with the mean makes zero periods most likely under a
+level of zero, the level follows them down, and on the demo's
+`contraction_mrr` the result in those windows was measurably worse than the
+default. Such a series stays on the default, with its `likelihood_warnings`. Noise that grows in
+proportion to the level itself, typical of spend, is not offered.
 
 ## Can the model generate its own data?
 
@@ -1034,7 +1096,13 @@ ship in every cold-start response.
    **Reach for ADVI when exact sampling is genuinely impractical** — a wide
    day-grain tree with many learned edges — and read the k̂ before quoting
    anything it produced.
-7. **The observation model is Gaussian, and a mostly-zero series breaks it.**
+7. **The default observation model is Gaussian, and a mostly-zero series breaks it.**
+   A count can now declare
+   [`likelihood: negative_binomial`](yaml-reference.md#likelihood), which has
+   no mass below zero and treats zeros as ordinary values; the rest of this
+   limitation describes a node that has not, and the cases a declared
+   likelihood does not yet cover (currency with many zeros, and more zeros
+   than a count's level explains).
    A series that is exactly zero for a long stretch of its fit window, a
    seasonal business's off-season or a spiky count, converges happily —
    convergence diagnostics measure the sampler, not the model. Since the
@@ -1051,8 +1119,9 @@ ship in every cold-start response.
    or more of a node's fitted periods are exactly zero, the fit discloses it
    with `likelihood_warnings` on the node, in the RCA table, the export and
    over MCP, and you should read its intervals and components as approximate. The
-   real fix is a zero-inflated or count likelihood, tracked as roadmap S20;
-   until it lands, the warning is the disclosure. A metric declared
+   count likelihood is the first half of roadmap S20; the zero-inflated half
+   is still open, and for a node on the default the warning remains the
+   disclosure. A metric declared
    [`sparse: true`](yaml-reference.md#sparse-sources-an-absent-period-is-a-zero)
    gets exact zeros for its absent periods by the tree's own statement, and
    the disclosure fires on those exactly as on observed zeros — correctly,

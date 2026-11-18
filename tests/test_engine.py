@@ -2258,7 +2258,9 @@ def test_marginalized_level_samples_the_same_posterior(monkeypatch):
 
     dag, frame = _s25_world()
     new = fit_metric(dag, frame, "y", draws=500, random_seed=3)
-    monkeypatch.setattr(model, "_level_is_marginalized", lambda method: False)
+    monkeypatch.setattr(
+        model, "_level_is_marginalized", lambda method, likelihood="gaussian": False
+    )
     old = fit_metric(dag, frame, "y", draws=500, random_seed=3)
 
     # Same variable readers depend on, same dims and shape; the latent is gone.
