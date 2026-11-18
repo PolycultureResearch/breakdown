@@ -264,7 +264,7 @@ the 7-day windows do not overlap, the longer ones do. A calibrated score has
 **Raw `z` is not calibrated, and the error runs in both directions by kind of
 metric.** At the 7-day horizon:
 
-| Metric kind | Windows | mean `z` | sd `z` | `|z| > 2` |
+| Metric kind | Windows | mean `z` | sd `z` | `\|z\| > 2` |
 |---|---|---|---|---|
 | Rates (7 nodes) | 224 | 0.04 | 0.81 | 2.2% |
 | Flows (7 nodes) | 224 | 0.54 | 1.46 | 15.2% |
