@@ -1,7 +1,9 @@
 # Innovation-based root cause analysis — "versus expected", and where the surprise entered
 
-**Status:** design plus a measured prototype; nothing in the engine has
-changed. Opened 2026-11-16 from an architecture review of the RCA use case.
+**Status:** design plus a measured prototype. Nothing in the engine's default
+behavior has changed; the one engine addition since is the opt-in
+`trend.kind: local_linear` (roadmap S8, default still an open decision),
+measured in §6.2 on 2026-11-17. Opened 2026-11-16 from an architecture review of the RCA use case.
 Proposes re-scoping roadmap [3.4](roadmap.md#horizon-3--make-it-findable-and-sticky-it-comes-to-you)
 and [S16](roadmap.md#statistical-rigor-s--a-standing-workstream), and replacing
 S12. The roadmap rows are **not** edited by this document; §8 lists the
@@ -342,6 +344,118 @@ synthetic company, and 32 windows per node cannot resolve a 5% tail well.
 for 4 to 23 nodes. On this tree, fitting source nodes as well as learned ones
 is affordable with the current sampler. This has not been measured on the
 106-metric B2B tree, so whether a faster fit is required remains open (§7).
+
+### 6.2 The same null run with a slope in the trend (roadmap S8)
+
+§6.1 blamed the upward bias on a trend with no momentum. `trend.kind:
+local_linear` now exists as an opt-in (`docs/model.md`), and
+`innovation_score.py null --nodes … --trend …` forces a trend kind on the
+loaded definitions without editing the tree. Ten nodes were re-scored on the
+same 32 windows under three trends: the local level, the local linear trend
+at its default (`slope_sigma: 0.001`), and its fixed-drift limit
+(`slope_sigma: 0`). The six parentless nodes were also run with a looser
+slope (`slope_sigma: 0.01`). The level arm reproduces §6.1's rows (largest
+difference in `z` 0.02 over 982 rows).
+
+Mean `z` on clean windows (0 is unbiased). The standard error of a mean is
+0.2 to 0.35 at 7 days, so read single cells loosely; the *paired* change from
+level to slope is far tighter (standard error 0.03 to 0.05 on the flows).
+
+| Node | Role | 7d level | 7d slope | 7d drift | 7d loose | 28d level | 28d slope | 28d drift | 28d loose |
+|---|---|---|---|---|---|---|---|---|---|
+| `active_subscriptions` | stock, no parents | 1.31 | 0.20 | 0.96 | 0.06 | 2.25 | 0.02 | 1.43 | −0.27 |
+| `contraction_mrr` | flow, no parents | 1.00 | 0.76 | 0.72 | 0.64 | 1.58 | 0.90 | 0.90 | 0.65 |
+| `reactivations` | flow, no parents | 0.75 | 0.49 | 0.48 | 0.33 | 1.31 | 0.62 | 0.65 | 0.29 |
+| `direct_conversions` | flow, no parents | 0.70 | 0.47 | 0.45 | 0.31 | 1.68 | 0.97 | 1.00 | 0.67 |
+| `marketing_spend` | flow, no parents | 0.57 | 0.32 | 0.28 | 0.37 | 0.44 | 0.05 | −0.08 | 0.17 |
+| `expansion_mrr` | flow, no parents | 0.54 | 0.18 | 0.16 | 0.05 | 1.52 | 0.64 | 0.64 | 0.39 |
+| `sessions` | flow, learned parent | 0.34 | 0.02 | −0.11 | | 0.38 | −0.25 | −0.56 | |
+| `trials_started` | flow, learned parent | −0.15 | −0.17 | −0.19 | | −0.13 | −0.20 | −0.22 | |
+| `visit_signup_rate` | rate | −0.12 | −0.22 | −0.29 | | 0.04 | −0.25 | −0.38 | |
+| `customer_churn_rate` | rate, learned parent | 0.10 | −0.31 | −0.34 | | 0.36 | −0.69 | −0.69 | |
+
+Spread and width, level against the default slope:
+
+| Node | 7d sd `z` | 7d `\|z\| > 2` | 7d predictive sd, slope / level | 28d sd `z` | 28d `\|z\| > 2` | 28d predictive sd, slope / level |
+|---|---|---|---|---|---|---|
+| `active_subscriptions` | 0.24 → 1.30 | 0% → 16% | 0.22 | 0.24 → 1.47 | 89% → 11% | 0.26 |
+| `contraction_mrr` | 1.86 → 1.94 | 19% → 22% | 0.95 | 2.06 → 2.00 | 22% → 22% | 1.00 |
+| `reactivations` | 1.56 → 1.68 | 22% → 19% | 0.90 | 1.23 → 1.60 | 28% → 22% | 0.78 |
+| `direct_conversions` | 1.53 → 1.64 | 19% → 19% | 0.90 | 0.95 → 1.20 | 39% → 17% | 0.86 |
+| `marketing_spend` | 1.36 → 1.40 | 12% → 12% | 0.94 | 0.89 → 0.86 | 6% → 0% | 1.02 |
+| `expansion_mrr` | 1.26 → 1.35 | 12% → 12% | 0.92 | 1.77 → 1.85 | 33% → 28% | 0.92 |
+| `sessions` | 1.17 → 1.24 | 12% → 12% | 0.87 | 0.88 → 0.81 | 6% → 0% | 0.91 |
+| `trials_started` | 1.19 → 1.23 | 9% → 9% | 1.01 | 0.75 → 0.76 | 0% → 6% | 1.36 |
+| `visit_signup_rate` | 0.73 → 0.74 | 0% → 0% | 0.99 | 0.72 → 0.61 | 0% → 0% | 1.20 |
+| `customer_churn_rate` | 0.74 → 0.80 | 3% → 3% | 0.94 | 0.81 → 0.95 | 6% → 11% | 0.94 |
+
+What the numbers say:
+
+- **The stock is fixed.** `active_subscriptions` goes from 1.31 to 0.20 at 7
+  days and from 2.25 to 0.02 at 28. Its predictive interval gets *four times
+  narrower*, not wider: under the local level the growth had to be explained
+  as level noise, which inflated `σ_trend`; with a slope the level noise is
+  small. The old score looked calm (sd 0.24) only because the interval was
+  that wide. The new one is slightly over-confident (sd 1.3).
+- **Parentless flows lose about a third to a half of the bias, not all of
+  it.** Every one moves down, by 0.23 to 0.35 at 7 days and 0.39 to 0.88 at
+  28, and every one is still positive. The looser slope takes more off on
+  five of six, so part of the remainder is the slope prior holding the slope
+  near its long-run average on a business whose growth is still speeding up.
+- **Fixed drift is the worse of the two.** It matches the default on the
+  flows and fails on the stock (1.43 at 28 days), because one constant slope
+  over the whole history lags the recent one. It also over-corrects `sessions`
+  (−0.56 at 28 days, 17% beyond 2).
+- **The slope does not belong on rates.** `customer_churn_rate` goes from 0.10
+  to −0.31 at 7 days and from 0.36 to −0.69 at 28; `visit_signup_rate` drifts
+  negative too. A rate's past drift is extrapolated into a window where it
+  does not continue.
+- **The interval does not blow up with the horizon.** At 28 days the
+  predictive sd under the slope is between 0.26 and 1.02 times the level's on
+  the six parentless nodes and `sessions`. It is wider on `trials_started` (1.36) and
+  `visit_signup_rate` (1.20), which did not need a slope.
+- **The spread of `z` on flows is unchanged** (1.3 to 1.9). That is the
+  Gaussian likelihood on spiky counts, S20's problem, and a slope does not
+  touch it.
+
+**Learned coefficients barely move.** Mean over the 32 fits of each
+posterior's mean and sd, level → slope: `sessions ← marketing_spend` 1.149 ±
+0.062 → 1.092 ± 0.063; `trials_started ← signups` 0.439 ± 0.020 → 0.432 ±
+0.023 (19% wider); `customer_churn_rate ← member_activity_rate` −0.0300 ±
+0.0152 → −0.0318 ± 0.0150. No interval that excluded zero stopped doing so.
+These three edges are a weak test of the identifiability worry: two are
+day-grain with weekly seasonality, so the parent has plenty of movement that
+is not drift, and both carry informative priors. A week-grain child of a
+smoothly growing parent is the case to fear, and this tree has none.
+
+**Planted roots still score.** 7-day `z`, level → slope: `visit_signup_rate`
+(CTA) −1.78 → −1.81; `customer_churn_rate` 1.71 → 1.67; `visit_signup_rate`
+(Brazil) 2.76 → 2.59; `trial_activation_rate` 3.55 → 3.68; `trial_days_active`
+5.42 → 5.34; `marketing_spend` (ramp) 2.00 → 2.04. The ramp was the worry,
+since a slope could absorb one. At onset it cannot, because the fit ends
+before the ramp starts, so the windows starting one, two and three weeks
+*into* the ramp were scored as well: 28-day `z` 1.69 → 1.51, 2.39 → 1.95 and
+3.40 → 3.10. The slope costs the ramp a little evidence and does not hide it.
+The one root that gets weaker against its own null is `customer_churn_rate`
+(clean windows as extreme: 1 of 32 → 3 of 32 at 7 days, 1 of 18 → 4 of 18 at
+28), which is the rate result again.
+
+**Cost.** A fit with the slope takes two to three times as long: about 3 s →
+7.5 s on a week-grain node and 10 s → 29 s on day-grain `sessions`, timed
+back to back in one process on a machine that was also running other fits.
+The two-state filter carries five scalars per period where the level carries
+two. The slope's innovation scale also mixes worse than the other
+parameters: on `active_subscriptions` the minimum bulk ESS fell below 400 in
+69% of fits (0% under the level), and `sessions` showed 4 to 10 divergences
+in three timed fits (none under the level).
+
+**What this suggests for the default** (a reading, not a decision): the slope
+earns its place on the stock and on parentless flows, costs a rate its
+calibration, and on a flow with a learned parent it is a wash at 7 days and a
+small loss at 28. That is the role-based rule §8 proposed. `trend_kind` in
+`breakdown/engine/model.py` is the one function to change. Before it changes:
+the sampler health on the stock, the fit-time bill on a wide tree, a second
+vertical, and a week-grain learned edge are all unmeasured or unresolved.
 
 ## 7. Open questions
 
