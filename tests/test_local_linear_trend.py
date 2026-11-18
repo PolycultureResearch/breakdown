@@ -139,7 +139,7 @@ def test_state_draws_stay_finite_when_the_states_are_near_deterministic():
     """The regression this sampler was rewritten for. A draw whose
     `sigma_trend` is ~1e-9 makes the level and slope indistinguishable to
     machine precision at the first periods; backward sampling, which inverts
-    that covariance, returned NaN or a level thousands of sds from the data
+    that covariance, returned NaN or a level tens of sds from the data
     for such draws. Every draw here must be finite and stay on the series — a
     straight line under noise, so a near-deterministic trend is that line."""
     rng = np.random.default_rng(0)

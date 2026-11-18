@@ -1993,7 +1993,7 @@ def _sample_local_linear(
     (`q2 = 0`), and to machine precision at the first periods of any draw
     with a small `sigma_trend`, where one observation cannot tell the level
     from the slope that produced it. Written that way, a draw with
-    `sigma_trend` near 1e-9 returned NaN or a level thousands of sds from the
+    `sigma_trend` near 1e-9 returned NaN or a level tens of sds from the
     data — measured, and the kind of value rule 3 exists to keep out of a
     payload.
 
