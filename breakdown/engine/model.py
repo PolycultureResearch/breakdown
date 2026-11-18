@@ -1866,8 +1866,9 @@ def _ffbs_local_level(
 #     level[-1] = 0,  slope[-1] ~ N(0, _SLOPE0_SD^2)
 #
 # is still linear and Gaussian, so the S25 machinery carries over with a
-# two-dimensional state: the same prediction-error decomposition, the same
-# backward sampler. `sigma_slope = 0` is the fixed-drift limit — the slope is
+# two-dimensional state: the same prediction-error decomposition, and an exact
+# draw of the states afterwards (by a simulation smoother rather than backward
+# sampling — see `_sample_local_linear`). `sigma_slope = 0` is the fixed-drift limit — the slope is
 # then one unknown constant, and the trend is a random walk with drift.
 #
 # The level's forecast under this trend is not flat: `k` periods past the last
@@ -1971,7 +1972,7 @@ def _kalman_local_linear_loglik(
     return ll.sum()
 
 
-def _ffbs_local_linear(
+def _sample_local_linear(
     r: np.ndarray,
     s2: np.ndarray,
     q2: np.ndarray,
@@ -1979,90 +1980,94 @@ def _ffbs_local_linear(
     rng: np.random.Generator,
     slope0_sd: float = _SLOPE0_SD,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """One exact draw of `(level, slope) | r, theta` per posterior draw.
+    """One exact draw of `(level, last slope) | r, theta` per posterior draw.
 
     `r` is `(n_draws, T)`; `s2`/`q2`/`o2` are `(n_draws,)` variances. Returns
-    `(level, slope)`, both `(n_draws, T)`. The forward pass is the filter of
-    `_kalman_local_linear_loglik`; the backward pass draws the last state from
-    its filtered distribution and each earlier state from its conditional
-    given the one after it, as `_ffbs_local_level` does, with 2x2 algebra.
+    the level path `(n_draws, T)` and the slope at the last period
+    `(n_draws,)`.
 
-    Under fixed drift (`q2 = 0`) the slope is constant, so the conditional of
-    `slope[t]` given `slope[t+1]` is a point mass and its covariance is
-    singular. The draw is taken through a Cholesky factor whose pivots are
-    clipped at zero, so that case yields the constant path rather than a NaN.
+    This is **not** the backward sampler `_ffbs_local_level` uses, on purpose.
+    Carter-Kohn backward sampling inverts the one-step prediction covariance
+    at every period, and with two states that matrix is singular whenever the
+    states are deterministic given each other: exactly under fixed drift
+    (`q2 = 0`), and to machine precision at the first periods of any draw
+    with a small `sigma_trend`, where one observation cannot tell the level
+    from the slope that produced it. Written that way, a draw with
+    `sigma_trend` near 1e-9 returned NaN or a level thousands of sds from the
+    data — measured, and the kind of value rule 3 exists to keep out of a
+    payload.
+
+    So the draw is taken by the simulation smoother of Durbin & Koopman
+    (2002) instead: simulate a path `x+` and a series `r+` from the model's
+    own prior, smooth the *difference* `r - r+`, and add the smoothed mean
+    back to `x+`. Because the model is linear and Gaussian that sum is an
+    exact draw from `x | r`. The smoother is the adjoint recursion (Durbin &
+    Koopman 2012, §4.4): `r[t-1] = Z' v[t] / F[t] + L[t]' r[t]`, smoothed
+    state `a[t] + P[t] r[t-1]` from the *predicted* moments, which divides by
+    nothing but the scalar innovation variance `F = P11 + sigma_obs^2 > 0`.
+    The forward pass is the filter of `_kalman_local_linear_loglik`, carried
+    in its predicted form.
     """
+    r, s2, q2, o2 = (np.asarray(x, dtype=np.float64) for x in (r, s2, q2, o2))
     n, T = r.shape
-    m1 = np.empty((n, T))
-    m2 = np.empty((n, T))
-    f11 = np.empty((n, T))
-    f12 = np.empty((n, T))
-    f22 = np.empty((n, T))
+    sd_s, sd_q, sd_o = np.sqrt(s2)[:, None], np.sqrt(q2)[:, None], np.sqrt(o2)[:, None]
+
+    # A path from the prior, and the series it would have produced.
+    slope0 = float(slope0_sd) * rng.standard_normal((n, 1))
+    slope_walk = slope0 + np.cumsum(sd_q * rng.standard_normal((n, T)), axis=1)
+    entering = np.concatenate([slope0, slope_walk[:, :-1]], axis=1)
+    level_plus = np.cumsum(entering + sd_s * rng.standard_normal((n, T)), axis=1)
+    slope_plus_end = slope_walk[:, -1]
+    del slope_walk, entering
+    resid = r - level_plus - sd_o * rng.standard_normal((n, T))
+
+    # Forward: predicted moments of (level, slope) before each observation.
+    # Only what the level's smoothed mean reads is kept per period; the slope
+    # is wanted at the last period alone.
+    A1 = np.empty((n, T))
+    P11s = np.empty((n, T))
+    P12s = np.empty((n, T))
+    V = np.empty((n, T))
+    v0 = float(slope0_sd) ** 2
     a1 = np.zeros(n)
     a2 = np.zeros(n)
-    P11 = np.zeros(n)
-    P12 = np.zeros(n)
-    P22 = np.full(n, float(slope0_sd) ** 2)
+    P11 = v0 + s2
+    P12 = np.full(n, v0)
+    P22 = v0 + q2
     for t in range(T):
-        a1 = a1 + a2
-        P11 = P11 + 2 * P12 + P22 + s2
-        P12 = P12 + P22
-        P22 = P22 + q2
         F = P11 + o2
-        v = r[:, t] - a1
-        K1 = P11 / F
-        K2 = P12 / F
-        a1 = a1 + K1 * v
-        a2 = a2 + K2 * v
-        P22 = P22 - K2 * P12
-        P11 = P11 * o2 / F
-        P12 = P12 * o2 / F
-        m1[:, t], m2[:, t] = a1, a2
-        f11[:, t], f12[:, t], f22[:, t] = P11, P12, P22
+        v = resid[:, t] - a1
+        A1[:, t], P11s[:, t], P12s[:, t], V[:, t] = a1, P11, P12, v
+        if t == T - 1:
+            break
+        k2 = P12 / F
+        # Filtered, then one step on: T = [[1, 1], [0, 1]], Q = diag(s2, q2).
+        f1 = a1 + (P11 / F) * v
+        f2 = a2 + k2 * v
+        f11 = P11 * o2 / F
+        f12 = P12 * o2 / F
+        f22 = np.maximum(P22 - k2 * P12, 0.0)
+        a1, a2 = f1 + f2, f2
+        P11 = f11 + 2 * f12 + f22 + s2
+        P12 = f12 + f22
+        P22 = f22 + q2
 
-    def draw(mean1, mean2, c11, c12, c22, z1, z2):
-        l11 = np.sqrt(np.maximum(c11, 0.0))
-        l21 = np.divide(c12, l11, out=np.zeros_like(c12), where=l11 > 0)
-        l22 = np.sqrt(np.maximum(c22 - l21**2, 0.0))
-        return mean1 + l11 * z1, mean2 + l21 * z1 + l22 * z2
-
-    z = rng.standard_normal((2, n, T))
+    # Backward: the adjoint `rho`, with L = T - K Z and K = T P Z' / F.
     level = np.empty((n, T))
-    slope = np.empty((n, T))
-    level[:, T - 1], slope[:, T - 1] = draw(
-        m1[:, T - 1],
-        m2[:, T - 1],
-        f11[:, T - 1],
-        f12[:, T - 1],
-        f22[:, T - 1],
-        z[0, :, T - 1],
-        z[1, :, T - 1],
-    )
-    for t in range(T - 2, -1, -1):
-        p11, p12, p22 = f11[:, t], f12[:, t], f22[:, t]
-        # A = P T' with T = [[1, 1], [0, 1]]; R = T P T' + Q is the one-step
-        # prediction covariance; J = A R^-1 is the backward gain.
-        a11, a12, a21, a22 = p11 + p12, p12, p12 + p22, p22
-        r11 = p11 + 2 * p12 + p22 + s2
-        r12 = p12 + p22
-        r22 = p22 + q2
-        det = r11 * r22 - r12**2
-        j11 = (a11 * r22 - a12 * r12) / det
-        j12 = (a12 * r11 - a11 * r12) / det
-        j21 = (a21 * r22 - a22 * r12) / det
-        j22 = (a22 * r11 - a21 * r12) / det
-        d1 = level[:, t + 1] - (m1[:, t] + m2[:, t])
-        d2 = slope[:, t + 1] - m2[:, t]
-        level[:, t], slope[:, t] = draw(
-            m1[:, t] + j11 * d1 + j12 * d2,
-            m2[:, t] + j21 * d1 + j22 * d2,
-            p11 - (j11 * a11 + j12 * a12),
-            p12 - (j11 * a21 + j12 * a22),
-            p22 - (j21 * a21 + j22 * a22),
-            z[0, :, t],
-            z[1, :, t],
-        )
-    return level, slope
+    rho1 = np.zeros(n)
+    rho2 = np.zeros(n)
+    for t in range(T - 1, -1, -1):
+        p11, p12 = P11s[:, t], P12s[:, t]
+        F = p11 + o2
+        k1 = (p11 + p12) / F
+        k2 = p12 / F
+        rho1, rho2 = V[:, t] / F + (1 - k1) * rho1 - k2 * rho2, rho1 + rho2
+        level[:, t] = A1[:, t] + p11 * rho1 + p12 * rho2
+        if t == T - 1:
+            # `a2`, `P22` still hold the last period's predicted slope moments.
+            slope_end = a2 + p12 * rho1 + P22 * rho2
+    level += level_plus
+    return level, slope_end + slope_plus_end
 
 
 def _attach_recovered_level(
@@ -2104,9 +2109,9 @@ def _attach_recovered_level(
             if "sigma_slope" in posterior
             else np.zeros_like(s2)
         )
-        level, slope = _ffbs_local_linear(y[None, :] - mu, s2, q2, o2, rng)
+        level, slope_end = _sample_local_linear(y[None, :] - mu, s2, q2, o2, rng)
         posterior["trend_slope_end"] = xr.DataArray(
-            slope[:, -1].reshape(n_chain, n_draw), dims=("chain", "draw"), coords=coords
+            slope_end.reshape(n_chain, n_draw), dims=("chain", "draw"), coords=coords
         )
     else:
         level = _ffbs_local_level(y[None, :] - mu, s2, o2, rng)

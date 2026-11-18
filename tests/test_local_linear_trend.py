@@ -22,9 +22,9 @@ import pytest
 
 from breakdown.engine.model import (
     _SLOPE0_SD,
-    _ffbs_local_linear,
     _kalman_local_level_loglik,
     _kalman_local_linear_loglik,
+    _sample_local_linear,
     fit_metric,
     simulate_trend_forward,
     trend_at,
@@ -105,10 +105,10 @@ def test_no_slope_at_all_is_the_local_level():
 
 
 @pytest.mark.parametrize("q2", [0.02, 0.0])
-def test_ffbs_draws_match_the_conditional_posterior_of_level_and_slope(q2):
-    """Mean and covariance of the backward-sampled level, and of the last
-    slope (the one the fit keeps), match the dense conditional. `q2 = 0` is
-    the fixed-drift limit, whose backward conditionals are singular."""
+def test_state_draws_match_the_conditional_posterior_of_level_and_slope(q2):
+    """Mean and covariance of the drawn level path, and of the last slope (the
+    one the fit keeps), match the dense conditional. `q2 = 0` is the
+    fixed-drift limit."""
     T, s2, o2 = 8, 0.3, 0.5
     r_obs = _series(T, s2, q2, o2, seed=11, slope0=0.2)
 
@@ -121,22 +121,44 @@ def test_ffbs_draws_match_the_conditional_posterior_of_level_and_slope(q2):
     keep = list(range(T)) + [2 * T - 1]  # every level, and the last slope
 
     n = 40_000
-    level, slope = _ffbs_local_linear(
+    level, slope_end = _sample_local_linear(
         np.tile(r_obs, (n, 1)),
         np.full(n, s2),
         np.full(n, q2),
         np.full(n, o2),
         np.random.default_rng(3),
     )
-    assert np.isfinite(level).all() and np.isfinite(slope).all()
-    draws = np.column_stack([level, slope[:, -1]])
+    draws = np.column_stack([level, slope_end])
     cov = post_cov[np.ix_(keep, keep)]
     se_mean = np.sqrt(np.diag(cov) / n)
     assert np.all(np.abs(draws.mean(axis=0) - post_mean[keep]) < 5 * se_mean)
     assert np.allclose(np.cov(draws, rowvar=False), cov, atol=0.03 * cov.max())
-    if q2 == 0.0:
-        # One unknown constant: every period of a draw carries the same slope.
-        assert np.allclose(slope, slope[:, -1:], atol=1e-9)
+
+
+def test_state_draws_stay_finite_when_the_states_are_near_deterministic():
+    """The regression this sampler was rewritten for. A draw whose
+    `sigma_trend` is ~1e-9 makes the level and slope indistinguishable to
+    machine precision at the first periods; backward sampling, which inverts
+    that covariance, returned NaN or a level thousands of sds from the data
+    for such draws. Every draw here must be finite and stay on the series — a
+    straight line under noise, so a near-deterministic trend is that line."""
+    rng = np.random.default_rng(0)
+    T, n = 100, 20_000
+    # Through the model's own start (`level[-1] = 0`, and no intercept here).
+    line = 0.03 * (np.arange(T) + 1)
+    y = line + rng.normal(0, 0.14, T)
+    s = 10 ** rng.uniform(-10, -6, n)
+    q = 10 ** rng.uniform(-13, -9, n)
+    q[: n // 4] = 0.0
+    o = 10 ** rng.uniform(-1.5, 0, n)
+    level, slope_end = _sample_local_linear(
+        np.tile(y, (n, 1)), s**2, q**2, o**2, np.random.default_rng(1)
+    )
+    assert np.isfinite(level).all() and np.isfinite(slope_end).all()
+    # A line fitted to 100 points with noise sd `o`: the level is known to
+    # well within one `o` everywhere, and the slope to a small fraction of it.
+    assert (np.abs(level - line).max(axis=1) < 1.5 * np.maximum(o, 0.14)).all()
+    assert (np.abs(slope_end - 0.03) < 0.05 * np.maximum(o, 0.14)).all()
 
 
 # --- the YAML, and the one function that picks the kind ---------------------
