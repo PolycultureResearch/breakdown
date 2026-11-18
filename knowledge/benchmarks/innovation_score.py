@@ -494,8 +494,18 @@ def score_windows(dag, data, node, start, limit, label, writer):
         writer.writerow(row)
 
 
-def null_run(out_path, only=None, trend=None, slope_sigma=None):
+def null_run(out_path, only=None, trend=None, slope_sigma=None, reverse=False, done_in=None):
+    """`reverse` walks the jobs from the last; `done_in` is another process's
+    CSV, re-read before every job, whose finished jobs are skipped. Together
+    they let a second process work the same arm from the other end and stop
+    where the first one has got to (concatenate the two CSVs afterwards)."""
     import csv
+
+    def finished(path):
+        if not (path and os.path.exists(path)):
+            return set()
+        with open(path) as f:
+            return {(r["label"], r["node"], r["start"]) for r in csv.DictReader(f)}
 
     dag, data = load()
     nodes = list(nx.topological_sort(dag))
@@ -505,10 +515,7 @@ def null_run(out_path, only=None, trend=None, slope_sigma=None):
             raise SystemExit(f"--nodes names metrics the tree does not have: {unknown}")
         nodes = [n for n in nodes if n in only]
     force_trend(dag, set(nodes) | {n for n, _ in PLANTED}, trend, slope_sigma)
-    done = set()
-    if os.path.exists(out_path):
-        with open(out_path) as f:
-            done = {(r["label"], r["node"], r["start"]) for r in csv.DictReader(f)}
+    done = finished(out_path)
     with open(out_path, "a", newline="") as f:
         writer = csv.DictWriter(f, NULL_FIELDS)
         if not done:
@@ -517,8 +524,9 @@ def null_run(out_path, only=None, trend=None, slope_sigma=None):
         for lo, hi in CLEAN_GAPS:
             for s in pd.date_range(lo, hi, freq="W-MON"):
                 jobs += [("null", n, str(s.date()), hi) for n in nodes]
-        for i, (label, node, start, limit) in enumerate(jobs):
-            if (label, node, start) in done:
+        order = list(enumerate(jobs))
+        for i, (label, node, start, limit) in reversed(order) if reverse else order:
+            if (label, node, start) in done | finished(done_in):
                 continue
             score_windows(dag, data, node, start, limit, label, writer)
             f.flush()
@@ -653,11 +661,13 @@ def main():
     cli.add_argument("--nodes", help="null: comma-separated nodes to restrict the null windows to")
     cli.add_argument("--trend", choices=("level", "local_linear"), help="force this trend kind")
     cli.add_argument("--slope-sigma", type=float, help="with --trend local_linear; 0 = fixed drift")
+    cli.add_argument("--reverse", action="store_true", help="null: walk the jobs from the last")
+    cli.add_argument("--done-in", help="null: skip jobs another process's CSV already holds")
     opts = cli.parse_args()
     argv = opts.args
     if argv[:1] == ["null"]:
         only = set(opts.nodes.split(",")) if opts.nodes else None
-        return null_run(argv[1], only, opts.trend, opts.slope_sigma)
+        return null_run(argv[1], only, opts.trend, opts.slope_sigma, opts.reverse, opts.done_in)
     if argv[:1] == ["null-summary"]:
         return null_summary(argv[1])
     if argv[:1] == ["null-compare"]:
