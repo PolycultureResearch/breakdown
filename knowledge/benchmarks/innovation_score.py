@@ -39,6 +39,17 @@ Null calibration (design doc §6.1) — every node over every anomaly-free
 window, ~500 fits and ~40 minutes, resumable from the CSV it appends to:
     uv run python knowledge/benchmarks/innovation_score.py null out.csv
     uv run python knowledge/benchmarks/innovation_score.py null-summary out.csv
+
+Restricting the null run, and forcing an observation model per node without
+editing the tree (roadmap S20). `--likelihood` may repeat; a node fitted under
+two likelihoods lands in the same CSV as two sets of rows, told apart by the
+`likelihood` column, so one file holds the comparison:
+    uv run python knowledge/benchmarks/innovation_score.py null out.csv \
+        --nodes reactivations,sessions --horizons 7,28
+    uv run python knowledge/benchmarks/innovation_score.py null out.csv \
+        --nodes reactivations,sessions --horizons 7,28 \
+        --likelihood reactivations=negative_binomial \
+        --likelihood sessions=negative_binomial
 """
 
 import os
@@ -241,7 +252,6 @@ def innovation(dag, data, fits, node, window):
     level_end = draws("trend")[:, -1:]
     pred += level_end + np.cumsum(draws("sigma_trend") * rng.standard_normal((len(idx), h)), axis=1)
     noiseless = fit.y_mean + fit.y_std * pred
-    pred = noiseless + fit.y_std * draws("sigma_obs") * rng.standard_normal((len(idx), h))
     beta_mean = {}
     if fit.parents:
         beta_raw = draws("beta_raw")
@@ -249,9 +259,19 @@ def innovation(dag, data, fits, node, window):
         for i, p in enumerate(fit.parents):
             x = shifted[p].to_numpy(float)
             centred = (x[in_win.to_numpy()] - np.nanmean(x[fitted_rows]))[None, :]
-            pred += beta_raw[:, i : i + 1] * centred
             noiseless += beta_raw[:, i : i + 1] * centred
             beta_mean[p] = float(beta_raw[:, i].mean())
+    # The observation noise comes from the likelihood the node was fitted
+    # with (roadmap S20), around the full mean: a count's or a mean-scaled
+    # node's spread depends on the level it is drawn at, parents included.
+    pred = fit.y_mean + fit.y_std * M.observation_draws(
+        fit.likelihood,
+        (noiseless - fit.y_mean) / fit.y_std,
+        draws(M.LIKELIHOOD_NOISE_PARAM[fit.likelihood]),
+        fit.y_mean,
+        fit.y_std,
+        rng,
+    )
 
     expected = noiseless.mean(axis=0)
     e = observed - expected
@@ -273,6 +293,7 @@ def innovation(dag, data, fits, node, window):
         "pit": float((pred_mean <= obs_mean).mean()),
         "pred_sd": sd,
         "ppc_status": fit.diagnostics.get("ppc_status"),
+        "likelihood": fit.likelihood,
         "beta_mean": beta_mean,
         "fit_quality": fit.diagnostics.get("fit_quality"),
     }
@@ -421,16 +442,19 @@ PLANTED = [
 ]
 HORIZON_DAYS = (1, 3, 7, 14, 28)  # 1 and 3 apply to day-grain nodes only
 NULL_FIELDS = (
-    "label node grain start horizon_days n z pit tail innovation pred_sd ppc_status status"
+    "label node grain start horizon_days n z pit tail innovation pred_sd ppc_status status "
+    "likelihood fit_seconds"
 ).split()
 
 
-def score_windows(dag, data, node, start, limit, label, writer):
+def score_windows(dag, data, node, start, limit, label, writer, horizons=HORIZON_DAYS):
     """Score `node` over every horizon from `start` that ends by `limit`, from
     one fit, and drop the fit afterwards (a daily trace is ~10 MB)."""
     fits = {}
     start = pd.Timestamp(start)
-    for h in HORIZON_DAYS:
+    likelihood = defn_of(dag, node).likelihood
+    fit_seconds = None
+    for h in horizons:
         if h < 7 and data.grain_of[node] != "day":
             continue
         end = start + pd.Timedelta(days=h - 1)
@@ -440,32 +464,60 @@ def score_windows(dag, data, node, start, limit, label, writer):
             r = innovation(dag, data, fits, node, (start, end))
         except Exception as exc:
             r = {"status": f"error: {exc}"[:100], "grain": data.grain_of[node]}
+        # The one fit is paid for by the first horizon scored; every row of
+        # the start carries its wall time so no horizon filter can lose it.
+        fit_seconds = r.get("fit_seconds", fit_seconds)
         row = {k: r.get(k) for k in NULL_FIELDS}
-        row.update(label=label, node=node, start=str(start.date()), horizon_days=h)
+        row.update(
+            label=label,
+            node=node,
+            start=str(start.date()),
+            horizon_days=h,
+            likelihood=likelihood,
+            fit_seconds=None if fit_seconds is None else round(fit_seconds, 2),
+        )
         writer.writerow(row)
 
 
-def null_run(out_path):
+def force_likelihoods(dag, forced):
+    """Re-declare `likelihood` on the named nodes, in memory. The tree file is
+    not touched, and the change goes through the parser's own validation, so a
+    likelihood the YAML would refuse is refused here too."""
+    for node, likelihood in forced.items():
+        defn = defn_of(dag, node)
+        dag.nodes[node]["definition"] = type(defn).model_validate(
+            {**defn.model_dump(exclude={"derived"}), "likelihood": likelihood}
+        )
+
+
+def null_run(out_path, nodes=None, forced=None, horizons=HORIZON_DAYS):
     import csv
 
     dag, data = load()
-    nodes = list(nx.topological_sort(dag))
+    force_likelihoods(dag, forced or {})
+    nodes = nodes or list(nx.topological_sort(dag))
+    unknown = [n for n in nodes if n not in dag]
+    assert not unknown, f"not in the tree: {unknown}"
     done = set()
     if os.path.exists(out_path):
         with open(out_path) as f:
-            done = {(r["label"], r["node"], r["start"]) for r in csv.DictReader(f)}
+            reader = csv.DictReader(f)
+            assert reader.fieldnames == NULL_FIELDS, (
+                f"{out_path} was written with other columns ({reader.fieldnames}); start a new file"
+            )
+            done = {(r["label"], r["node"], r["start"], r["likelihood"]) for r in reader}
     with open(out_path, "a", newline="") as f:
         writer = csv.DictWriter(f, NULL_FIELDS)
         if not done:
             writer.writeheader()
-        jobs = [("planted", n, s, "2026-07-26") for n, s in PLANTED]
+        jobs = [("planted", n, s, "2026-07-26") for n, s in PLANTED if n in nodes]
         for lo, hi in CLEAN_GAPS:
             for s in pd.date_range(lo, hi, freq="W-MON"):
                 jobs += [("null", n, str(s.date()), hi) for n in nodes]
         for i, (label, node, start, limit) in enumerate(jobs):
-            if (label, node, start) in done:
+            if (label, node, start, defn_of(dag, node).likelihood) in done:
                 continue
-            score_windows(dag, data, node, start, limit, label, writer)
+            score_windows(dag, data, node, start, limit, label, writer, horizons)
             f.flush()
             print(f"[{i + 1}/{len(jobs)}] {label} {node} {start}", flush=True)
 
@@ -474,6 +526,8 @@ def null_summary(out_path):
     # `keep_default_na=False`: pandas reads the literal label "null" as missing.
     df = pd.read_csv(out_path, keep_default_na=False, na_values=[""])
     df = df[df["z"].notna() & (df["status"] != "exact_identity")]
+    if "likelihood" not in df:  # a CSV from before the column existed
+        df = df.assign(likelihood="gaussian", fit_seconds=np.nan)
     null, planted = df[df.label == "null"], df[df.label == "planted"]
 
     def table(frame, by):
@@ -490,7 +544,43 @@ def null_summary(out_path):
             }
         ).round(3)
 
-    pd.set_option("display.width", 200)
+    def calibration(frame):
+        """Per node, likelihood and horizon. `sd_z` is about the node's own mean
+        `z`, so a forecast that is biased (roadmap S8) and one that is too
+        narrow (S20) read as different numbers; `rms_z` is the two together.
+        `pit_ks` is the largest gap between the PIT's empirical distribution
+        and the uniform's, 0 when flat; `pit_hist` its five equal bins."""
+        rows = []
+        for (node, lik, h), g in frame.groupby(["node", "likelihood", "horizon_days"]):
+            u = np.sort(g["pit"].to_numpy(float))
+            n = len(u)
+            ks = max(np.max(np.arange(1, n + 1) / n - u), np.max(u - np.arange(0, n) / n))
+            hist = np.histogram(u, bins=5, range=(0, 1))[0]
+            fits = g.drop_duplicates("start")["fit_seconds"]
+            rows.append(
+                dict(
+                    node=node,
+                    likelihood=lik,
+                    h=h,
+                    n=n,
+                    mean_z=g["z"].mean(),
+                    sd_z=g["z"].std(),
+                    rms_z=float(np.sqrt((g["z"] ** 2).mean())),
+                    over2=(g["z"].abs() > 2).mean(),
+                    over2_centred=((g["z"] - g["z"].mean()).abs() > 2).mean(),
+                    pit_ks=ks,
+                    pit_hist="/".join(str(c) for c in hist),
+                    ppc="/".join(f"{k}:{v}" for k, v in g["ppc_status"].value_counts().items()),
+                    fit_s_median=fits.median(),
+                )
+            )
+        return pd.DataFrame(rows).round(3)
+
+    pd.set_option("display.width", 250)
+    if null["likelihood"].nunique() > 1 or null["fit_seconds"].notna().any():
+        print("=== null windows, by node, likelihood and horizon")
+        print(calibration(null).to_string(index=False))
+        print()
     print("=== null windows, by horizon (calibrated: sd_z 1, |z|>2 0.046, pit tails 0.2)")
     print(table(null, "horizon_days").to_string())
     print("\n=== null windows, by node (all horizons)")
@@ -500,11 +590,16 @@ def null_summary(out_path):
     print("\n=== planted roots at onset, against the same node's null z at the same horizon")
     rows = []
     for _, r in planted.iterrows():
-        ref = null[(null.node == r.node) & (null.horizon_days == r.horizon_days)]["z"]
+        ref = null[
+            (null.node == r.node)
+            & (null.horizon_days == r.horizon_days)
+            & (null.likelihood == r.likelihood)
+        ]["z"]
         allz = null[null.horizon_days == r.horizon_days]["z"]
         rows.append(
             dict(
                 node=r.node,
+                likelihood=r.likelihood,
                 onset=r.start,
                 h=r.horizon_days,
                 z=round(r.z, 2),
@@ -517,9 +612,27 @@ def null_summary(out_path):
     print(pd.DataFrame(rows).to_string(index=False))
 
 
+def _null_args(argv):
+    """`[--nodes a,b] [--horizons 7,28] [--likelihood node=family]...`"""
+    nodes, horizons, forced = None, HORIZON_DAYS, {}
+    it = iter(argv)
+    for flag in it:
+        value = next(it)
+        if flag == "--nodes":
+            nodes = value.split(",")
+        elif flag == "--horizons":
+            horizons = tuple(int(h) for h in value.split(","))
+        elif flag == "--likelihood":
+            node, _, family = value.partition("=")
+            forced[node] = family
+        else:
+            raise SystemExit(f"unknown option {flag}")
+    return dict(nodes=nodes, horizons=horizons, forced=forced)
+
+
 def main():
     if sys.argv[1:2] == ["null"]:
-        return null_run(sys.argv[2])
+        return null_run(sys.argv[2], **_null_args(sys.argv[3:]))
     if sys.argv[1:2] == ["null-summary"]:
         return null_summary(sys.argv[2])
     names = sys.argv[1:] or list(STORIES)
