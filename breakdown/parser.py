@@ -338,7 +338,11 @@ class TrendConfig(BaseModel):
     def slope_sigma_needs_a_slope(self) -> "TrendConfig":
         # Refuse rather than ignore: a `slope_sigma` on a trend with no slope
         # would be read by nothing, and the author would believe it was.
-        if "slope_sigma" in self.model_fields_set and self.kind != "local_linear":
+        # Judged by value, not by whether the field was supplied: a definition
+        # dumped and re-validated (`model_dump` writes every default) supplies
+        # the default, and that round trip must not be refused.
+        default = type(self).model_fields["slope_sigma"].default
+        if self.slope_sigma != default and self.kind != "local_linear":
             raise ValueError(
                 "trend slope_sigma is set but the trend has no slope: "
                 "add `kind: local_linear`, or remove slope_sigma."

@@ -201,6 +201,12 @@ def test_trend_kind_and_slope_sigma_are_validated():
         Parser(_tree("    trend: {slope_sigma: 0.01}"))
     fixed = Parser(_tree("    trend: {kind: local_linear, slope_sigma: 0}")).dag
     assert fixed.nodes["y"]["definition"].trend.slope_sigma == 0
+    # A dumped definition re-validates: `model_dump` writes the default
+    # `slope_sigma` on a level trend, which is not an author asking for one.
+    for line in ("    trend: linear", "    trend: {kind: local_linear, slope_sigma: 0}"):
+        defn = Parser(_tree(line)).dag.nodes["y"]["definition"]
+        again = type(defn).model_validate(defn.model_dump(exclude={"derived"}))
+        assert again.trend == defn.trend
 
 
 def _posterior(trend, slope_end=None, sigma_trend=0.0, sigma_slope=None):
