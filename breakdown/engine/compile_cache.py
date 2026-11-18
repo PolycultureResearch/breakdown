@@ -28,14 +28,16 @@ compiled:
 1. Replaces numba's function counter with random 128-bit ids, so no two
    processes (and no two forked chains, which would inherit a counter's
    state) hand out the same uid. Cached code written by different processes
-   then never shares a symbol name. This is the fix PyTensor itself ships in
-   its 3.x line (`pytensor.link.numba.cache._RandomUidIter`); PyMC 5.28 pins
-   PyTensor below 2.39, which does not have it. When the installed PyTensor
-   already does this, nothing here runs.
+   then never shares a symbol name. This is the fix PyTensor itself ships
+   from 2.38.3 (`pytensor.link.numba.cache._RandomUidIter`); the lock is on
+   2.38.2, and the base install admits it. On a PyTensor that already does
+   this, the step is skipped and the other two still run.
 2. Points the cache at its own directory beside PyTensor's
    (`<base_compiledir>/numba-unique-ids`), because entries written before
-   this, or by any other program using PyTensor, still carry low uids and two
-   of *those* can collide inside this process.
+   this, or by any program on an older PyTensor, still carry low uids and two
+   of *those* can collide inside this process. Measured: PyTensor 2.38.3
+   reading a cache 2.38.2 wrote returns the wrong function exactly as 2.38.2
+   does. Upgrading PyTensor does not clean a cache; not reading it does.
 3. Turns the cache off for any Python process started from this one that
    does not go through this module (a `spawn` child, a forkserver started
    without the preload), through `PYTENSOR_FLAGS`. Such a process compiles
@@ -70,8 +72,8 @@ CACHE_DIRNAME = "numba-unique-ids"
 #: turned it off".
 _MARKER = "BREAKDOWN_NUMBA_CACHE_HARDENED"
 
-#: "hardened" | "upstream" | "disabled" | "user_disabled" once
-#: `ensure_safe_compile_cache` has run in this process; None before.
+#: "hardened" | "disabled" | "user_disabled" once `ensure_safe_compile_cache`
+#: has run in this process; None before.
 _state: Optional[str] = None
 
 
@@ -120,7 +122,6 @@ def ensure_safe_compile_cache() -> str:
     """Harden the numba cache for this process; idempotent. Returns the state.
 
     `"hardened"`: unique function ids, own cache directory, cache on.
-    `"upstream"`: the installed PyTensor already makes the ids unique.
     `"disabled"`: hardening failed, cache off for this process.
     `"user_disabled"`: the user had the cache off already; nothing changed.
     """
@@ -136,20 +137,11 @@ def ensure_safe_compile_cache() -> str:
         _state = "user_disabled"
         return _state
 
-    try:
-        already_unique = not _ids_are_sequential()
-    except Exception:
-        already_unique = False  # reported below, where the same call fails again
-    if already_unique and not inherited:
-        # A PyTensor that ships the fix: its own cache directory holds only
-        # what it wrote under unique ids, and its children need nothing.
-        _state = "upstream"
-        return _state
-
     _disable_for_other_children()
     try:
         import pytensor.link.numba.cache as pt_cache
 
+        # False on a PyTensor that already replaced the counter (2.38.3 on).
         if _ids_are_sequential():
             _randomize_function_ids()
         path = config.base_compiledir / CACHE_DIRNAME

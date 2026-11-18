@@ -513,7 +513,9 @@ breakdown's own: `numba-unique-ids/`, beside PyTensor's `numba/`.
   0.3.0 and earlier used that directory. From the next release, breakdown
   gives every process's compiled functions names no other process uses and
   keeps them in its own directory, so it never loads anything an older
-  version or another program wrote.
+  version or another program wrote. Upgrading PyTensor alone is not enough:
+  2.38.3 stops writing colliding entries but still reads the ones already
+  there.
 - **You can delete either directory at any time** when no fit is running. The
   only cost is recompiling. After upgrading from 0.3.0 or earlier,
   `~/.pytensor/numba` is no longer read by breakdown and can be removed.
