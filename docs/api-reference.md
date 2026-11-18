@@ -323,6 +323,14 @@ sampler struggled. See [the model guide](model.md#can-the-model-generate-its-own
 [`GET /metrics/{name}/ppc`](#get-metricsnameppc) for the per-period series behind
 the verdict.
 
+A fit of a metric that declares a [`likelihood`](yaml-reference.md#likelihood)
+other than the default also reports **`likelihood`** (its name) and
+**`level: "explicit_latent"`**: the declared noise model rules out the exact
+shortcut a Gaussian fit uses for its trend, so the trend was sampled period by
+period and the fit took longer. Both keys are absent on a metric that declares
+none. A `negative_binomial` fit's `summary` has `nb_overdispersion` where a
+Gaussian's has `sigma_obs`.
+
 Whichever sampler ran, a fit with two or more parents also reports
 **`collinearity_status`** — `ok`, `moderate`, `high` or `unavailable` — plus
 `collinearity` (the evidence: `max_abs_correlation`, the flagged `pairs` with
