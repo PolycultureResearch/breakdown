@@ -391,6 +391,8 @@ are skipped, so an interrupted run loses at most the jobs in flight.
 | `--shards N` | Worker processes, default 4. Each fit also runs four chains |
 | `--trace-cache-gb G` | Byte cap on the trace cache, default 4; 0 keeps no traces |
 
+What each tier selects:
+
 | Tier | Seeds | Regimes | Horizons | Null windows per world | Single worlds |
 |---|---|---|---|---|---|
 | smoke | 0 to 2 | baseline | 7 | at most 8, evenly spaced | 3 anomalies, spread over the depths their roots sit at |
@@ -520,7 +522,13 @@ values so that two scoreboards can be compared on the worlds they share.
 **Roles.** Five: rate, stock, flow with no parents, flow with a learned
 parent, formula. A rate or stock with a learned parent is pooled with its
 kind. Formula nodes are not calibrated (their residual is zero by
-construction) and appear under cost only.
+construction). A formula node appears in the `nodes` rows of a single world,
+where an innovation at it would mean the identity stopped holding.
+
+**Cost per fit is read off the null worlds.** They fit every non-formula node
+on the same windows in every run, so the numbers compare across scoreboards.
+A single world's fits are whichever nodes its anomaly's scope holds; that
+cost is reported per analysis.
 
 **The fit cache is two things** (§7). Scored rows are kept for every fit and
 never evicted: they are what a rerun or a ranking-only arm reuses, and a
@@ -534,6 +542,31 @@ generator version, the node, the fit end, the node's definition, each
 parent's grain and kind, the sampler's draws, chains and seed, and the git
 tree hash of `breakdown/` (so a docs-only commit keeps the cache and any
 engine change drops it).
+
+**The smoke tier, measured** (2026-11-19, White Cube, `demo/white_cube_tree.yml`,
+[`eval/2026-11-19_smoke_white_cube_demo_tree.md`](eval/2026-11-19_smoke_white_cube_demo_tree.md)).
+393 jobs: 384 calibration fits (16 fitted nodes, 8 windows, 3 seeds) and 9
+single worlds. 476 fits in all, 52 process-minutes, **13 minutes 54 seconds
+of wall time** on four worker processes, on a 12-core machine that another
+job kept at a load average of 20 to 87 throughout. So the 15-minute budget of
+§7 holds for the run, with a minute to spare and no margin for a slower tree.
+Three things it does not include or would not survive:
+
+- Building the world set took another 6 minutes (12 worlds, two at a time,
+  8.4 GB peak). The set is deterministic for a generator version, so it
+  should be built once and kept, not rebuilt per pull request.
+- Three of the nine single worlds were nearly free: the spend ramp reaches
+  one node below its root on this tree, so its scope is two nodes and its
+  ranking is first of one. A world whose scope is the whole tree cost 26 fits
+  and close to three minutes. On a tree where every anomaly reaches the top,
+  the nine single worlds alone would add about four minutes.
+- Four workers, each fit running four chains, is 16 busy processes on 12
+  cores.
+
+To hold the budget on a canonical tree: six null windows per world instead
+of eight (96 fewer fits, about three minutes), or a quiet machine. The trace
+cache held 67 fits in 366 MB (5.7 MB each on average, 11.6 MB at most), so
+the 4 GB cap is not reached at smoke scale and would be at standard scale.
 
 **One compile directory per worker process,** created for the run and removed
 after it, as §7 requires. Workers are separate processes started with
