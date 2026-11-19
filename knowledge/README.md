@@ -77,6 +77,12 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
   hold from day one, and the tree graduates to a warehouse unchanged), what
   was carried over from the original PR, and a customer guide from export to
   RCA. Original implementation by justincfung
+- [`evaluation_spec.md`](evaluation_spec.md) — **proposal, nothing built**
+  (2026-11-19): score the engine against a family of generated companies
+  instead of one dataset at a time. Null, single-anomaly and twin worlds across
+  seeds, verticals and regimes; the questions, metrics, tiers, held-out split
+  and scoreboard that gate a change of engine defaults. The generator side is
+  `docs/eval_worlds_spec.md` in the fake_companies repo.
 - [`innovation_rca_design.md`](innovation_rca_design.md) — **design plus a
   measured prototype, nothing built** (2026-11-16): separate "did something
   change" (versus expectation) from "why", and rank root causes by each node's
