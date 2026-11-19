@@ -63,7 +63,9 @@ per arm, then compare them:
 
 A slope arm takes several times as long as the level arm. `--shard k/n` scores
 every n-th job, starting at the k-th, into its own CSV, so n processes split an
-arm; `null-compare` takes `name=a.csv,b.csv` and concatenates.
+arm; `null-compare` takes `name=a.csv,b.csv` and concatenates (the first file
+wins where two hold the same window, so an arm that refits only some nodes is
+`name=refit.csv,baseline.csv`). `--stride n` keeps every n-th weekly start.
 
 A second company (design doc §6.4). `--company alpenglow` (or
 `BENCH_COMPANY=alpenglow`) points every mode at Alpenglow Supply Co., the
@@ -747,9 +749,11 @@ def null_run(
     trend=None,
     slope_sigma=None,
     shard=None,
+    stride=1,
 ):
     """`shard=(k, n)` scores jobs `k, k + n, k + 2n, ...` only, so `n`
-    processes with their own CSVs split one arm."""
+    processes with their own CSVs split one arm. `stride=n` keeps every n-th
+    weekly start, for an arm whose fits are too slow to run on all of them."""
     import csv
 
     dag, data = load()
@@ -776,7 +780,7 @@ def null_run(
         # are the positive class every arm is read against.
         last = "2026-07-26" if COMPANY == "white_cube" else CONFIG["end"]
         jobs = [("planted", n, s, last) for n, s in PLANTED]
-        for s, hi in clean_starts(clean_gaps()):
+        for s, hi in clean_starts(clean_gaps())[::stride]:
             jobs += [("null", n, s, hi) for n in nodes]
         for i, (label, node, start, limit) in enumerate(jobs):
             if shard and i % shard[1] != shard[0]:
@@ -1087,6 +1091,7 @@ def main():
     )
     cli.add_argument("--slope-sigma", type=float, help="with a slope; 0 = fixed drift")
     cli.add_argument("--shard", help="null: k/n — score every n-th job starting at the k-th")
+    cli.add_argument("--stride", type=int, default=1, help="null: keep every n-th weekly start")
     opts = cli.parse_args()
     argv = opts.args
     if argv[:1] == ["null"]:
@@ -1101,6 +1106,7 @@ def main():
             trend=opts.trend,
             slope_sigma=opts.slope_sigma,
             shard=shard,
+            stride=opts.stride,
         )
     if argv[:1] == ["null-summary"]:
         return null_summary(argv[1])
