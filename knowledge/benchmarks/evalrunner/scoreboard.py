@@ -242,7 +242,10 @@ def localization_rows(rows, seed_of, vertical) -> list[dict]:
     # A first place the reader has no reason to trust: its own |z| under 2.
     df["first_place_lacks_evidence"] = (~(first_z >= EVIDENCE_Z)).astype(float)
     df["top1_with_evidence"] = ((df["rank"] == 1) & (first_z >= EVIDENCE_Z)).astype(float)
+    # How many nodes the root was ranked among: first of one is not a finding.
+    df["candidates"] = df["n_ranked"].astype(float)
     metrics = (
+        "candidates",
         "top1",
         "top3",
         "reciprocal_rank",
@@ -270,7 +273,12 @@ def cost_rows(fits, analyses, seed_of, vertical) -> list[dict]:
     out: list[dict] = []
     df = pd.DataFrame(fits)
     if not df.empty:
-        df = df[df["ok"].astype(bool)].copy()
+        # Per-fit cost is read off the null worlds' fits: every non-formula
+        # node on the same windows in every run, so one scoreboard's numbers
+        # are comparable with another's. A single world's fits are whichever
+        # nodes its anomaly's scope happened to hold; their cost is reported
+        # per analysis below.
+        df = df[df["ok"].astype(bool) & (df["purpose"] == "calibration")].copy()
     if not df.empty:
         div = pd.to_numeric(df["divergences"], errors="coerce")
         df["ess_under_400"] = (pd.to_numeric(df["min_ess"], errors="coerce") < 400).astype(float)
@@ -516,9 +524,35 @@ def _roles(index) -> list[str]:
     return [r for r in ROLE_ORDER if r in roles] + sorted(roles - set(ROLE_ORDER))
 
 
+def _wall(run: dict[str, Any]) -> str:
+    calls = run.get("invocations") or []
+    if not calls:
+        return ""
+    total = sum(c["wall_seconds"] for c in calls) / 60
+    shards = sorted({c["shards"] for c in calls})
+    return f"; wall time {total:.0f} min over {len(calls)} invocation(s) on {shards} shard(s)"
+
+
+def _unscored(run: dict[str, Any]) -> str:
+    statuses = run["coverage"]["calibration_status"]
+    scored = sum(n for s, n in statuses.items() if s == "ok" or s.startswith("ok "))
+    # One line per reason: the same failure reads differently in each world
+    # after the node's name (how many periods, which dates).
+    rest: dict[str, int] = defaultdict(int)
+    for status, n in statuses.items():
+        if not (status == "ok" or status.startswith("ok ")):
+            rest[status.split("' on ")[0][:110]] += n
+    text = f"- Calibration windows: {scored} scored"
+    for status, n in sorted(rest.items(), key=lambda kv: -kv[1]):
+        text += f"; {n} not scored ({status}')"
+    return text
+
+
 def render_markdown(board: dict[str, Any], title: str | None = None) -> str:
     runs = board.get("runs") or [board]
     lines = [f"# {title or 'Evaluation scoreboard'}", ""]
+    if board.get("note"):
+        lines += [f"> {board['note']}", ""]
     for run in runs:
         tree = run["tree"]
         lines += [
@@ -542,13 +576,15 @@ def render_markdown(board: dict[str, Any], title: str | None = None) -> str:
             ),
             f"- Run {run['created']}; {run['coverage']['jobs_done']} of {run['coverage']['jobs']} "
             f"jobs done, {run['coverage']['job_seconds'] / 60:.0f} process-minutes; load "
-            f"average at plan {run['host']['load_at_plan']} on {run['host']['cpus']} cores",
+            f"average at plan {run['host']['load_at_plan']} on {run['host']['cpus']} cores"
+            + _wall(run),
             "- Null windows per world: "
             + ", ".join(
                 sorted(
                     {f"{g['n']} every {g['spacing_days']} days" for g in run["windows"].values()}
                 )
             ),
+            _unscored(run),
             f"- Single worlds: {run['coverage']['single_worlds_ranked']} ranked of "
             f"{run['coverage']['single_worlds']}; off-tree "
             f"{len(run['coverage']['single_worlds_off_tree'])}; skipped "
@@ -692,7 +728,9 @@ def _render_vertical(rows: list[dict]) -> list[str]:
         out += [
             "### Q3 Localization: rank of the true root",
             "",
-            f"A first place lacks evidence when its own \\|z\\| is under {EVIDENCE_Z:g}.",
+            f"A first place lacks evidence when its own \\|z\\| is under {EVIDENCE_Z:g}. "
+            "Nodes ranked is how many candidates the root was ranked among: where the "
+            "anomaly reaches only one node below its root, first of one is not a finding.",
             "",
         ]
         body = []
@@ -711,6 +749,7 @@ def _render_vertical(rows: list[dict]) -> list[str]:
                         method,
                         role,
                         str(g("top1")["n"]),
+                        _cell(g("candidates"), digits=1),
                         _cell(g("top1"), pct=True),
                         _cell(g("top3"), pct=True),
                         _cell(g("reciprocal_rank")),
@@ -723,6 +762,7 @@ def _render_vertical(rows: list[dict]) -> list[str]:
                 "Method",
                 "Root role",
                 "worlds",
+                "nodes ranked",
                 "top-1",
                 "top-3",
                 "mean reciprocal rank",
@@ -737,8 +777,9 @@ def _render_vertical(rows: list[dict]) -> list[str]:
         out += [
             "### Q8 Cost",
             "",
-            "Wall seconds were taken on a shared machine: read them as ratios between "
-            "roles and between scoreboards, not as absolutes.",
+            "Per fit, over the null worlds' fits. Wall seconds were taken on a shared "
+            "machine: read them as ratios between roles and between scoreboards, not as "
+            "absolutes.",
             "",
         ]
         index = _pick(cost)

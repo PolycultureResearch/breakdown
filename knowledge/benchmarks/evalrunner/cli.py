@@ -119,12 +119,18 @@ def cmd_run(opts) -> int:
             )
         )
     wanted = {j["job"] for j in run["jobs"]}
+    # Watch the workers closely and report rarely: the wall time written below
+    # is the run's cost, and a coarse sleep would round it up to the report.
+    reported = started
     while any(p.poll() is None for p, _, _ in procs):
-        time.sleep(opts.poll_seconds)
-        done = len(done_jobs(out) & wanted)
-        print(
-            f"  {done}/{len(wanted)} jobs done, {(time.time() - started) / 60:.1f} min", flush=True
-        )
+        time.sleep(1.0)
+        if time.time() - reported >= opts.poll_seconds:
+            reported = time.time()
+            done = len(done_jobs(out) & wanted)
+            print(
+                f"  {done}/{len(wanted)} jobs done, {(reported - started) / 60:.1f} min",
+                flush=True,
+            )
     failed = [k for k, (p, _, _) in enumerate(procs) if p.returncode != 0]
     for _, compile_dir, log in procs:
         log.close()
@@ -148,7 +154,7 @@ def cmd_run(opts) -> int:
     if failed:
         print(f"shard(s) {failed} failed; see {out / 'logs'}", file=sys.stderr)
         return 1
-    return cmd_score(argparse.Namespace(run_dirs=[str(out)], publish=None, title=None))
+    return cmd_score(argparse.Namespace(run_dirs=[str(out)], publish=None, title=None, note=None))
 
 
 def cmd_worker(opts) -> int:
@@ -170,6 +176,8 @@ def cmd_score(opts) -> int:
             board["invocations"] = [json.loads(line) for line in log.read_text().splitlines()]
         boards.append(board)
     board = merge_scoreboards(boards)
+    if opts.note:
+        board["note"] = opts.note
     targets = [Path(opts.run_dirs[0]) / "scoreboard"] if len(boards) == 1 else []
     if opts.publish:
         targets.append(Path(opts.publish))
@@ -240,6 +248,7 @@ def main(argv=None) -> int:
     score.add_argument("run_dirs", nargs="+")
     score.add_argument("--publish", help="also write PATH.json and PATH.md")
     score.add_argument("--title")
+    score.add_argument("--note", help="a caveat printed under the title and kept in the JSON")
     score.set_defaults(func=cmd_score)
 
     diff = sub.add_parser("diff", help="paired differences between two scoreboards")

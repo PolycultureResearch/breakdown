@@ -313,6 +313,11 @@ def plan_run(
                         "spacing_days": spacing,
                     }
                 )
+    # Shard k takes every n-th job. In tree order a shard would draw the same
+    # nodes at every start (always the daily ones, or never), so calibration
+    # jobs are dealt in the order of their keys: fixed, and unrelated to cost.
+    # The single worlds, the heaviest jobs, stay first and are dealt evenly.
+    jobs.sort(key=lambda j: (j["kind"] != "single", j["job"] if j["kind"] != "single" else ""))
 
     return {
         "row_format_version": ROW_FORMAT_VERSION,
@@ -406,7 +411,14 @@ class RowWriter:
         by_type: dict[str, list[dict]] = {}
         for row_type, row in self._buffer:
             by_type.setdefault(row_type, []).append({"job": job["job"], **row})
-        by_type["done"] = [{"job": job["job"], "kind": job["kind"], "seconds": round(seconds, 1)}]
+        by_type["done"] = [
+            {
+                "job": job["job"],
+                "kind": job["kind"],
+                "seconds": round(seconds, 1),
+                "finished": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            }
+        ]
         for row_type, rows in by_type.items():  # `done` last
             with open(self.dir / f"{row_type}.{self.shard}.jsonl", "a") as f:
                 for row in rows:
