@@ -180,13 +180,15 @@ Onset is the date the node's own series first moves, taken from the twin
 difference, not the date the driver was changed. The Alpenglow recall was dated
 by order while the return rate moved two weeks later.
 
-The generator reports two dates per metric. `onset` is the first day the twin
-difference clears the metric's noise floor, and `first_diff` is the first day
-the twins differ at all. The runner uses `onset`; if the metric never clears
-its floor it uses `first_diff`, but only when that is not before the declared
-start, because most of the generator's entity builders re-deal earlier days
-and an early `first_diff` is then noise. Failing both it uses the declared
-start. Every detection row says which it used.
+The generator reports two dates per metric. `first_diff` is the first day the
+twins differ at all, and `onset` is the first day the difference clears the
+metric's noise floor. The runner uses `first_diff` when it is not before the
+declared start: the twins were then identical until the anomaly reached this
+metric, so the date is exact. That matters for a ramp, whose `onset` comes
+two weeks into it, after a fit ending there has absorbed the start. When
+`first_diff` is earlier (most of the generator's entity builders re-deal days
+long before the anomaly) the runner uses `onset`, and failing both the
+declared start. Every detection row says which it used.
 
 The empirical tail has the resolution of the null windows behind it: with
 eight windows per node the smallest non-zero tail is 12.5%, so "below 5%"
@@ -215,7 +217,10 @@ to §5.5). One case needs a rule: the generator roots some anomalies at a
 count, because that is what its semantic layer can slice (a spike in the churn
 rate is rooted at `churned_subscriptions`). In a tree that count is usually an
 exact identity of a stock and a rate, and an identity cannot be a root. The
-true root is then the formula's parents that the measured effects say moved.
+true root is then the one parent of the formula, among those the measured
+effects say moved, with the largest relative change. The stock moves as well,
+because churned subscriptions leave it, but by a small fraction of what the
+rate moves by.
 
 **The target and its window.** The target is the deepest node downstream of
 the root whose metric the measured effects say moved. Its window starts in
@@ -483,12 +488,22 @@ from its parents. A node some remaining formula needs cannot be dropped. The
 scoreboard lists what was dropped and carries the hash of the tree actually
 run.
 
-**Root on a formula node** (§5.3): scored at the formula's parents that the
-measured effects say moved. If none did, the label stays on the formula node
-and the row says so.
+**Root on a formula node** (§5.3): scored at the formula's moved parent with
+the largest relative change. If no parent moved, the label stays on the
+formula node and the row says so. On White Cube this turns the churn spike's
+label from `churned_subscriptions` into `customer_churn_rate`; without the
+"largest change" rule `active_subscriptions` would count as a root too.
 
-**Onset** (§5.2): `onset`, then a `first_diff` not before the declared start,
+**Onset** (§5.2): a `first_diff` not before the declared start, then `onset`,
 then the declared start.
+
+**The target is chosen per world.** Whether a downstream metric "moved" is
+one twin's verdict and is noisy, so the same anomaly can get a different
+target in different seeds (White Cube's signup regression reaches
+`trials_started` in two seeds and `new_mrr` in the third). That is part of
+the spread across seeds. The alternative is the set-level
+`effects_summary.parquet`, which would give every seed the same target but
+make a world's rows depend on which other seeds are in the set.
 
 **The window grid** (§5.1). Smoke scores at most eight windows per null
 world; standard and full score one every 28 days, which is about 20 per

@@ -519,7 +519,7 @@ def run_single(lw, job, run, writer, common) -> None:
     # §5.2: the root's own score at the date its own series first moves.
     onsets = {}
     for node in mapping.truth:
-        onset, source = onset_of(node, plan, record, is_root=True)
+        onset, source = onset_of(node, plan, record, is_root=node == mapping.root_node)
         onsets[node] = onset
         grain = data.grain_of[node]
         start = floor_period(onset, grain)

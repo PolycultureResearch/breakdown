@@ -337,11 +337,15 @@ def test_a_dropped_root_is_off_tree_and_says_why(mapping):
     assert m.status == "off_tree" and "dropped" in m.note
 
 
-def test_a_root_on_a_formula_node_is_scored_at_the_parents_that_moved(mapping):
+def test_a_root_on_a_formula_node_is_scored_at_the_parent_that_carries_the_change(mapping):
     """The generator roots a churn-rate spike at the churned count; in the
-    tree that count is an identity, and the rate is what changed."""
+    tree that count is an identity, and the rate is what changed. The base
+    moves too (churned customers leave it), by far less."""
     dag, plan = mapping
-    m = map_root(dag, plan, record("churned", moved=["churned", "churn_rate"]))
+    rec = record("churned", moved=["churned", "churn_rate", "base"])
+    rec["measured_effects"]["churn_rate"]["rel_change"] = 0.36
+    rec["measured_effects"]["base"]["rel_change"] = -0.017
+    m = map_root(dag, plan, rec)
     assert (m.status, m.root_node, m.truth) == ("via_formula_parents", "churned", ["churn_rate"])
 
 
@@ -351,21 +355,30 @@ def test_a_formula_root_with_no_moved_parent_keeps_its_own_label(mapping):
     assert m.truth == ["churned"] and "no parent" in m.note
 
 
-def test_onset_prefers_the_measured_onset_then_first_diff_then_the_declared_start(mapping):
+def test_onset_is_the_exact_first_difference_then_the_noise_floor_then_the_declared_start(mapping):
     _, plan = mapping
     rec = record("revenue", moved=["revenue"])
+    # The twins were identical until the anomaly's own start: that day is exact,
+    # and a ramp's noise-floor onset a week later is not when it arrived.
+    assert onset_of("revenue", plan, rec, is_root=True) == (
+        pd.Timestamp("2025-02-03"),
+        "first_diff:node",
+    )
+    # A first difference before the declared start is re-dealt draws, not arrival.
+    rec["measured_effects"]["revenue"]["first_diff"] = "2024-06-01"
     assert onset_of("revenue", plan, rec, is_root=True) == (
         pd.Timestamp("2025-02-10"),
         "onset:node",
     )
     rec["measured_effects"]["revenue"]["onset"] = None
-    assert onset_of("revenue", plan, rec, is_root=True)[1] == "first_diff:node"
-    # A first difference before the declared start is re-dealt draws, not arrival.
-    rec["measured_effects"]["revenue"]["first_diff"] = "2024-06-01"
     assert onset_of("revenue", plan, rec, is_root=True) == (
         pd.Timestamp("2025-02-03"),
         "declared_start",
     )
+    # The root's own slice is consulted for the root node only.
+    rec["root_effect"] = {"onset": "2025-02-12", "first_diff": "2024-06-01"}
+    assert onset_of("revenue", plan, rec, is_root=True)[1] == "onset:root_slice"
+    assert onset_of("revenue", plan, rec, is_root=False)[1] == "declared_start"
 
 
 def test_the_target_is_the_deepest_node_the_anomaly_is_measured_to_reach(mapping):

@@ -14,14 +14,18 @@ score:
   at a count (a spike in the churn *rate* is rooted at `churned_subscriptions`,
   because that is the metric its semantic layer can slice). In a tree that
   count is often an exact identity of a stock and a rate, and an identity
-  cannot be a root (innovation design §4.1). The truth is then the formula's
-  parents that the measured effects say moved, followed up through formulas.
-- **Onset** (`onset_of`). The date the node's own series first clears its
-  noise floor in the twin difference (`onset`); failing that the first day
-  the twins differ at all (`first_diff`) when that is not before the declared
-  start (most entity builders re-deal earlier days, so an early `first_diff`
-  is realization noise, not arrival); failing that the declared start. The
-  source used is recorded on every row.
+  cannot be a root (innovation design §4.1). The truth is then the one parent
+  of the formula, among those the measured effects say moved, with the
+  largest relative change: the parent that carries the change. The stock
+  moves too, but as a consequence (churned subscriptions leave the base), and
+  by a small fraction of what the rate moves by.
+- **Onset** (`onset_of`). The first day the twins differ at all
+  (`first_diff`), when that is not before the declared start: the twins were
+  then identical until the anomaly arrived at this metric, so it is the exact
+  arrival date, ramps included. When it is earlier (most entity builders
+  re-deal days long before the anomaly, so the twins differ from the start),
+  the first day the difference clears the metric's noise floor (`onset`).
+  Failing both, the declared start. The source used is on every row.
 - **Target** (`pick_target`). The deepest node downstream of the truth whose
   metric the measured effects say moved: "the top metric the anomaly reaches".
 """
@@ -45,7 +49,7 @@ MAX_ANALYSIS_DAYS = 28
 class RootMapping:
     status: str  # on_tree | on_tree_slice | via_formula_parents | off_tree
     root_node: str | None  # the node the generator's label lands on
-    truth: list[str] = field(default_factory=list)  # the node(s) scored as the root
+    truth: list[str] = field(default_factory=list)  # the node scored as the root
     note: str = ""
 
     @property
@@ -116,10 +120,19 @@ def map_root(dag: nx.DiGraph, plan: TreePlan, record: dict[str, Any]) -> RootMap
                     [node],
                     note=f"'{node}' is a formula and no parent of '{n}' is measured as moved",
                 )
-            nxt.extend(moved)
+            nxt.append(max(moved, key=lambda p: _abs_rel_change(p, plan, record)))
         truth = list(dict.fromkeys(nxt))
         status = "via_formula_parents"
     return RootMapping(status, node, truth)
+
+
+def _abs_rel_change(node: str, plan: TreePlan, record: dict[str, Any]) -> float:
+    effects = record.get("measured_effects") or {}
+    effect = effects.get(metric_of(node, plan, set(effects)) or "") or {}
+    try:
+        return abs(float(effect.get("rel_change") or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _is_formula(dag: nx.DiGraph, node: str) -> bool:
@@ -136,13 +149,13 @@ def onset_of(
     if is_root:
         candidates.append(("root_slice", record.get("root_effect")))
     for label, effect in candidates:
-        if effect and effect.get("onset"):
-            return pd.Timestamp(effect["onset"]), f"onset:{label}"
-    for label, effect in candidates:
         if effect and effect.get("first_diff"):
             first = pd.Timestamp(effect["first_diff"])
             if first >= declared:
                 return first, f"first_diff:{label}"
+    for label, effect in candidates:
+        if effect and effect.get("onset"):
+            return pd.Timestamp(effect["onset"]), f"onset:{label}"
     return declared, "declared_start"
 
 
