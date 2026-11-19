@@ -64,6 +64,25 @@ per arm, then compare them:
 A slope arm takes several times as long as the level arm. `--shard k/n` scores
 every n-th job, starting at the k-th, into its own CSV, so n processes split an
 arm; `null-compare` takes `name=a.csv,b.csv` and concatenates.
+
+A second company (design doc §6.4). `--company alpenglow` (or
+`BENCH_COMPANY=alpenglow`) points every mode at Alpenglow Supply Co., the
+retail vertical, instead of White Cube. Its clean windows are not written
+down here: they are derived from the planted-anomaly key
+(`<slug>.ground_truth.json`, which `python demo/fetch_demo_data.py alpenglow`
+downloads to `demo/.data/alpenglow/`). `describe` prints the per-node table
+that says which claims the company can test, and `windows` the derived gaps:
+    ... --company alpenglow describe
+    ... --company alpenglow windows
+    ... --company alpenglow null out.csv --horizons 7,28
+Its series are committed snapshots (`demo/.breakdown/alpenglow_snapshots`),
+so the duckdb is not read. The `dbt` provider still has to be constructed,
+and unlike `local` it reads its project to do that, so a fake_companies
+checkout is needed for `dbt/retail_dtc` (its `dbt_project.yml`, `profiles.yml`
+and `target/semantic_manifest.json`): beside this repo, as `demo/Makefile`
+assumes, or named in `ALPENGLOW_DBT_PROJECT`. `demo/alpenglow_tree.yml` says
+how to refetch the snapshots. `<COMPANY>_TREE`, `<COMPANY>_SNAPSHOT_DIR` and
+`<COMPANY>_GROUND_TRUTH` in the environment override where each is read from.
 """
 
 import argparse
@@ -75,13 +94,62 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO)
 DEMO = os.path.join(REPO, "demo")
+
+
+def _company_from_argv():
+    """`--company X` has to be read before breakdown is imported, because the
+    tree and window reach the app through the environment."""
+    for i, a in enumerate(sys.argv):
+        if a == "--company" and i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+        if a.startswith("--company="):
+            return a.split("=", 1)[1]
+    return os.environ.get("BENCH_COMPANY", "white_cube")
+
+
+# What differs between companies and is not in the ground-truth file: where
+# the tree and its data live, and the window the tree is loaded over. `env`
+# is a default, not an override: a path already in the environment wins, so a
+# first Alpenglow load can name the real dbt project.
+COMPANIES = {
+    "white_cube": dict(
+        tree=os.path.join(DEMO, "white_cube_tree.yml"),
+        start="2024-06-01",
+        end="2026-07-30",
+        snapshots=os.path.join(DEMO, ".breakdown", "snapshots"),
+        ground_truth=os.path.join(DEMO, ".data", "white_cube", "white_cube.ground_truth.json"),
+        env={"WHITE_CUBE_DBT_PROJECT": "/nonexistent/white-cube-has-no-provider"},
+    ),
+    "alpenglow": dict(
+        tree=os.path.join(DEMO, "alpenglow_tree.yml"),
+        start="2024-06-01",
+        end="2026-05-31",
+        snapshots=os.path.join(DEMO, ".breakdown", "alpenglow_snapshots"),
+        ground_truth=os.path.join(DEMO, ".data", "alpenglow", "alpenglow.ground_truth.json"),
+        env={
+            "ALPENGLOW_DBT_PROJECT": os.path.join(
+                os.path.dirname(REPO), "fake_companies", "dbt", "retail_dtc"
+            )
+        },
+        profiles_from="ALPENGLOW_DBT_PROJECT",
+    ),
+}
+COMPANY = _company_from_argv()
+if COMPANY not in COMPANIES:
+    raise SystemExit(f"unknown company {COMPANY!r}; known: {sorted(COMPANIES)}")
+CONFIG = COMPANIES[COMPANY]
+_PREFIX = COMPANY.upper()
 os.environ.update(
-    BREAKDOWN_TREE=os.path.join(DEMO, "white_cube_tree.yml"),
-    BREAKDOWN_START_DATE="2024-06-01",
-    BREAKDOWN_END_DATE="2026-07-30",
-    BREAKDOWN_SNAPSHOT_DIR=os.path.join(DEMO, ".breakdown", "snapshots"),
-    WHITE_CUBE_DBT_PROJECT="/nonexistent/white-cube-has-no-provider",
+    BREAKDOWN_TREE=os.environ.get(f"{_PREFIX}_TREE", CONFIG["tree"]),
+    BREAKDOWN_START_DATE=CONFIG["start"],
+    BREAKDOWN_END_DATE=CONFIG["end"],
+    BREAKDOWN_SNAPSHOT_DIR=os.environ.get(f"{_PREFIX}_SNAPSHOT_DIR", CONFIG["snapshots"]),
 )
+for _name, _value in CONFIG["env"].items():
+    os.environ.setdefault(_name, _value)
+if "profiles_from" in CONFIG:  # the project's own profiles.yml, not ~/.dbt
+    os.environ["DBT_PROFILES_DIR"] = os.environ[CONFIG["profiles_from"]]
+GROUND_TRUTH = os.environ.get(f"{_PREFIX}_GROUND_TRUTH", CONFIG["ground_truth"])
 os.environ.pop("BREAKDOWN_WARM", None)
 
 import networkx as nx  # noqa: E402
@@ -105,7 +173,7 @@ from breakdown.parser import TrendConfig  # noqa: E402
 # ones knowledge/demo_guided_tour.md walks a prospect through; the "-onset"
 # variants start the analysis window on the anomaly's own first period, which
 # is the window a monitor would hand over.
-STORIES = {
+WHITE_CUBE_STORIES = {
     "A": dict(
         target="new_mrr",
         ana=("2026-02-09", "2026-03-08"),
@@ -156,6 +224,44 @@ STORIES = {
         truth={"trial_activation_rate", "trial_days_active"},
     ),
 }
+
+# Alpenglow's planted anomalies (alpenglow.ground_truth.json), each over its
+# own span from its first period. `truth` is the first metric of
+# demo/alpenglow_tree.yml in the anomaly's `affected_metrics`; the two demand
+# anomalies enter the tree twice, through `units` and through `aov`.
+ALPENGLOW_STORIES = {
+    "checkout": dict(
+        target="gross_revenue",
+        ana=("2024-09-12", "2024-09-23"),
+        ref=None,
+        truth={"conversion_rate"},  # mobile_checkout_bug
+    ),
+    "recall": dict(
+        target="net_revenue",
+        ana=("2024-10-07", "2024-11-10"),
+        ref=None,
+        truth={"return_rate"},  # jackets_sizing_recall
+    ),
+    "budget": dict(
+        target="gross_revenue",
+        ana=("2025-02-03", "2025-02-23"),
+        ref=None,
+        truth={"marketing_spend"},  # paid_social_budget_cut
+    ),
+    "basket": dict(
+        target="net_revenue",
+        ana=("2025-04-07", "2025-04-20"),
+        ref=None,
+        truth={"units", "aov"},  # surprise level shift in items_per_order
+    ),
+    "tees": dict(
+        target="net_revenue",
+        ana=("2025-05-05", "2025-05-18"),
+        ref=None,
+        truth={"units", "aov"},  # tees_demand_slump
+    ),
+}
+STORIES = {"white_cube": WHITE_CUBE_STORIES, "alpenglow": ALPENGLOW_STORIES}[COMPANY]
 
 MAX_DRAWS = 1000
 SEED = 0
@@ -488,7 +594,7 @@ def run_story(name, dag, data, fits):
 # the horizon's effect on the predictive width is read off directly. A fit's
 # *history* still contains earlier anomalies, as a real tree's would.
 # ---------------------------------------------------------------------------
-CLEAN_GAPS = [
+WHITE_CUBE_CLEAN_GAPS = [
     ("2024-12-02", "2025-03-02"),  # after the 2024 surprises, before the LatAm campaign
     ("2025-06-23", "2025-08-03"),  # after the campaign + null spike, before onboarding
     ("2025-12-15", "2026-02-01"),  # after onboarding + the dupes, before the CTA regression
@@ -496,7 +602,7 @@ CLEAN_GAPS = [
     ("2026-07-13", "2026-07-26"),  # after the churn spike
 ]
 # Where each planted anomaly enters the tree, and when: the positive class.
-PLANTED = [
+WHITE_CUBE_PLANTED = [
     ("visit_signup_rate", "2026-02-02"),
     ("customer_churn_rate", "2026-04-27"),
     ("marketing_spend", "2025-03-03"),
@@ -504,6 +610,85 @@ PLANTED = [
     ("trial_activation_rate", "2025-08-04"),
     ("trial_days_active", "2025-08-04"),
 ]
+# Alpenglow's. `return_rate` is dated by the return request, which trails the
+# order by delivery and request time (about two weeks), so the recall is also
+# scored from the week its first returns arrive.
+ALPENGLOW_PLANTED = [
+    ("conversion_rate", "2024-09-12"),  # mobile_checkout_bug
+    ("return_rate", "2024-10-07"),  # jackets_sizing_recall, as dated
+    ("return_rate", "2024-10-21"),  # ... and when its returns reach the metric
+    ("marketing_spend", "2025-02-03"),  # paid_social_budget_cut
+    ("units", "2025-04-07"),  # surprise level shift in items_per_order
+    ("aov", "2025-04-07"),
+    ("units", "2025-05-05"),  # tees_demand_slump
+    ("aov", "2025-05-05"),
+    ("units", "2025-12-25"),  # surprise two-day spike in shorts demand
+    ("aov", "2025-12-25"),
+]
+PLANTED = {"white_cube": WHITE_CUBE_PLANTED, "alpenglow": ALPENGLOW_PLANTED}[COMPANY]
+
+BUFFER_DAYS = 14  # a clean window starts at least this long after an anomaly ends
+MIN_HISTORY_DAYS = 182  # ... and this long after the data starts
+
+
+def derive_clean_gaps(ground_truth, data_start, data_end):
+    """The spans with nothing planted, from a fake_companies ground-truth list.
+
+    A gap opens on the first Monday at least `BUFFER_DAYS` after one anomaly
+    ends (and `MIN_HISTORY_DAYS` after the data starts) and closes the day
+    before the next anomaly begins, or on the last day of data. Every entry
+    counts, data-quality events included. Gaps too short to hold one 7-day
+    window are dropped."""
+    spans = sorted((pd.Timestamp(a["start"]), pd.Timestamp(a["end"])) for a in ground_truth)
+    data_start, data_end = pd.Timestamp(data_start), pd.Timestamp(data_end)
+    floor = data_start + pd.Timedelta(days=MIN_HISTORY_DAYS)
+    gaps = []
+    for i in range(len(spans) + 1):
+        prev_end = max((e for _, e in spans[:i]), default=None)
+        lo = floor if prev_end is None else max(floor, prev_end + pd.Timedelta(days=BUFFER_DAYS))
+        lo += pd.Timedelta(days=(7 - lo.dayofweek) % 7)  # the next Monday
+        hi = spans[i][0] - pd.Timedelta(days=1) if i < len(spans) else data_end
+        if lo + pd.Timedelta(days=6) <= hi:
+            gaps.append((str(lo.date()), str(hi.date())))
+    return gaps
+
+
+def clean_gaps():
+    """White Cube's gaps are pinned as §6.1 to §6.3 ran them: they were
+    written by hand and do not follow one rule (`windows` prints what the
+    rule above gives instead), so deriving them would change those sections'
+    numbers. Every other company's are derived."""
+    if COMPANY == "white_cube":
+        return WHITE_CUBE_CLEAN_GAPS
+    with open(GROUND_TRUTH) as f:
+        return derive_clean_gaps(json.load(f), CONFIG["start"], CONFIG["end"])
+
+
+def clean_starts(gaps):
+    """`(start, limit)` per weekly window. In a derived gap a start is kept
+    only if a whole 7-day window fits; a pinned gap is taken as written."""
+    out = []
+    for lo, hi in gaps:
+        for s in pd.date_range(lo, hi, freq="W-MON"):
+            if COMPANY == "white_cube" or s + pd.Timedelta(days=6) <= pd.Timestamp(hi):
+                out.append((str(s.date()), hi))
+    return out
+
+
+def show_windows():
+    gaps = clean_gaps()
+    print(f"{COMPANY}: {len(clean_starts(gaps))} weekly starts in {len(gaps)} gaps")
+    for lo, hi in gaps:
+        print(f"  {lo} .. {hi}  ({len(clean_starts([(lo, hi)]))} starts)")
+    if os.path.exists(GROUND_TRUTH):
+        with open(GROUND_TRUTH) as f:
+            derived = derive_clean_gaps(json.load(f), CONFIG["start"], CONFIG["end"])
+        if derived != gaps:
+            print("derived from the ground truth instead (not used):")
+            for lo, hi in derived:
+                print(f"  {lo} .. {hi}")
+
+
 HORIZON_DAYS = (1, 3, 7, 14, 28)  # 1 and 3 apply to day-grain nodes only
 NULL_FIELDS = (
     "label node grain start horizon_days n z pit tail innovation pred_sd ppc_status status "
@@ -589,10 +774,10 @@ def null_run(
             f.flush()
         # The planted roots are always scored, whatever `--nodes` says: they
         # are the positive class every arm is read against.
-        jobs = [("planted", n, s, "2026-07-26") for n, s in PLANTED]
-        for lo, hi in CLEAN_GAPS:
-            for s in pd.date_range(lo, hi, freq="W-MON"):
-                jobs += [("null", n, str(s.date()), hi) for n in nodes]
+        last = "2026-07-26" if COMPANY == "white_cube" else CONFIG["end"]
+        jobs = [("planted", n, s, last) for n, s in PLANTED]
+        for s, hi in clean_starts(clean_gaps()):
+            jobs += [("null", n, s, hi) for n in nodes]
         for i, (label, node, start, limit) in enumerate(jobs):
             if shard and i % shard[1] != shard[0]:
                 continue
@@ -791,9 +976,105 @@ def null_compare(specs, horizons=(7, 28)):
         print(pd.DataFrame(rows).T.sort_index(sort_remaining=False).to_string())
 
 
+def describe(out_path=None):
+    """The company in numbers: per fetched node, what the calibration claims
+    need to know before a single fit (design doc §6.4).
+
+    Model-free on purpose. The level is a centred rolling mean over four weeks
+    and the residual is what is left after that level and one additive
+    weekday effect, which is the shape of the engine's default model (a
+    level, additive seasonality, constant Gaussian noise) without its fit.
+
+    - `growth`: mean of the last third of the history over the first third.
+    - `fall_13w`: the largest fall of the level over any 13 weeks, as a share
+      of where it started. A business that only grows has 0.
+    - `annual_swing`: range of the level about its straight-line trend, over
+      the mean. `weekday_share`: share of the detrended variance that the
+      weekday effect explains (day grain only).
+    - `zeros`, `zero_run`: share of periods exactly zero; longest run of them.
+    - `var_power`: slope of log residual variance on log level over eight
+      level bins. 0 is constant noise, 1 a Poisson-like count, 2 noise
+      proportional to the level.
+    - `late_sd`: residual sd in the last third over the pooled residual sd.
+      Above 1, one noise level is too narrow where an analysis window sits.
+    - `dispersion`: residual variance over the mean level, for counts. 1 is a
+      Poisson; below 1 a negative binomial cannot represent it.
+    """
+    dag, data = load()
+    rows = []
+    for node in nx.topological_sort(dag):
+        defn = defn_of(dag, node)
+        if defn.formula:
+            continue
+        grain = data.grain_of[node]
+        frame = data.fit_frame(node, [], grain)
+        y = pd.Series(frame[node].to_numpy(float), index=pd.DatetimeIndex(frame["date"]))
+        y = y.dropna()
+        n = len(y)
+        per_week = 7 if grain == "day" else 1
+        level = y.rolling(4 * per_week, center=True, min_periods=2 * per_week).mean()
+        detr = y - level
+        weekday = detr.groupby(y.index.dayofweek).transform("mean") if grain == "day" else 0.0
+        resid = (detr - weekday).dropna()
+        third = n // 3
+        t = np.arange(n)
+        line = np.polyval(np.polyfit(t, level.bfill().ffill().to_numpy(), 1), t)
+        span = 13 * per_week
+        lv = level.dropna()
+        fall = max(0.0, float(((lv - lv.shift(-span)) / lv).max())) if len(lv) > span else np.nan
+        is_zero = (y == 0).to_numpy()
+        run = longest = 0
+        for z in is_zero:
+            run = run + 1 if z else 0
+            longest = max(longest, run)
+        bins = pd.qcut(level[resid.index], 8, duplicates="drop")
+        by_bin = pd.DataFrame({"level": level[resid.index], "r": resid}).groupby(
+            bins, observed=True
+        )
+        lev, var = by_bin["level"].mean(), by_bin["r"].var()
+        usable = (lev > 0) & (var > 0)
+        power = (
+            float(np.polyfit(np.log(lev[usable]), np.log(var[usable]), 1)[0])
+            if usable.sum() >= 4
+            else np.nan
+        )
+        whole = bool(np.all(np.abs(y - y.round()) < 1e-9))
+        rows.append(
+            dict(
+                node=node,
+                role=node_role(dag, node),
+                parents=",".join(dag.predecessors(node)) or "-",
+                grain=grain,
+                n=n,
+                mean=float(y.mean()),
+                growth=float(y.iloc[-third:].mean() / y.iloc[:third].mean()),
+                fall_13w=fall,
+                annual_swing=float((level - line).max() - (level - line).min()) / float(y.mean()),
+                weekday_share=(
+                    float(1 - resid.var() / detr.dropna().var()) if grain == "day" else np.nan
+                ),
+                zeros=float(is_zero.mean()),
+                zero_run=longest,
+                whole=whole,
+                var_power=power,
+                late_sd=float(resid.iloc[-third:].std() / resid.std()),
+                dispersion=float(resid.var() / y.mean())
+                if whole and defn.kind == "flow"
+                else np.nan,
+            )
+        )
+    table = pd.DataFrame(rows)
+    pd.set_option("display.width", 250)
+    pd.set_option("display.max_columns", 40)
+    print(table.to_string(index=False, float_format=lambda v: f"{v:.3g}"))
+    if out_path:
+        table.to_csv(out_path, index=False)
+
+
 def main():
     cli = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     cli.add_argument("args", nargs="*")
+    cli.add_argument("--company", default=COMPANY, help="white_cube (default) or alpenglow")
     cli.add_argument("--nodes", help="null: comma-separated nodes to restrict the null windows to")
     cli.add_argument("--horizons", help="null: comma-separated horizons in days")
     cli.add_argument(
@@ -825,6 +1106,10 @@ def main():
         return null_summary(argv[1])
     if argv[:1] == ["null-compare"]:
         return null_compare(argv[1:])
+    if argv[:1] == ["windows"]:
+        return show_windows()
+    if argv[:1] == ["describe"]:
+        return describe(argv[1] if len(argv) > 1 else None)
     names = argv or list(STORIES)
     dag, data = load()
     force_trend(dag, list(dag.nodes), opts.trend, opts.slope_sigma)
