@@ -56,7 +56,9 @@ def compile_env(compile_dir: Path) -> dict[str, str]:
 
 
 def cmd_run(opts) -> int:
+    from .loader import UnservedNodes, WorldCannotAnswer
     from .runner import RunRefused, done_jobs, plan_run
+    from .worldset import WorldSetError
 
     out = Path(opts.out)
     bindings = opts.bindings or default_bindings(opts.tree)
@@ -76,7 +78,7 @@ def cmd_run(opts) -> int:
             drop_unserved=opts.drop_unserved,
             trace_cache_bytes=int(opts.trace_cache_gb * 1024**3),
         )
-    except RunRefused as exc:
+    except (RunRefused, UnservedNodes, WorldCannotAnswer, WorldSetError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
     kinds = {k: sum(j["kind"] == k for j in run["jobs"]) for k in ("calibration", "single")}

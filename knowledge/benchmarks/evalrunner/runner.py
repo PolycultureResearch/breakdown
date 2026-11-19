@@ -693,7 +693,14 @@ def run_shard(run_dir: str | Path, shard: tuple[int, int] = (0, 1), log=print) -
         if loaded is None or loaded.world.id != job["world"]:
             world = worldset.world(job["world"])
             loaded = load_world(worldset, world, tree, drop_unserved=run["tree"]["drop_unserved"])
-            if loaded.plan.summary() != {key: run["tree"][key] for key in loaded.plan.summary()}:
+            here, planned = loaded.plan.summary(), run["tree"]
+            # The reasons name the world, so nodes are compared, not sentences.
+            if (
+                here["served"] != planned["served"]
+                or set(here["unserved"]) != set(planned["unserved"])
+                or here["dropped"] != planned["dropped"]
+                or here["derived_instead_of_fetched"] != planned["derived_instead_of_fetched"]
+            ):
                 raise RunRefused(
                     f"world '{world.id}' binds the tree differently from the world the run "
                     "was planned on; a set's worlds must share their metrics"

@@ -1,8 +1,13 @@
 # Evaluation spec: scoring breakdown against generated companies
 
-**Status:** proposal, 2026-11-19. Nothing here is built except the prototype
-benchmark it grows out of
-([`benchmarks/innovation_score.py`](benchmarks/innovation_score.py)).
+**Status:** proposal, 2026-11-19. Built so far: the prototype benchmark it
+grows out of ([`benchmarks/innovation_score.py`](benchmarks/innovation_score.py)),
+and the runner of §10 step 2
+([`benchmarks/evaluate.py`](benchmarks/evaluate.py), §11), with one smoke-tier
+scoreboard on a tree that is not yet canonical
+([`eval/`](eval/)). Attribution (§5.4), abstention (§5.5), the magnitude
+ladder and the slice check are not built. §12 records what building the
+runner changed or pinned down in this document.
 
 **Companion:** the generator side of this lives in the fake_companies repo, at
 `docs/eval_worlds_spec.md`. That document says what the generator must emit;
@@ -109,6 +114,15 @@ trees must include at least one rate, one stock, one node with a learned
 parent, one formula node and one sliceable dimension, so every claim in §3 can
 be tested on every vertical.
 
+Canonical trees do not exist yet (generator phase 2). Until they do the
+runner takes the tree as a parameter and stamps its path and hash on the
+scoreboard, marked as not canonical. A tree binds to a world set by metric
+name: a node is the metric its `source` names, or what a small bindings file
+says (a slice of a metric, a running total). A node the world set cannot
+serve is reported by name and the run refuses, unless it is told to run
+without those nodes, which the scoreboard records as a change to the tree
+(§12).
+
 ### 4.4 Development and held-out worlds
 
 - **Development:** seeds 0 to 4 of every cell. White Cube and Alpenglow story
@@ -142,6 +156,12 @@ correlated (−0.19 to −0.44), so counting them as independent overstated the
 evidence. Spread is taken across seeds, where worlds are independent, not
 across windows.
 
+The windows of a world sit on one grid of Monday starts, evenly spaced by a
+whole number of weeks, the first one 182 days into the data. Every node and
+every arm is scored on the same grid. A horizon longer than the spacing is
+scored on every k-th start, so windows at one horizon never overlap.
+"Consecutive" means neighbours on the grid; the scoreboard states the spacing.
+
 For Q9, the same table split by the engine's `ppc_status` and `fit_quality`,
 with the share of badly calibrated nodes the flag catches and the share of
 well-calibrated nodes it wrongly flags.
@@ -160,6 +180,18 @@ Onset is the date the node's own series first moves, taken from the twin
 difference, not the date the driver was changed. The Alpenglow recall was dated
 by order while the return rate moved two weeks later.
 
+The generator reports two dates per metric. `onset` is the first day the twin
+difference clears the metric's noise floor, and `first_diff` is the first day
+the twins differ at all. The runner uses `onset`; if the metric never clears
+its floor it uses `first_diff`, but only when that is not before the declared
+start, because most of the generator's entity builders re-deal earlier days
+and an early `first_diff` is then noise. Failing both it uses the declared
+start. Every detection row says which it used.
+
+The empirical tail has the resolution of the null windows behind it: with
+eight windows per node the smallest non-zero tail is 12.5%, so "below 5%"
+means "no quiet window was as extreme". The scoreboard prints the count.
+
 ### 5.3 Localization (Q3, Q4)
 
 On single worlds, with the target set to the top metric the anomaly reaches:
@@ -173,7 +205,22 @@ On single worlds, with the target set to the top metric the anomaly reaches:
 
 A first place carries a flag for whether it had evidence behind it. On
 Alpenglow two of four first places had `|z|` under 1, which is a right answer
-the reader would have no reason to trust.
+the reader would have no reason to trust. The bar is `|z|` of 2.
+
+**The true root, in tree terms.** The generator labels a root as a metric and
+a slice. The runner maps it to the node bound to that metric at that slice,
+else the node bound to the metric's total. If no node carries the metric the
+world is **off-tree** for that tree and is counted, not ranked (it is an input
+to §5.5). One case needs a rule: the generator roots some anomalies at a
+count, because that is what its semantic layer can slice (a spike in the churn
+rate is rooted at `churned_subscriptions`). In a tree that count is usually an
+exact identity of a stock and a rate, and an identity cannot be a root. The
+true root is then the formula's parents that the measured effects say moved.
+
+**The target and its window.** The target is the deepest node downstream of
+the root whose metric the measured effects say moved. Its window starts in
+the period holding the root's onset and runs to the anomaly's end, at most 28
+days, in whole periods of the target's grain.
 
 ### 5.4 Attribution (Q5)
 
@@ -237,7 +284,10 @@ shared machine. So the evaluation is tiered.
 Rules that keep it affordable:
 
 - Fits are cached by world, node, fit end and model configuration, so a node
-  whose configuration did not change between two arms is fitted once.
+  whose configuration did not change between two arms is fitted once. What is
+  kept for every fit is its scored rows, which are small. The trace is kept
+  only for single worlds, where a fit has several consumers, in a directory
+  capped in bytes (§12).
 - Each process has its own compile directory (roadmap C65).
 - Arms are compared on the same windows. A subset of windows is never an arm
   of its own, because of the correlation in §5.1.
@@ -292,6 +342,217 @@ the manifest grows.
    check.
 
 Steps 1 and 2 can proceed in parallel once the manifest format is fixed.
+
+Step 2 is built (§11). Step 3 waits on canonical trees and the generator's
+ten-seed sets.
+
+## 11. How to run
+
+The runner is [`benchmarks/evaluate.py`](benchmarks/evaluate.py); its code is
+the `evalrunner` package beside it. It needs a world set on disk and nothing
+else from the generator: no dbt, no warehouse, no fake_companies checkout.
+
+**Build a world set** (in the fake_companies repo; `--no-raw` keeps only what
+the runner reads):
+
+```bash
+uv run fake-companies worlds --config configs/white_cube_b2c_app.yaml \
+    --seeds 0-2 --null --singles all --no-raw --out /path/to/worlds/white_cube
+```
+
+**Run a tier.** Output goes to a run directory outside the repo:
+
+```bash
+uv run python knowledge/benchmarks/evaluate.py run \
+    --worlds /path/to/worlds/white_cube --tree demo/white_cube_tree.yml \
+    --tier smoke --out /path/to/runs/white_cube_smoke
+```
+
+It prints the plan (which nodes are served, how each single world's root maps
+to the tree, how many fits), runs it in four worker processes, and writes
+`scoreboard.json` and `scoreboard.md` into the run directory. `--dry-run`
+stops after the plan. Running the same command again resumes: finished jobs
+are skipped, so an interrupted run loses at most the jobs in flight.
+
+| Option | Meaning |
+|---|---|
+| `--tier smoke\|standard\|full` | Seeds, regimes, horizons, windows and single worlds as in §7 (table below) |
+| `--seeds 0-2` | Override the tier's seeds. Seeds from 5 up are refused without `--held-out` |
+| `--held-out` | Also score held-out seeds. The scoreboard says so in its header |
+| `--regimes`, `--horizons`, `--singles` | Comma-separated overrides |
+| `--spacing-days N` or `--max-windows N` | The null-window grid: a fixed spacing, or at most N windows per world |
+| `--bindings FILE` | Node-to-series bindings. Defaults to `evalrunner/bindings/<tree file stem>.yml` when that exists |
+| `--drop-unserved` | Run without the nodes the world set cannot serve |
+| `--shards N` | Worker processes, default 4. Each fit also runs four chains |
+| `--trace-cache-gb G` | Byte cap on the trace cache, default 4; 0 keeps no traces |
+
+| Tier | Seeds | Regimes | Horizons | Null windows per world | Single worlds |
+|---|---|---|---|---|---|
+| smoke | 0 to 2 | baseline | 7 | at most 8, evenly spaced | 3 anomalies, spread over the depths their roots sit at |
+| standard | 0 to 4 | baseline | 1, 7, 28 | every 28 days | all |
+| full | 0 to 4, plus 5 to 9 with `--held-out` | all in the set | 1, 7, 28 | every 28 days | all |
+
+**Trees.** `demo/white_cube_tree.yml` (b2c_saas) binds by metric name and
+needs no bindings file. `demo/alpenglow_tree.yml` (retail_dtc) uses
+`evalrunner/bindings/alpenglow_tree.yml` and needs `--drop-unserved`: its
+`discounted_orders` node has no metric in the world set.
+
+**Score, publish, compare.**
+
+```bash
+# rebuild the scoreboard from a run's rows, and publish a copy into the repo
+uv run python knowledge/benchmarks/evaluate.py score /path/to/runs/white_cube_smoke \
+    --publish knowledge/eval/2026-11-19_smoke_white_cube_demo_tree
+# several verticals as one scoreboard, with per-vertical tables
+uv run python knowledge/benchmarks/evaluate.py score RUN_A RUN_B --publish knowledge/eval/NAME
+# paired differences between two scoreboards, on the worlds they share
+uv run python knowledge/benchmarks/evaluate.py diff before.json after.json
+```
+
+**What a run directory holds.**
+
+| Path | What |
+|---|---|
+| `run.json` | The stamp (engine commit, generator version, manifest `config_sha256`, tree path and hashes, tier, seeds, world ids) and the ordered job list |
+| `rows/<type>.<shard>.jsonl` | Raw rows: `calibration`, `detection`, `localization`, `nodes`, `fits`, `analysis`, `skipped`, `done`. Not committed |
+| `traces/` | Pickled fits of single worlds, least recently used evicted over the byte cap |
+| `logs/`, `invocations.jsonl` | Worker output, and the wall time of each invocation |
+| `scoreboard.json`, `scoreboard.md` | The scoreboard |
+
+**The scoreboard file.** `rows` is a list with one entry per question, metric,
+horizon, ranking method, role and vertical: `value` (mean over seeds),
+`spread` (standard deviation across seeds), `n_seeds`, `n`, and `units`, the
+metric's value in each world. `diff` pairs two scoreboards on `units`.
+
+**Tests.** `tests/test_eval_runner.py`, on hand-written world sets
+(`tests/eval_worlds_fixture.py`). One test fits; the rest run in two seconds.
+
+## 12. Decisions made while building the runner
+
+Where this document was silent or turned out wrong, the smallest sensible
+choice was made. Each is recorded here so the spec and the code agree.
+
+**A world reaches the engine through the provider boundary.** The loader is a
+fetcher (`evalrunner/loader.py`, a `BaseDataFetcher`) that answers each node
+from the world's daily series file, handed to the same `fetch_all_metrics`
+the server calls. The data therefore goes through the alignment every
+provider goes through, derived nodes are derived by the engine's own code,
+and the identity checks run. It is kept with the benchmark and not in
+`breakdown/`: it reads one generator's file format, and "this node cannot be
+served" is a result it reports, not a connection someone fixes.
+
+**Coarser grains are rebuilt from days by the manifest's rule, and refused
+when they cannot be.** A sum adds the days of each whole week; a stock takes
+the last day; a derived metric is recomputed from its inputs, each aggregated
+by its own rule. A mean over rows, a distinct count and a rolling window are
+served at day grain and refused at a coarser one. Nothing is approximated.
+
+**A ratio aggregates each side by that side's own rule.** The manifest calls
+every ratio `ratio_of_sums`. `customer_churn_rate` is churned subscriptions
+over active subscriptions, and active subscriptions is a stock. Summing a
+stock over a week gives subscription-days, and the tree's weekly identity
+(`churned = active × rate`) then fails by a factor of seven. The loader reads
+the two input metrics' rules from `metrics[].inputs`: a summed numerator over
+the denominator's last day. Raised with the generator (it should say this in
+the manifest).
+
+**A weekly value rebuilt from days is not always MetricFlow's weekly value.**
+`active_subscriptions` is a distinct count. Asked for a week, MetricFlow
+counts subscriptions active at any time in it; the world set calls the metric
+a stock and the loader takes Sunday's count. The two differ by the week's
+cancellations, about one percent. `demo/white_cube_tree.yml` was written
+against MetricFlow's weekly numbers, so on a world set its week-grain stock
+and churn rate are slightly different series from the demo's. They are
+consistent within a world set (null and single worlds are built the same
+way), which is what the scores need.
+
+**A tree's `kind` must agree with the generator.** The engine resamples a
+parent by its kind, so a node the tree calls a flow and the generator calls a
+stock is refused by name.
+
+**Bindings beyond a metric name are explicit.** A node whose `source` is not
+a generator metric needs an entry in a bindings file: members of one
+dimension of a metric (summed; for a ratio, both sides summed), or the
+running total of a summed metric. The Alpenglow tree needs five. This is a
+restatement of the tree's own SQL in the world set's terms, so it is a second
+definition that can drift; canonical trees should bind by metric name only.
+
+**Unserved nodes refuse the run by default.** `--drop-unserved` removes them
+and their edges; a formula node that cannot be fetched stays and is derived
+from its parents. A node some remaining formula needs cannot be dropped. The
+scoreboard lists what was dropped and carries the hash of the tree actually
+run.
+
+**Root on a formula node** (§5.3): scored at the formula's parents that the
+measured effects say moved. If none did, the label stays on the formula node
+and the row says so.
+
+**Onset** (§5.2): `onset`, then a `first_diff` not before the declared start,
+then the declared start.
+
+**The window grid** (§5.1). Smoke scores at most eight windows per null
+world; standard and full score one every 28 days, which is about 20 per
+two-year world and lets all three horizons share one grid without overlap.
+Every weekly start would be about 78 per world: at 16 fitted nodes and five
+seeds that is 6,000 fits per vertical for calibration alone.
+
+**Spread across seeds, computed from per-world units.** Each metric is first
+computed per world (a null world's statistic over its windows; a single
+world's rank or score), then averaged within a seed, and the spread is the
+standard deviation of the per-seed means. The scoreboard keeps the per-world
+values so that two scoreboards can be compared on the worlds they share.
+
+**Roles.** Five: rate, stock, flow with no parents, flow with a learned
+parent, formula. A rate or stock with a learned parent is pooled with its
+kind. Formula nodes are not calibrated (their residual is zero by
+construction) and appear under cost only.
+
+**The fit cache is two things** (§7). Scored rows are kept for every fit and
+never evicted: they are what a rerun or a ranking-only arm reuses, and a
+null-world fit has no other consumer. Traces are megabytes each and grow with
+draws times periods, so only single worlds' fits are written, under a byte
+cap with least-recently-used eviction. Evicting a trace costs a refit and
+never a wrong number.
+
+**What a cache key holds.** The world's id and effective-config hash, the
+generator version, the node, the fit end, the node's definition, each
+parent's grain and kind, the sampler's draws, chains and seed, and the git
+tree hash of `breakdown/` (so a docs-only commit keeps the cache and any
+engine change drops it).
+
+**One compile directory per worker process,** created for the run and removed
+after it, as §7 requires. Workers are separate processes started with
+`PYTENSOR_FLAGS` already set.
+
+**Held-out seeds.** Any seed from 5 up needs `--held-out`. The scoreboard
+header then names the held-out seeds scored.
+
+**Data-quality single worlds are skipped, and off-tree ones are counted.**
+Both are inputs to §5.5 and are written as rows now so abstention can be
+scored from an existing run directory.
+
+**Not built:** attribution (§5.4; every in-scope node's contribution is
+already written as a `nodes` row, waiting on the generator's ten-seed study
+of how precise the measured effects are); abstention (§5.5); the magnitude
+ladder (§5.2); the slice check (§5.3); the share of badly calibrated nodes a
+diagnostic flag catches (§5.1, which needs a definition of "badly calibrated"
+for one node on a handful of windows); story worlds; nodes at month grain
+(skipped: the grid is weekly).
+
+**What the other two verticals' trees would need.** Neither is authored here.
+Meridian (`b2b_services`): `win_rate` and average deal size as rates with
+their identities (`deals_won = closed_deals × win_rate`,
+`bookings = deals_won × avg_deal_size`), `open_deals` or
+`open_pipeline_value` as the stock, learned and lagged edges down the funnel
+(leads to qualified to proposals to negotiations) and from bookings to
+invoiced revenue to collected cash. `sales_cycle_days` is a mean over rows,
+so it can only be a day-grain node unless the generator exports its two
+sides. Bristlecone (`cpg_wholesale`): eight metrics and no stock, so the
+canonical-tree requirement of one stock needs a new metric from the
+generator (retailer inventory, or points of distribution); a learned edge
+from scan sales to shipped cases; `net = gross − trade spend` as the formula;
+and marketing spend has no path to sales in that vertical, so it would be a
+node with no descendants.
 
 ---
 
