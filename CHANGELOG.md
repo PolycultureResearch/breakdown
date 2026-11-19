@@ -23,6 +23,13 @@ its notes never listed it at all.)
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-11-18
+
+A **patch** release for one correctness defect (roadmap C65). Nothing in the
+CLI, the tree YAML or the HTTP and MCP surfaces changes. If you run breakdown
+from a Docker image or a locked checkout, read the first entry: results from
+0.3.0 may need re-running.
+
 ### Fixed
 
 - **A fit could silently return another fit's posterior** (roadmap C65).
@@ -1209,4 +1216,5 @@ published` and uploads via Trusted Publishing. -->
 [0.1.0]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.1.0
 [0.2.0]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.2.0
 [0.3.0]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.3.0
-[Unreleased]: https://github.com/PolycultureResearch/breakdown/compare/v0.3.0...HEAD
+[0.3.1]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.3.1
+[Unreleased]: https://github.com/PolycultureResearch/breakdown/compare/v0.3.1...HEAD
