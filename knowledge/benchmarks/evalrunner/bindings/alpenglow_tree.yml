@@ -1,0 +1,22 @@
+# How demo/alpenglow_tree.yml's nodes are read from a retail_dtc world set's
+# series files, where the node's `source` does not name a generator metric.
+# Every other node is the metric its `source` names, total.
+#
+# The tree binds these nodes with its own SQL over the dbt marts. A world set
+# holds metric series, not marts, so each is restated here in terms of a
+# metric and one of the dimensions it is exported by. The runner refuses a
+# node it finds neither here nor among the metrics.
+
+# `sessions`, filtered to the two bought channels.
+paid_sessions: { metric: sessions, dimension: channel, values: [paid_search, paid_social] }
+organic_sessions: { metric: sessions, dimension: channel, values: [organic] }
+email_sessions: { metric: sessions, dimension: channel, values: [email] }
+direct_sessions: { metric: sessions, dimension: channel, values: [direct] }
+
+# The tree's stock is the running total of new customers, which the generator
+# does not export as a metric. The running total of `new_customers` from the
+# first day of the world is the same series.
+customer_base: { metric: new_customers, cumulative: true }
+
+# Not served: `discounted_orders` (orders with a discount). No metric counts
+# them and `orders` is not exported by a discount dimension.
