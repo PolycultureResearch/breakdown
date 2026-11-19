@@ -721,13 +721,560 @@ in 100% and 50% of windows at 0.9, which is S20's level path and was not
 changed here. `marketing_spend` under arms 4 to 6 should not be read as a
 result about slopes; it is a likelihood that does not fit, sampled badly.
 
+### 6.4 A second company: Alpenglow (retail, direct to consumer)
+
+§6.1 to §6.3 are one company. White Cube is a subscription business that
+only grows, with no annual cycle and no series that switches off. This
+section repeats the null run on Alpenglow Supply Co., the `retail_dtc`
+vertical of fake_companies, to see which of those conclusions travel.
+
+**Setup.** Alpenglow had no breakdown tree. `demo/alpenglow_tree.yml` is a
+benchmark tree written for this section (20 metrics, 14 fetched and not
+formulas), on the `dbt` provider against the published
+`alpenglow.duckdb`, with its series committed as snapshots. It keeps the
+spine of the generator's scenario tree (spend → sessions → orders → revenue,
+less discounts and refunds) and adds the three rates the planted anomalies
+enter through, sessions split into bought and earned, and the customer base
+behind repeat orders. `innovation_score.py --company alpenglow` runs every
+mode on it. The clean windows are derived from `alpenglow.ground_truth.json`:
+weekly starts at least 14 days after one planted anomaly ends (data-quality
+events included) and 26 weeks after the data starts, with the window ending
+before the next anomaly begins. That gives 54 starts in five gaps: 7 in
+December 2024 and January 2025, one each in March and June 2025, 25 from
+July to December 2025 and 20 from January to May 2026. White Cube's 32
+hand-written starts are kept as they were; the same rule applied to its
+ground truth gives a different list (`innovation_score.py windows`).
+
+**The company in numbers** (`innovation_score.py --company alpenglow
+describe`, model-free: the level is a centred four-week mean and the
+residual is what an additive weekday effect leaves).
+
+| Node | Role | Grain | Mean | Growth | Largest 13-week fall | Annual swing | Zeros (longest run) | Variance power | Late sd | Dispersion |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `marketing_spend` | flow, no parents | day | 3,330 | 1.37 | 30% | 0.60 | 0 | 1.85 | 1.12 | |
+| `organic_sessions` | flow, no parents | day | 2,600 | 1.45 | 28% | 0.66 | 0 | 2.07 | 1.26 | 25 |
+| `email_sessions` | flow, no parents | day | 789 | 1.61 | 28% | 0.71 | 0 | 1.78 | 1.26 | 8.8 |
+| `direct_sessions` | flow, no parents | day | 963 | 1.40 | 29% | 0.65 | 0 | 2.36 | 1.23 | 11 |
+| `discounted_orders` | flow, no parents | day | 3.3 | 1.77 | 100% | 12 | 97.1% (224) | | 1.50 | 153 |
+| `customer_base` | stock, no parents | day | 48,100 | 6.37 | 0% | 0.24 | 0 | −0.30 | 1.29 | |
+| `conversion_rate` | rate | day | 0.018 | 1.02 | 6% | 0.10 | 0 | | 0.89 | |
+| `aov` | rate | day | 143 | 1.01 | 17% | 0.23 | 0 | | 0.75 | |
+| `return_rate` | rate | week | 0.060 | 1.08 | 18% | 1.01 | 0 | | 0.66 | |
+| `paid_sessions` | flow ← `marketing_spend` | day | 3,680 | 1.38 | 30% | 0.60 | 0 | 1.64 | 1.11 | 31 |
+| `returning_customer_orders` | flow ← `customer_base` | day | 182 | 7.32 | 0% | 0.40 | 4.1% (30) | 0.55 | 1.47 | 3.2 |
+| `units` | flow ← `orders` | day | 644 | 3.02 | 13% | 0.42 | 0 | 1.05 | 1.38 | 9.0 |
+| `refunds` | flow ← `returned_units` | week | 26,000 | 2.94 | 16% | 0.64 | 0 | 0.91 | 1.28 | |
+| `discounts` | flow ← `discounted_orders` | day | 100 | 1.78 | 100% | 15 | 97.1% (224) | | 1.56 | |
+
+*Growth* is the mean of the last third of the history over the first third.
+*Largest 13-week fall* is how far the level drops over its worst quarter.
+*Annual swing* is the range of the level about a straight line, over the
+mean. *Variance power* is the slope of log residual variance on log level (0
+constant noise, 1 Poisson-like, 2 noise proportional to the level; not
+meaningful for a rate, whose noise shrinks as its denominator grows). *Late
+sd* is the residual sd in the last third over the pooled one. *Dispersion* is
+residual variance over the mean, for counts (1 is a Poisson).
+
+What this says before any fit:
+
+- **It is not a business that only grows.** Sessions and spend grow about
+  30% year on year and swing by 60% to 70% of their mean within the year,
+  peaking in late November. Every spring they fall by 30% in a quarter. The
+  three rates are flat.
+- **Two series only grow:** the customer base (a running total) and the
+  repeat orders it drives, both about seven times larger at the end.
+- **The noise is proportional to the level.** Variance power is 1.6 to 2.4 on
+  spend and every session count, and the counts are 9 to 31 times more
+  dispersed than a Poisson. That is the case §6.3 found no likelihood for on
+  a currency flow; on a count the negative binomial's quadratic term covers
+  it in principle.
+- **Structural zeros are present, as a switch and not as a season.**
+  `discounted_orders` and `discounts` are zero on 97% of days, with one run
+  of 224 days, and non-zero only inside four promotions of four to eight
+  days. No series has an off-season: every product category sells every day.
+- **There is one stock**, added for this study, and it is a running total. A
+  stock that can fall (inventory, active subscribers with churn) is not in
+  this data.
+
+**The default model (Gaussian noise, local level), all 54 windows.** Pooled
+by role, with the two promotion series kept out of the pools because their
+clean windows are almost all exact zeros. `sd z` is about each node's own
+mean. Calibrated is mean 0, sd 1, 4.6% beyond 2.
+
+| Role | Horizon | n | mean z | sd z | \|z\|>2 | \|z\|>2 centred | PIT KS | PPC ok / moderate / severe | suspect |
+|---|---|---|---|---|---|---|---|---|---|
+| stock (1 node) | 7 | 54 | 2.72 | 0.46 | 98% | 0% | 0.98 | 54 / 0 / 0 | 0% |
+| | 28 | 43 | 5.60 | 0.88 | 100% | 0% | 1.00 | 43 / 0 / 0 | 0% |
+| parentless flow (4) | 7 | 216 | 0.10 | 1.19 | 10% | 10% | 0.08 | 0 / 4 / 212 | 99% |
+| | 28 | 172 | 0.31 | 0.89 | 3% | 3% | 0.16 | 0 / 3 / 169 | 99% |
+| flow with parent (4) | 7 | 216 | −0.11 | 1.32 | 10% | 10% | 0.09 | 93 / 56 / 67 | 31% |
+| | 28 | 172 | −0.10 | 1.25 | 6% | 6% | 0.12 | 76 / 43 / 53 | 31% |
+| rate (3) | 7 | 162 | 0.05 | 0.66 | 1% | 1% | 0.15 | 51 / 42 / 69 | 43% |
+| | 28 | 129 | 0.12 | 0.51 | 0% | 0% | 0.23 | 41 / 36 / 52 | 41% |
+| `discounted_orders` | 7 | 54 | −0.19 | 2.38 | 6% | 6% | 0.46 | 0 / 0 / 54 | 100% |
+| `discounts` | 7 | 54 | 0.13 | 0.74 | 4% | 4% | 0.45 | 0 / 0 / 54 | 100% |
+
+Per node, 7 days / 28 days:
+
+| Node | mean z | sd z | \|z\|>2 | PPC ok / moderate / severe (7d) | min ESS < 400 | fits with a divergence (mean count) | suspect |
+|---|---|---|---|---|---|---|---|
+| `customer_base` | 2.72 / 5.60 | 0.46 / 0.88 | 98% / 100% | 54 / 0 / 0 | 0% | 13% (0.3) | 0% |
+| `marketing_spend` | −0.04 / 0.11 | 0.99 / 0.53 | 6% / 0% | 0 / 0 / 54 | 11% | 13% (10.5) | 100% |
+| `organic_sessions` | 0.16 / 0.36 | 1.30 / 1.02 | 13% / 5% | 0 / 0 / 54 | 9% | 15% (5.9) | 100% |
+| `email_sessions` | 0.11 / 0.42 | 1.25 / 1.05 | 11% / 5% | 0 / 4 / 50 | 7% | 15% (9.1) | 96% |
+| `direct_sessions` | 0.16 / 0.35 | 1.21 / 0.85 | 11% / 5% | 0 / 0 / 54 | 7% | 15% (7.7) | 100% |
+| `paid_sessions` | −0.04 / −0.10 | 1.01 / 0.77 | 4% / 0% | 41 / 13 / 0 | 0% | 4% (0.1) | 0% |
+| `returning_customer_orders` | −0.23 / 0.05 | 1.85 / 2.13 | 24% / 21% | 0 / 0 / 54 | 13% | 78% (13.0) | 100% |
+| `units` | 0.00 / −0.05 | 1.21 / 0.51 | 7% / 0% | 2 / 39 / 13 | 0% | 11% (0.2) | 24% |
+| `refunds` | −0.15 / −0.30 | 1.04 / 0.92 | 4% / 2% | 50 / 4 / 0 | 9% | 39% (5.6) | 2% |
+| `conversion_rate` | 0.09 / 0.34 | 0.77 / 0.66 | 4% / 0% | 0 / 36 / 18 | 0% | 22% (0.4) | 33% |
+| `aov` | −0.02 / −0.07 | 0.71 / 0.39 | 0% / 0% | 51 / 3 / 0 | 0% | 4% (0.1) | 0% |
+| `return_rate` | 0.09 / 0.10 | 0.47 / 0.43 | 0% / 0% | 0 / 3 / 51 | 11% | 43% (7.5) | 96% |
+
+What the default model does here:
+
+- **The stock is biased upward, worse than White Cube's.** `customer_base`
+  sits 2.7 predictive sds above its forecast at 7 days and 5.6 at 28, in
+  every window, and passes its posterior predictive check in every fit.
+- **The parentless flows are not biased overall, and are biased by season.**
+  Pooled mean z is 0.10 at 7 days and 0.31 at 28, against White Cube's 0.71
+  and 1.31. Split by where the window sits in the year (below), the bias is
+  there on the way up to the November peak and absent on the way down. These
+  nodes declare annual seasonality, which carries most of the cycle once
+  there is a year of history behind it.
+- **Rates are conservative**, as on White Cube: sd z 0.47 to 0.77.
+- **Flows are a little over-confident, one of them badly.** sd z is 0.99 to
+  1.30 on seven of the eight flows, against White Cube's 1.2 to 1.9.
+  `returning_customer_orders`, the one flow that grows sevenfold, is at 1.85
+  with 24% of clean weeks beyond 2. It is also the daily child of a smoothly
+  growing parent, the edge §6.2 named as the one to fear: 78% of its fits
+  have a divergence and 13% fall under 400 effective samples.
+- **Nodes with a learned parent and rates are not biased** (−0.11 and 0.05).
+
+**A slope by role (arms B and C).** `--trend role` puts a local linear trend
+on the six parentless flows and stocks and leaves the other eight nodes on
+the level. Arm B (`slope_sigma` 0.001) ran on all 54 windows; arm C (0.003)
+on every second one.
+
+Mean z / sd z / share beyond 2, by where the window sits. *Early* is December
+2024 to June 2025, with under a year of history; *rising* is July to December
+2025; *falling* is January to May 2026.
+
+| Role | Horizon | Arm | all 54 | early (9) | rising (25) | falling (20) |
+|---|---|---|---|---|---|---|
+| parentless flow (4 nodes) | 7 | A, level | 0.10 / 1.19 / 10% | −0.03 / 1.26 / 14% | 0.28 / 1.27 / 12% | −0.06 / 1.07 / 6% |
+| | | B, slope | −0.12 / 1.29 / 12% | −0.32 / 1.29 / 11% | 0.08 / 1.38 / 15% | −0.28 / 1.19 / 9% |
+| | 28 | A, level | 0.31 / 0.89 / 3% | 0.21 / 0.97 / 0% | 0.62 / 0.87 / 7% | −0.06 / 0.70 / 0% |
+| | | B, slope | −0.09 / 0.98 / 4% | −0.25 / 0.98 / 6% | 0.20 / 1.00 / 5% | −0.43 / 0.83 / 3% |
+| stock | 7 | A, level | 2.72 / 0.46 / 98% | 2.65 / 0.37 / 89% | 2.95 / 0.46 / 100% | 2.47 / 0.34 / 100% |
+| | | B, slope | −0.67 / 1.02 / 7% | −0.92 / 1.02 / 11% | −0.25 / 0.82 / 0% | −1.09 / 1.07 / 15% |
+| | 28 | A, level | 5.60 / 0.88 / 100% | 5.88 / 0.09 / 100% | 6.00 / 0.89 / 100% | 5.01 / 0.62 / 100% |
+| | | B, slope | −0.22 / 1.09 / 2% | −0.25 / 0.51 / 0% | 0.61 / 0.64 / 0% | −1.29 / 0.60 / 6% |
+
+Per node, level → slope (0.001), 54 windows. The change in z is paired on the
+same windows; its standard error is 0.01 to 0.04.
+
+| Node | 7d mean z | 7d sd z | 7d change in z | 7d predictive sd, slope / level | 28d mean z | 28d change in z | fits with a divergence | fit s |
+|---|---|---|---|---|---|---|---|---|
+| `customer_base` | 2.72 → −0.67 | 0.46 → 1.02 | −3.39 | 0.19 | 5.60 → −0.22 | −5.82 | 13% → 4% | 10 → 31 |
+| `organic_sessions` | 0.16 → −0.11 | 1.30 → 1.43 | −0.27 | 0.93 | 0.36 → −0.15 | −0.52 | 15% → 61% | 12 → 37 |
+| `email_sessions` | 0.11 → −0.11 | 1.25 → 1.36 | −0.22 | 0.93 | 0.42 → 0.01 | −0.41 | 15% → 80% | 12 → 37 |
+| `direct_sessions` | 0.16 → −0.09 | 1.21 → 1.31 | −0.25 | 0.94 | 0.35 → −0.10 | −0.45 | 15% → 54% | 11 → 35 |
+| `marketing_spend` | −0.04 → −0.18 | 0.99 → 1.01 | −0.14 | 1.01 | 0.11 → −0.13 | −0.24 | 13% → 17% | 13 → 37 |
+| `discounted_orders` | −0.19 → −0.20 | 2.38 → 2.39 | 0.00 | 1.01 | −0.02 → −0.02 | 0.00 | 4% → 17% | 9 → 25 |
+
+- **The stock is fixed, as on White Cube, and for the same reason.** Its
+  interval gets five times narrower, because the growth no longer has to be
+  explained as level noise. It then over-shoots: mean z −0.67 at 7 days, and
+  −1.09 in the months when acquisition is slowing after the holidays. A slope
+  held near its long-run value lags a growth rate that has a season. Its
+  spread is right (sd 1.02) where White Cube's was too narrow (1.3). Its
+  predictive check passes in all 54 fits under both trends, with the forecast
+  2.7 sds out or 0.7 sds out.
+- **On the seasonal flows the slope moves every window down by the same
+  amount, whatever the season.** 0.14 to 0.27 at 7 days and 0.24 to 0.52 at
+  28. That removes the bias on the way up (rising, 28 days: 0.62 → 0.20) and
+  puts an equal one in on the way down (falling: −0.06 → −0.43) and in the
+  short-history windows (0.21 → −0.25). The pooled mean improves at 28 days
+  only because the two cancel. The absolute z of a window goes up at 7 days
+  on every one of them (by 0.02 to 0.10) and the share beyond 2 goes from
+  10% to 12%.
+- **It does not widen the interval.** The predictive sd is 6% to 7% narrower
+  at 7 days on the session counts and unchanged at 28; on spend it is
+  unchanged at 7 and 9% wider at 28.
+- **It costs sampler health and time.** A divergence in 54% to 80% of the
+  session-count fits against 15% under the level (the mean count per fit is
+  no higher, 3 to 5 against 6 to 9, because the level's are concentrated in
+  a few bad fits). Fit time triples. Minimum ESS is better under the slope.
+- **On the series that is nearly all zeros it changes nothing** and costs
+  three times the fit.
+- **A slope forced on the three rates** (`--trend local_linear`, 27 windows)
+  leaves the two flat ones alone (`aov` +0.04, `conversion_rate` −0.10 at 7
+  days) and drags `return_rate` down by 0.26 at 7 days and 0.51 at 28. That
+  rate climbed over its first weeks, while returns from the first orders
+  were still arriving, and the slope extrapolates the climb. It also costs
+  the recall its evidence: the planted root's 28-day z goes from 1.67 (0 of
+  22 clean windows as extreme) to 0.49 (12 of 22).
+
+**0.001 against 0.003**, on the 27 windows both ran. Paired, the change in z
+from 0.001 to 0.003 is within ±0.03 on every node at both horizons. The
+predictive sd is 0% to 2% wider at 7 days and 0% to 4% wider at 28. A
+divergence in 53% of parentless-flow fits at 0.001 and 47% at 0.003 (3.8 and
+4.7 a fit); 4% and 7% on the stock; ESS under 400 in 1% and 3%; the same fit
+time. The stock's mean z is −0.71 under both. Nothing here separates them.
+All of this is the marginalized Gaussian path; §6.3's argument for 0.003 was
+on the explicit path under a declared likelihood, which this run has at
+0.001 only (arm E, below).
+
+**A declared likelihood (arm D), level trend.** Chosen from the company
+table:
+`negative_binomial` on the whole-number counts (`organic_sessions`,
+`email_sessions`, `paid_sessions`, `returning_customer_orders`, `units`,
+`discounted_orders`), `mean_scaled_gaussian` on the two currency flows whose
+residual sd is larger late (`marketing_spend`, `refunds`), Gaussian on the
+rates, the stock and `discounts` (97% zeros, which `mean_scaled_gaussian`
+refuses). `direct_sessions` was left out to save fits; it has the same
+generator as the other two earned-session counts. Every second weekly start
+(27), except week-grain `refunds` on all 54. Each row is against the Gaussian
+fit of the same node on the same windows, 7 days.
+
+| Node | Likelihood | mean z | sd z | \|z\|>2 | predictive sd, declared / Gaussian | PPC ok / moderate / severe | min ESS < 400 | fits with a divergence (mean count) | suspect | fit s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `returning_customer_orders` | Gaussian | −0.20 | 1.82 | 22% | | 0 / 0 / 27 | 7% | 85% (10.9) | 100% | 16 |
+| | negative binomial | −0.19 | 1.01 | 7% | 1.97 | 4 / 11 / 12 | 15% | 4% (0.1) | 44% | 79 |
+| `units` | Gaussian | −0.31 | 1.26 | 7% | | 1 / 20 / 6 | 0% | 11% (0.2) | 22% | 10 |
+| | negative binomial | −0.27 | 1.09 | 4% | 1.01 | 7 / 18 / 2 | 15% | 15% (1.3) | 11% | 114 |
+| `paid_sessions` | Gaussian | −0.09 | 1.06 | 7% | | 21 / 6 / 0 | 0% | 0% (0.0) | 0% | 10 |
+| | negative binomial | −0.09 | 0.92 | 4% | 1.09 | 25 / 2 / 0 | 33% | 89% (15.5) | 19% | 61 |
+| `organic_sessions` | Gaussian | −0.07 | 1.46 | 22% | | 0 / 0 / 27 | 11% | 15% (6.3) | 100% | 12 |
+| | negative binomial | −0.08 | 1.23 | 19% | 1.16 | 0 / 4 / 23 | 37% | 100% (16.2) | 93% | 44 |
+| `email_sessions` | Gaussian | 0.15 | 1.26 | 11% | | 0 / 3 / 24 | 11% | 15% (8.9) | 96% | 12 |
+| | negative binomial | 0.13 | 1.07 | 7% | 1.16 | 7 / 9 / 11 | 22% | 96% (10.2) | 44% | 60 |
+| `marketing_spend` | Gaussian | −0.03 | 0.99 | 7% | | 0 / 0 / 27 | 15% | 15% (7.7) | 100% | 12 |
+| | mean-scaled | −0.04 | 0.88 | 0% | 1.11 | 0 / 0 / 27 | 44% | 56% (8.0) | 100% | 62 |
+| `refunds` (week, 54) | Gaussian | −0.15 | 1.04 | 4% | | 50 / 4 / 0 | 9% | 39% (5.6) | 2% | 4 |
+| | mean-scaled | −0.16 | 0.83 | 0% | 1.23 | 54 / 0 / 0 | 87% | 100% (34.3) | 35% | 8 |
+
+Fit seconds are medians from the arm itself, four processes at once on a
+machine that others were loading, so read them as ratios.
+
+- **The count likelihood does what §6.3 said it does, on the nodes that
+  needed it.** `returning_customer_orders` is the one flow the default gets
+  badly wrong (sd 1.82, 22% beyond 2, a divergence in 85% of fits). It grows
+  sevenfold, so one noise level is far too narrow late. Under the negative
+  binomial its predictive interval doubles, sd z is 1.01 and the divergences
+  go. The three session counts and `units` move the same way by less (sd 1.06
+  to 1.46 → 0.92 to 1.23). The mean does not move on any node (paired change
+  in z under 0.05), as designed.
+- **It costs sampler health on a long daily series.** The session counts
+  diverge in 89% to 100% of fits under the negative binomial (10 to 16 a fit)
+  against 0% to 15% under the Gaussian, and a third of fits fall under 400
+  effective samples. §6.3 saw this on White Cube's `sessions` (50%) and
+  `trials_started` (100%); it is the explicit level path at `target_accept`
+  0.9, not something about this company.
+- **`mean_scaled_gaussian` hurt both currency flows it was tried on.**
+  `marketing_spend` and `refunds` were already calibrated under the default
+  (sd 0.99 and 1.04). The declared likelihood makes both conservative (0.88
+  and 0.83), leaves spend's predictive check `severe`, and puts a divergence
+  in 56% and 100% of fits. The model-free diagnosis (late sd 1.12 and 1.28)
+  said they needed it and the null run says they did not: the diagnosis looks
+  at the series alone, and both nodes have something that carries the level
+  for the noise to be measured against (annual seasonality on spend, a
+  parent on refunds).
+
+**Both together (arm E): the declared likelihood plus the slope by role**,
+`slope_sigma` 0.001, on the two nodes that take both and were affordable:
+`organic_sessions` and `email_sessions`, 27 windows. (`customer_base` under
+arm E is arm B's fit; `marketing_spend` was not run with both, since arm D
+shows its declared likelihood is the wrong one; `discounted_orders` was not
+run with both, since the slope does nothing to it.) Mean z / sd z / share
+beyond 2 at 7 days, and fit health:
+
+| Node | Arm | mean z | sd z | \|z\|>2 | 28d mean z | PPC ok / moderate / severe | min ESS < 400 | fits with a divergence (mean count) | fit s |
+|---|---|---|---|---|---|---|---|---|---|
+| `organic_sessions` | A: Gaussian, level | −0.07 | 1.46 | 22% | 0.28 | 0 / 0 / 27 | 11% | 15% (6.3) | 12 |
+| | B: Gaussian, slope | −0.35 | 1.64 | 26% | −0.24 | 0 / 0 / 27 | 0% | 59% (4.6) | 33 |
+| | D: count, level | −0.08 | 1.23 | 19% | 0.29 | 0 / 4 / 23 | 37% | 100% (16.2) | 44 |
+| | E: count, slope | −0.33 | 1.28 | 19% | −0.22 | 0 / 3 / 24 | 78% | 100% (16.0) | 222 |
+| `email_sessions` | A | 0.15 | 1.26 | 11% | 0.32 | 0 / 3 / 24 | 11% | 15% (8.9) | 12 |
+| | B | −0.07 | 1.39 | 11% | −0.10 | 0 / 3 / 24 | 0% | 81% (3.7) | 32 |
+| | D | 0.13 | 1.07 | 7% | 0.33 | 7 / 9 / 11 | 22% | 96% (10.2) | 60 |
+| | E | −0.09 | 1.09 | 7% | −0.11 | 3 / 12 / 12 | 78% | 96% (31.4) | 222 |
+
+The means on these 27 windows are aliased by the week-to-week correlation
+described further down; the differences between arms are not. The two changes add
+here exactly as in §6.3: the likelihood moves the spread and not the mean
+(D − A: under 0.03 in z), the slope moves the mean and not the spread (E − D:
+−0.22 and −0.25 at 7 days, −0.44 and −0.50 at 28, the same shift the
+Gaussian slope gives). What does not carry over is the cost. A daily node
+with both samples two latent walks of up to 700 steps: 78% of fits fall
+under 400 effective samples and each takes 222 seconds on the loaded
+machine, four to five times the count likelihood alone and eighteen times
+the default.
+
+**Structural zeros.** `discounted_orders` is the question White Cube could
+not ask: a count that is zero 97% of the time and 30 to 300 a day inside a
+promotion. Three clean 7-day windows touch a promotion (the last day of
+Black Friday 2024, the first three days of Black Friday 2025, and its last
+day); the other 51 are all zeros. The negative binomial was fitted on every
+second window, which holds the first two of those three.
+
+| | Gaussian, level | Negative binomial, level |
+|---|---|---|
+| Posterior predictive check, 27 fits | 0 ok / 27 severe | 27 ok / 0 severe |
+| `suspect` | 100% | 0% |
+| Predictive sd of a 7-day mean, all-zero weeks (median) | 14.7 orders a day | 1.5 orders a day |
+| \|z\| in an all-zero week (median, largest) | 0.01, 0.04 | 0.10, 0.54 |
+| z in the week Black Friday 2025 starts (126 a day above expected) | 9.5 | 154 |
+| z in the week Black Friday 2024 ends (one promotion day, then zeros) | −9.6 | 0.2 |
+| Fit seconds (median, four processes, loaded machine) | 9 | 163 |
+
+- **The plain negative binomial passes its predictive check on this series,
+  in every fit.** It does so by sitting at a level near zero with a large
+  overdispersion, which generates the zeros and the occasional burst the
+  history contains. A zero-inflated family is not needed to pass the check.
+- **Passing the check is not the same as being a usable expectation.** Both
+  models say a promotion is impossible: Gaussian z 9.5, negative binomial z
+  154. The promotion is a calendar decision. No likelihood can expect it,
+  zero-inflated or otherwise; it is a declared input (an intervention, or a
+  parent carrying the promotion calendar), and Alpenglow's tree has neither.
+  What the negative binomial does fix is the way out: the Gaussian level
+  stays up through a promotion's last day and scores the return to zero at
+  −10 (−9.6 in 2024, −11.0 in 2025), where the count model scores the 2024
+  one at 0.2.
+- **Under the Gaussian the score on such a node means nothing.** The
+  predictive interval for a week of zeros is ±15 orders a day around zero,
+  half of it below zero, so every quiet week scores 0.01 and every switch
+  scores 10. `likelihood_warnings` and a `severe` check already say so on
+  every fit. `discounts`, the currency twin, behaves the same and has no
+  alternative: `mean_scaled_gaussian` refuses a series that is half zeros.
+- `z` and the PIT are themselves poor summaries here. With a point mass at
+  zero the PIT of a zero week is 0.98 or 0.00 depending on whether any draw
+  is exactly zero, so the KS column for this node is not evidence of
+  anything.
+
+**What this company breaks in the benchmark.**
+
+- **Three of the six planted anomalies cannot be seen at node level, and the
+  ground truth says otherwise.** `affected_metrics` lists `units` for the
+  tees slump, but the generator moves demand between categories: tees fall
+  30% for two weeks and total units and units per order do not move (3,594
+  and 3,743 units in the two slump weeks against 3,510 and 3,666 before).
+  The two-day shorts spike is the same. The checkout bug takes about 40% off
+  conversion in paid-search mobile, 8% of sessions, which is about 3% off
+  the node. So "the first tree metric in `affected_metrics`" is a root in name
+  only for half the list, and a null of `z ≈ 0` there is correct.
+- **A lag between the anomaly's dates and the metric's.** The jacket recall
+  is dated from the orders (2024-10-07); `return_rate` counts returns by
+  request date, about two weeks later. Scored from its declared onset the
+  7-day z is 0.03. The benchmark's onset has to be the date the root metric
+  moves, which the ground truth does not carry.
+- **Weekly windows are not independent.** Under a correct model one-step
+  errors are uncorrelated. Here the 7-day z of consecutive weeks correlates
+  at −0.44 (`units`), −0.40 (`aov`, `marketing_spend`), −0.33
+  (`direct_sessions`), −0.19 to −0.25 (the other session counts), over 49
+  adjacent pairs: the level chases one week's noise and the next week pays
+  it back. Two consequences. A node's mean z over every second week is not
+  its mean z (on `units`, −0.31 on even weeks and +0.31 on odd ones), so the
+  27-window arms below are read as paired differences only. And the
+  standard error of a mean z is smaller than `sd / √n` suggests, while a
+  count of `|z| > 2` is not a count of independent events. §6.1 to §6.3 did
+  not check this on White Cube.
+- **A clean window is not a quiet one.** Black Friday is in no ground-truth
+  entry and is in the data: the week of 2025-11-24 scores 2.7 and 4.2 on
+  organic and email sessions, and the week after −1.9 and −3.4. Promotions
+  and a 40% holiday effect are business as usual that the tree does not
+  declare.
+- **Under two years of history.** Every fit has fewer than 730 daily periods,
+  so the engine's own rule calls the declared annual seasonality
+  unidentifiable in every one of them and fits it anyway (as it should; it
+  warns). The earliest 8 windows have under a year of it.
+- **A stock that is a running total** has almost no noise of its own. The
+  score on it is a test of the trend and nothing else.
+
+**The planted roots.** z at the anomaly's first period, and how many of the
+same node's clean windows are as extreme. Arm A is the default; arm E is the
+declared likelihood plus the slope by role, which changes two of these
+nodes: `marketing_spend` (Gaussian with a slope; its clean windows are arm
+B's 54) and `units` (negative binomial; arm D's 27).
+
+| Root | Anomaly | From | Horizon | Arm A | Arm E |
+|---|---|---|---|---|---|
+| `units` | items per order −45%, 12 days | 2025-04-07 | 7 | −21.8 (0/54) | −22.2 (0/27) |
+| | | | 28 | −10.0 (0/43) | −12.6 (0/22) |
+| `aov` | the same | 2025-04-07 | 7 | −13.3 (0/54) | same |
+| | | | 28 | −8.9 (0/43) | same |
+| `marketing_spend` | paid social spend halved, 3 weeks | 2025-02-03 | 7 | −6.2 (0/54) | −6.3 (0/54) |
+| | | | 28 | −3.7 (0/43) | −3.6 (0/43) |
+| `return_rate` | jacket returns ×2.2, 5 weeks | 2024-10-07 (as dated) | 7 | 0.03 (51/54) | same |
+| | | | 28 | 1.04 (1/43) | same |
+| | | 2024-10-21 (returns arrive) | 7 | 1.21 (1/54) | same |
+| | | | 28 | 1.67 (0/43) | same |
+| `conversion_rate` | paid-search mobile checkout bug, 12 days | 2024-09-12 | 7 | −0.57 (20/54) | same |
+| | | | 28 | 0.00 (42/43) | same |
+| `units` | tees demand −30%, 2 weeks | 2025-05-05 | 7 | −0.30 (44/54) | −0.18 (24/27) |
+| | | | 28 | −0.33 (24/43) | −0.28 (12/22) |
+| `aov` | the same | 2025-05-05 | 7 | 0.77 (15/54) | same |
+| `units` | shorts spike, 2 days | 2025-12-25 | 7 | 0.41 (39/54) | 0.47 (16/27) |
+
+The three that move the node are found under either model: two at 6 to 22
+sds, and the recall at 1.2 to 1.7, which is weak as a raw z and clear against
+the node's own clean windows (0 or 1 as extreme), because `return_rate`'s
+interval is twice too wide. That is §6.1's argument for scoring against the
+node's own backtest, repeated. The three that do not move the node score as
+noise, correctly. Neither model change helps or hurts a planted root here.
+
+**Story-style ranking** (`run_story`), each anomaly over its own span, rank
+of the planted root (1 is first):
+
+| Story | Target | Truth | Innovation contribution | Innovation z | Engine `ranked_causes` | Naive relative change |
+|---|---|---|---|---|---|---|
+| checkout bug | `gross_revenue` | `conversion_rate` | 1 | 3 | 10 | 11 |
+| recall | `net_revenue` | `return_rate` | 3 | 4 | 15 | 17 |
+| budget cut | `gross_revenue` | `marketing_spend` | 1 | 3 | 7 | 3 |
+| items per order | `net_revenue` | `aov`, `units` | 1 | 2 | 2 | 2 |
+| tees slump | `net_revenue` | `aov`, `units` | 1 | 7 | 2 | 4 |
+
+With the slope by role forced on (`--trend role`), the recall's root moves to
+2 by contribution and 3 by z, the checkout bug's to 5 by z, and the rest are
+unchanged.
+
+- **The innovation contribution puts a planted root first in four of five,
+  the engine's ranking in none.** The engine's top three are intermediate
+  nodes again (`orders`, `converting_sessions`, `gross_revenue`), §3's chain
+  property on a deeper tree.
+- **Two of those four firsts are not evidence.** The checkout bug's root
+  ranks first with z −0.71 and the tees slump's with z 0.53: a contribution
+  with no evidence behind it, which is §4.3's warning. They happen to be
+  right.
+- **The miscalibrated nodes are the false roots.** In the recall story
+  `customer_base` ranks first at z 6.9, which is the level forecast's bias
+  on a stock and nothing the business did; with a slope it drops out and the
+  root moves up. In the budget story `returning_customer_orders` ranks
+  second at z 6.0, which is the Gaussian on a count that has grown sevenfold.
+  The calibration errors measured above are what pollutes a ranking.
+- The recall's root is beaten by `refunds` (z 4.7), a child of the returned
+  units. Jackets cost more than the average unit, so the recall raises the
+  refund per returned unit as well as the number returned. `refunds` is a
+  second place where the same anomaly enters, and the ground truth lists it.
+
+**Does `ppc_status` still find the nodes whose z is off?** Under the default
+model, 7 days, all 54 windows:
+
+| | Windows | mean z | sd z about node means | \|z\|>2 |
+|---|---|---|---|---|
+| PPC `ok` | 198 | 0.68 | 0.81 | 29% |
+| PPC `ok`, without the stock | 144 | −0.09 | 0.91 | 3% |
+| PPC `moderate` | 102 | 0.00 | 1.00 | 4% |
+| PPC `severe`, without the two promotion series | 348 | 0.06 | 1.22 | 11% |
+
+Leaving the stock aside the order is White Cube's (0.94, 1.12, 1.44 there)
+and flatter. Node by node it is a poor gate here, in both directions:
+
+- **It passes the worst node.** `customer_base` is `ok` in 54 of 54 fits and
+  `suspect` in none, with 98% of clean weeks beyond 2. With the stock in,
+  `ok` is the worst class of the three. White Cube's stock did the same.
+- **It fails every seasonal parentless flow, calibrated or not.** All four
+  are `severe` and `suspect` in 96% to 100% of fits. `marketing_spend` among
+  them has mean z −0.04, sd 0.99 and 6% beyond 2. The check fails on `min`,
+  `max`, `resid_max` and `resid_acf1`: the series peaks at 1.4 times its
+  level on holidays, never goes as low as a symmetric noise model says it
+  should, and its daily noise is autocorrelated. Those are true statements
+  about the shape of the series and say little about the weekly mean of an
+  ordinary week. A declared likelihood does not clear it
+  (`organic_sessions` is `severe` in 23 of 27 fits as a count).
+- **It fails a rate for being conservative.** `return_rate` is `severe` in 51
+  of 54 with sd z 0.47.
+- **It does catch the one flow that is badly over-confident**
+  (`returning_customer_orders`, 54 of 54 `severe`) and both promotion
+  series, and it passes the three nodes that are fine (`paid_sessions`,
+  `refunds`, `aov`).
+
+So 61% of all default fits on this tree are `suspect` (54% without the two
+promotion series), and the flag separates sd 1.2 from sd 0.9. It cannot gate evidence on this company as
+§6.1 proposed. The per-node backtest can: it is what shows the stock, and
+what shows that spend is fine.
+
+**Fit time**, one fit at a time on a machine that had gone quiet, seconds,
+for the window starting 2026-05-04 (702 daily periods of history, 100 weekly).
+Each configuration ran in its own process with a fresh compile cache and
+fitted an earlier window first, so compilation is not in these numbers.
+
+| Node | Gaussian, level | Gaussian, slope 0.001 | declared, level | declared, slope 0.001 |
+|---|---|---|---|---|
+| `organic_sessions` (count) | 10.2 | 25.9 | 37.5 | 195.7 |
+| `marketing_spend` (mean-scaled) | 12.3 | 24.2 | 59.3 | |
+| `customer_base` | 10.0 | 19.2 | | |
+| `paid_sessions` (count) | 10.6 | | 46.1 | |
+| `returning_customer_orders` (count) | 18.2 | | 76.4 | |
+| `units` (count) | 9.9 | | 88.5 | |
+| `refunds` (week, mean-scaled) | 3.1 | | 6.5 | |
+| `conversion_rate` | 8.8 | | | |
+
+The slope doubles a Gaussian fit, as in §6.2 and §6.3. A count likelihood on
+a daily node costs four to nine times the default, and both together twenty
+times.
+
+**The five White Cube claims, on this company.**
+
+| Claim | Here |
+|---|---|
+| 1a. Rates are conservative under the default | Holds. sd z 0.47 to 0.77. |
+| 1b. Flows are over-confident (sd about 1.5) | Weaker. 0.99 to 1.30 on seven of eight flows; 1.85 on the one that grew sevenfold. The over-confidence follows growth in the level: the four parentless flows grew 40% to 60% where White Cube's grew 2 to 13 times, and the two that tripled here have a parent that carries it. |
+| 1c. Parentless flows and stocks are biased upward | Holds for the stock (2.7 at 7 days, 5.6 at 28). Fails for the flows as stated: 0.10 and 0.31 pooled. The bias exists in the half of the year the business is climbing (0.28 and 0.62) and not in the half it is falling. |
+| 1d. Nodes with a learned parent, and rates, are not biased | Holds. −0.11 and 0.05. |
+| 2a. A slope by role removes most of the bias | Holds for the stock, which then over-shoots (−0.67 at 7 days). On the flows there was little to remove; the slope subtracts the same amount in every season and trades a bias on the way up for one on the way down. |
+| 2b. The slope harms rates | Holds for a rate with drift in its history (`return_rate`: −0.5 at 28 days, and the planted recall goes from 0 of 22 clean windows as extreme to 12 of 22). The two flat rates are unaffected. |
+| 2c. `slope_sigma` 0.01 is out; 0.001 against 0.003 is undecided | 0.01 not run. 0.001 and 0.003 are indistinguishable on the Gaussian path. Still undecided. |
+| 3a. A count likelihood fixes count flows | Holds, with the same sampler cost. Large where the count grew a lot, small elsewhere. |
+| 3b. `mean_scaled_gaussian` fixes some currency flows | Fails here. Both currency flows were calibrated under the default and it made them conservative and hard to sample. |
+| 3c. Nothing fits a currency flow that is half zeros, or noise proportional to the level | Half zeros: holds (`discounts` has no option). Proportional noise: the counts that have it are served by the negative binomial; the currency flow that has it (`marketing_spend`) is calibrated under the default anyway, so this company cannot show the gap. |
+| 3d. Structural zeros | Tested for the first time. The plain negative binomial passes its check; see above for why that is not enough. |
+| 4. The stock with a slope is over-confident while passing its check | The spread does not repeat (sd 1.02 and 1.09 against 1.3). The blindness does: the check passes in every fit under both trends. |
+| 5. `ppc_status` / `suspect` flags most of the badly calibrated nodes | Half holds. It catches the over-confident flow and the promotion series, misses the stock, and fires on four calibrated or mildly over-confident seasonal flows and a conservative rate. |
+
+**What this means for the two open defaults** (a reading, not a decision).
+
+- *The trend by role.* A rule keyed on role alone is right for `kind: stock`
+  on both companies and not for parentless flows on this one. On the five
+  flows it touches here it turns a 7-day bias of +0.1 into −0.1, raises sd z
+  by a tenth, triples the fit time and adds divergences; on one of them it
+  does nothing at all. What separates the nodes the slope helped from the
+  ones it did not is in the model-free table (`describe`, run on both
+  companies): the six White Cube sources and this stock grew 2.3 to 13
+  times over their history, last third over first; the five flows here
+  grew 1.4 to 1.8 times, less than they swing within a year. A data check
+  of that kind (a slope where net growth over the history exceeds the
+  within-year swing, or simply exceeds a factor of two), or more directly
+  the node's own backtest bias under the level, would have chosen as the
+  null runs did on all 12 parentless nodes across the two companies. That
+  rule was read off these results and has not been tested as a rule; a
+  declining business and a stock that can fall are still unmeasured.
+- *`slope_sigma`.* No evidence from this company either way. On the
+  marginalized path the two values give the same z to within 0.03 and the
+  same sampler health; 0.003 is up to 4% wider at 28 days.
+- *The likelihood.* Declaring one is still a per-node decision that the null
+  run, not the model-free diagnosis, has to make: of the eight nodes the
+  diagnosis picked here, one gained a great deal, three a little, two did
+  not need it, two were made worse, and every daily one became at least
+  four times slower.
+
+**Limits.** One more synthetic company, from the same generator as the
+first. Arms C, D and E ran on every second window, whose means are aliased;
+only their paired differences are used. Arm E covers two nodes. The 28-day
+windows overlap. The tree was written for this study, and its choices
+(annual seasonality on the parentless flows, a running-total stock, the
+split of sessions) shape which claims it can test. No flat or declining
+flow, no stock that can fall, and no off-season exist in this data; the
+other two verticals (`b2b_services`, `cpg_wholesale`) were not looked at.
+
 ## 7. Open questions
 
 1. **Calibrating the evidence.** §6.1 answers the first half: the likelihood
    (flows) and the flat forecast (growth bias) are the causes, and rates are
    too wide. Still open: whether declaring past steps (S24) or down-weighting
-   old history tightens the rates, and whether the per-node backtest holds on
-   a second vertical.
+   old history tightens the rates. §6.4 is the second vertical: the backtest
+   holds there, and `ppc_status` as a gate does not.
 2. **Fit cost on a wide tree.** If every source node needs a fit, the B2B tree
    needs roughly ten times the fits it does today. The model is linear-Gaussian
    given its two variance parameters, so with Normal priors the coefficients
