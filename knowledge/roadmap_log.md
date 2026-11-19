@@ -1148,3 +1148,23 @@ zero rows. Dropped interventions carry no machine-readable case, so the UI
 matches on the engine's reason sentence. The weakest load-bearing assumption
 the review named (a coefficient learned before the window read as causal and
 still valid inside it) is S14, S16 and S5, all still open.
+
+## C65
+
+**Status at compression:** ✅ shipped 2026-11-18 (0.3.1)
+
+**A fit could run another fit's compiled code.** Found 2026-11-17 by two agents working in separate worktrees against one shared `~/.pytensor`: one saw an `IndexError` inside a numba-compiled node on a Gaussian fit that passed alone and on a private cache; the other a seeded fit of a four-parameter model that sampled `sigma_slope` near 2.69 under a HalfNormal(0.001) prior, three runs in a row, and passed alone.
+
+*Mechanism.* PyTensor's numba backend generates every function from source, so they share a few names. numba separates same-named functions in compiled code with a `v<uid>` tag in the symbol; through PyTensor 2.38.2 the uid was numba's per-process counter, starting at 1. The on-disk cache key is built from the graph and does not contain it. Two processes that each compile a different graph first write entries with identical symbol names; a process that loads both keeps the first definition (`linkonce_odr`) and runs it for the second. The name also carries a tag built from a Python set, so two writers must share a string-hash ordering: 1.2% of process pairs over 300 sampled, every pair under a fixed `PYTHONHASHSEED`. breakdown's own code was not involved: it has no custom Op, the Kalman filter is a plain `pytensor.scan`, and PyTensor's key does cover graph structure and constant values.
+
+*Reproduced from an empty cache*, pure PyTensor, three processes with `PYTHONHASHSEED=0`: compile `f`; compile `g`; load both, and `g(v)` returns `f`'s values. On release 0.3.0: fit `spend`; fit `refunds`; fit both, and `refunds` comes back with alpha 1.3204, sigma_obs 0.2219, sigma_trend 0.2383, which is `spend`'s posterior to four digits, R-hat 1.00, 0 divergences. Three nodes of different shape gave `sigma_obs = inf` or the `IndexError`. One node at two `fit_end` dates gave the clean-history fit the parameters of the fit that had trained through the anomaly, which is the RCA case. On the preserved copy of the shared cache, the failing sequence left two functions with different cache keys loaded under `numba_funcified_fgraph` uid 3.
+
+*What noticed.* In every wrong-posterior case produced, the posterior predictive check went `severe` and `fit_quality` went `suspect`. R-hat, ESS and divergences never moved: the sampler converged, on the wrong density. A borrowed posterior from a similar series could plausibly pass the check; that was not produced.
+
+*Fix.* PyTensor 2.38.3 draws the uid at random and is now the floor (PyMC 5.28 admits 2.38.2, which the lock and so the Docker images were on; a plain `pip install` already resolved a newer PyTensor). That is not sufficient alone: 2.38.3 reading a cache 2.38.2 wrote returns the wrong function exactly as 2.38.2 does. So `engine/compile_cache.py` points breakdown's cache at its own directory, `numba-unique-ids`, turns the cache off through `PYTENSOR_FLAGS` for child processes that never load the module, and has the forkserver preload it so sampling chains keep theirs. If the function ids are still numba's counter, the cache is turned off with a warning. A first cut also replaced numba's counter itself; the floor made that dead code and it was removed.
+
+*Cost.* None on a warm cache. Turning the cache off instead measured about three times the wall time over four short fits, which is why it is only the fallback.
+
+*Not fixed.* A seeded fit can still differ slightly between a cold and a warm cache (one seasonal node: `alpha` 0.0518 cold, 0.0532 warm and stable thereafter, on the 2.38.3 lock). That is a different, upstream effect, floating-point reassociation in cached code, and is inside Monte-Carlo error.
+
+*Checked afterwards.* The S20 null run's Gaussian arm, which had used the shared cache, was rerun on a private one: 145 of 352 rows compared before the run was stopped for machine load, largest difference in `z` 0.004, no PPC status changed.

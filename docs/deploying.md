@@ -505,24 +505,23 @@ breakdown's own: `numba-unique-ids/`, beside PyTensor's `numba/`.
 - **It is safe to keep between restarts and to share between processes**,
   including on a mounted volume in a container. Mount the whole
   `base_compiledir` if you want a restarted container to skip compilation.
-- **Why breakdown has its own directory.** The compiled code in PyTensor's
-  shared `numba/` directory is only safe within the process that wrote it.
-  Entries written by two different processes can end up with the same
-  internal name, and a process that loads both runs the first one's code for
-  the second: a fit could silently return another fit's posterior. breakdown
-  0.3.0 and earlier used that directory. From the next release, breakdown
-  gives every process's compiled functions names no other process uses and
-  keeps them in its own directory, so it never loads anything an older
-  version or another program wrote. Upgrading PyTensor alone is not enough:
-  2.38.3 stops writing colliding entries but still reads the ones already
-  there.
+- **Why breakdown has its own directory.** Through PyTensor 2.38.2, the
+  compiled code in PyTensor's shared `numba/` directory was only safe within
+  the process that wrote it. Entries written by two different processes could
+  end up with the same internal name, and a process that loaded both ran the
+  first one's code for the second: a fit could silently return another fit's
+  posterior. breakdown 0.3.0's lockfile, and so its Docker images, were on
+  that version. breakdown now requires PyTensor 2.38.3, which stops writing
+  such entries, and keeps its cache in a directory of its own, because
+  2.38.3 still *reads* the ones already there. It never loads anything an
+  older version or another program wrote.
 - **You can delete either directory at any time** when no fit is running. The
   only cost is recompiling. After upgrading from 0.3.0 or earlier,
   `~/.pytensor/numba` is no longer read by breakdown and can be removed.
 - **To turn the cache off**, set `PYTENSOR_FLAGS=numba__cache=False`. Every
   fit then compiles from scratch, which roughly triples the time of a short
-  fit. breakdown turns it off by itself, with a warning in the log, if it
-  cannot make the names unique on the installed version of numba.
+  fit. breakdown turns it off by itself, with a warning in the log, if the
+  installed PyTensor is older than 2.38.3.
 - **breakdown appends `numba__cache=False` to `PYTENSOR_FLAGS` in its own
   process environment** once the first fit starts. That is deliberate: it is
   for any Python process started from breakdown's that does not load
