@@ -2504,6 +2504,8 @@ def test_an_undeclared_direction_serializes_as_undeclared():
     # White Cube's provider path is an env placeholder (see the demo fixture);
     # any value parses, and nothing here reaches a provider.
     os.environ.setdefault("WHITE_CUBE_DBT_PROJECT", "/nonexistent/white-cube-has-no-provider")
+    # The same for the Alpenglow benchmark tree (demo/alpenglow_tree.yml).
+    os.environ.setdefault("ALPENGLOW_DBT_PROJECT", "/nonexistent/alpenglow-has-no-provider")
     seen_declared = seen_undeclared = 0
     for path in trees:
         parser = Parser(path.read_text())
