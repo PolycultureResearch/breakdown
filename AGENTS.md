@@ -73,6 +73,8 @@ breakdown/
     windows.py       # Window → scalar: node_window_value() and how the payload names the aggregate
     warm.py          # plan_warm_fits() — which fits make each metric's default analysis a cache hit
     progress.py      # Progress callbacks for long-running analyses
+    compile_cache.py # ensure_safe_compile_cache() — one fit must never load another fit's compiled code (C65)
+    compile_cache_preload.py  # Imported by the forkserver so sampling chains are hardened too
   api/
     main.py          # FastAPI app
     trees.py         # TreeState — one per metric tree served by the process

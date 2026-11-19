@@ -495,6 +495,39 @@ A fit depends only on the analysis window's start date, never on the
 reference window, so a warmed default analysis stays a cache hit if the
 analyst then changes the reference.
 
+## The compile cache
+
+Every fit compiles its model before sampling, and the compiled code is cached
+on disk so the next process does not pay for it again. The cache lives under
+PyTensor's `base_compiledir` (`~/.pytensor` by default), in a directory of
+breakdown's own: `numba-unique-ids/`, beside PyTensor's `numba/`.
+
+- **It is safe to keep between restarts and to share between processes**,
+  including on a mounted volume in a container. Mount the whole
+  `base_compiledir` if you want a restarted container to skip compilation.
+- **Why breakdown has its own directory.** Through PyTensor 2.38.2, the
+  compiled code in PyTensor's shared `numba/` directory was only safe within
+  the process that wrote it. Entries written by two different processes could
+  end up with the same internal name, and a process that loaded both ran the
+  first one's code for the second: a fit could silently return another fit's
+  posterior. breakdown 0.3.0's lockfile, and so its Docker images, were on
+  that version. breakdown now requires PyTensor 2.38.3, which stops writing
+  such entries, and keeps its cache in a directory of its own, because
+  2.38.3 still *reads* the ones already there. It never loads anything an
+  older version or another program wrote.
+- **You can delete either directory at any time** when no fit is running. The
+  only cost is recompiling. After upgrading from 0.3.0 or earlier,
+  `~/.pytensor/numba` is no longer read by breakdown and can be removed.
+- **To turn the cache off**, set `PYTENSOR_FLAGS=numba__cache=False`. Every
+  fit then compiles from scratch, which roughly triples the time of a short
+  fit. breakdown turns it off by itself, with a warning in the log, if the
+  installed PyTensor is older than 2.38.3.
+- **breakdown appends `numba__cache=False` to `PYTENSOR_FLAGS` in its own
+  process environment** once the first fit starts. That is deliberate: it is
+  for any Python process started from breakdown's that does not load
+  breakdown, which would otherwise use the shared directory. Other
+  `PYTENSOR_FLAGS` you set are kept.
+
 ## Environment variables
 
 Every `breakdown serve` flag has an environment-variable form, which is what a

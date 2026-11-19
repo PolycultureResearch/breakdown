@@ -3,8 +3,8 @@
 **A white paper on the models behind Bayesian metric trees, why each was chosen,
 and where each one stops being trustworthy.**
 
-> **Written:** 2026-08-04 · **Last updated:** 2026-10-12 ·
-> **Engine version:** 0.3.0
+> **Written:** 2026-08-04 · **Last updated:** 2026-11-18 ·
+> **Engine version:** 0.3.1
 >
 > **This is a living document.** The assessment in §3 and the improvements in §4
 > describe the engine *as it stands on the last-updated date above*. Both
@@ -708,6 +708,21 @@ An honest assessment, in the spirit of the fourth commitment.
   on-demand fits mean identical requests return identical numbers, and with the
   snapshot store an analysis re-runs from a fresh clone. Reproducibility is a
   precondition for rigor and is frequently missing in this product category.
+  **Correction (2026-11-18, roadmap C65):** through 0.3.0 this was false in
+  one circumstance, and badly. With a compile cache kept between processes, a
+  fit could run the compiled density of a *different* fit and return that
+  fit's posterior, converged, under the right node's name. It is fixed in
+  0.3.1; an analysis run on 0.3.0 or earlier from a Docker image or a locked
+  checkout whose `~/.pytensor` outlived a restart should be re-run. The
+  posterior predictive check (S3) flagged every case reproduced, which is the
+  argument for reading `ppc_status` before a number and not after. One
+  qualification stays open: "identical numbers" holds for a given state of
+  the compile cache. The process that first compiles a model and a later one
+  that loads it from the cache can run floating-point operations in a
+  different order, and a seeded chain then takes a slightly different path
+  (measured on one seasonal node: `alpha` 0.0518 cold, 0.0532 warm, the same
+  on every warm run after; a second node did not move). The difference is
+  well inside Monte-Carlo error and is upstream behavior, not fixed here.
 - **There is a calibration suite.** `tests/test_calibration.py` tests recovery
   of planted causes (contemporaneous, lagged, and identity), *restraint* on null
   cases and unrelated parents, and interval coverage across 20 independently
@@ -1829,6 +1844,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-11-18 | **A correctness defect outside the statistics, recorded because it falsified a strength this paper claims (roadmap C65).** §3.1's "deterministic and reproducible" carries a dated correction: through 0.3.0, with a compile cache shared between processes, PyTensor 2.38.2 could load one fit's compiled function for another, and the engine returned the first fit's posterior for the second with clean convergence diagnostics. Not a §3.2 weakness and not a modeling limitation: the model was right and a different one was executed. Fixed in 0.3.1 by requiring PyTensor 2.38.3 and never reading a cache an older version wrote. The only diagnostic that noticed was S3's posterior predictive check. |
 | 2026-10-06 | **Fourth hostile review acted on (roadmap C45–C64).** Two §4 entries carry dated corrections: S24's `learn_from: window` extended the fit on every RCA for any dated step, not only when the analysis window contained it (C55), and S23's alternative reference blocks were not whole periods on month grains while `stable` could be read as a surviving top cause when none was ranked (C56). Not a §3.2 weakness but worth stating here because it published a wrong number: a parent held at a value with no exact binary form (4.99) was not recognised as constant, and its coefficient was standardized against float noise into a contribution near 1e13 with `fit_quality: ok` (C45); "constant" is now one scale-relative test. No model changed. The review found the S25 Kalman marginal correct against an independent dense Gaussian. Its named weakest assumption — a coefficient learned before the window read as causal and still valid inside it, with a flat analysis-window level and no interval on `unexplained` — is §4's S14, S16 and S5, all still open. |
 | 2026-09-30 | **S25 shipped — the local level is integrated out of every NUTS fit.** A scalar Kalman filter computes the likelihood with the level marginalized (a `pm.Potential`, compiled on PyMC's numba backend); `trend` is recovered afterwards by forward-filtering backward-sampling with the same name and shape, so RCA and the posterior predictive check read it unchanged; the S3 replicates are drawn as `μ + trend + N(0, σ_obs²)` from the joint draws because there is no observed node any more. §2.1 now describes the computation and §2.2 says R̂/ESS are over the sampled parameters, not the recovered trend states. The acceptance test was that the posterior did not move: on six calibration worlds (twelve seeds per path) and the demo's four story-B nodes every parameter's mean and 94% HDI and the level at its first, middle and last period agree with the explicit latent within Monte-Carlo error, and a seeded test pins it. What moved is cost and geometry: story B's four fits 47.0s → 19.1s, the cold RCA 47.7s → 20.0s, `sessions` bulk ESS 460 → 2,072, and the divergences the explicit latent threw on `trials_started` (10), `trial_conversion_rate` (6) and most calibration worlds are gone. No §3.2 weakness changed status; the ADVI opt-in keeps the explicit latent its k̂ was measured against. |
 | 2026-09-30 | **S25 filed — integrate the local level out with a Kalman filter, designed and prototyped, not built.** Profiling a cold story-B RCA found one daily node (`sessions`, ~263 leapfrog steps per draw) was 70% of the wait, from the coupled non-centered level rather than from compute. §4 gains the item and its prototype measurements (same β, ~4× the ESS, zero divergences, the four fits 2.4× faster); nothing in §2 or §3 changes until it ships. |

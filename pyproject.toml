@@ -7,7 +7,7 @@
 # `pip install` and `import` read differently, which the README now states up
 # front.
 name = "metric-breakdown"
-version = "0.3.0"
+version = "0.3.1"
 description = "Bayesian metric trees: root cause analysis for business metrics over the dbt Semantic Layer"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -91,6 +91,16 @@ dependencies = [
     # pytensor 2.23 with no numba at all. Raising the floor rather than adding
     # `numba` directly keeps the pair PyMC tested together.
     "pymc>=5.27.0",
+    # Named directly, against the rule just above, for one reason: 2.38.3 is
+    # the first PyTensor whose numba backend gives compiled functions ids that
+    # are unique across processes. On 2.38.2 two processes can cache different
+    # functions under one symbol name, and a process that loads both runs the
+    # first one's code for the second: a fit that returns another fit's
+    # posterior, converged and with no error (roadmap C65,
+    # `breakdown/engine/compile_cache.py`). PyMC 5.28 admits 2.38.2, so the
+    # floor has to be stated here. It also excludes PyMC 5.27.x, whose own pin
+    # is on PyTensor 2.36-2.37; the resolver then picks 5.28 or later.
+    "pytensor>=2.38.3",
     "pyyaml>=6.0",
     "uvicorn>=0.27.0",
 ]

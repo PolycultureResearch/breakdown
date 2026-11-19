@@ -23,6 +23,48 @@ its notes never listed it at all.)
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-11-19
+
+A **patch** release for one correctness defect (roadmap C65). Nothing in the
+CLI, the tree YAML or the HTTP and MCP surfaces changes. If you run breakdown
+from a Docker image or a locked checkout, read the first entry: results from
+0.3.0 may need re-running.
+
+### Fixed
+
+- **A fit could silently return another fit's posterior** (roadmap C65).
+  PyTensor 2.38.2, which 0.3.0's lockfile and Docker images pinned, cached
+  numba-compiled functions on disk under names that were only unique within
+  the process that wrote them. A process that loaded two entries written by
+  different processes ran the first one's code for the second. On 0.3.0, with
+  a cache kept between restarts: fit node A in one process, node B in
+  another, both in a third, and B came back with A's posterior exactly,
+  converged, with no error. Where the two models differed in shape the fit
+  failed with an `IndexError` or a non-finite posterior instead. It needed
+  two writers to agree on a detail that depends on Python's hash seed, about
+  1 pair of processes in 80, or every pair under a fixed `PYTHONHASHSEED`.
+  The posterior predictive check went `severe` on every case reproduced;
+  R-hat and divergences did not move.
+
+  breakdown now requires `pytensor>=2.38.3`, which no longer writes such
+  entries, and keeps its compile cache in its own directory
+  (`<base_compiledir>/numba-unique-ids`), because 2.38.3 still reads the
+  ones an older version left behind. **If you ran 0.3.0 or earlier from a
+  Docker image or a `uv sync` checkout with a `~/.pytensor` (or a mounted
+  cache volume) that outlived a restart, re-run any analysis you rely on.**
+  The old `~/.pytensor/numba` directory is no longer read and can be
+  deleted. See [deploying.md](docs/deploying.md#the-compile-cache).
+
+### Changed
+
+- `pytensor>=2.38.3` is now a direct dependency. It was already installed
+  through PyMC; this only raises the minimum.
+- breakdown appends `numba__cache=False` to `PYTENSOR_FLAGS` in its own
+  process environment when the first fit starts, so that Python processes
+  started from it that do not load breakdown never touch PyTensor's shared
+  cache directory. Flags you set are kept, and setting `numba__cache=False`
+  yourself turns breakdown's cache off too.
+
 ## [0.3.0] — 2026-10-12
 
 This cycle's statistical work is reference-window sensitivity (S23), declared
@@ -1174,4 +1216,5 @@ published` and uploads via Trusted Publishing. -->
 [0.1.0]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.1.0
 [0.2.0]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.2.0
 [0.3.0]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.3.0
-[Unreleased]: https://github.com/PolycultureResearch/breakdown/compare/v0.3.0...HEAD
+[0.3.1]: https://github.com/PolycultureResearch/breakdown/releases/tag/v0.3.1
+[Unreleased]: https://github.com/PolycultureResearch/breakdown/compare/v0.3.1...HEAD
