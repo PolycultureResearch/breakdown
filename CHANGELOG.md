@@ -23,7 +23,7 @@ its notes never listed it at all.)
 
 ## [Unreleased]
 
-## [0.3.1] — 2026-11-18
+## [0.3.1] — 2026-11-19
 
 A **patch** release for one correctness defect (roadmap C65). Nothing in the
 CLI, the tree YAML or the HTTP and MCP surfaces changes. If you run breakdown
