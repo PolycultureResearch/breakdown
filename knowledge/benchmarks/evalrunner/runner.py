@@ -274,7 +274,9 @@ def plan_run(
     for w in single_worlds:
         # The set's verdicts depend on which seeds the set was built with, so
         # they are part of what decides a single world's result.
-        verdicts = sorted(map(list, worldset.verdicts(w.regime, w.anomalies[0]).items()))
+        verdicts = sorted(
+            (json.dumps(k), v) for k, v in worldset.verdicts(w.regime, w.anomalies[0]).items()
+        )
         key = _sha(
             [
                 "single",

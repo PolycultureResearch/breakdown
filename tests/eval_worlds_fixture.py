@@ -339,4 +339,6 @@ def e2e_world_set(root: Path) -> Path:
         }
         for m in truth["measured_effects"]
     ]
+    # A slice row beside its total: keys with and without a dimension.
+    summary.append({**summary[1], "dimension": "channel", "value": "paid", "verdict": "open"})
     return write_world_set(root, metrics, worlds, effects_summary=summary)
