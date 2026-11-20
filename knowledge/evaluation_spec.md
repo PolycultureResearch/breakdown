@@ -402,14 +402,16 @@ What each tier selects:
 **Trees.** `demo/white_cube_tree.yml` (b2c_saas) binds by metric name and
 needs no bindings file. `demo/alpenglow_tree.yml` (retail_dtc) uses
 `evalrunner/bindings/alpenglow_tree.yml` and needs `--drop-unserved`: its
-`discounted_orders` node has no metric in the world set.
+`discounted_orders` node has no metric in the world set (rechecked at
+generator `b51d70e`: 18 nodes served, that one dropped; the generator lists
+the metric under its phase 2).
 
 **Score, publish, compare.**
 
 ```bash
 # rebuild the scoreboard from a run's rows, and publish a copy into the repo
 uv run python knowledge/benchmarks/evaluate.py score /path/to/runs/white_cube_smoke \
-    --publish knowledge/eval/2026-11-19_smoke_white_cube_demo_tree
+    --publish knowledge/eval/2026-11-20_smoke_white_cube_demo_tree
 # several verticals as one scoreboard, with per-vertical tables
 uv run python knowledge/benchmarks/evaluate.py score RUN_A RUN_B --publish knowledge/eval/NAME
 # paired differences between two scoreboards, on the worlds they share
@@ -449,29 +451,42 @@ and the identity checks run. It is kept with the benchmark and not in
 served" is a result it reports, not a connection someone fixes.
 
 **Coarser grains are rebuilt from days by the manifest's rule, and refused
-when they cannot be.** A sum adds the days of each whole week; a stock takes
-the last day; a derived metric is recomputed from its inputs, each aggregated
-by its own rule. A mean over rows, a distinct count and a rolling window are
-served at day grain and refused at a coarser one. Nothing is approximated.
+when they cannot be.** Every rule the loader applies is one the manifest
+states (the generator's contract since its commit `83640ca`). A sum adds the
+days of each whole week; a stock takes the last day; a ratio aggregates its
+`numerator` and `denominator` columns each by the side's rule in
+`metrics[].input_time_aggregation`, then divides; an average (`has_sides`)
+sums its sum and its row count, then divides; a derived metric aggregates
+each input by its own rule (checked against `input_time_aggregation`) and
+evaluates `metrics[].formula`, the expression as a tree. The SQL `expr` is
+never parsed. A distinct count and a rolling window are served at day grain
+and refused at a coarser one, and so is a ratio or derived metric whose
+sides' rules the manifest does not state (a set built before `83640ca`).
+Nothing is approximated.
 
-**A ratio aggregates each side by that side's own rule.** The manifest calls
-every ratio `ratio_of_sums`. `customer_churn_rate` is churned subscriptions
-over active subscriptions, and active subscriptions is a stock. Summing a
-stock over a week gives subscription-days, and the tree's weekly identity
-(`churned = active × rate`) then fails by a factor of seven. The loader reads
-the two input metrics' rules from `metrics[].inputs`: a summed numerator over
-the denominator's last day. Raised with the generator (it should say this in
-the manifest).
+**A ratio aggregates each side by that side's own rule.** `customer_churn_rate`
+is churned subscriptions over active subscriptions, and active subscriptions
+is a stock. Summing a stock over a week gives subscription-days, and the
+tree's weekly identity (`churned = active × rate`) then fails by a factor of
+seven. The manifest now calls such a ratio `ratio_of_aggregates` and gives
+`input_time_aggregation: {numerator: sum, denominator: end_of_period}`; a
+`ratio_of_sums` whose sides are stated as anything but sums is refused.
+Measured on the 2026-11-20 White Cube set (generator `b51d70e`, 33 worlds):
+the rate's daily `numerator` and `denominator` equal the
+`churned_subscriptions` and `active_subscriptions` series exactly, and the
+weekly identity holds to 2e-16 relative in every week of every world. Summing
+both sides would have given a weekly rate 6.9 times too small.
 
 **A weekly value rebuilt from days is not always MetricFlow's weekly value.**
-`active_subscriptions` is a distinct count. Asked for a week, MetricFlow
-counts subscriptions active at any time in it; the world set calls the metric
-a stock and the loader takes Sunday's count. The two differ by the week's
-cancellations, about one percent. `demo/white_cube_tree.yml` was written
-against MetricFlow's weekly numbers, so on a world set its week-grain stock
-and churn rate are slightly different series from the demo's. They are
-consistent within a world set (null and single worlds are built the same
-way), which is what the scores need.
+`active_subscriptions` is a distinct count (`measure_agg: count_distinct`).
+Asked for a week, MetricFlow counts subscriptions active at any time in it;
+the loader takes Sunday's count, which is what a stock node means. The two
+differ by the week's cancellations, about one percent. The node is served,
+and the plan and the scoreboard carry a caveat that names it.
+`demo/white_cube_tree.yml` was written against MetricFlow's weekly numbers, so
+on a world set its week-grain stock and churn rate are slightly different
+series from the demo's. They are consistent within a world set, which is what
+the scores need.
 
 **A tree's `kind` must agree with the generator.** The engine resamples a
 parent by its kind, so a node the tree calls a flow and the generator calls a
@@ -490,22 +505,37 @@ from its parents. A node some remaining formula needs cannot be dropped. The
 scoreboard lists what was dropped and carries the hash of the tree actually
 run.
 
-**Root on a formula node** (§5.3): scored at the formula's moved parent with
-the largest relative change. If no parent moved, the label stays on the
-formula node and the row says so. On White Cube this turns the churn spike's
-label from `churned_subscriptions` into `customer_churn_rate`; without the
-"largest change" rule `active_subscriptions` would count as a root too.
+**Root on a rate's numerator** (§5.3). The generator roots a rate anomaly at
+the rate's numerator count when its semantic layer cannot slice the rate
+(White Cube's churn spike at `churned_subscriptions`), and names the rate in
+`root_metric_rate`. A tree holding the rate as a non-formula node is scored
+at the rate (`on_tree_rate`).
+
+**Root on a formula node**, when `root_metric_rate` does not resolve it:
+scored at the formula's moved parent with the largest relative change. If no
+parent moved, the label stays on the formula node and the row says so.
 
 **Onset** (§5.2): a `first_diff` not before the declared start, then `onset`,
 then the declared start.
 
-**The target is chosen per world.** Whether a downstream metric "moved" is
-one twin's verdict and is noisy, so the same anomaly can get a different
-target in different seeds (White Cube's signup regression reaches
-`trials_started` in two seeds and `new_mrr` in the third). That is part of
-the spread across seeds. The alternative is the set-level
-`effects_summary.parquet`, which would give every seed the same target but
-make a world's rows depend on which other seeds are in the set.
+**The target is chosen per anomaly, from the set's verdict.** One twin's
+`moved` is noisy, so the same anomaly got a different target in different
+seeds (White Cube's signup regression reached `trials_started` in two seeds
+and `new_mrr` in the third). The set's `effects_summary.parquet` now carries
+one `verdict` per regime, anomaly, metric and slice (`established_up` /
+`established_down` at two-sided 1% across seeds, `open`, `exactly_zero`,
+`undefined`), and a node moved when its verdict is established. A node the
+summary has no row for (several slice members summed, a running total)
+falls back to the twin's `moved`, and every localization row names its basis
+(`set_verdict`, `twin_moved`, or `fallback_deepest_descendant` when nothing
+downstream moved). The cost: a world's target depends on which seeds the set
+was built with, so the verdicts used are part of a single world's job key.
+With three seeds the 1% bar is a t of 9.9, so few effects are established on
+a smoke set (see the smoke tier, below).
+
+**A node bound to one slice member reads its own stats.** The twin's
+`<world>.effects_summary.parquet` holds every single-dimension slice; the
+ground truth's `measured_effects` holds totals only.
 
 **The window grid** (§5.1). Smoke scores at most eight windows per null
 world; standard and full score one every 28 days, which is about 20 per
@@ -543,25 +573,46 @@ parent's grain and kind, the sampler's draws, chains and seed, and the git
 tree hash of `breakdown/` (so a docs-only commit keeps the cache and any
 engine change drops it).
 
-**The smoke tier, measured** (2026-11-19, White Cube, `demo/white_cube_tree.yml`,
-[`eval/2026-11-19_smoke_white_cube_demo_tree.md`](eval/2026-11-19_smoke_white_cube_demo_tree.md)).
+**The smoke tier, measured** (2026-11-20, White Cube, `demo/white_cube_tree.yml`,
+[`eval/2026-11-20_smoke_white_cube_demo_tree.md`](eval/2026-11-20_smoke_white_cube_demo_tree.md),
+replacing the 2026-11-19 baseline; the paired difference is
+[`eval/2026-11-20_smoke_white_cube_diff_vs_2026-11-19.md`](eval/2026-11-20_smoke_white_cube_diff_vs_2026-11-19.md)).
 393 jobs: 384 calibration fits (16 fitted nodes, 8 windows, 3 seeds) and 9
-single worlds. 476 fits in all, 52 process-minutes, **13 minutes 54 seconds
-of wall time** on four worker processes, on a 12-core machine that another
-job kept at a load average of 20 to 87 throughout. So the 15-minute budget of
-§7 holds for the run, with a minute to spare and no margin for a slower tree.
-Three things it does not include or would not survive:
+single worlds, the three anomalies pinned with `--singles` to the ones the
+first baseline ran (the default smoke pick now takes
+`latam_campaign_brazil_lift_organic` in place of the signup regression,
+because the set holds every anomaly). 34 process-minutes and **9 minutes 3
+seconds of wall time** on four worker processes. The load average went from
+3.5 to 16 during the run with no generator process alive, which is the run's
+own 16 sampler processes on 12 cores; the first baseline took 13 minutes 54
+seconds with another job holding the load at 20 to 87. Median fit time fell
+from 5.3 to 3.5 seconds for the same reason, not because of any change here.
 
-- Building the world set took another 6 minutes (12 worlds, two at a time,
-  8.4 GB peak). The set is deterministic for a generator version, so it
-  should be built once and kept, not rebuilt per pull request.
-- Three of the nine single worlds were nearly free: the spend ramp reaches
-  one node below its root on this tree, so its scope is two nodes and its
-  ranking is first of one. A world whose scope is the whole tree cost 26 fits
-  and close to three minutes. On a tree where every anomaly reaches the top,
-  the nine single worlds alone would add about four minutes.
-- Four workers, each fit running four chains, is 16 busy processes on 12
-  cores.
+What moved between the two baselines, and why:
+
+- **Calibration (Q1, Q9) and detection (Q2): identical** to three decimals.
+  The null worlds and the roots' own series are the same numbers under the
+  new contract: the churn rate was already rebuilt from a summed numerator
+  over the stock's last day, and is now so by the manifest's statement
+  rather than by inference.
+- **Localization (Q3): every change is a target change** from the set's
+  verdicts. The roots did not change (the churn spike's root is
+  `customer_churn_rate` either way; now by `root_metric_rate`, before by the
+  largest-change rule). The signup regression's target went from
+  `trials_started` (seeds 0, 2) and `new_mrr` (seed 1) to `signups` in every
+  seed: only `signups` is established at the set level, so its scope is three
+  nodes instead of four or thirteen, and its ranks improved. The churn spike
+  in seed 2 went from `churned_mrr` (four nodes) to `net_new_mrr` (twenty),
+  by the fallback, and its ranks got worse. With three seeds the 1% bar is a
+  t of 9.9, and the churn spike's own metrics (rate +33%, t 5.3) are `open`,
+  so nothing below its root is established and every seed falls back to the
+  deepest descendant. The spend ramp is unchanged. These are changes in what
+  is asked, not in the engine.
+
+Not included: building the set took 13 minutes 19 seconds (33 worlds, every
+anomaly, two at a time, 11.5 GB peak). It is deterministic for a generator
+version, so it should be built once and kept, not rebuilt per pull request.
+Four workers, each fit running four chains, is 16 busy processes on 12 cores.
 
 To hold the budget on a canonical tree: six null windows per world instead
 of eight (96 fewer fits, about three minutes), or a quiet machine. The trace
@@ -587,15 +638,23 @@ diagnostic flag catches (§5.1, which needs a definition of "badly calibrated"
 for one node on a handful of windows); story worlds; nodes at month grain
 (skipped: the grid is weekly).
 
+**What each vertical can serve, rechecked at generator `b51d70e`.** White
+Cube: all 23 fetched nodes of the demo tree; `active_subscriptions` carries
+the distinct-count caveat; `dau`, `paying_active_users` and `wau` are refused
+at week grain. Alpenglow: the demo tree minus `discounted_orders`, and no
+stock but the running total of new customers its bindings file builds.
+Meridian: every one of its 15 metrics is servable at week grain now,
+`sales_cycle_days` included (from its sides), so a tree is the only thing
+missing. Bristlecone: all 8 servable at week grain, still no stock.
+
 **What the other two verticals' trees would need.** Neither is authored here.
 Meridian (`b2b_services`): `win_rate` and average deal size as rates with
 their identities (`deals_won = closed_deals × win_rate`,
 `bookings = deals_won × avg_deal_size`), `open_deals` or
 `open_pipeline_value` as the stock, learned and lagged edges down the funnel
 (leads to qualified to proposals to negotiations) and from bookings to
-invoiced revenue to collected cash. `sales_cycle_days` is a mean over rows,
-so it can only be a day-grain node unless the generator exports its two
-sides. Bristlecone (`cpg_wholesale`): eight metrics and no stock, so the
+invoiced revenue to collected cash. `sales_cycle_days` is a mean over rows
+whose sides the generator now exports, so it can be a week-grain rate. Bristlecone (`cpg_wholesale`): eight metrics and no stock, so the
 canonical-tree requirement of one stock needs a new metric from the
 generator (retailer inventory, or points of distribution); a learned edge
 from scan sales to shipped cases; `net = gross − trade spend` as the formula;
