@@ -21,25 +21,33 @@ grain whose value cannot be rebuilt from days (a mean over rows, a distinct
 count) are each an error that says which.
 
 The series file is daily. A node at a coarser grain is rebuilt from the days
-by the rule the manifest gives for its metric (`metrics[].time_aggregation`):
+by the rule the manifest gives for its metric (`metrics[].time_aggregation`),
+and every rule the loader applies is one the manifest states:
 
 - `sum`: add the days of each whole period;
-- `end_of_period`: take the period's last day (a stock);
-- a ratio: aggregate its numerator and its denominator, each by its own
-  metric's rule, then divide. The manifest's `ratio_of_sums` is this with
-  both sides summed; a ratio over a stock (churned / active subscriptions)
-  takes the stock's last day, as the semantic layer does;
-- `derived`: aggregate each input metric by its own rule, then evaluate the
-  metric's expression;
-- anything else (`average`, `count_distinct`, `rolling_window`, min, max):
-  refused at a coarser grain, served as written at day grain.
+- `end_of_period`: take the period's last day (a stock). A stock whose
+  measure is a distinct count (`measure_agg: count_distinct`) is then the
+  last day's count, which is not MetricFlow's number at that grain (distinct
+  over the whole period). It is served, because a stock node means the level
+  at the period's end, and the plan carries a caveat that names it;
+- `ratio_of_sums`, `ratio_of_aggregates`: aggregate the `numerator` and the
+  `denominator` columns, each by its side's rule in
+  `metrics[].input_time_aggregation`, then divide (a churn rate is a summed
+  flow over the stock's last day);
+- `average`: the series carry the sum and the row count as the sides
+  (`metrics[].has_sides`); sum both, then divide;
+- `derived`: aggregate each input metric by its own rule (checked against
+  `input_time_aggregation`), then evaluate `metrics[].formula`, the
+  expression as a tree. The SQL `expr` is never parsed;
+- anything else (`count_distinct`, `rolling_window`, min, max), and a ratio
+  or derived metric from a set that does not state its sides' rules: refused
+  at a coarser grain, served as written at day grain.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -49,7 +57,6 @@ import pandas as pd
 import yaml
 
 from breakdown.data_fetch import BaseDataFetcher, _align_to_spine
-from breakdown.formula import eval_formula
 from breakdown.grains import GrainedData, resample_up
 from breakdown.loading import fetch_all_metrics
 from breakdown.parser import Parser
@@ -207,7 +214,8 @@ class WorldSeries:
             parts.append(self._slices[key][cols])
         if len(parts) == 1:
             return parts[0]
-        if spec.type == "ratio":
+        if spec.has_sides:
+            # Members of a ratio or an average: add the sides, then divide.
             total = sum(p[["numerator", "denominator"]].fillna(0.0) for p in parts)
             with np.errstate(divide="ignore", invalid="ignore"):
                 total["metric_value"] = total["numerator"] / total["denominator"]
@@ -231,8 +239,43 @@ class WorldSeries:
             f"values at grain '{grain}'"
         )
 
-    def _rule(self, metric: str | None, default: str = "sum") -> str:
-        return self.specs[metric].time_aggregation if metric in self.specs else default
+    def side_rules(self, spec: MetricSpec) -> tuple[str, str]:
+        """How a ratio's or an average's numerator and denominator aggregate
+        over time, as the manifest states it, and as each input metric's own
+        entry agrees. Refused when it does not say, or contradicts itself."""
+        rules = self._stated_side_rules(spec)
+        for side, rule in zip(("numerator", "denominator"), rules):
+            metric = spec.inputs.get(side)
+            if metric in self.specs and self.specs[metric].time_aggregation != rule:
+                own = self.specs[metric].time_aggregation
+                raise WorldCannotAnswer(
+                    f"'{spec.name}' is '{spec.time_aggregation}', so its {side} "
+                    f"'{metric}' aggregates as '{rule}', and '{metric}' itself says '{own}'"
+                )
+        return rules
+
+    def _stated_side_rules(self, spec: MetricSpec) -> tuple[str, str]:
+        if spec.time_aggregation in ("ratio_of_sums", "average"):
+            stated = spec.input_time_aggregation
+            rules = (stated.get("numerator", "sum"), stated.get("denominator", "sum"))
+            if rules != ("sum", "sum"):
+                raise WorldCannotAnswer(
+                    f"metric '{spec.name}' is '{spec.time_aggregation}' but its sides are "
+                    f"stated to aggregate as {rules}"
+                )
+            return rules
+        if spec.time_aggregation == "ratio_of_aggregates":
+            stated = spec.input_time_aggregation
+            if not {"numerator", "denominator"} <= set(stated):
+                raise WorldCannotAnswer(
+                    f"ratio '{spec.name}' is 'ratio_of_aggregates' and the manifest does not "
+                    "state how each side aggregates (`input_time_aggregation`)"
+                )
+            return stated["numerator"], stated["denominator"]
+        raise WorldCannotAnswer(
+            f"metric '{spec.name}' aggregates as '{spec.time_aggregation}', which is not a "
+            "rule over a numerator and a denominator"
+        )
 
     def at_grain(self, binding: SeriesBinding, grain: str) -> pd.Series:
         """The binding's series at `grain`, indexed by period start. Undefined
@@ -251,13 +294,15 @@ class WorldSeries:
                 out = resample_up(out, "day", grain, "stock", label=label)
         elif grain == "day":
             out = days["metric_value"]
-        elif spec.type == "ratio":
-            num = self._combine(
-                days["numerator"], self._rule(spec.inputs.get("numerator")), grain, label
-            )
-            den = self._combine(
-                days["denominator"], self._rule(spec.inputs.get("denominator")), grain, label
-            )
+        elif spec.time_aggregation in ("ratio_of_sums", "ratio_of_aggregates", "average"):
+            if not spec.has_sides:
+                raise WorldCannotAnswer(
+                    f"{label} is '{spec.time_aggregation}' and its series carry no "
+                    f"numerator/denominator, so it cannot be rebuilt at grain '{grain}'"
+                )
+            num_rule, den_rule = self.side_rules(spec)
+            num = self._combine(days["numerator"], num_rule, grain, f"{label} numerator")
+            den = self._combine(days["denominator"], den_rule, grain, f"{label} denominator")
             with np.errstate(divide="ignore", invalid="ignore"):
                 out = num / den
         elif spec.time_aggregation == "derived":
@@ -273,36 +318,80 @@ class WorldSeries:
         return out[np.isfinite(out)]
 
     def _derived(self, spec: MetricSpec, grain: str) -> pd.Series:
-        if not spec.expr or not spec.inputs:
+        if spec.formula is None:
             raise WorldCannotAnswer(
-                f"derived metric '{spec.name}' has no `expr`/`inputs` in the manifest, so it "
-                f"cannot be rebuilt at grain '{grain}'"
+                f"derived metric '{spec.name}' has no structured `formula` in the manifest "
+                f"(expr {spec.expr!r}), so it cannot be rebuilt at grain '{grain}'"
             )
-        inputs = pd.DataFrame(
-            {
-                alias: self.at_grain(SeriesBinding(metric), grain)
-                for alias, metric in spec.inputs.items()
-            }
-        )
-        # `x / nullif(y, 0)` is the semantic layer's way of leaving a zero
-        # denominator undefined; dividing and dropping the non-finite result
-        # (in `at_grain`) says the same thing.
-        expr = re.sub(r"nullif\(\s*(\w+)\s*,\s*0\s*\)", r"\1", spec.expr, flags=re.IGNORECASE)
-        try:
-            with np.errstate(divide="ignore", invalid="ignore"):
-                values = eval_formula(expr, {a: inputs[a].to_numpy(float) for a in inputs})
-        except ValueError as exc:
+        if set(spec.input_time_aggregation) != set(spec.inputs):
             raise WorldCannotAnswer(
-                f"derived metric '{spec.name}' has an expression this loader cannot "
-                f"evaluate ({spec.expr!r}): {exc}"
-            ) from exc
+                f"derived metric '{spec.name}' does not state how each input aggregates "
+                "(`input_time_aggregation`), so it is not rebuilt at a coarser grain"
+            )
+        columns = {}
+        for alias, metric in spec.inputs.items():
+            stated = spec.input_time_aggregation[alias]
+            own = self.spec(metric).time_aggregation
+            if stated != own:
+                raise WorldCannotAnswer(
+                    f"derived metric '{spec.name}' states its input '{metric}' aggregates as "
+                    f"'{stated}', and '{metric}' itself says '{own}'"
+                )
+            columns[metric] = self.at_grain(SeriesBinding(metric), grain)
+        inputs = pd.DataFrame(columns)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            values = _evaluate(spec.formula, inputs, spec.name)
         return pd.Series(np.asarray(values, dtype=float), index=inputs.index)
+
+
+_BINARY = {
+    "+": np.add,
+    "-": np.subtract,
+    "*": np.multiply,
+    "/": np.divide,
+}
+
+
+def _evaluate(node: dict, inputs: pd.DataFrame, name: str) -> np.ndarray:
+    """A manifest `formula` tree over aggregated inputs. `nullif_zero(x)` is
+    undefined where x is 0, and an undefined period is dropped by the caller,
+    which is what the semantic layer's NULL means."""
+    if "metric" in node:
+        return inputs[node["metric"]].to_numpy(float)
+    if "const" in node:
+        return np.full(len(inputs), float(node["const"]))
+    op, args = node.get("op"), [_evaluate(a, inputs, name) for a in node.get("args", [])]
+    if op in _BINARY and len(args) == 2:
+        return _BINARY[op](args[0], args[1])
+    if op == "neg" and len(args) == 1:
+        return -args[0]
+    if op == "nullif_zero" and len(args) == 1:
+        return np.where(args[0] == 0, np.nan, args[0])
+    raise WorldCannotAnswer(
+        f"derived metric '{name}' has a formula node this loader cannot read: {node}"
+    )
 
 
 def effective_rule(spec: MetricSpec, binding: SeriesBinding) -> str:
     if binding.cumulative:
         return "end_of_period"
     return "ratio" if spec.type == "ratio" else spec.time_aggregation
+
+
+def caveat_for(spec: MetricSpec, binding: SeriesBinding, grain: str) -> str | None:
+    """What a served node's value is that its source's own number is not.
+    Recorded on the plan; never a reason to refuse."""
+    if (
+        grain != "day"
+        and not binding.cumulative
+        and spec.time_aggregation == "end_of_period"
+        and spec.measure_agg == "count_distinct"
+    ):
+        return (
+            f"'{binding.describe()}' is a distinct count per day; at grain '{grain}' it is "
+            "served as the last day's count, not MetricFlow's distinct count over the period"
+        )
+    return None
 
 
 def kind_refusal(kind: str, spec: MetricSpec, binding: SeriesBinding) -> str | None:
@@ -400,10 +489,12 @@ class TreePlan:
     dropped: list[str] = field(default_factory=list)  # removed from the tree
     derived_instead: list[str] = field(default_factory=list)  # formula nodes no longer fetched
     raw: dict[str, Any] = field(default_factory=dict)  # the tree actually parsed
+    caveats: dict[str, str] = field(default_factory=dict)  # served, but not as the source's number
 
     def summary(self) -> dict[str, Any]:
         return {
             "served": {n: b.describe() for n, b in self.served.items()},
+            "caveats": dict(self.caveats),
             "unserved": dict(self.unserved),
             "dropped": list(self.dropped),
             "derived_instead_of_fetched": list(self.derived_instead),
@@ -421,21 +512,27 @@ def plan_tree(tree: TreeSpec, series: WorldSeries, *, drop_unserved: bool = Fals
     still refuses.
     """
     raw = tree.raw()
-    served, unserved = {}, {}
+    served, unserved, caveats = {}, {}, {}
     for m in raw["metrics"]:
         binding = tree.binding_for(m)
         if binding is None:
             continue  # derived: never fetched
+        grain = m.get("grain", "day")
         try:
-            refusal = kind_refusal(m.get("kind", "flow"), series.spec(binding.metric), binding)
+            spec = series.spec(binding.metric)
+            refusal = kind_refusal(m.get("kind", "flow"), spec, binding)
             if refusal:
                 raise WorldCannotAnswer(refusal)
-            if series.at_grain(binding, m.get("grain", "day")).empty:
+            if series.at_grain(binding, grain).empty:
                 raise WorldCannotAnswer(f"'{binding.describe()}' has no defined period")
             served[m["name"]] = binding
+            caveat = caveat_for(spec, binding, grain)
+            if caveat:
+                caveats[m["name"]] = caveat
+                logger.warning("node '%s': %s", m["name"], caveat)
         except (WorldCannotAnswer, ValueError) as exc:
             unserved[m["name"]] = str(exc)
-    plan = TreePlan(served=served, unserved=unserved, raw=raw)
+    plan = TreePlan(served=served, unserved=unserved, raw=raw, caveats=caveats)
     if not unserved:
         return plan
     if not drop_unserved:

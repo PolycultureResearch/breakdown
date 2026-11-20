@@ -43,7 +43,7 @@ import yaml
 
 from .fitcache import DEFAULT_TRACE_CACHE_BYTES, FitStore, fit_key
 from .loader import TreeSpec, WorldSeries, load_world, plan_tree
-from .truth import analysis_window, map_root, onset_of, pick_target
+from .truth import Measured, analysis_window, map_root, onset_of, pick_target, read_twin_summary
 from .windows import horizons_for, window_starts
 from .worldset import World, WorldSet, load_world_set
 
@@ -183,14 +183,16 @@ def select_singles(worldset, worlds, dag, plan, limit, names=None) -> tuple[list
         if record.get("kind") != "rate":
             described[name] = {"class": "data_quality"}
             continue
-        mapping = map_root(dag, plan, record)
+        mapping = map_root(dag, plan, record, measured_for(worldset, w, record))
         described[name] = {
             "class": mapping.status,
             "root_metric": record.get("root_metric"),
+            "root_metric_rate": record.get("root_metric_rate"),
             "root_slice": record.get("root_slice") or {},
             "truth": mapping.truth,
             "depth": min((depth[t] for t in mapping.truth), default=None),
             "note": mapping.note,
+            "set_verdicts": bool(worldset.verdicts(w.regime, name)),
         }
     if limit is None or names is not None:
         return list(by_anomaly), described
@@ -202,6 +204,15 @@ def select_singles(worldset, worlds, dag, plan, limit, names=None) -> tuple[list
         picks = [round(i * (len(scorable) - 1) / (limit - 1)) for i in range(limit)]
         scorable = [scorable[i] for i in sorted(set(picks))]
     return scorable, described
+
+
+def measured_for(worldset: WorldSet, world: World, record: dict[str, Any]) -> Measured:
+    """Everything the set measured about a single world's anomaly."""
+    return Measured(
+        record,
+        verdicts=worldset.verdicts(world.regime, record["id"]),
+        twin=read_twin_summary(world.effects_summary),
+    )
 
 
 def plan_run(
@@ -261,6 +272,9 @@ def plan_run(
 
     jobs: list[dict[str, Any]] = []
     for w in single_worlds:
+        # The set's verdicts depend on which seeds the set was built with, so
+        # they are part of what decides a single world's result.
+        verdicts = sorted(map(list, worldset.verdicts(w.regime, w.anomalies[0]).items()))
         key = _sha(
             [
                 "single",
@@ -269,6 +283,7 @@ def plan_run(
                 tree_sha,
                 engine["key"],
                 horizons,
+                verdicts,
             ]
         )
         jobs.append({"job": key[:32], "kind": "single", "world": w.id})
@@ -331,6 +346,9 @@ def plan_run(
             "schema_version": worldset.schema_version,
             "config": worldset.config,
             "config_sha256": worldset.config_sha256,
+            "effects_summary": None
+            if worldset.effects_summary is None
+            else str(worldset.effects_summary.relative_to(worldset.root)),
         },
         "vertical": worldset.vertical,
         "company": worldset.company_slug,
@@ -507,7 +525,8 @@ def run_single(lw, job, run, writer, common) -> None:
     if record.get("kind") != "rate":
         writer.emit("skipped", {**base, "reason": "data_quality", "detail": record.get("kind")})
         return
-    mapping = map_root(dag, plan, record)
+    measured = common["measured"]
+    mapping = map_root(dag, plan, record, measured)
     base.update(
         root_node=mapping.root_node,
         truth=mapping.truth,
@@ -531,7 +550,9 @@ def run_single(lw, job, run, writer, common) -> None:
     # §5.2: the root's own score at the date its own series first moves.
     onsets = {}
     for node in mapping.truth:
-        onset, source = onset_of(node, plan, record, is_root=node == mapping.root_node)
+        onset, source = onset_of(
+            node, plan, record, is_root=node == mapping.root_node, measured=measured
+        )
         onsets[node] = onset
         grain = data.grain_of[node]
         start = floor_period(onset, grain)
@@ -557,7 +578,7 @@ def run_single(lw, job, run, writer, common) -> None:
             )
 
     # §5.3: rank the root among the nodes upstream of the top metric reached.
-    target, basis = pick_target(dag, plan, record, mapping.truth)
+    target, basis = pick_target(dag, plan, record, mapping.truth, measured)
     if target is None:
         writer.emit("localization", {**base, "status": "no_target", "detail": basis})
     else:
@@ -717,6 +738,7 @@ def run_shard(run_dir: str | Path, shard: tuple[int, int] = (0, 1), log=print) -
                     f"world '{world.id}' binds the tree differently from the world the run "
                     "was planned on; a set's worlds must share their metrics"
                 )
+            truth = worldset.ground_truth(world)
             common = {
                 "world_key": world_key(worldset, world),
                 "ids": {
@@ -725,7 +747,8 @@ def run_shard(run_dir: str | Path, shard: tuple[int, int] = (0, 1), log=print) -
                     "regime": world.regime,
                     "vertical": worldset.vertical,
                 },
-                "truth": worldset.ground_truth(world),
+                "truth": truth,
+                "measured": measured_for(worldset, world, truth[0]) if truth else None,
                 "trace_dir": run_dir / "traces",
             }
         t0 = time.perf_counter()

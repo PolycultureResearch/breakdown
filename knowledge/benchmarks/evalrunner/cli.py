@@ -87,6 +87,8 @@ def cmd_run(opts) -> int:
     print(f"tree {tree['path']}: {len(tree['served'])} nodes served")
     for node, why in tree["unserved"].items():
         print(f"  not served: {node}: {why}")
+    for node, why in tree.get("caveats", {}).items():
+        print(f"  served with a caveat: {node}: {why}")
     for name, d in {**run["singles"], **run["singles_not_run"]}.items():
         mark = "run " if name in run["singles"] else "skip"
         print(f"  {mark} single {name}: {d['class']} {d.get('truth') or ''} {d.get('note') or ''}")

@@ -31,9 +31,19 @@ class MetricSpec:
 
     name: str
     type: str  # simple | ratio | derived | cumulative
-    time_aggregation: str  # sum | end_of_period | ratio_of_sums | average | ...
+    # sum | end_of_period | ratio_of_sums | ratio_of_aggregates | average |
+    # derived | count_distinct | rolling_window
+    time_aggregation: str
+    # ratio: {"numerator": m, "denominator": m}; derived: alias -> metric.
     inputs: dict[str, str] = field(default_factory=dict)
-    expr: str | None = None
+    # Each key of `inputs` -> that input's own time_aggregation. Absent from
+    # sets built before the generator stated it (then a ratio or a derived
+    # metric is refused at a coarser grain, never guessed).
+    input_time_aggregation: dict[str, str] = field(default_factory=dict)
+    expr: str | None = None  # derived: SQL text, kept for messages only
+    formula: dict | None = None  # derived: the expression as a tree
+    measure_agg: str | None = None  # the measure's own aggregation
+    has_sides: bool = False  # the series carry numerator/denominator
     dimensions: tuple[str, ...] = ()
 
 
@@ -49,6 +59,9 @@ class World:
     ground_truth: Path
     series: Path | None
     effects: Path | None
+    # Single worlds: the measured stats of every slice in the series file
+    # (the ground truth's `measured_effects` holds totals only).
+    effects_summary: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +77,9 @@ class WorldSet:
     regimes: tuple[str, ...]
     metrics: dict[str, MetricSpec]
     worlds: tuple[World, ...]
+    # The set's cross-seed summary, with one `verdict` per (regime, anomaly,
+    # metric, slice). None for a set built without measured effects.
+    effects_summary: Path | None = None
 
     def world(self, world_id: str) -> World:
         for w in self.worlds:
@@ -74,6 +90,42 @@ class WorldSet:
     def ground_truth(self, world: World) -> list[dict[str, Any]]:
         """The world's planted-anomaly records (empty for a null world)."""
         return json.loads(world.ground_truth.read_text())
+
+    def verdicts(self, regime: str, anomaly: str) -> dict[tuple, str]:
+        """`(metric, dimension, value) -> verdict` for one anomaly, from the
+        set's `effects_summary.parquet` (`dimension`/`value` None for a
+        total). Empty when the set has no summary or the summary no
+        `verdict` column: the caller then says it fell back."""
+        table = self._verdict_table()
+        if table is None:
+            return {}
+        rows = table[(table["regime"] == regime) & (table["anomaly"] == anomaly)]
+        return {
+            (r.metric, _none(r.dimension), _none(r.value)): r.verdict
+            for r in rows.itertuples(index=False)
+        }
+
+    def _verdict_table(self):
+        if self.effects_summary is None or not self.effects_summary.exists():
+            return None
+        cached = _VERDICT_TABLES.get(self.effects_summary)
+        if cached is None:
+            import pandas as pd
+
+            frame = pd.read_parquet(self.effects_summary)
+            need = ["regime", "anomaly", "metric", "dimension", "value", "verdict"]
+            if any(c not in frame.columns for c in need):
+                return None
+            cached = _VERDICT_TABLES[self.effects_summary] = frame[need]
+        return cached
+
+
+_VERDICT_TABLES: dict[Path, Any] = {}
+
+
+def _none(v):
+    """A parquet null (None or NaN) as None."""
+    return None if v is None or v != v else v
 
 
 def _need(obj: dict, key: str, where: str):
@@ -108,7 +160,12 @@ def load_world_set(path: str | Path) -> WorldSet:
             type=_need(m, "type", f"metric {name!r} in {where}"),
             time_aggregation=_need(m, "time_aggregation", f"metric {name!r} in {where}"),
             inputs=dict(m.get("inputs") or {}),
+            input_time_aggregation=dict(m.get("input_time_aggregation") or {}),
             expr=m.get("expr"),
+            formula=m.get("formula"),
+            measure_agg=m.get("measure_agg"),
+            # Sets that predate `has_sides` carried sides for ratios only.
+            has_sides=bool(m.get("has_sides", m["type"] == "ratio")),
             dimensions=tuple(m.get("dimensions") or ()),
         )
 
@@ -131,6 +188,7 @@ def load_world_set(path: str | Path) -> WorldSet:
                 ground_truth=root / _need(w, "ground_truth", here),
                 series=root / w["series"] if w.get("series") else None,
                 effects=root / w["effects"] if w.get("effects") else None,
+                effects_summary=(root / w["effects_summary"] if w.get("effects_summary") else None),
             )
         )
     ids = [w.id for w in worlds]
@@ -153,4 +211,5 @@ def load_world_set(path: str | Path) -> WorldSet:
         regimes=tuple(raw.get("regimes") or sorted({w.regime for w in worlds})),
         metrics=metrics,
         worlds=tuple(worlds),
+        effects_summary=root / raw["effects_summary"] if raw.get("effects_summary") else None,
     )

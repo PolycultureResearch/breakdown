@@ -385,6 +385,18 @@ def build_scoreboard(run_dir: str | Path) -> dict[str, Any]:
                 r["world"] for r in localization if r.get("status") == "no_target"
             ),
             "single_worlds_skipped": {r["world"]: r["reason"] for r in skipped},
+            # Each ranked world's target and what said it moved.
+            "targets": {
+                r["world"]: {
+                    "anomaly": r.get("anomaly"),
+                    "truth": r.get("truth"),
+                    "mapping": r.get("mapping"),
+                    "target": r.get("target"),
+                    "basis": r.get("target_basis"),
+                }
+                for r in localization
+                if r.get("method") == "innovation_contribution"
+            },
         },
         "not_built": NOT_BUILT,
         "rows": board_rows,
@@ -548,6 +560,19 @@ def _unscored(run: dict[str, Any]) -> str:
     return text
 
 
+def _targets(run: dict[str, Any]) -> list[str]:
+    """One line per anomaly: where its root lands and which target each seed got."""
+    by_anomaly: dict[str, list] = {}
+    for world, t in sorted(run["coverage"].get("targets", {}).items()):
+        by_anomaly.setdefault(t["anomaly"], []).append((run["worlds"][world]["seed"], t))
+    out = []
+    for anomaly, seeds in sorted(by_anomaly.items()):
+        first = seeds[0][1]
+        picks = ", ".join(f"s{seed}: `{t['target']}` ({t['basis']})" for seed, t in seeds)
+        out.append(f"- `{anomaly}`: root {first['truth']} ({first['mapping']}); target {picks}")
+    return out
+
+
 def render_markdown(board: dict[str, Any], title: str | None = None) -> str:
     runs = board.get("runs") or [board]
     lines = [f"# {title or 'Evaluation scoreboard'}", ""]
@@ -589,6 +614,11 @@ def render_markdown(board: dict[str, Any], title: str | None = None) -> str:
             f"{run['coverage']['single_worlds']}; off-tree "
             f"{len(run['coverage']['single_worlds_off_tree'])}; skipped "
             f"{len(run['coverage']['single_worlds_skipped'])}",
+            *_targets(run),
+            *[
+                f"- Served with a caveat: `{n}`: {why}"
+                for n, why in tree.get("caveats", {}).items()
+            ],
             "",
         ]
     lines += [

@@ -18,6 +18,8 @@ from tests.eval_worlds_fixture import (
     ARITHMETIC_TREE,
     E2E_ONSET,
     E2E_TREE,
+    TICKET_COUNT,
+    TICKET_SUM,
     arithmetic_world_set,
     e2e_world_set,
 )
@@ -50,7 +52,13 @@ from evalrunner.scoreboard import (  # noqa: E402
     render_markdown,
     summarize,
 )
-from evalrunner.truth import analysis_window, map_root, onset_of, pick_target  # noqa: E402
+from evalrunner.truth import (  # noqa: E402
+    Measured,
+    analysis_window,
+    map_root,
+    onset_of,
+    pick_target,
+)
 from evalrunner.windows import horizons_for, window_starts  # noqa: E402
 from evalrunner.worldset import WorldSetError, load_world_set  # noqa: E402
 
@@ -66,9 +74,26 @@ def test_manifest_is_read_without_the_generator(tmp_path):
     ws = load_world_set(arithmetic_world_set(tmp_path))
     assert ws.vertical == "fixture_vertical"
     assert ws.metrics["churn"].inputs == {"numerator": "churned", "denominator": "base"}
+    assert ws.metrics["churn"].input_time_aggregation == {
+        "numerator": "sum",
+        "denominator": "end_of_period",
+    }
+    assert ws.metrics["net"].formula["op"] == "-"
+    assert ws.metrics["ticket"].has_sides and not ws.metrics["orders"].has_sides
+    assert ws.metrics["base"].measure_agg == "count_distinct"
     (world,) = ws.worlds
     assert world.kind == "null" and world.series.exists()
     assert ws.ground_truth(world) == []
+
+
+def test_the_sets_verdicts_and_a_twins_slice_stats_are_read_from_their_files(tmp_path):
+    ws = load_world_set(e2e_world_set(tmp_path))
+    verdicts = ws.verdicts("baseline", "rate_drop")
+    assert verdicts[("signups", None, None)] == "established_down"
+    assert verdicts[("spend", None, None)] == "exactly_zero"
+    assert ws.verdicts("baseline", "no_such_anomaly") == {}
+    single = ws.world("fixture.baseline.s0.only.rate_drop")
+    assert single.effects_summary.exists()
 
 
 def test_unknown_schema_version_is_refused_by_number(tmp_path):
@@ -124,9 +149,86 @@ def test_a_ratio_over_a_stock_divides_by_the_stocks_last_day(arithmetic):
     assert weekly.tolist() == pytest.approx([14 / 106, 14 / 113, 14 / 120, 14 / 127])
 
 
+def _edit_metric(tmp_path, name, **changes):
+    root = arithmetic_world_set(tmp_path)
+    raw = json.loads((root / "worlds.json").read_text())
+    (m,) = [m for m in raw["metrics"] if m["name"] == name]
+    m.update(changes)
+    (root / "worlds.json").write_text(json.dumps(raw))
+    ws = load_world_set(root)
+    return WorldSeries(ws.worlds[0], ws.metrics)
+
+
+def test_a_ratio_whose_sides_rules_are_not_stated_is_refused(tmp_path):
+    """A set from before the generator stated each side's rule: summing a
+    stock over a week is the factor-of-seven error, so nothing is assumed."""
+    series = _edit_metric(tmp_path, "churn", input_time_aggregation={})
+    with pytest.raises(WorldCannotAnswer, match="'churn'.*input_time_aggregation"):
+        series.at_grain(SeriesBinding("churn"), "week")
+    assert len(series.at_grain(SeriesBinding("churn"), "day")) == 28
+
+
+def test_a_ratio_of_sums_over_a_stock_is_refused_by_the_stocks_own_rule(tmp_path):
+    """How sets built before 83640ca described the churn rate: `ratio_of_sums`
+    with no sides stated. The denominator's own entry says it is a stock."""
+    series = _edit_metric(
+        tmp_path, "churn", time_aggregation="ratio_of_sums", input_time_aggregation={}
+    )
+    with pytest.raises(WorldCannotAnswer, match="'base' aggregates as 'sum'.*'end_of_period'"):
+        series.at_grain(SeriesBinding("churn"), "week")
+
+
+def test_a_ratio_of_sums_with_a_side_that_is_not_a_sum_is_refused(tmp_path):
+    series = _edit_metric(
+        tmp_path,
+        "churn",
+        time_aggregation="ratio_of_sums",
+        input_time_aggregation={"numerator": "sum", "denominator": "end_of_period"},
+    )
+    with pytest.raises(WorldCannotAnswer, match="ratio_of_sums.*end_of_period"):
+        series.at_grain(SeriesBinding("churn"), "week")
+
+
 def test_a_derived_metric_is_recomputed_from_its_aggregated_inputs(arithmetic):
     _, series = arithmetic
     assert series.at_grain(SeriesBinding("net"), "week").tolist() == [21.0, 70.0, 119.0, 168.0]
+
+
+def test_a_derived_metric_without_a_structured_formula_is_refused(tmp_path):
+    """The SQL `expr` is not parsed: the manifest's tree is the contract."""
+    series = _edit_metric(tmp_path, "net", formula=None)
+    with pytest.raises(WorldCannotAnswer, match="'net'.*structured `formula`"):
+        series.at_grain(SeriesBinding("net"), "week")
+
+
+def test_a_derived_input_whose_stated_rule_contradicts_its_own_is_refused(tmp_path):
+    series = _edit_metric(
+        tmp_path, "net", input_time_aggregation={"o": "end_of_period", "r": "sum"}
+    )
+    with pytest.raises(WorldCannotAnswer, match="'orders'.*'end_of_period'.*'sum'"):
+        series.at_grain(SeriesBinding("net"), "week")
+
+
+def test_a_formula_divisor_of_zero_leaves_the_period_undefined(tmp_path):
+    series = _edit_metric(
+        tmp_path,
+        "net",
+        formula={
+            "op": "/",
+            "args": [{"metric": "orders"}, {"op": "nullif_zero", "args": [{"const": 0}]}],
+        },
+    )
+    assert series.at_grain(SeriesBinding("net"), "week").empty
+
+
+def test_an_average_is_rebuilt_weekly_from_its_sum_and_row_count(arithmetic):
+    """Not the mean of the daily means: a day with more rows weighs more."""
+    _, series = arithmetic
+    weekly = series.at_grain(SeriesBinding("ticket"), "week")
+    expected = [TICKET_SUM[w : w + 7].sum() / TICKET_COUNT[w : w + 7].sum() for w in (0, 7, 14, 21)]
+    daily_means = (TICKET_SUM / TICKET_COUNT)[:7].mean()
+    assert weekly.tolist() == pytest.approx(expected)
+    assert weekly.iloc[0] != pytest.approx(daily_means)
 
 
 def test_slice_members_are_summed(arithmetic):
@@ -149,7 +251,7 @@ def test_a_running_total_is_a_stock(arithmetic):
         (SeriesBinding("revenue"), "day", ["'revenue'", "not in the series file"]),
         (SeriesBinding("orders", "channel", ("a",)), "day", ["'orders'", "'channel'"]),
         (SeriesBinding("visits", "channel", ("a", "z")), "day", ["channel='z'"]),
-        (SeriesBinding("ticket"), "week", ["ticket", "'average'", "week"]),
+        (SeriesBinding("users"), "week", ["users", "'count_distinct'", "week"]),
     ],
 )
 def test_what_the_file_cannot_answer_is_refused_by_name(arithmetic, binding, grain, names):
@@ -160,9 +262,19 @@ def test_what_the_file_cannot_answer_is_refused_by_name(arithmetic, binding, gra
         assert name in str(exc.value)
 
 
-def test_a_mean_over_rows_is_served_at_day_grain_as_written(arithmetic):
+def test_a_distinct_count_is_served_at_day_grain_as_written(arithmetic):
     _, series = arithmetic
-    assert series.at_grain(SeriesBinding("ticket"), "day").tolist() == [50.0] * 28
+    assert series.at_grain(SeriesBinding("users"), "day").tolist() == [40.0] * 28
+
+
+def test_a_distinct_count_stock_is_served_weekly_with_a_caveat_on_the_plan(tmp_path):
+    """Its last day's count is the stock's level, and not MetricFlow's weekly
+    distinct count: served, and the plan says which number it is."""
+    ws = load_world_set(arithmetic_world_set(tmp_path))
+    tree = TreeSpec("fixture_tree.yml", ARITHMETIC_TREE, bindings=AB)
+    plan = plan_tree(tree, WorldSeries(ws.worlds[0], ws.metrics))
+    assert set(plan.caveats) == {"base"}
+    assert "last day's count" in plan.summary()["caveats"]["base"]
 
 
 def test_the_fetcher_refuses_a_node_whose_kind_contradicts_the_generator(arithmetic):
@@ -191,8 +303,8 @@ def test_every_unserved_node_is_reported_and_the_tree_is_not_loaded(tmp_path):
     raw = yaml.safe_load(ARITHMETIC_TREE)
     raw["metrics"] += [
         {
-            "name": "ticket",
-            "source": "fx.metrics.ticket",
+            "name": "users",
+            "source": "fx.metrics.users",
             "grain": "week",
             "kind": "rate",
             "no_denominator": "fixture",
@@ -203,9 +315,9 @@ def test_every_unserved_node_is_reported_and_the_tree_is_not_loaded(tmp_path):
     series = WorldSeries(ws.worlds[0], ws.metrics)
     with pytest.raises(UnservedNodes) as exc:
         plan_tree(tree, series)
-    assert set(exc.value.unserved) == {"ticket", "ghost"}
+    assert set(exc.value.unserved) == {"users", "ghost"}
     plan = plan_tree(tree, series, drop_unserved=True)
-    assert sorted(plan.dropped) == ["ghost", "ticket"]
+    assert sorted(plan.dropped) == ["ghost", "users"]
     assert "ghost" not in [m["name"] for m in plan.raw["metrics"]]
     Parser(yaml.safe_dump(plan.raw))  # the tree without them still parses
 
@@ -349,6 +461,49 @@ def test_a_root_on_a_formula_node_is_scored_at_the_parent_that_carries_the_chang
     assert (m.status, m.root_node, m.truth) == ("via_formula_parents", "churned", ["churn_rate"])
 
 
+def test_a_root_on_a_rates_numerator_is_scored_at_the_rate_the_record_names(mapping):
+    """`root_metric_rate` says which rate the count is the numerator of; no
+    guess from which parent moved more."""
+    dag, plan = mapping
+    rec = record("churned", {"plan": "pro"}, moved=["churned"], root_metric_rate="churn_rate")
+    m = map_root(dag, plan, rec)
+    assert (m.status, m.root_node, m.truth) == ("on_tree_rate", "churn_rate", ["churn_rate"])
+    # A tree without the rate falls back to the count's own node.
+    rec["root_metric_rate"] = "not_in_tree"
+    assert map_root(dag, plan, rec).root_node == "churned"
+
+
+def test_the_sets_verdict_decides_what_moved_over_this_twins(mapping):
+    """One verdict per anomaly and metric across seeds, so every seed gets
+    the same target; a node the set has no row for falls back to the twin."""
+    dag, plan = mapping
+    rec = record("churned", moved=["churn_rate", "churned", "revenue"])
+    verdicts = {
+        ("revenue", None, None): "open",
+        ("churned", None, None): "established_up",
+    }
+    measured = Measured(rec, verdicts=verdicts)
+    assert pick_target(dag, plan, rec, ["churn_rate"], measured) == ("churned", "set_verdict")
+    assert pick_target(dag, plan, rec, ["churn_rate"]) == ("revenue", "twin_moved")
+    # No set row for `churned` either: this twin's `moved` decides.
+    measured = Measured(rec, verdicts={("revenue", None, None): "exactly_zero"})
+    assert pick_target(dag, plan, rec, ["churn_rate"], measured) == ("churned", "twin_moved")
+
+
+def test_a_node_bound_to_one_slice_reads_its_own_slices_stats(mapping):
+    dag, plan = mapping
+    plan.served["paid_sessions"] = SeriesBinding("sessions", "channel", ("paid_social",))
+    rec = record("sessions", {"channel": "paid_social"})
+    twin = {("sessions", "channel", "paid_social"): {"first_diff": "2025-02-05", "moved": True}}
+    measured = Measured(rec, twin=twin)
+    assert onset_of("paid_sessions", plan, rec, is_root=False, measured=measured) == (
+        pd.Timestamp("2025-02-05"),
+        "first_diff:node",
+    )
+    assert measured.moved("paid_sessions", plan) == (True, "twin_moved")
+    assert measured.moved("other_sessions", plan) == (False, "twin_moved")
+
+
 def test_a_formula_root_with_no_moved_parent_keeps_its_own_label(mapping):
     dag, plan = mapping
     m = map_root(dag, plan, record("churned", moved=["churned"]))
@@ -384,9 +539,9 @@ def test_onset_is_the_exact_first_difference_then_the_noise_floor_then_the_decla
 def test_the_target_is_the_deepest_node_the_anomaly_is_measured_to_reach(mapping):
     dag, plan = mapping
     rec = record("churned", moved=["churn_rate", "churned"])
-    assert pick_target(dag, plan, rec, ["churn_rate"]) == ("churned", "measured")
+    assert pick_target(dag, plan, rec, ["churn_rate"]) == ("churned", "twin_moved")
     rec = record("churned", moved=["churn_rate", "churned", "revenue"])
-    assert pick_target(dag, plan, rec, ["churn_rate"]) == ("revenue", "measured")
+    assert pick_target(dag, plan, rec, ["churn_rate"]) == ("revenue", "twin_moved")
     assert pick_target(dag, plan, record("x"), ["churn_rate"])[1] == "fallback_deepest_descendant"
     assert pick_target(dag, plan, rec, ["revenue"])[0] is None
 
@@ -523,6 +678,7 @@ def test_a_run_goes_from_manifest_to_scoreboard_and_resumes_without_refitting(tm
     kinds = [j["kind"] for j in run["jobs"]]
     assert kinds.count("single") == 1 and kinds.count("calibration") == 6  # 3 nodes x 2 windows
     assert run["singles"]["rate_drop"]["truth"] == ["signup_rate"]
+    assert run["singles"]["rate_drop"]["set_verdicts"]
 
     out = tmp_path / "run"
     out.mkdir()
@@ -533,6 +689,8 @@ def test_a_run_goes_from_manifest_to_scoreboard_and_resumes_without_refitting(tm
     board = build_scoreboard(out)
     assert board["coverage"]["jobs_done"] == 7
     assert board["coverage"]["single_worlds_ranked"] == 1
+    (target,) = board["coverage"]["targets"].values()
+    assert (target["target"], target["basis"]) == ("signups", "set_verdict")
     rows = {
         (r["question"], r["metric"], r["method"], r["role"]): r
         for r in board["rows"]
