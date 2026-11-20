@@ -1,0 +1,3442 @@
+{
+ "scoreboard_version": 1,
+ "tier": "smoke",
+ "engine_commit": "610cf8fed213d9813f5695c188b23d027d0ec662+dirty",
+ "engine_key": "2ace584b50c602731fc8e34811ae6eea64c63e05|draws=500|chains=4|seed=0",
+ "generator_version": "0.1.0",
+ "manifest": {
+  "path": "/private/tmp/claude-501/-Users-devon-Documents-code-breakdown/78b550e7-b666-4a0b-9412-817601330457/scratchpad/ws/white_cube_smoke",
+  "schema_version": 1,
+  "config": "configs/white_cube_b2c_app.yaml",
+  "config_sha256": "6517547081b833f9c872f2663578a89a84dcfdac3424bedafc13003d21234c1a",
+  "effects_summary": "effects_summary.parquet"
+ },
+ "vertical": "b2c_saas",
+ "company": "white_cube",
+ "tree": {
+  "path": "demo/white_cube_tree.yml",
+  "sha256": "d8e50fe756cba33aa25483f90083a1b7e8c9aec1a9bfb8194f990584501cf9f0",
+  "canonical": false,
+  "bindings_path": null,
+  "bindings_sha256": null,
+  "effective_sha256": "f7cbeb07c28beb6334e331a902434e88e25fe9b3967afe0920ef7a261041d716",
+  "drop_unserved": false,
+  "served": {
+   "marketing_spend": "marketing_spend",
+   "sessions": "sessions",
+   "visit_signup_rate": "visit_signup_rate",
+   "signups": "signups",
+   "trials_started": "trials_started",
+   "trial_activation_rate": "trial_activation_rate",
+   "trial_days_active": "trial_days_active",
+   "trial_conversion_rate": "trial_conversion_rate",
+   "trial_conversions": "trial_conversions",
+   "reactivations": "reactivations",
+   "direct_conversions": "direct_conversions",
+   "new_subscriptions": "new_subscriptions",
+   "new_arpu": "new_arpu",
+   "new_mrr": "new_mrr",
+   "active_subscriptions": "active_subscriptions",
+   "member_activity_rate": "member_activity_rate",
+   "customer_churn_rate": "customer_churn_rate",
+   "churned_subscriptions": "churned_subscriptions",
+   "churn_arpu": "churn_arpu",
+   "churned_mrr": "churned_mrr",
+   "expansion_mrr": "expansion_mrr",
+   "contraction_mrr": "contraction_mrr",
+   "net_new_mrr": "net_new_mrr"
+  },
+  "caveats": {
+   "active_subscriptions": "'active_subscriptions' is a distinct count per day; at grain 'week' it is served as the last day's count, not MetricFlow's distinct count over the period"
+  },
+  "unserved": {},
+  "dropped": [],
+  "derived_instead_of_fetched": []
+ },
+ "seeds": [
+  0,
+  1,
+  2
+ ],
+ "held_out": false,
+ "held_out_seeds": [],
+ "regimes": [
+  "baseline"
+ ],
+ "horizons": [
+  7
+ ],
+ "created": "2026-11-20T17:30:46+00:00",
+ "host": {
+  "machine": "arm64",
+  "cpus": 12,
+  "load_at_plan": 3.46
+ },
+ "windows": {
+  "white_cube.baseline.s0.null": {
+   "spacing_days": 77,
+   "n": 8
+  },
+  "white_cube.baseline.s1.null": {
+   "spacing_days": 77,
+   "n": 8
+  },
+  "white_cube.baseline.s2.null": {
+   "spacing_days": 77,
+   "n": 8
+  }
+ },
+ "singles": {
+  "latam_campaign_spend_ramp": {
+   "class": "on_tree",
+   "root_metric": "marketing_spend",
+   "root_metric_rate": null,
+   "root_slice": {
+    "channel": "paid_social"
+   },
+   "truth": [
+    "marketing_spend"
+   ],
+   "depth": 0,
+   "note": "",
+   "set_verdicts": true
+  },
+  "mobile_signup_cta_regression": {
+   "class": "on_tree",
+   "root_metric": "visit_signup_rate",
+   "root_metric_rate": null,
+   "root_slice": {
+    "channel": "paid_social",
+    "device": "mobile"
+   },
+   "truth": [
+    "visit_signup_rate"
+   ],
+   "depth": 0,
+   "note": "",
+   "set_verdicts": true
+  },
+  "professional_churn_spike": {
+   "class": "on_tree_rate",
+   "root_metric": "churned_subscriptions",
+   "root_metric_rate": "customer_churn_rate",
+   "root_slice": {
+    "plan": "professional"
+   },
+   "truth": [
+    "customer_churn_rate"
+   ],
+   "depth": 1,
+   "note": "root 'churned_subscriptions' is the numerator of 'customer_churn_rate'",
+   "set_verdicts": true
+  }
+ },
+ "singles_not_run": {},
+ "worlds": {
+  "white_cube.baseline.s0.null": {
+   "seed": 0,
+   "regime": "baseline",
+   "kind": "null",
+   "anomalies": []
+  },
+  "white_cube.baseline.s1.null": {
+   "seed": 1,
+   "regime": "baseline",
+   "kind": "null",
+   "anomalies": []
+  },
+  "white_cube.baseline.s2.null": {
+   "seed": 2,
+   "regime": "baseline",
+   "kind": "null",
+   "anomalies": []
+  },
+  "white_cube.baseline.s0.only.latam_campaign_spend_ramp": {
+   "seed": 0,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "latam_campaign_spend_ramp"
+   ]
+  },
+  "white_cube.baseline.s0.only.mobile_signup_cta_regression": {
+   "seed": 0,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "mobile_signup_cta_regression"
+   ]
+  },
+  "white_cube.baseline.s0.only.professional_churn_spike": {
+   "seed": 0,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "professional_churn_spike"
+   ]
+  },
+  "white_cube.baseline.s1.only.latam_campaign_spend_ramp": {
+   "seed": 1,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "latam_campaign_spend_ramp"
+   ]
+  },
+  "white_cube.baseline.s1.only.mobile_signup_cta_regression": {
+   "seed": 1,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "mobile_signup_cta_regression"
+   ]
+  },
+  "white_cube.baseline.s1.only.professional_churn_spike": {
+   "seed": 1,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "professional_churn_spike"
+   ]
+  },
+  "white_cube.baseline.s2.only.latam_campaign_spend_ramp": {
+   "seed": 2,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "latam_campaign_spend_ramp"
+   ]
+  },
+  "white_cube.baseline.s2.only.mobile_signup_cta_regression": {
+   "seed": 2,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "mobile_signup_cta_regression"
+   ]
+  },
+  "white_cube.baseline.s2.only.professional_churn_spike": {
+   "seed": 2,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "professional_churn_spike"
+   ]
+  }
+ },
+ "coverage": {
+  "jobs": 393,
+  "jobs_done": 393,
+  "job_seconds": 2020.3,
+  "calibration_status": {
+   "ok": 360,
+   "unassessed, fit failed: Cannot fit over undefined periods: 'churn_arpu' on 7 period(s) (2024-06-03, 2024-06-10": 8,
+   "unassessed, fit failed: Cannot fit over undefined periods: 'churn_arpu' on 8 period(s) (2024-06-03, 2024-06-10": 8,
+   "unassessed, fit failed: Cannot fit over undefined periods: 'churn_arpu' on 6 period(s) (2024-06-03, 2024-06-10": 8
+  },
+  "single_worlds": 9,
+  "single_worlds_ranked": 9,
+  "single_worlds_off_tree": [],
+  "single_worlds_no_target": [],
+  "single_worlds_skipped": {},
+  "targets": {
+   "white_cube.baseline.s0.only.latam_campaign_spend_ramp": {
+    "anomaly": "latam_campaign_spend_ramp",
+    "truth": [
+     "marketing_spend"
+    ],
+    "mapping": "on_tree",
+    "target": "sessions",
+    "basis": "set_verdict"
+   },
+   "white_cube.baseline.s1.only.mobile_signup_cta_regression": {
+    "anomaly": "mobile_signup_cta_regression",
+    "truth": [
+     "visit_signup_rate"
+    ],
+    "mapping": "on_tree",
+    "target": "signups",
+    "basis": "set_verdict"
+   },
+   "white_cube.baseline.s2.only.professional_churn_spike": {
+    "anomaly": "professional_churn_spike",
+    "truth": [
+     "customer_churn_rate"
+    ],
+    "mapping": "on_tree_rate",
+    "target": "net_new_mrr",
+    "basis": "fallback_deepest_descendant"
+   },
+   "white_cube.baseline.s0.only.mobile_signup_cta_regression": {
+    "anomaly": "mobile_signup_cta_regression",
+    "truth": [
+     "visit_signup_rate"
+    ],
+    "mapping": "on_tree",
+    "target": "signups",
+    "basis": "set_verdict"
+   },
+   "white_cube.baseline.s1.only.professional_churn_spike": {
+    "anomaly": "professional_churn_spike",
+    "truth": [
+     "customer_churn_rate"
+    ],
+    "mapping": "on_tree_rate",
+    "target": "net_new_mrr",
+    "basis": "fallback_deepest_descendant"
+   },
+   "white_cube.baseline.s0.only.professional_churn_spike": {
+    "anomaly": "professional_churn_spike",
+    "truth": [
+     "customer_churn_rate"
+    ],
+    "mapping": "on_tree_rate",
+    "target": "net_new_mrr",
+    "basis": "fallback_deepest_descendant"
+   },
+   "white_cube.baseline.s2.only.latam_campaign_spend_ramp": {
+    "anomaly": "latam_campaign_spend_ramp",
+    "truth": [
+     "marketing_spend"
+    ],
+    "mapping": "on_tree",
+    "target": "sessions",
+    "basis": "set_verdict"
+   },
+   "white_cube.baseline.s1.only.latam_campaign_spend_ramp": {
+    "anomaly": "latam_campaign_spend_ramp",
+    "truth": [
+     "marketing_spend"
+    ],
+    "mapping": "on_tree",
+    "target": "sessions",
+    "basis": "set_verdict"
+   },
+   "white_cube.baseline.s2.only.mobile_signup_cta_regression": {
+    "anomaly": "mobile_signup_cta_regression",
+    "truth": [
+     "visit_signup_rate"
+    ],
+    "mapping": "on_tree",
+    "target": "signups",
+    "basis": "set_verdict"
+   }
+  }
+ },
+ "not_built": {
+  "Q4 slices": "whether the true slice is the top slice of the true node (spec \u00a75.3)",
+  "Q5 attribution": "contribution sizes against the measured twin difference (spec \u00a75.4)",
+  "Q6 abstention": "off-tree, data-quality and null-world false alarms (spec \u00a75.5)",
+  "Q7 power": "the magnitude ladder (spec \u00a75.2); needs generator phase 2",
+  "Q9 catch rate": "share of badly calibrated nodes a flag catches; needs a per-node verdict"
+ },
+ "rows": [
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.3511565935764874,
+   "spread": 0.08564156179897536,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": 0.3214549519798265,
+    "white_cube.baseline.s1.null": 0.4476948459185709,
+    "white_cube.baseline.s2.null": 0.28431998283106474
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 1.0540826283081992,
+   "spread": 0.15190533550542915,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": 1.2064139108352494,
+    "white_cube.baseline.s1.null": 1.0532271206773072,
+    "white_cube.baseline.s2.null": 0.9026068534120414
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.09722222222222222,
+   "spread": 0.025458753860865782,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": 0.125,
+    "white_cube.baseline.s1.null": 0.09166666666666666,
+    "white_cube.baseline.s2.null": 0.075
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.05833333333333333,
+   "spread": 0.030046260628866575,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": 0.06666666666666667,
+    "white_cube.baseline.s1.null": 0.08333333333333333,
+    "white_cube.baseline.s2.null": 0.025
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.1484444444444444,
+   "spread": 0.03483346624110743,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": 0.1283333333333333,
+    "white_cube.baseline.s1.null": 0.18866666666666665,
+    "white_cube.baseline.s2.null": 0.1283333333333333
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": -0.15550758827534994,
+   "spread": 0.07280363945947751,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": -0.22648909681681678,
+    "white_cube.baseline.s1.null": -0.1590243845868928,
+    "white_cube.baseline.s2.null": -0.08100928342234023
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": 0.15578710549340588,
+   "spread": 0.16512892427684725,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": -0.024530772759258565,
+    "white_cube.baseline.s1.null": 0.1922649611762036,
+    "white_cube.baseline.s2.null": 0.29962712806327263
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": 1.091654690417566,
+   "spread": 0.350782558804431,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": 0.9276117614694633,
+    "white_cube.baseline.s1.null": 1.4944032065383093,
+    "white_cube.baseline.s2.null": 0.852949103244925
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": 0.14583333333333334,
+   "spread": 0.09547032697824666,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": 0.125,
+    "white_cube.baseline.s1.null": 0.25,
+    "white_cube.baseline.s2.null": 0.0625
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": 0.10416666666666667,
+   "spread": 0.1301041249666333,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.25,
+    "white_cube.baseline.s2.null": 0.0625
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": 0.23150000000000004,
+   "spread": 0.060973354836354514,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": 0.20650000000000002,
+    "white_cube.baseline.s1.null": 0.18700000000000006,
+    "white_cube.baseline.s2.null": 0.301
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": -0.22776647366278224,
+   "spread": 0.17389799798827532,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": -0.3376542546863645,
+    "white_cube.baseline.s1.null": -0.027275269913627855,
+    "white_cube.baseline.s2.null": -0.31836989638835433
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.5876553036987954,
+   "spread": 0.21019458466357607,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": 0.4892496076764341,
+    "white_cube.baseline.s1.null": 0.8290013344270821,
+    "white_cube.baseline.s2.null": 0.4447149689928699
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.45231529093447,
+   "spread": 0.2911443987567616,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": 1.7710043567399532,
+    "white_cube.baseline.s1.null": 1.3856693040260297,
+    "white_cube.baseline.s2.null": 1.2002722120374274
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.19999999999999998,
+   "spread": 0.04330127018922194,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": 0.25,
+    "white_cube.baseline.s1.null": 0.175,
+    "white_cube.baseline.s2.null": 0.175
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.13333333333333333,
+   "spread": 0.07637626158259735,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": 0.2,
+    "white_cube.baseline.s1.null": 0.15,
+    "white_cube.baseline.s2.null": 0.05
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.261,
+   "spread": 0.08543418519538883,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": 0.243,
+    "white_cube.baseline.s1.null": 0.354,
+    "white_cube.baseline.s2.null": 0.18600000000000005
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": -0.13529624269620796,
+   "spread": 0.1369098058872374,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": -0.22398771378542814,
+    "white_cube.baseline.s1.null": -0.20428480101318036,
+    "white_cube.baseline.s2.null": 0.022383786709984654
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.07055986678635259,
+   "spread": 0.07623393304699674,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": 0.12970877061372893,
+    "white_cube.baseline.s1.null": 0.09744485101781929,
+    "white_cube.baseline.s2.null": -0.01547402127249046
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.6926005018371618,
+   "spread": 0.09449703866858285,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": 0.7825498123856045,
+    "white_cube.baseline.s1.null": 0.594132562255221,
+    "white_cube.baseline.s2.null": 0.7011191308706599
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.005952380952380952,
+   "spread": 0.010309826235529031,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": 0.017857142857142856,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.15061904761904762,
+   "spread": 0.02154129083607466,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": 0.13185714285714284,
+    "white_cube.baseline.s1.null": 0.17414285714285715,
+    "white_cube.baseline.s2.null": 0.1458571428571429
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": -0.20398265644033553,
+   "spread": 0.015596348053085542,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": -0.18683506164151528,
+    "white_cube.baseline.s1.null": -0.20779031629928485,
+    "white_cube.baseline.s2.null": -0.21732259138020646
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 1.5235791066620543,
+   "spread": 0.024014273901218252,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": 1.516676392537642,
+    "white_cube.baseline.s1.null": 1.50377213716601,
+    "white_cube.baseline.s2.null": 1.5502887902825107
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 0.3476716081526128,
+   "spread": 0.028887081480825177,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": 0.3763231109118402,
+    "white_cube.baseline.s1.null": 0.31855457492495354,
+    "white_cube.baseline.s2.null": 0.3481371386210445
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 0.125,
+   "spread": 0.125,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": 0.25,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.125
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 0.8523333333333333,
+   "spread": 0.013316656236958798,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": 0.859,
+    "white_cube.baseline.s1.null": 0.861,
+    "white_cube.baseline.s2.null": 0.837
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 0.09096048038497773,
+   "spread": 0.3653384133431615,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": -0.30431850810037125,
+    "white_cube.baseline.s1.null": 0.41622460865493655,
+    "white_cube.baseline.s2.null": 0.16097534060036792
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=moderate",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.21388888888888888,
+   "spread": 0.012729376930432886,
+   "n_seeds": 3,
+   "n": 77,
+   "units": {
+    "white_cube.baseline.s0.null": 0.225,
+    "white_cube.baseline.s1.null": 0.21666666666666667,
+    "white_cube.baseline.s2.null": 0.2
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=moderate",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.3238096253337634,
+   "spread": 0.14209175943929667,
+   "n_seeds": 3,
+   "n": 77,
+   "units": {
+    "white_cube.baseline.s0.null": 0.24799182551428822,
+    "white_cube.baseline.s1.null": 0.23570735897854078,
+    "white_cube.baseline.s2.null": 0.4877296915084612
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=moderate",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 1.055467783556087,
+   "spread": 0.2712745956823146,
+   "n_seeds": 3,
+   "n": 77,
+   "units": {
+    "white_cube.baseline.s0.null": 1.2612073410174196,
+    "white_cube.baseline.s1.null": 1.1571544325765786,
+    "white_cube.baseline.s2.null": 0.7480415770742633
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=moderate",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.11562203228869895,
+   "spread": 0.03240805964508586,
+   "n_seeds": 3,
+   "n": 77,
+   "units": {
+    "white_cube.baseline.s0.null": 0.14814814814814814,
+    "white_cube.baseline.s1.null": 0.11538461538461539,
+    "white_cube.baseline.s2.null": 0.08333333333333333
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=ok",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.4361111111111111,
+   "spread": 0.020971762320196506,
+   "n_seeds": 3,
+   "n": 157,
+   "units": {
+    "white_cube.baseline.s0.null": 0.4583333333333333,
+    "white_cube.baseline.s1.null": 0.4166666666666667,
+    "white_cube.baseline.s2.null": 0.43333333333333335
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=ok",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.30403728639727345,
+   "spread": 0.11129786497401166,
+   "n_seeds": 3,
+   "n": 157,
+   "units": {
+    "white_cube.baseline.s0.null": 0.3705500866651532,
+    "white_cube.baseline.s1.null": 0.3660134977898856,
+    "white_cube.baseline.s2.null": 0.17554827473678147
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=ok",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.6875798682188142,
+   "spread": 0.05621558092988744,
+   "n_seeds": 3,
+   "n": 157,
+   "units": {
+    "white_cube.baseline.s0.null": 0.699138470124675,
+    "white_cube.baseline.s1.null": 0.626483385660427,
+    "white_cube.baseline.s2.null": 0.7371177488713408
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=ok",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.037668997668997665,
+   "spread": 0.017286358729324616,
+   "n_seeds": 3,
+   "n": 157,
+   "units": {
+    "white_cube.baseline.s0.null": 0.05454545454545454,
+    "white_cube.baseline.s1.null": 0.02,
+    "white_cube.baseline.s2.null": 0.038461538461538464
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=severe",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.35000000000000003,
+   "spread": 0.028867513459481284,
+   "n_seeds": 3,
+   "n": 126,
+   "units": {
+    "white_cube.baseline.s0.null": 0.31666666666666665,
+    "white_cube.baseline.s1.null": 0.36666666666666664,
+    "white_cube.baseline.s2.null": 0.36666666666666664
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=severe",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.4234303989441786,
+   "spread": 0.20988109057743745,
+   "n_seeds": 3,
+   "n": 126,
+   "units": {
+    "white_cube.baseline.s0.null": 0.30259368900289413,
+    "white_cube.baseline.s1.null": 0.6657798928930038,
+    "white_cube.baseline.s2.null": 0.30191761493663793
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=severe",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 1.3690246708861407,
+   "spread": 0.3417895354635482,
+   "n_seeds": 3,
+   "n": 126,
+   "units": {
+    "white_cube.baseline.s0.null": 1.7504508231111844,
+    "white_cube.baseline.s1.null": 1.266093451392662,
+    "white_cube.baseline.s2.null": 1.090529738154575
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=severe",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.16108452950558214,
+   "spread": 0.04847573206075736,
+   "n_seeds": 3,
+   "n": 126,
+   "units": {
+    "white_cube.baseline.s0.null": 0.21052631578947367,
+    "white_cube.baseline.s1.null": 0.1590909090909091,
+    "white_cube.baseline.s2.null": 0.11363636363636363
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=ok",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.65,
+   "spread": 0.028867513459481315,
+   "n_seeds": 3,
+   "n": 234,
+   "units": {
+    "white_cube.baseline.s0.null": 0.6833333333333333,
+    "white_cube.baseline.s1.null": 0.6333333333333333,
+    "white_cube.baseline.s2.null": 0.6333333333333333
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=ok",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.3085874997252207,
+   "spread": 0.03015922231916695,
+   "n_seeds": 3,
+   "n": 234,
+   "units": {
+    "white_cube.baseline.s0.null": 0.3301955372618195,
+    "white_cube.baseline.s1.null": 0.32143508188074127,
+    "white_cube.baseline.s2.null": 0.27413188003310135
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=ok",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.8421066056296101,
+   "spread": 0.05601603711094453,
+   "n_seeds": 3,
+   "n": 234,
+   "units": {
+    "white_cube.baseline.s0.null": 0.898359554894686,
+    "white_cube.baseline.s1.null": 0.8416297365611722,
+    "white_cube.baseline.s2.null": 0.7863305254329721
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=ok",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.06354300385109114,
+   "spread": 0.018899142316220103,
+   "n_seeds": 3,
+   "n": 234,
+   "units": {
+    "white_cube.baseline.s0.null": 0.08536585365853659,
+    "white_cube.baseline.s1.null": 0.05263157894736842,
+    "white_cube.baseline.s2.null": 0.05263157894736842
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=suspect",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.35000000000000003,
+   "spread": 0.028867513459481284,
+   "n_seeds": 3,
+   "n": 126,
+   "units": {
+    "white_cube.baseline.s0.null": 0.31666666666666665,
+    "white_cube.baseline.s1.null": 0.36666666666666664,
+    "white_cube.baseline.s2.null": 0.36666666666666664
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=suspect",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.4234303989441786,
+   "spread": 0.20988109057743745,
+   "n_seeds": 3,
+   "n": 126,
+   "units": {
+    "white_cube.baseline.s0.null": 0.30259368900289413,
+    "white_cube.baseline.s1.null": 0.6657798928930038,
+    "white_cube.baseline.s2.null": 0.30191761493663793
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=suspect",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 1.3690246708861407,
+   "spread": 0.3417895354635482,
+   "n_seeds": 3,
+   "n": 126,
+   "units": {
+    "white_cube.baseline.s0.null": 1.7504508231111844,
+    "white_cube.baseline.s1.null": 1.266093451392662,
+    "white_cube.baseline.s2.null": 1.090529738154575
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=suspect",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.16108452950558214,
+   "spread": 0.04847573206075736,
+   "n_seeds": 3,
+   "n": 126,
+   "units": {
+    "white_cube.baseline.s0.null": 0.21052631578947367,
+    "white_cube.baseline.s1.null": 0.1590909090909091,
+    "white_cube.baseline.s2.null": 0.11363636363636363
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "abs_z_at_onset",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.4551804102694366,
+   "spread": 0.13816626197443868,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.80523417266406,
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 0.6927129071218066,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.5502034330837354,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 0.5474719797992167,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.4899955396324246,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 0.45641804237654904,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.23820751538449927,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 0.23402734342134196,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 0.08235275894129605
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.5277777777777778,
+   "spread": 0.1463285243451769,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 0.5,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.125,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 0.5,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.25,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 0.625,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.75,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail_under_5pct",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.1111111111111111,
+   "spread": 0.19245008972987526,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 0.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "null_windows_per_node",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 8.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s1.only.professional_churn_spike": 8.0,
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 8.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 8.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 8.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 8.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 8.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 8.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 8.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 8.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "abs_z_at_onset",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.46105276430656583,
+   "spread": 0.22937790231914162,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 0.6927129071218066,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 0.45641804237654904,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 0.23402734342134196
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.7083333333333334,
+   "spread": 0.2602082499332666,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 0.5,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 0.625,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail_under_5pct",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 0.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "null_windows_per_node",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 8.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 8.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 8.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 8.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "abs_z_at_onset",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.452244233250872,
+   "spread": 0.09265757149062477,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.80523417266406,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.5502034330837354,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 0.5474719797992167,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.4899955396324246,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.23820751538449927,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 0.08235275894129605
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.4375,
+   "spread": 0.10825317547305482,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.125,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 0.5,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.25,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.75,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail_under_5pct",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.16666666666666666,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 0.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "null_windows_per_node",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 8.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.professional_churn_spike": 8.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 8.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 8.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 8.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 8.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 8.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 8.666666666666666,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 3.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 3.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 3.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.5555555555555555,
+   "spread": 0.19245008972987526,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.6666666666666666,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.6769841269841269,
+   "spread": 0.11234294487770213,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.14285714285714285,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.2,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.25,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.5
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 12.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 3.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 3.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 3.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.3333333333333333,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.5154761904761904,
+   "spread": 0.16851441731655312,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.14285714285714285,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.2,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.25,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.5
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 8.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 3.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 3.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 3.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.8888888888888888,
+   "spread": 0.1924500897298753,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.9444444444444445,
+   "spread": 0.0962250448649376,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.5,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.1111111111111111,
+   "spread": 0.19245008972987526,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.8888888888888888,
+   "spread": 0.1924500897298753,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 11.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 3.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 3.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 3.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.8333333333333334,
+   "spread": 0.28867513459481287,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.9166666666666666,
+   "spread": 0.14433756729740646,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.5,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.16666666666666666,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.8333333333333334,
+   "spread": 0.28867513459481287,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 8.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 3.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 3.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 3.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.6666666666666666,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.8888888888888888,
+   "spread": 0.1924500897298753,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.7703703703703705,
+   "spread": 0.06697459748157451,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.1,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.3333333333333333,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.5,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.6666666666666666,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 11.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 3.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 3.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 3.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.8333333333333334,
+   "spread": 0.28867513459481287,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.6555555555555556,
+   "spread": 0.10046189622236178,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.1,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.3333333333333333,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.5,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 8.666666666666666,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 3.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 3.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 3.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.5555555555555555,
+   "spread": 0.19245008972987526,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.6666666666666666,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.6666666666666666,
+   "spread": 0.14433756729740646,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.16666666666666666,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.25,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.25,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.3333333333333333
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 1.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 12.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 3.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 3.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 3.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.3333333333333333,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.5,
+   "spread": 0.21650635094610965,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.16666666666666666,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.25,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.25,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.3333333333333333
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 1.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 3.516666666666666,
+   "spread": 0.005773502691896391,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": 3.51,
+    "white_cube.baseline.s1.null": 3.52,
+    "white_cube.baseline.s2.null": 3.52
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.005555555555555556,
+   "spread": 0.004811252243246881,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": 0.008333333333333333,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.008333333333333333
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.18611111111111112,
+   "spread": 0.029265704869035392,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": 0.21666666666666667,
+    "white_cube.baseline.s1.null": 0.18333333333333332,
+    "white_cube.baseline.s2.null": 0.15833333333333333
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.35000000000000003,
+   "spread": 0.028867513459481284,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": 0.31666666666666665,
+    "white_cube.baseline.s1.null": 0.36666666666666664,
+    "white_cube.baseline.s2.null": 0.36666666666666664
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": 8.251666666666665,
+   "spread": 0.4583212119609272,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": 8.77,
+    "white_cube.baseline.s1.null": 8.084999999999999,
+    "white_cube.baseline.s2.null": 7.9
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": 0.08333333333333333,
+   "spread": 0.03608439182435161,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0625,
+    "white_cube.baseline.s1.null": 0.0625,
+    "white_cube.baseline.s2.null": 0.125
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": 0.3333333333333333,
+   "spread": 0.1301041249666333,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": 0.375,
+    "white_cube.baseline.s1.null": 0.4375,
+    "white_cube.baseline.s2.null": 0.1875
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 3.188333333333334,
+   "spread": 0.1559112995691247,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": 3.0700000000000003,
+    "white_cube.baseline.s1.null": 3.365,
+    "white_cube.baseline.s2.null": 3.13
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.041666666666666664,
+   "spread": 0.014433756729740645,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": 0.05,
+    "white_cube.baseline.s1.null": 0.025,
+    "white_cube.baseline.s2.null": 0.05
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.8000000000000002,
+   "spread": 0.024999999999999967,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": 0.8,
+    "white_cube.baseline.s1.null": 0.775,
+    "white_cube.baseline.s2.null": 0.825
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 3.6283333333333334,
+   "spread": 0.09751068317540076,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": 3.74,
+    "white_cube.baseline.s1.null": 3.5599999999999996,
+    "white_cube.baseline.s2.null": 3.585
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.011904761904761904,
+   "spread": 0.010309826235529031,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": 0.017857142857142856,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.017857142857142856
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.3452380952380952,
+   "spread": 0.07216878364870322,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": 0.4107142857142857,
+    "white_cube.baseline.s1.null": 0.35714285714285715,
+    "white_cube.baseline.s2.null": 0.26785714285714285
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.08333333333333333,
+   "spread": 0.07434521426664759,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.10714285714285714,
+    "white_cube.baseline.s2.null": 0.14285714285714285
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 3.1350000000000002,
+   "spread": 0.21788758569500907,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": 2.91,
+    "white_cube.baseline.s1.null": 3.3449999999999998,
+    "white_cube.baseline.s2.null": 3.1500000000000004
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "analysis_innovation_seconds",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 31.855555555555554,
+   "spread": 1.4986413600077675,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 6.4,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 19.2,
+    "white_cube.baseline.s2.only.professional_churn_spike": 68.6,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 17.9,
+    "white_cube.baseline.s1.only.professional_churn_spike": 68.5,
+    "white_cube.baseline.s0.only.professional_churn_spike": 76.2,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 5.8,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 6.8,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 17.3
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "analysis_rca_seconds",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 7.9444444444444455,
+   "spread": 0.7042200834440364,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 24.1,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 21.6,
+    "white_cube.baseline.s0.only.professional_churn_spike": 25.8,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 0.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "analysis_fits_made",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 10.666666666666666,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.latam_campaign_spend_ramp": 2.0,
+    "white_cube.baseline.s1.only.mobile_signup_cta_regression": 4.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 26.0,
+    "white_cube.baseline.s0.only.mobile_signup_cta_regression": 4.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 26.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 26.0,
+    "white_cube.baseline.s2.only.latam_campaign_spend_ramp": 2.0,
+    "white_cube.baseline.s1.only.latam_campaign_spend_ramp": 2.0,
+    "white_cube.baseline.s2.only.mobile_signup_cta_regression": 4.0
+   }
+  }
+ ],
+ "invocations": [
+  {
+   "started": "20261120T173046",
+   "wall_seconds": 541.5,
+   "shards": 4,
+   "jobs_already_done": 0,
+   "jobs_done_now": 393,
+   "failed_shards": []
+  }
+ ],
+ "note": "A baseline for the pipeline, not for the engine. Three seeds, eight null windows per node and three anomalies are too few to conclude anything about the engine, and the tree is the demo tree, not a canonical evaluation tree. Do not cite these numbers as findings. It replaces the 2026-11-19 baseline after the runner moved to the generator's stated contract (fake_companies b51d70e); the three anomalies are pinned with --singles to the ones that baseline ran, so the two pair world for world. The engine commit's +dirty is an uncommitted docs file; breakdown/ was clean, as the engine key records."
+}
