@@ -381,7 +381,7 @@ are skipped, so an interrupted run loses at most the jobs in flight.
 
 | Option | Meaning |
 |---|---|
-| `--tier smoke\|standard\|full` | Seeds, regimes, horizons, windows and single worlds as in §7 (table below) |
+| `--tier smoke\|standard\|full\|attribution` | Seeds, regimes, horizons, windows and single worlds as in §7 (table below) |
 | `--seeds 0-2` | Override the tier's seeds. Seeds from 5 up are refused without `--held-out` |
 | `--held-out` | Also score held-out seeds. The scoreboard says so in its header |
 | `--regimes`, `--horizons`, `--singles` | Comma-separated overrides |
@@ -398,6 +398,7 @@ What each tier selects:
 | smoke | 0 to 2 | baseline | 7 | at most 8, evenly spaced | 3 anomalies, spread over the depths their roots sit at |
 | standard | 0 to 4 | baseline | 1, 7, 28 | every 28 days | all |
 | full | 0 to 4, plus 5 to 9 with `--held-out` | all in the set | 1, 7, 28 | every 28 days | all |
+| attribution | 0 to 4 | baseline | 7 | none | all, or those `--singles` names: for a ten-seed set, the anomalies whose sizes it can ground |
 
 **Trees.** `demo/white_cube_tree.yml` (b2c_saas) binds by metric name and
 needs no bindings file. `demo/alpenglow_tree.yml` (retail_dtc) uses
@@ -630,9 +631,82 @@ header then names the held-out seeds scored.
 Both are inputs to §5.5 and are written as rows now so abstention can be
 scored from an existing run directory.
 
-**Not built:** attribution (§5.4; every in-scope node's contribution is
-already written as a `nodes` row, waiting on the generator's ten-seed study
-of how precise the measured effects are); abstention (§5.5); the magnitude
+**Attribution (§5.4, Q5) is scored where the world set can ground a size.**
+The generator's ten-seed study (fake_companies `docs/eval_worlds_spec.md`
+§9.2, §9.5, §9.7, commit `d28b29f`) settled that a measured effect can be the
+truth for an attributed size when its cross-seed verdict is established and
+its cross-seed mean is known to about ±20%, and that one twin's difference
+can be the truth only where the twins were identical until the anomaly.
+The runner derives both from the data; it keeps no list of anomalies.
+
+- *What is compared* (`evalrunner/attribution.py`). The engine's RCA over the
+  anomaly's declared window, as the whole periods of the target that cover
+  it: the window the set's cross-seed effects were measured over, the same
+  in every seed, and not capped at 28 days as localization's is. On each edge `p -> c` on a
+  path from the truth root to the target, the engine's contribution of `p`
+  to `c`'s change with its 95% interval; the truth is `p`'s share of `c`'s
+  twin difference over `c`'s effective window, by the engine's own window
+  rule: the exact Shapley share per period for a formula child, all of the
+  difference for a learned child (refused by name, `several_parents_moved`,
+  when another parent's verdict is established too). The root: the part of
+  its change the engine leaves unexplained (`root_unexplained`), or for a
+  root with no parents its change itself (`root_gap`, since the engine
+  attributes nothing at a terminal cause); neither has an interval.
+- *Eligibility*, from the set's `effects_summary.parquet` for the child
+  metric: `verdict` established, and the 95% half-width of
+  `rel_change_mean` within 20% of it at the set's own seed count
+  (`t · rel_change_sd / √n_seeds / |rel_change_mean|`, Student's t on n − 1
+  degrees of freedom; the study uses 1.96, and at three seeds t is 4.30).
+  The generator ships both, so nothing is recomputed from per-twin files.
+  Established but imprecise: scored on direction only. Anything else: listed
+  with its reason and not scored.
+- *Truth.* The set's mean relative effect of the child (every seed of the
+  set, held-out ones included: it is ground truth, not engine output), times
+  the item's share of the child's effect (1 for a learned edge or a root; for
+  a formula parent its mean Shapley fraction over the run's worlds), times
+  this world's null value of the child. Where this world's twins were
+  aligned (`pre_onset_rms_diff` 0 in the twin's summary for the child), its
+  own twin difference instead. The set's relative change is of the daily
+  series' window mean; the engine's window rule takes a rate as
+  Σnumerator / Σdenominator, and that small difference is in the error.
+- *Scored.* `ratio` (engine over truth; median per world), `log_error`
+  (ln of the ratio) and its absolute value, `coverage` (the interval holds
+  the truth; items with an interval only), `wrong_sign`, and `withheld`: an
+  estimate the engine withheld (a node status, a non-finite posterior) is
+  counted as withheld and never as zero. Formula edges, learned edges and
+  roots are reported apart. `items_*` count what each world could score, so
+  a run with nothing eligible reads as zero, beside the eligibility table
+  that says why.
+- *The two questions differ, on purpose.* The engine answers window over
+  window (analysis against the adjacent reference window); the truth is a
+  counterfactual (world against its null twin). The reference window's own
+  drift is in the error, as it is in what a reader of the engine gets.
+- *Not built:* the error as a share of the target's measured change (§5.4's
+  third bullet).
+- *First runs* (2026-11-21; demo tree, not citable). Smoke set (three
+  seeds): 4 of 8 items size-eligible, all near the root (the spend ramp's
+  root and its sessions edge, the signup regression's root and its signups
+  edge; t at two degrees of freedom still admits them); the churn spike's
+  four are `open` at three seeds. Ten-seed set, `attribution` tier, dev seeds
+  0–4, onboarding revamp and churn spike
+  ([`eval/2026-11-21_attribution_white_cube10_demo_tree.md`](eval/2026-11-21_attribution_white_cube10_demo_tree.md)):
+  8 of 10 items size-eligible; the churn spike's top edge is ±21% and scored
+  on direction only, and the onboarding revamp's learned edge is refused
+  (`several_parents_moved`). Roots are sized well (median ratio 0.99 for a
+  parentless root's change, 1.09 for a fitted root's unexplained part).
+  Formula edges are not: median ratio 2.4, interval coverage 38%, every sign
+  right. Over a 17-week window the engine's Shapley shares answer
+  window-over-window, so a formula edge carries its parent's growth since the
+  reference window as well as the anomaly (onboarding seed 0:
+  `new_subscriptions -> new_mrr` attributed 1,088 against a twin difference
+  of 270). Whether Q5 should keep scoring the engine's own question against
+  the counterfactual, or compare against a reference-matched truth, is a
+  decision for the next change. Cost: 6.1 minutes of wall time on four
+  shards for the ten worlds.
+
+**Not built:** abstention (§5.5; it does not fall out of attribution: it
+needs the off-tree and data-quality worlds scored for what the engine says,
+not for sizes); the magnitude
 ladder (§5.2); the slice check (§5.3); the share of badly calibrated nodes a
 diagnostic flag catches (§5.1, which needs a definition of "badly calibrated"
 for one node on a handful of windows); story worlds; nodes at month grain
