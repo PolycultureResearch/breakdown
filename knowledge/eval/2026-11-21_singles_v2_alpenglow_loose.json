@@ -1,0 +1,2589 @@
+{
+ "scoreboard_version": 1,
+ "tier": "attribution",
+ "engine_commit": "a97567d9959bd58b75737e0bb92a9a4eacedeb28+dirty",
+ "engine_key": "2ace584b50c602731fc8e34811ae6eea64c63e05|draws=500|chains=4|seed=0",
+ "generator_version": "0.1.0",
+ "manifest": {
+  "path": "/private/tmp/claude-501/-Users-devon-Documents-code-breakdown/1baf7fcf-162d-4aa4-a012-4e42cd2ef008/scratchpad/eval-worlds/out/worlds/proof_v2_alpenglow",
+  "schema_version": 2,
+  "config": "configs/alpenglow_retail_dtc.yaml",
+  "config_sha256": "e4fe407bc07f846fede320572f28267a7ec3937ecacfba35cc77bb4de80fd32f",
+  "effects_summary": "effects_summary.parquet"
+ },
+ "vertical": "retail_dtc",
+ "company": "alpenglow",
+ "tree": {
+  "path": "demo/alpenglow_tree.yml",
+  "sha256": "c6d0f0660d744aecd365730352920fd54a490fd3eae9fc0875e414c1d570787c",
+  "canonical": false,
+  "bindings_path": "knowledge/benchmarks/evalrunner/bindings/alpenglow_tree.yml",
+  "bindings_sha256": "c9de5cbd727baba527907f58a8dfbe1a1bd460873bdca577ddf63f4cfdce1ef5",
+  "effective_sha256": "e1c322b84121314297971ca7acfb1979f1ad3772e718b5a2303977abff38e304",
+  "drop_unserved": false,
+  "served": {
+   "marketing_spend": "marketing_spend",
+   "paid_sessions": "sessions [channel in paid_search, paid_social]",
+   "organic_sessions": "sessions [channel in organic]",
+   "email_sessions": "sessions [channel in email]",
+   "direct_sessions": "sessions [channel in direct]",
+   "sessions": "sessions",
+   "conversion_rate": "conversion_rate",
+   "converting_sessions": "converting_sessions",
+   "customer_base": "customer_base",
+   "returning_customer_orders": "returning_customer_orders",
+   "orders": "orders",
+   "aov": "aov",
+   "gross_revenue": "gross_revenue",
+   "discounted_orders": "discounted_orders",
+   "discounts": "discounts",
+   "units": "units",
+   "return_rate": "return_rate",
+   "returned_units": "returned_units",
+   "refunds": "refunds"
+  },
+  "caveats": {},
+  "unserved": {},
+  "dropped": [],
+  "derived_instead_of_fetched": []
+ },
+ "seeds": [
+  0,
+  1,
+  2
+ ],
+ "held_out": false,
+ "held_out_seeds": [],
+ "regimes": [
+  "baseline"
+ ],
+ "horizons": [
+  7
+ ],
+ "created": "2026-11-21T05:14:54+00:00",
+ "host": {
+  "machine": "arm64",
+  "cpus": 12,
+  "load_at_plan": 10.83
+ },
+ "verdict_column": "verdict_10pct",
+ "verdict_level": 0.1,
+ "allow_schema_v1": false,
+ "windows": {},
+ "singles": {
+  "paid_social_budget_cut": {
+   "class": "on_tree",
+   "root_metric": "marketing_spend",
+   "root_metric_rate": null,
+   "root_slice": {
+    "channel": "paid_social"
+   },
+   "truth": [
+    "marketing_spend"
+   ],
+   "depth": 0,
+   "note": "",
+   "set_verdicts": true
+  },
+  "tees_demand_slump": {
+   "class": "on_tree",
+   "root_metric": "units",
+   "root_metric_rate": null,
+   "root_slice": {
+    "category": "tees"
+   },
+   "truth": [
+    "units"
+   ],
+   "depth": 5,
+   "note": "",
+   "set_verdicts": true
+  }
+ },
+ "singles_not_run": {},
+ "worlds": {
+  "alpenglow.baseline.s0.null": {
+   "seed": 0,
+   "regime": "baseline",
+   "kind": "null",
+   "anomalies": []
+  },
+  "alpenglow.baseline.s1.null": {
+   "seed": 1,
+   "regime": "baseline",
+   "kind": "null",
+   "anomalies": []
+  },
+  "alpenglow.baseline.s2.null": {
+   "seed": 2,
+   "regime": "baseline",
+   "kind": "null",
+   "anomalies": []
+  },
+  "alpenglow.baseline.s0.only.paid_social_budget_cut": {
+   "seed": 0,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "paid_social_budget_cut"
+   ]
+  },
+  "alpenglow.baseline.s0.only.tees_demand_slump": {
+   "seed": 0,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "tees_demand_slump"
+   ]
+  },
+  "alpenglow.baseline.s1.only.paid_social_budget_cut": {
+   "seed": 1,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "paid_social_budget_cut"
+   ]
+  },
+  "alpenglow.baseline.s1.only.tees_demand_slump": {
+   "seed": 1,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "tees_demand_slump"
+   ]
+  },
+  "alpenglow.baseline.s2.only.paid_social_budget_cut": {
+   "seed": 2,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "paid_social_budget_cut"
+   ]
+  },
+  "alpenglow.baseline.s2.only.tees_demand_slump": {
+   "seed": 2,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "tees_demand_slump"
+   ]
+  }
+ },
+ "coverage": {
+  "jobs": 6,
+  "jobs_done": 6,
+  "job_seconds": 77.0,
+  "calibration_status": {},
+  "single_worlds": 6,
+  "single_worlds_ranked": 6,
+  "single_worlds_off_tree": [],
+  "single_worlds_no_target": [],
+  "single_worlds_skipped": {},
+  "targets": {
+   "alpenglow.baseline.s0.only.paid_social_budget_cut": {
+    "anomaly": "paid_social_budget_cut",
+    "truth": [
+     "marketing_spend"
+    ],
+    "mapping": "on_tree",
+    "target": "net_revenue",
+    "basis": "set:verdict_10pct"
+   },
+   "alpenglow.baseline.s2.only.paid_social_budget_cut": {
+    "anomaly": "paid_social_budget_cut",
+    "truth": [
+     "marketing_spend"
+    ],
+    "mapping": "on_tree",
+    "target": "net_revenue",
+    "basis": "set:verdict_10pct"
+   },
+   "alpenglow.baseline.s0.only.tees_demand_slump": {
+    "anomaly": "tees_demand_slump",
+    "truth": [
+     "units"
+    ],
+    "mapping": "on_tree",
+    "target": "net_revenue",
+    "basis": "set:verdict_10pct"
+   },
+   "alpenglow.baseline.s2.only.tees_demand_slump": {
+    "anomaly": "tees_demand_slump",
+    "truth": [
+     "units"
+    ],
+    "mapping": "on_tree",
+    "target": "net_revenue",
+    "basis": "set:verdict_10pct"
+   },
+   "alpenglow.baseline.s1.only.paid_social_budget_cut": {
+    "anomaly": "paid_social_budget_cut",
+    "truth": [
+     "marketing_spend"
+    ],
+    "mapping": "on_tree",
+    "target": "net_revenue",
+    "basis": "set:verdict_10pct"
+   },
+   "alpenglow.baseline.s1.only.tees_demand_slump": {
+    "anomaly": "tees_demand_slump",
+    "truth": [
+     "units"
+    ],
+    "mapping": "on_tree",
+    "target": "net_revenue",
+    "basis": "set:verdict_10pct"
+   }
+  }
+ },
+ "attribution": {
+  "max_rel_precision": 0.2,
+  "eligibility": [
+   {
+    "anomaly": "paid_social_budget_cut",
+    "item": "converting_sessions->orders",
+    "kind": "formula_edge",
+    "verdict": "established_down",
+    "n_seeds": 3,
+    "rel_mean": -0.05034542494836899,
+    "fraction": 1.1217656738008728,
+    "precision": 0.5783703581183852,
+    "aligned_worlds": 0,
+    "eligible": false,
+    "why": "precision \u00b158% at the set's 3 seeds (needs \u00b120%)"
+   },
+   {
+    "anomaly": "paid_social_budget_cut",
+    "item": "gross_revenue->net_revenue",
+    "kind": "formula_edge",
+    "verdict": "established_down",
+    "n_seeds": 3,
+    "rel_mean": -0.04982833022276693,
+    "fraction": 1.1351266810964622,
+    "precision": 0.5020444202570329,
+    "aligned_worlds": 0,
+    "eligible": false,
+    "why": "precision \u00b150% at the set's 3 seeds (needs \u00b120%)"
+   },
+   {
+    "anomaly": "paid_social_budget_cut",
+    "item": "marketing_spend->paid_sessions",
+    "kind": "learned_edge",
+    "verdict": null,
+    "n_seeds": null,
+    "rel_mean": null,
+    "fraction": 1.0,
+    "precision": null,
+    "aligned_worlds": 0,
+    "eligible": false,
+    "why": "no set verdict"
+   },
+   {
+    "anomaly": "paid_social_budget_cut",
+    "item": "orders->gross_revenue",
+    "kind": "formula_edge",
+    "verdict": "established_down",
+    "n_seeds": 3,
+    "rel_mean": -0.05216165227131079,
+    "fraction": 0.9622032756778299,
+    "precision": 0.4807529241807939,
+    "aligned_worlds": 0,
+    "eligible": false,
+    "why": "precision \u00b148% at the set's 3 seeds (needs \u00b120%)"
+   },
+   {
+    "anomaly": "paid_social_budget_cut",
+    "item": "orders->units",
+    "kind": "learned_edge",
+    "verdict": "established_down",
+    "n_seeds": 3,
+    "rel_mean": -0.05280430613335204,
+    "fraction": 1.0,
+    "precision": 0.6253140516795519,
+    "aligned_worlds": 0,
+    "eligible": false,
+    "why": "precision \u00b163% at the set's 3 seeds (needs \u00b120%)"
+   },
+   {
+    "anomaly": "paid_social_budget_cut",
+    "item": "paid_sessions->sessions",
+    "kind": "formula_edge",
+    "verdict": "established_down",
+    "n_seeds": 3,
+    "rel_mean": -0.16193873465055483,
+    "fraction": 1.000772320262337,
+    "precision": 0.022149365669041313,
+    "aligned_worlds": 0,
+    "eligible": true,
+    "why": "established and precise"
+   },
+   {
+    "anomaly": "paid_social_budget_cut",
+    "item": "refunds->net_revenue",
+    "kind": "formula_edge",
+    "verdict": "established_down",
+    "n_seeds": 3,
+    "rel_mean": -0.04982833022276693,
+    "fraction": -0.13512668109646117,
+    "precision": 0.5020444202570329,
+    "aligned_worlds": 0,
+    "eligible": false,
+    "why": "precision \u00b150% at the set's 3 seeds (needs \u00b120%)"
+   },
+   {
+    "anomaly": "paid_social_budget_cut",
+    "item": "returned_units->refunds",
+    "kind": "learned_edge",
+    "verdict": "established_down",
+    "n_seeds": 3,
+    "rel_mean": -0.08017514798211815,
+    "fraction": 1.0,
+    "precision": 0.3237573756222696,
+    "aligned_worlds": 0,
+    "eligible": false,
+    "why": "precision \u00b132% at the set's 3 seeds (needs \u00b120%)"
+   },
+   {
+    "anomaly": "paid_social_budget_cut",
+    "item": "root:marketing_spend",
+    "kind": "root_gap",
+    "verdict": "established_down",
+    "n_seeds": 3,
+    "rel_mean": -0.28595256996926816,
+    "fraction": 1.0,
+    "precision": 0.03681402143944749,
+    "aligned_worlds": 3,
+    "eligible": true,
+    "why": "established and precise"
+   },
+   {
+    "anomaly": "paid_social_budget_cut",
+    "item": "sessions->converting_sessions",
+    "kind": "formula_edge",
+    "verdict": "established_down",
+    "n_seeds": 3,
+    "rel_mean": -0.10484255396245361,
+    "fraction": 1.6021677305507904,
+    "precision": 0.16210410621401267,
+    "aligned_worlds": 0,
+    "eligible": true,
+    "why": "established and precise"
+   },
+   {
+    "anomaly": "paid_social_budget_cut",
+    "item": "units->returned_units",
+    "kind": "formula_edge",
+    "verdict": "established_down",
+    "n_seeds": 3,
+    "rel_mean": -0.039719165947154855,
+    "fraction": 1.3543194155206322,
+    "precision": 0.39507369086275423,
+    "aligned_worlds": 0,
+    "eligible": false,
+    "why": "precision \u00b140% at the set's 3 seeds (needs \u00b120%)"
+   },
+   {
+    "anomaly": "tees_demand_slump",
+    "item": "refunds->net_revenue",
+    "kind": "formula_edge",
+    "verdict": "established_up",
+    "n_seeds": 3,
+    "rel_mean": 0.049489661740489264,
+    "fraction": -0.021581653964570124,
+    "precision": 0.5084616950358888,
+    "aligned_worlds": 3,
+    "eligible": false,
+    "why": "precision \u00b151% at the set's 3 seeds (needs \u00b120%)"
+   },
+   {
+    "anomaly": "tees_demand_slump",
+    "item": "returned_units->refunds",
+    "kind": "learned_edge",
+    "verdict": "open",
+    "n_seeds": 3,
+    "rel_mean": 0.010530855408241058,
+    "fraction": 1.0,
+    "precision": null,
+    "aligned_worlds": 3,
+    "eligible": false,
+    "why": "verdict open"
+   },
+   {
+    "anomaly": "tees_demand_slump",
+    "item": "root:units",
+    "kind": "root_unexplained",
+    "verdict": "exactly_zero",
+    "n_seeds": 3,
+    "rel_mean": 0.0,
+    "fraction": null,
+    "precision": null,
+    "aligned_worlds": 3,
+    "eligible": false,
+    "why": "verdict exactly_zero"
+   },
+   {
+    "anomaly": "tees_demand_slump",
+    "item": "units->returned_units",
+    "kind": "formula_edge",
+    "verdict": "established_up",
+    "n_seeds": 3,
+    "rel_mean": 0.0058951584456622035,
+    "fraction": 0.0,
+    "precision": 1.192492066031253,
+    "aligned_worlds": 3,
+    "eligible": false,
+    "why": "precision \u00b1119% at the set's 3 seeds (needs \u00b120%)"
+   }
+  ],
+  "errors": []
+ },
+ "not_built": {
+  "Q4 slices": "whether the true slice is the top slice of the true node (spec \u00a75.3)",
+  "Q5 error share": "attribution error as a share of the target's measured change (spec \u00a75.4)",
+  "Q6 abstention": "off-tree, data-quality and null-world false alarms (spec \u00a75.5)",
+  "Q7 power": "the magnitude ladder (spec \u00a75.2); needs generator phase 2",
+  "Q9 catch rate": "share of badly calibrated nodes a flag catches; needs a per-node verdict"
+ },
+ "rows": [
+  {
+   "question": "Q2 detection",
+   "metric": "abs_z_at_onset",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 4.040573816478883,
+   "spread": 0.2658564899090025,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 7.664170990220041,
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 6.947244292274583,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 6.055999153395716,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 1.7232640688948848,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 1.0309178165950474,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.8218465774930285
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": null,
+   "spread": null,
+   "n_seeds": 0,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": null,
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": null,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail_under_5pct",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": null,
+   "spread": null,
+   "n_seeds": 0,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": null,
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": null,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "null_windows_per_node",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "abs_z_at_onset",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 1.1920094876609868,
+   "spread": 0.4718063885922027,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s2.only.tees_demand_slump": 1.7232640688948848,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 1.0309178165950474,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.8218465774930285
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": null,
+   "spread": null,
+   "n_seeds": 0,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s2.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail_under_5pct",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": null,
+   "spread": null,
+   "n_seeds": 0,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s2.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "null_windows_per_node",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "abs_z_at_onset",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 6.889138145296779,
+   "spread": 0.8056589895397341,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 7.664170990220041,
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 6.947244292274583,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 6.055999153395716
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": null,
+   "spread": null,
+   "n_seeds": 0,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": null,
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": null
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail_under_5pct",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": null,
+   "spread": null,
+   "n_seeds": 0,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": null,
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": null
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "null_windows_per_node",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 19.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 19.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 19.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 19.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.08280961957432545,
+   "spread": 0.015603745383008908,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.08333333333333333,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.07692307692307693,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.1111111111111111,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.05555555555555555,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.1111111111111111,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.058823529411764705
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 1.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 1.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 19.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 19.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 19.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 19.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 0.07516339869281045,
+   "spread": 0.03117448370643613,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.1111111111111111,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.05555555555555555,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.058823529411764705
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 1.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 1.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 19.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 19.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 0.09045584045584044,
+   "spread": 0.01817286441904996,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.08333333333333333,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.07692307692307693,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.1111111111111111
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 19.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 19.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 19.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 19.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.3333333333333333,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.4623737373737374,
+   "spread": 0.14461629778253945,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.1,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.08333333333333333,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.5,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.09090909090909091
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.3333333333333333,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 1.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 1.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 19.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 19.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 19.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 19.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 0.09141414141414143,
+   "spread": 0.008344803859524403,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.1,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.08333333333333333,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.09090909090909091
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 1.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 1.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 19.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 19.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 0.6666666666666666,
+   "spread": 0.5773502691896258,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 0.8333333333333334,
+   "spread": 0.28867513459481287,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.5
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 0.6666666666666666,
+   "spread": 0.5773502691896258,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 19.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 19.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 19.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 19.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.32765151515151514,
+   "spread": 0.04188133406722723,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.5,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.5,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.25,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.09090909090909091,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.5,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.125
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 19.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 19.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 19.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 19.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 0.1553030303030303,
+   "spread": 0.08376266813445446,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.25,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.09090909090909091,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.125
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 19.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 19.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.5,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.5,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.5
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 19.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 19.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 19.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 19.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.12680311890838206,
+   "spread": 0.0008440793409204974,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.2,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.2,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.05555555555555555,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.05263157894736842,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.2,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.05263157894736842
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 1.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 1.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 19.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 19.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 19.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 19.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 0.05360623781676413,
+   "spread": 0.0016881586818410109,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.05555555555555555,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.05263157894736842,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.05263157894736842
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "retail_dtc",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.tees_demand_slump": 1.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 1.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 19.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 19.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 19.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 0.20000000000000004,
+   "spread": 3.3993498887762956e-17,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.2,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.2,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.2
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "retail_dtc",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 1.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 1.0
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "items_size_eligible",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 1.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 3.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 3.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 3.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "items_direction_only",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 4.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 27,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 7.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 2.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 7.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 2.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 7.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 2.0
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "items_total",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 7.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 45,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 11.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 4.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 11.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 4.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 11.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 4.0
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "abs_log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.29539506579457336,
+   "spread": 0.035615516281354634,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.2727089204822337,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.33644452005702424,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.2770317568444621,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.29539506579457336,
+   "spread": 0.035615516281354634,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.2727089204822337,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.33644452005702424,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.2770317568444621,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "ratio",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 1.2742929282707038,
+   "spread": 0.05658312480480868,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 1.2298010217392477,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 1.3379756128574916,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 1.2551021502153725,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "coverage",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "withheld",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "wrong_sign",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "abs_log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "retail_dtc",
+   "value": 0.3222214179925888,
+   "spread": 0.03198081743053048,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.30563718804620327,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.35908791259752476,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.3019391533340384,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "retail_dtc",
+   "value": 0.3222214179925888,
+   "spread": 0.03198081743053048,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.30563718804620327,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.35908791259752476,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.3019391533340384,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "ratio",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "retail_dtc",
+   "value": 1.390853477780239,
+   "spread": 0.04433933333371867,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 1.3695036740355828,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 1.4418287008737074,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 1.361228058431426,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "coverage",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "withheld",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "wrong_sign",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "abs_log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "retail_dtc",
+   "value": 0.24174236139854235,
+   "spread": 0.04398963939195586,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.20685238535429457,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.2911577349760232,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.22721696386530932,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "retail_dtc",
+   "value": 0.24174236139854235,
+   "spread": 0.04398963939195586,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.20685238535429457,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.2911577349760232,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.22721696386530932,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "ratio",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "retail_dtc",
+   "value": 1.2742929282707038,
+   "spread": 0.05658312480480868,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 1.2298010217392477,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 1.3379756128574916,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 1.2551021502153725,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "coverage",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "retail_dtc",
+   "value": null,
+   "spread": null,
+   "n_seeds": 0,
+   "n": 0,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": null,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": null,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": null,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "withheld",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "wrong_sign",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "retail_dtc",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": null,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": null,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "direction_agrees",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.23809523809523805,
+   "spread": 0.14433756729740643,
+   "n_seeds": 3,
+   "n": 27,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.14285714285714285,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.5,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.14285714285714285,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.14285714285714285,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.5
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "analysis_innovation_seconds",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 11.383333333333333,
+   "spread": 3.1501322723551364,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 24.6,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 14.1,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 1.5,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 1.4,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 25.2,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 1.5
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "analysis_rca_seconds",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 0.20000000000000004,
+   "spread": 3.3993498887762956e-17,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 0.2,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 0.2,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.2,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.2,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 0.2,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.2
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "analysis_fits_made",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "retail_dtc",
+   "value": 2.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "alpenglow.baseline.s0.only.paid_social_budget_cut": 5.0,
+    "alpenglow.baseline.s2.only.paid_social_budget_cut": 5.0,
+    "alpenglow.baseline.s0.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s2.only.tees_demand_slump": 0.0,
+    "alpenglow.baseline.s1.only.paid_social_budget_cut": 5.0,
+    "alpenglow.baseline.s1.only.tees_demand_slump": 0.0
+   }
+  }
+ ],
+ "invocations": [
+  {
+   "started": "20261121T051022",
+   "wall_seconds": 269.8,
+   "shards": 4,
+   "jobs_already_done": 0,
+   "jobs_done_now": 6,
+   "failed_shards": []
+  },
+  {
+   "started": "20261121T051454",
+   "wall_seconds": 43.4,
+   "shards": 4,
+   "jobs_already_done": 0,
+   "jobs_done_now": 6,
+   "failed_shards": []
+  }
+ ],
+ "note": "Proof of the schema 2 runner, not a finding: the generator's proof_v2 set (seeds 0-2, null plus two singles each, fake_companies 01bf895), single worlds only (attribution tier), on a demo tree, not a canonical evaluation tree. Do not cite. The engine commit's +dirty is uncommitted docs; breakdown/ was clean, as the engine key records. tees_demand_slump is rooted at units[tees], and the tree has only total units, whose verdict is exactly_zero: its localization asks about a node the anomaly did not move."
+}
