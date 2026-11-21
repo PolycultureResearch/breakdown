@@ -94,12 +94,8 @@ def test_the_sets_verdicts_and_a_twins_slice_stats_are_read_from_their_files(tmp
     assert verdicts[("spend", None, None)] == "exactly_zero"
     assert ws.verdicts("baseline", "no_such_anomaly") == {}
     effects = ws.set_effects("baseline", "rate_drop")
-    assert effects[("signups", None, None)] == {
-        "rel_mean": -0.4,
-        "rel_sd": None,
-        "n_seeds": 1,
-        "null_mean": None,
-    }
+    signups = effects[("signups", None, None)]
+    assert (signups["rel_mean"], signups["rel_sd"], signups["n_seeds"]) == (-0.4, None, 1)
     single = ws.world("fixture.baseline.s0.only.rate_drop")
     assert single.effects_summary.exists()
 
@@ -314,6 +310,43 @@ def test_a_cumulative_metric_is_served_weekly_as_its_first_day_like_metricflow(a
     _, series = arithmetic
     weekly = series.at_grain(SeriesBinding("signups_to_date"), "week")
     assert weekly.tolist() == [6.0, 48.0, 90.0, 132.0]  # days 1, 8, 15, 22
+
+
+def test_a_week_node_is_served_as_breakdowns_providers_return_it(tmp_path):
+    """Every provider asks its source at the node's grain, so a week node gets
+    MetricFlow's week number where the set states it: a stock whose measure
+    sums is seven days of its level added up, not the business number."""
+    from evalrunner.loader import caveat_for
+
+    series = _edit_metric(
+        tmp_path, "base", metricflow_week="sum_of_days", matches_metricflow_week=False
+    )
+    assert series.at_grain(SeriesBinding("base"), "week").iloc[0] == sum(range(100, 107))
+    assert series.at_grain(SeriesBinding("base"), "day").iloc[0] == 100  # days unchanged
+    note = caveat_for(series.specs["base"], SeriesBinding("base"), "week")
+    assert "sum_of_days" in note and "seven days" in note
+    with pytest.raises(WorldCannotAnswer, match="week grain only"):
+        series.at_grain(SeriesBinding("base"), "month")
+
+
+def test_a_ratio_is_served_from_its_inputs_week_rules(tmp_path):
+    series = _edit_metric(
+        tmp_path,
+        "lapse",
+        metricflow_week="ratio_of_week_inputs",
+        matches_metricflow_week=False,
+        input_metricflow_week={"numerator": "sum_of_days", "denominator": "distinct_over_week"},
+    )
+    weekly = series.at_grain(SeriesBinding("lapse"), "week")
+    assert weekly.tolist() == pytest.approx([14 / 60, 14 / 70, 14 / 80, 14 / 90])
+    series = _edit_metric(
+        tmp_path / "b",
+        "lapse",
+        metricflow_week="ratio_of_week_inputs",
+        input_metricflow_week={"numerator": "sum_of_days", "denominator": "first_day"},
+    )
+    with pytest.raises(WorldCannotAnswer, match="denominator.*'first_day'"):
+        series.at_grain(SeriesBinding("lapse"), "week")
 
 
 def test_the_plan_names_where_a_week_value_departs_from_the_manifests_rule(arithmetic):
@@ -702,6 +735,17 @@ def test_truth_is_the_sets_mean_times_the_items_share_or_an_aligned_twins_own():
     assert scored["w1"]["truth"] == pytest.approx(0.8 * 0.10 * 110.0)
 
 
+def test_error_is_also_a_share_of_the_targets_measured_counterfactual_change():
+    from evalrunner.attribution import target_changes
+
+    edge = [_item(f"w{s}", s, 10.0, estimate=14.0, child="t", target="t") for s in range(2)]
+    v = eligibility(edge)
+    changes = target_changes({("a", "x->t"): edge}, {("a", "x->t"): v})
+    assert changes["w0"] == (pytest.approx(10.0), "cross_seed_mean")
+    scored = score_items(edge, v, changes)
+    assert scored[0]["error_share"] == pytest.approx(0.4)  # (14 − 10) / |10|
+
+
 def test_an_imprecise_but_established_item_is_scored_on_direction_only():
     rows = [
         _item(f"w{s}", s, 10.0, estimate=e, set_rel_sd=0.2) for s, e in enumerate([5.0, -1.0, 3.0])
@@ -848,7 +892,9 @@ def test_a_run_goes_from_manifest_to_scoreboard_and_resumes_without_refitting(tm
     assert board["verdict_column"] == "verdict"
     # One seed: the attribution items are written, and none is size-eligible,
     # which the eligibility table says rather than leaving the question empty.
-    table = {t["item"]: t for t in board["attribution"]["eligibility"]}
+    section = board["counterfactual_attribution"]
+    assert section["truth_seeds"] == [0] and not section["truth_includes_held_out_seeds"]
+    table = {t["item"]: t for t in section["eligibility"]}
     assert set(table) == {"root:signup_rate", "signup_rate->signups"}
     assert not table["signup_rate->signups"]["eligible"]
     assert "no cross-seed mean and spread" in table["signup_rate->signups"]["why"]
@@ -880,7 +926,7 @@ def test_a_run_goes_from_manifest_to_scoreboard_and_resumes_without_refitting(tm
     json.dumps(board, allow_nan=False)
     text = render_markdown(board)
     assert "not a canonical evaluation tree" in text and "Q3 Localization" in text
-    assert "Q5 Which attribution sizes the world set can ground" in text
+    assert "Q5 Which counterfactual attribution sizes the world set can ground" in text
 
     # A different shard layout finds the same jobs done.
     assert run_shard(out, (1, 3), log=lambda *a, **k: None) == 0

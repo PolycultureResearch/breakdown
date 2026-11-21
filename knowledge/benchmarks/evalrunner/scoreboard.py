@@ -18,8 +18,9 @@ compared on the worlds they share, seed by seed, and the difference carries
 the spread of the paired per-seed differences.
 
 Questions scored today: `Q1 calibration`, `Q9 diagnostics` (Q1 split by the
-engine's own flags), `Q2 detection`, `Q3 localization`, `Q5 attribution`
-(sizes only where the world set can ground them; `attribution.py`), `Q8 cost`.
+engine's own flags), `Q2 detection`, `Q3 localization`, `Q5 counterfactual attribution`
+(sizes against the twin difference, only where the world set can ground
+them; `attribution.py`), `Q8 cost`.
 `Q6 abstention` is a reserved name: its rows will have this same shape,
 computed from the `skipped` and off-tree rows the runner already writes.
 """
@@ -35,14 +36,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .attribution import MAX_REL_PRECISION, eligibility, score_items
-from .runner import read_rows
+from .attribution import MAX_REL_PRECISION, eligibility, score_items, target_changes
+from .runner import DEV_SEEDS, read_rows
 
 SCOREBOARD_VERSION = 1
 EVIDENCE_Z = 2.0
 NOT_BUILT = {
     "Q4 slices": "whether the true slice is the top slice of the true node (spec §5.3)",
-    "Q5 error share": "attribution error as a share of the target's measured change (spec §5.4)",
     "Q6 abstention": "off-tree, data-quality and null-world false alarms (spec §5.5)",
     "Q7 power": "the magnitude ladder (spec §5.2); needs generator phase 2",
     "Q9 catch rate": "share of badly calibrated nodes a flag catches; needs a per-node verdict",
@@ -329,7 +329,10 @@ ATTRIBUTION_METRICS = (
     "coverage",
     "withheld",
     "wrong_sign",
+    "error_share",
+    "abs_error_share",
 )
+Q5 = "Q5 counterfactual attribution"
 
 
 def attribution_rows(rows, seed_of, vertical) -> tuple[list[dict], list[dict]]:
@@ -345,8 +348,10 @@ def attribution_rows(rows, seed_of, vertical) -> tuple[list[dict], list[dict]]:
     for r in ok:
         groups[(r["anomaly"], r["item"])].append(r)
     table, scored = [], []
+    verdicts = {key: eligibility(g) for key, g in groups.items()}
+    changes = target_changes(groups, verdicts)
     for (anomaly, item), g in sorted(groups.items()):
-        verdict = eligibility(g)
+        verdict = verdicts[(anomaly, item)]
         table.append(
             {
                 "anomaly": anomaly,
@@ -354,24 +359,40 @@ def attribution_rows(rows, seed_of, vertical) -> tuple[list[dict], list[dict]]:
                 "kind": g[0]["kind"],
                 **{
                     k: verdict[k]
-                    for k in ("verdict", "n_seeds", "rel_mean", "fraction", "precision")
+                    for k in (
+                        "verdict",
+                        "truth_basis",
+                        "n_seeds",
+                        "rel_mean",
+                        "fraction",
+                        "precision",
+                    )
                 },
                 "aligned_worlds": verdict["aligned_worlds"],
                 "eligible": verdict["eligible"],
                 "why": verdict["why"],
             }
         )
-        for s in score_items(g, verdict):
+        for s in score_items(g, verdict, changes):
             scored.append({**s, "kind": g[0]["kind"], "eligible": verdict["eligible"]})
     out: list[dict] = []
     worlds = sorted({r["world"] for r in rows})
     if not worlds:
         return out, table
     df = pd.DataFrame(scored) if scored else pd.DataFrame(columns=["world", "kind", "eligible"])
-    for col in ("ratio", "log_error", "covered", "wrong_sign", "direction_agrees", "withheld"):
+    for col in (
+        "ratio",
+        "log_error",
+        "covered",
+        "wrong_sign",
+        "direction_agrees",
+        "withheld",
+        "error_share",
+    ):
         if col not in df:
             df[col] = None
     df["abs_log_error"] = pd.to_numeric(df["log_error"], errors="coerce").abs()
+    df["abs_error_share"] = pd.to_numeric(df["error_share"], errors="coerce").abs()
     df["coverage"] = df["covered"].map(lambda v: None if v is None or v != v else float(v))
     df["withheld"] = df["withheld"].map(lambda v: float(bool(v) and v == v))
     df["wrong_sign"] = df["wrong_sign"].map(lambda v: None if v is None or v != v else float(v))
@@ -399,7 +420,7 @@ def attribution_rows(rows, seed_of, vertical) -> tuple[list[dict], list[dict]]:
                 seed_of,
                 units,
                 len(frame),
-                question="Q5 attribution",
+                question=Q5,
                 metric=metric,
                 role="all",
                 vertical=vertical,
@@ -416,7 +437,7 @@ def attribution_rows(rows, seed_of, vertical) -> tuple[list[dict], list[dict]]:
                     seed_of,
                     per_world(frame, metric, how),
                     n,
-                    question="Q5 attribution",
+                    question=Q5,
                     metric=metric,
                     role=kind,
                     vertical=vertical,
@@ -429,7 +450,7 @@ def attribution_rows(rows, seed_of, vertical) -> tuple[list[dict], list[dict]]:
                 seed_of,
                 per_world(direction, "direction_agrees"),
                 len(direction),
-                question="Q5 attribution",
+                question=Q5,
                 metric="direction_agrees",
                 role="all",
                 vertical=vertical,
@@ -443,7 +464,7 @@ def attribution_rows(rows, seed_of, vertical) -> tuple[list[dict], list[dict]]:
 # ---------------------------------------------------------------------------
 STAMP_KEYS = (
     "tier engine_commit engine_key generator_version manifest vertical company tree seeds "
-    "held_out held_out_seeds regimes horizons created host verdict_column verdict_level "
+    "held_out held_out_seeds set_seeds regimes horizons created host verdict_column verdict_level "
     "allow_schema_v1"
 ).split()
 
@@ -519,7 +540,16 @@ def build_scoreboard(run_dir: str | Path) -> dict[str, Any]:
                 if r.get("method") == "innovation_contribution"
             },
         },
-        "attribution": {
+        "counterfactual_attribution": {
+            "truth": "the twin difference (single world against its null twin); the engine "
+            "answers window over window, so a formula edge carrying its parents' drift since "
+            "the reference window is expected to exceed it",
+            # Devon's decision (2026-11-21): the truth averages every seed of
+            # the set, held-out seeds included. Ground truth, not engine output.
+            "truth_seeds": run.get("set_seeds"),
+            "truth_includes_held_out_seeds": any(
+                s not in DEV_SEEDS for s in (run.get("set_seeds") or [])
+            ),
             "max_rel_precision": MAX_REL_PRECISION,
             "eligibility": eligibility_table,
             "errors": sorted(
@@ -1004,21 +1034,28 @@ def _render_vertical(rows: list[dict]) -> list[str]:
 
 
 def _render_attribution(rows: list[dict]) -> list[str]:
-    q5 = [r for r in rows if r["question"] == "Q5 attribution"]
+    q5 = [r for r in rows if r["question"] == Q5]
     if not q5:
         return []
     index = _pick(q5)
     g = lambda role, m: index.get((role, m))  # noqa: E731
     out = [
-        "### Q5 Attribution: attributed sizes against the measured effect",
+        "### Q5 Counterfactual attribution: attributed sizes against the twin difference",
         "",
-        "Over the anomaly's declared window, each edge on the path from the root to the target "
-        "(the engine's contribution of the parent to the child's change, with its 95% "
+        "Over the anomaly's declared window, each edge on the path from the root to the "
+        "target (the engine's contribution of the parent to the child's change, with its 95% "
         "interval) and the root (the part of its change the engine leaves unexplained, or "
-        "for a root with no parents its change itself; no interval). Only items whose size the world set can ground are scored: set verdict "
-        f"established and the set's cross-seed mean precise to ±{MAX_REL_PRECISION:.0%} "
-        "at its own seed count (the eligibility table says why each other item is not). Log error is "
-        "ln(engine / measured); a withheld estimate counts as withheld, never as zero.",
+        "for a root with no parents its change itself; no interval), against the "
+        "counterfactual: what the anomaly changed, single world against its null twin. The "
+        "engine answers a different question, window over window, so a formula edge that "
+        "carries its parents' drift since the reference window is expected to exceed the "
+        "counterfactual; that excess is the gap innovation-based RCA (branch "
+        "design/innovation-rca) aims to close. Only items whose size the world set can "
+        "ground are scored: set verdict established and the set's cross-seed mean precise "
+        f"to ±{MAX_REL_PRECISION:.0%} at its own seed count (the eligibility table says why "
+        "each other item is not). Log error is ln(engine / truth); error share is "
+        "(engine − truth) / |the target's measured counterfactual change|; a withheld "
+        "estimate counts as withheld, never as zero.",
         "",
     ]
     counts = [
@@ -1042,6 +1079,8 @@ def _render_attribution(rows: list[dict]) -> list[str]:
                 _cell(g(role, "coverage"), pct=True),
                 _cell(g(role, "withheld"), pct=True),
                 _cell(g(role, "wrong_sign"), pct=True),
+                _cell(g(role, "error_share")),
+                _cell(g(role, "abs_error_share")),
             ]
         )
     if body:
@@ -1055,6 +1094,8 @@ def _render_attribution(rows: list[dict]) -> list[str]:
                 "interval covers truth",
                 "withheld",
                 "wrong sign",
+                "mean error share",
+                "mean \\|error share\\|",
             ],
             body,
         )
@@ -1071,11 +1112,24 @@ def _render_attribution(rows: list[dict]) -> list[str]:
 
 
 def _render_eligibility(run: dict[str, Any]) -> list[str]:
-    table = (run.get("attribution") or {}).get("eligibility") or []
+    section = run.get("counterfactual_attribution") or run.get("attribution") or {}
+    table = section.get("eligibility") or []
     if not table:
         return []
     out = [
-        f"### Q5 Which attribution sizes the world set can ground ({run['vertical']})",
+        f"### Q5 Which counterfactual attribution sizes the world set can ground "
+        f"({run['vertical']})",
+        "",
+        "Truth averages every seed the set holds"
+        + (
+            f" ({section.get('truth_seeds')}), **held-out seeds included**, by decision: "
+            "it is ground truth, not engine output."
+            if section.get("truth_includes_held_out_seeds")
+            else f" ({section.get('truth_seeds')})."
+        )
+        + " Basis is which set effect matches the engine's window value: `rel_change` "
+        "(window mean of daily values, for a stock) or `rel_change_aggregated` (the metric's "
+        "own rule: Σnum/Σden for a rate).",
         "",
         "Mean relative effect, seeds and precision are the set's, for the item's child, over "
         "the anomaly's declared window: precision is the 95% half-width of the cross-seed "
@@ -1092,12 +1146,15 @@ def _render_eligibility(run: dict[str, Any]) -> list[str]:
             f"`{t['item']}`",
             t["kind"],
             str(t["verdict"]),
+            str(t.get("truth_basis") or "—"),
             str(t["n_seeds"]),
             _fmt(t["rel_mean"], 3),
             _fmt(t.get("fraction"), 2),
             "—" if t["precision"] is None else f"±{t['precision']:.0%}",
             str(t["aligned_worlds"]),
-            "size" if t["eligible"] else ("direction" if "precision" in t["why"] else "no"),
+            "size"
+            if t["eligible"]
+            else ("direction" if t["verdict"] in ("established_up", "established_down") else "no"),
             t["why"],
         ]
         for t in table
@@ -1108,6 +1165,7 @@ def _render_eligibility(run: dict[str, Any]) -> list[str]:
             "Item",
             "Kind",
             "Set verdict",
+            "basis",
             "seeds",
             "mean relative effect",
             "share",
@@ -1118,7 +1176,7 @@ def _render_eligibility(run: dict[str, Any]) -> list[str]:
         ],
         body,
     )
-    errors = (run.get("attribution") or {}).get("errors") or []
+    errors = section.get("errors") or []
     out += [f"- Attribution not run on `{w}`: {why}" for w, why in errors]
     return out + ([""] if errors else [])
 

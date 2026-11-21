@@ -166,15 +166,48 @@ def _verdict(measured: Measured, plan, node: str) -> str | None:
     return None if key is None else measured.verdicts.get(key)
 
 
-def _aligned(measured: Measured, plan, node: str) -> bool | None:
+def _aligned(measured: Measured, plan, node: str, stats: dict) -> tuple[bool | None, str]:
+    """Whether this child's twins were identical before the start, and on
+    what basis: the set's `aligned_before_start` (every seed; generator
+    §10.5), or, where the set leaves it NULL, this twin's own
+    `pre_onset_rms_diff` over its `pre_onset_days`, named as the fallback."""
+    flag = stats.get("aligned_before_start")
+    if flag is not None:
+        return bool(flag), "set_flag"
     effect = measured.effect(node, plan) or {}
-    rms = effect.get("pre_onset_rms_diff")
-    if rms is None:
-        return None
+    rms, days = effect.get("pre_onset_rms_diff"), effect.get("pre_onset_days")
+    if rms is None or (days is not None and not days):
+        return None, "unknown: set flag NULL and no twin days before the start"
     try:
-        return float(rms) == 0.0
+        return float(rms) == 0.0, "twin_pre_onset (set flag NULL)"
     except (TypeError, ValueError):
-        return None
+        return None, "unknown: set flag NULL"
+
+
+def _truth_basis(lw, child: str, stats: dict) -> tuple[str, str | None]:
+    """`(basis, refusal)`: which of the set's effects matches the engine's
+    window value for this child, or why none does.
+
+    The engine averages a stock's per-period levels over a window (the mean
+    of daily values: `rel_change`) and takes a rate as Σnum/Σden and a flow
+    as its sum (the metric's own rule: `rel_change_aggregated`, generator
+    §10.6, where the set has it). A week node is served as breakdown's
+    providers return it, MetricFlow's week rule; where that differs from the
+    business rule the set measured by (`matches_metricflow_week` false), no
+    set effect matches the engine's number, and the size is refused."""
+    defn = lw.dag.nodes[child]["definition"]
+    binding = lw.plan.served.get(child)
+    spec = lw.specs.get(binding.metric if binding else child)
+    grain = lw.data.grain_of.get(child)
+    if grain == "week" and spec is not None and spec.matches_metricflow_week is False:
+        return "none", (
+            f"provider_rule_differs: '{spec.name}' is served at week grain as MetricFlow's "
+            f"`{spec.metricflow_week}`, and the set measures it by its "
+            f"'{spec.time_aggregation}' rule"
+        )
+    if defn.kind == "stock" or stats.get("rel_agg_mean") is None:
+        return "rel_change", None
+    return "rel_change_aggregated", None
 
 
 def attribution_items(
@@ -195,9 +228,14 @@ def attribution_items(
             v_world, v_null = _value(lw, child, window), _value(null_lw, child, window)
         key = measured.key(child, plan)
         stats = (measured.set_effects.get(key) if key else None) or {}
+        basis, refusal = _truth_basis(lw, child, stats)
+        agg = basis == "rel_change_aggregated"
+        aligned, aligned_basis = _aligned(measured, plan, child, stats)
         return {
-            "set_rel_mean": _finite(stats.get("rel_mean")),
-            "set_rel_sd": _finite(stats.get("rel_sd")),
+            "truth_basis": basis,
+            **({"refused": refusal} if refusal else {}),
+            "set_rel_mean": _finite(stats.get("rel_agg_mean" if agg else "rel_mean")),
+            "set_rel_sd": _finite(stats.get("rel_agg_sd" if agg else "rel_sd")),
             "set_n_seeds": stats.get("n_seeds"),
             "set_null_mean": _finite(stats.get("null_mean")),
             "item": f"{parent}->{child}" if parent else f"root:{child}",
@@ -208,7 +246,8 @@ def attribution_items(
             "window_end": None if window is None else str(window[1].date()),
             "verdict": _verdict(measured, plan, child),
             "verdict_column": measured.verdict_column,
-            "aligned": _aligned(measured, plan, child),
+            "aligned": aligned,
+            "aligned_basis": aligned_basis,
             "world_value": v_world,
             "null_value": v_null,
             "node_status": node.get("status"),
@@ -254,7 +293,7 @@ def attribution_items(
             ]
             if others:
                 row["measured_effect"] = None
-                row["refused"] = f"several_parents_moved: {sorted(others)}"
+                row.setdefault("refused", f"several_parents_moved: {sorted(others)}")
             else:
                 row["measured_effect"] = _diff(row)
         items.append(row)
@@ -320,6 +359,7 @@ def eligibility(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "rel_mean": first.get("set_rel_mean"),
         "rel_sd": first.get("set_rel_sd"),
         "fraction": float(np.mean(fractions)) if fractions else None,
+        "truth_basis": first.get("truth_basis"),
         "precision": None,
         "aligned_worlds": sum(1 for r in rows if r.get("aligned")),
     }
@@ -360,9 +400,35 @@ def eligibility(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
-def score_items(rows: list[dict[str, Any]], verdict: dict[str, Any]) -> list[dict[str, Any]]:
-    """Per world: truth, ratio, log error, coverage, withheld. For an
-    ineligible item whose verdict is established, the direction only."""
+def target_changes(groups: dict[tuple, list[dict]], verdicts: dict[tuple, dict]) -> dict:
+    """`world -> (the target's measured counterfactual change, basis)`: the
+    denominator of the error share (spec §5.4). Read off the item whose child
+    is the target: the set's cross-seed mean times this world's null value
+    where the set has one on a basis matching the engine's, else this
+    world's own twin difference, named."""
+    out: dict[str, tuple[float | None, str]] = {}
+    for key, rows in groups.items():
+        v = verdicts[key]
+        for r in rows:
+            if r.get("child") != r.get("target") or r["world"] in out:
+                continue
+            null = r.get("null_value")
+            if v.get("rel_mean") is not None and null and not r.get("refused"):
+                out[r["world"]] = (v["rel_mean"] * null, "cross_seed_mean")
+            elif r.get("world_value") is not None and null is not None:
+                out[r["world"]] = (r["world_value"] - null, "this_twin")
+            else:
+                out[r["world"]] = (None, "unmeasured")
+    return out
+
+
+def score_items(
+    rows: list[dict[str, Any]], verdict: dict[str, Any], target_change: dict | None = None
+) -> list[dict[str, Any]]:
+    """Per world: truth, ratio, log error, coverage, withheld, and the error
+    as a share of the target's measured change. For an ineligible item whose
+    verdict is established, the direction only."""
+    target_change = target_change or {}
     out = []
     for r in rows:
         s = {"world": r["world"], "seed": r["seed"], "withheld": r.get("withheld")}
@@ -383,6 +449,10 @@ def score_items(rows: list[dict[str, Any]], verdict: dict[str, Any]) -> list[dic
                 s["log_error"] = math.log(ratio) if ratio > 0 else None
                 ci = r.get("ci_95")
                 s["covered"] = None if ci is None else bool(ci[0] <= truth <= ci[1])
+                change, change_basis = target_change.get(r["world"], (None, None))
+                if change:
+                    s["error_share"] = (est - truth) / abs(change)
+                    s["target_change_basis"] = change_basis
         elif verdict["verdict"] in ESTABLISHED and est is not None:
             # The item's own measured direction (a formula share can point
             # against its child: the stock's share in a churn spike), else

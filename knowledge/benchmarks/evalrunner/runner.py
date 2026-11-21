@@ -52,8 +52,9 @@ REPO = Path(__file__).resolve().parents[3]
 ROW_FORMAT_VERSION = 1
 # A single world's rows: 2 added `attribution`, 3 split its root item into
 # `root_unexplained` and `root_gap`, 4 scores over the declared window with the
-# set's cross-seed effects. Calibration jobs keep their keys.
-SINGLE_ROW_FORMAT_VERSION = 4
+# set's cross-seed effects, 5 adds the truth basis, the set's alignment flag and
+# the target's measured change. Calibration jobs keep their keys.
+SINGLE_ROW_FORMAT_VERSION = 5
 
 DEV_SEEDS = tuple(range(0, 5))
 HELD_OUT_SEEDS = tuple(range(5, 10))
@@ -399,6 +400,9 @@ def plan_run(
         },
         "seeds": chosen_seeds,
         "held_out": bool(held_out),
+        # Every seed the set holds: the cross-seed truth attribution is scored
+        # against averages all of them, held-out ones included (by decision).
+        "set_seeds": list(worldset.seeds),
         # Which of the set's verdict columns decided targets and attribution
         # eligibility; the strict one unless the run asked otherwise.
         "verdict_column": verdict_column,
