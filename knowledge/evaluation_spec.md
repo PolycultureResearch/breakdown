@@ -384,6 +384,8 @@ are skipped, so an interrupted run loses at most the jobs in flight.
 | `--tier smoke\|standard\|full\|attribution` | Seeds, regimes, horizons, windows and single worlds as in §7 (table below) |
 | `--seeds 0-2` | Override the tier's seeds. Seeds from 5 up are refused without `--held-out` |
 | `--held-out` | Also score held-out seeds. The scoreboard says so in its header |
+| `--verdict-column verdict\|verdict_10pct` | Which of the set's verdicts picks targets and attribution eligibility. The strict `verdict` (two-sided 1%) by default; `verdict_10pct` for a small set. Stamped on the scoreboard and on every row |
+| `--allow-schema-v1` | Read a schema_version 1 world set, which is refused by default. Stamped on the scoreboard |
 | `--regimes`, `--horizons`, `--singles` | Comma-separated overrides |
 | `--spacing-days N` or `--max-windows N` | The null-window grid: a fixed spacing, or at most N windows per world |
 | `--bindings FILE` | Node-to-series bindings. Defaults to `evalrunner/bindings/<tree file stem>.yml` when that exists |
@@ -402,10 +404,16 @@ What each tier selects:
 
 **Trees.** `demo/white_cube_tree.yml` (b2c_saas) binds by metric name and
 needs no bindings file. `demo/alpenglow_tree.yml` (retail_dtc) uses
-`evalrunner/bindings/alpenglow_tree.yml` and needs `--drop-unserved`: its
-`discounted_orders` node has no metric in the world set (rechecked at
-generator `b51d70e`: 18 nodes served, that one dropped; the generator lists
-the metric under its phase 2).
+`evalrunner/bindings/alpenglow_tree.yml` for its four channel-filtered
+session nodes; on a schema 2 set all 19 of its fetched nodes are served
+(`discounted_orders` and `customer_base` are generator metrics now) and it no
+longer needs `--drop-unserved`.
+
+**World sets must be schema_version 2** (the generator's spec §10.4). A
+version 1 set is refused before anything else is read, naming the version
+found and the one needed; `--allow-schema-v1` reads one anyway, stamped. The
+loader's contradiction checks (a side's stated rule against its input's own)
+stay as a second line.
 
 **Score, publish, compare.**
 
@@ -478,16 +486,27 @@ the rate's daily `numerator` and `denominator` equal the
 weekly identity holds to 2e-16 relative in every week of every world. Summing
 both sides would have given a weekly rate 6.9 times too small.
 
-**A weekly value rebuilt from days is not always MetricFlow's weekly value.**
-`active_subscriptions` is a distinct count (`measure_agg: count_distinct`).
-Asked for a week, MetricFlow counts subscriptions active at any time in it;
-the loader takes Sunday's count, which is what a stock node means. The two
-differ by the week's cancellations, about one percent. The node is served,
-and the plan and the scoreboard carry a caveat that names it.
-`demo/white_cube_tree.yml` was written against MetricFlow's weekly numbers, so
-on a world set its week-grain stock and churn rate are slightly different
-series from the demo's. They are consistent within a world set, which is what
-the scores need.
+**Week values match MetricFlow where the generator says what that is.**
+
+- *Distinct counts.* `dau`, `paying_active_users` and `active_subscriptions`
+  count distinct entities; MetricFlow at week grain counts them over the
+  week, which the days cannot give. Schema 2 ships those week values in
+  `<world>.weekly_series.parquet` (`metrics[].has_weekly_series`), and the
+  loader serves them from there, whole weeks only (the generator's partial
+  edge weeks, `days < 7`, are dropped). A ratio side or derived input that is
+  such a count takes its week value too, as MetricFlow aggregates each input
+  at the grain asked for: the weekly churn rate is the week's churned over
+  the week's distinct active subscriptions, so `churned = active × rate`
+  holds exactly (2e-16 on `proof_v2_white_cube`). The distinct week count is
+  about 0.7% above the last day's. Without a weekly file (a version 1 set),
+  a distinct-count stock is served as the last day's count with a caveat
+  naming it.
+- *Cumulative metrics* (`wau`, and schema 2's `customer_base` and
+  `trade_inventory_build`). MetricFlow answers them at week grain with the
+  value on the week's *first* day; the manifest's rule says the last day, and
+  the generator kept its rule and recorded the mismatch (its §10.2). The
+  loader matches MetricFlow, and the plan carries a caveat on every such node
+  that says so. Day grain is unaffected.
 
 **A tree's `kind` must agree with the generator.** The engine resamples a
 parent by its kind, so a node the tree calls a flow and the generator calls a
@@ -528,11 +547,16 @@ one `verdict` per regime, anomaly, metric and slice (`established_up` /
 `undefined`), and a node moved when its verdict is established. A node the
 summary has no row for (several slice members summed, a running total)
 falls back to the twin's `moved`, and every localization row names its basis
-(`set_verdict`, `twin_moved`, or `fallback_deepest_descendant` when nothing
-downstream moved). The cost: a world's target depends on which seeds the set
-was built with, so the verdicts used are part of a single world's job key.
-With three seeds the 1% bar is a t of 9.9, so few effects are established on
-a smoke set (see the smoke tier, below).
+(`set:<verdict column>`, `twin_moved`, or `fallback_deepest_descendant` when
+nothing downstream moved). The cost: a world's target depends on which seeds
+the set was built with, so the verdicts used are part of a single world's
+job key. With three seeds the 1% bar is a t of 9.9, so few effects are
+established on a smoke set. Schema 2 adds `verdict_10pct` (two-sided 10%,
+t 2.92 at three seeds) beside the strict one; `--verdict-column
+verdict_10pct` picks targets and attribution eligibility by it. The strict
+column stays the default; the loose one is stamped on the scoreboard header
+with its cost (about one pair in ten with no effect is established by
+chance), and every row names the column that decided.
 
 **A node bound to one slice member reads its own stats.** The twin's
 `<world>.effects_summary.parquet` holds every single-dimension slice; the
@@ -682,7 +706,9 @@ The runner derives both from the data; it keeps no list of anomalies.
   counterfactual (world against its null twin). The reference window's own
   drift is in the error, as it is in what a reader of the engine gets.
 - *Not built:* the error as a share of the target's measured change (§5.4's
-  third bullet).
+  third bullet), and sizes in units: an item whose child's null level is
+  zero or negative (`trade_inventory_build`, `discounted_orders` outside a
+  promotion) is refused by name, since its relative change is no size.
 - *First runs* (2026-11-21; demo tree, not citable). Smoke set (three
   seeds): 4 of 8 items size-eligible, all near the root (the spend ramp's
   root and its sessions edge, the signup regression's root and its signups
@@ -712,14 +738,45 @@ diagnostic flag catches (§5.1, which needs a definition of "badly calibrated"
 for one node on a handful of windows); story worlds; nodes at month grain
 (skipped: the grid is weekly).
 
-**What each vertical can serve, rechecked at generator `b51d70e`.** White
-Cube: all 23 fetched nodes of the demo tree; `active_subscriptions` carries
-the distinct-count caveat; `dau`, `paying_active_users` and `wau` are refused
-at week grain. Alpenglow: the demo tree minus `discounted_orders`, and no
-stock but the running total of new customers its bindings file builds.
-Meridian: every one of its 15 metrics is servable at week grain now,
-`sales_cycle_days` included (from its sides), so a tree is the only thing
-missing. Bristlecone: all 8 servable at week grain, still no stock.
+**What each vertical can serve, rechecked on the schema 2 proof sets**
+(generator `01bf895`). Every metric of every vertical is servable at week
+grain. White Cube: all 23 fetched nodes of the demo tree, with no caveat
+(`active_subscriptions` comes from the weekly file); `dau`,
+`paying_active_users` (weekly file) and `wau` (first day, with a caveat) are
+servable too. Alpenglow: all 19 fetched nodes; the returns anomaly
+(`jackets_sizing_recall`, rooted at `returned_units` with
+`root_metric_rate: return_rate`) maps to the tree's `return_rate` node
+(`on_tree_rate`), checked against its ground-truth record. Meridian: all 15
+metrics; a tree is the only thing missing. Bristlecone: all 9, including the
+stock `trade_inventory_build` (first day at week grain, with a caveat); its
+level can be negative, so a relative attribution size over it is refused by
+name until scoring in units is built. A tree is still missing.
+
+**The schema 2 proof runs** (2026-11-21, the generator's `proof_v2_*` sets:
+seeds 0–2, null plus two singles each; demo trees; not citable).
+White Cube smoke tier, strict and loose
+([`eval/2026-11-21_smoke_v2_white_cube_strict.md`](eval/2026-11-21_smoke_v2_white_cube_strict.md),
+[`…_loose.md`](eval/2026-11-21_smoke_v2_white_cube_loose.md)): 12 minutes of
+wall time for the strict run (the run's own 16 sampler processes held the
+load at 6 to 17; nothing else was running); the loose one reused its
+calibration and fits and took 12 seconds. Under the strict verdict the churn
+spike has no established target and falls back to the deepest descendant
+(`net_new_mrr`); under `verdict_10pct` the same node is its target, now
+because the set establishes it (basis `set:verdict_10pct`), so the ranks
+are unchanged. Attribution: the loose verdict turns 2.5 more items per world
+into direction-only items (every one in the right direction); none becomes
+size-eligible, because precision at three seeds, not the verdict, is what
+holds them back (the churn spike's items are ±56–82%). The two sized
+formula edges and roots repeat the ten-seed pattern: roots within 2%,
+formula edges 3.5 times the twin difference with no interval covering it.
+Alpenglow, single worlds only, strict and loose
+([`eval/2026-11-21_singles_v2_alpenglow_strict.md`](eval/2026-11-21_singles_v2_alpenglow_strict.md)):
+4.5 minutes. All 19 nodes served without `--drop-unserved`. The budget cut's
+target is `refunds` strictly and `net_revenue` loosely. The tees demand
+slump is rooted at `units[tees]`, and the tree holds only total units, whose
+verdict is `exactly_zero` (the slump moves the mix, not the count): its
+root maps to a node the anomaly did not move, which the tree, not the
+runner, would have to fix with a slice node.
 
 **What the other two verticals' trees would need.** Neither is authored here.
 Meridian (`b2b_services`): `win_rate` and average deal size as rates with
