@@ -227,9 +227,15 @@ the root whose metric the measured effects say moved. Its window starts in
 the period holding the root's onset and runs to the anomaly's end, at most 28
 days, in whole periods of the target's grain.
 
-### 5.4 Attribution (Q5)
+### 5.4 Counterfactual attribution (Q5)
 
-On twin worlds, for each node on the path from root to target:
+Scored against the counterfactual, the twin difference (Devon, 2026-11-21).
+The engine answers a window-over-window question, so a formula edge that
+carries its parents' drift since the reference window is expected to exceed
+the counterfactual under this framing; that excess is the gap innovation-based
+RCA (branch `design/innovation-rca`) aims to close. No alternative pre/post
+truth is built. On twin worlds, for each node on the path from root to
+target:
 
 - the measured effect: the twin difference in the node's window value
 - the engine's attributed contribution, with its credible interval
@@ -486,7 +492,28 @@ the rate's daily `numerator` and `denominator` equal the
 weekly identity holds to 2e-16 relative in every week of every world. Summing
 both sides would have given a weekly rate 6.9 times too small.
 
-**Week values match MetricFlow where the generator says what that is.**
+**Week values are what breakdown's providers would return.** The evaluation
+measures the engine as users run it, so each node carries the number its
+provider would hand the engine. Checked in the code: every provider asks its
+source at the node's own grain. The local provider runs `mf query
+--group-by metric_time__<grain>` (`data_fetch.LocalDataFetcher`); the dbt
+and duckdb providers compile `SUM` / `COUNT` / `COUNT(DISTINCT)` / `AVG`
+bucketed by `DATE_TRUNC(<grain>)` (`dbt_sql._aggregate`, `build_query`), and
+`dbt_bridge` turns a ratio or derived metric into a formula edge over inputs
+fetched the same way (it refuses cumulative metrics outright). None fetches
+days and resamples them by kind; `grains.resample_up` only lifts a finer
+parent to a coarser child inside the engine. So a week node gets
+MetricFlow's week number, which the generator states per metric since its
+§10.9 (`metricflow_week`, `matches_metricflow_week`,
+`input_metricflow_week`), and the loader serves exactly that, each side of a
+ratio included. Where it differs from the manifest's business rule the plan
+carries a caveat naming both. For 11 metrics it differs; for stocks whose
+measure sums (`mrr`, `open_deals`, `open_pipeline_value`) MetricFlow and the
+dbt provider add up seven days of the level, and that is what is served: it
+is what a user's tree gets, and the engine has to live with it. A month node
+of such a metric is refused (the set states week rules only). On a set
+without `metricflow_week`, the rules below apply. For the demo trees no value
+changed with this: their week nodes were already served as MetricFlow does.
 
 - *Distinct counts.* `dau`, `paying_active_users` and `active_subscriptions`
   count distinct entities; MetricFlow at week grain counts them over the
@@ -655,7 +682,7 @@ header then names the held-out seeds scored.
 Both are inputs to §5.5 and are written as rows now so abstention can be
 scored from an existing run directory.
 
-**Attribution (§5.4, Q5) is scored where the world set can ground a size.**
+**Counterfactual attribution (§5.4, Q5) is scored where the world set can ground a size.**
 The generator's ten-seed study (fake_companies `docs/eval_worlds_spec.md`
 §9.2, §9.5, §9.7, commit `d28b29f`) settled that a measured effect can be the
 truth for an attributed size when its cross-seed verdict is established and
@@ -676,26 +703,46 @@ The runner derives both from the data; it keeps no list of anomalies.
   its change the engine leaves unexplained (`root_unexplained`), or for a
   root with no parents its change itself (`root_gap`, since the engine
   attributes nothing at a terminal cause); neither has an interval.
+- *Basis.* Which of the set's effects matches the engine's window value for
+  the child: `rel_change_aggregated` (the metric's own rule, generator §10.6:
+  Σnum/Σden for a rate, the window total for a flow) where the set has it;
+  `rel_change` (the window mean of daily values) for a stock, whose
+  per-period levels the engine averages over the window. A week child served
+  by a MetricFlow rule that differs from the business rule the set measured
+  by has no matching effect, and its size is refused by name
+  (`provider_rule_differs`; on White Cube, `customer_churn_rate` and
+  `active_subscriptions`). Every row and the eligibility table name the
+  basis.
 - *Eligibility*, from the set's `effects_summary.parquet` for the child
-  metric: `verdict` established, and the 95% half-width of
-  `rel_change_mean` within 20% of it at the set's own seed count
-  (`t · rel_change_sd / √n_seeds / |rel_change_mean|`, Student's t on n − 1
-  degrees of freedom; the study uses 1.96, and at three seeds t is 4.30).
-  The generator ships both, so nothing is recomputed from per-twin files.
-  Established but imprecise: scored on direction only. Anything else: listed
-  with its reason and not scored.
-- *Truth.* The set's mean relative effect of the child (every seed of the
-  set, held-out ones included: it is ground truth, not engine output), times
+  metric on that basis: `verdict` established (the verdict tests
+  `rel_change`; target choice is unchanged), and the 95% half-width of the
+  mean within 20% of it at the set's own seed count (`t · sd / √n_seeds /
+  |mean|`, Student's t on n − 1 degrees of freedom; the study uses 1.96, and
+  at three seeds t is 4.30). Established but imprecise: scored on direction
+  only. Anything else: listed with its reason and not scored.
+- *Truth.* The set's mean relative effect of the child on that basis, times
   the item's share of the child's effect (1 for a learned edge or a root; for
   a formula parent its mean Shapley fraction over the run's worlds), times
-  this world's null value of the child. Where this world's twins were
-  aligned (`pre_onset_rms_diff` 0 in the twin's summary for the child), its
-  own twin difference instead. The set's relative change is of the daily
-  series' window mean; the engine's window rule takes a rate as
-  Σnumerator / Σdenominator, and that small difference is in the error.
+  this world's null value of the child. Where the child's twins were aligned
+  before the start (the set's `aligned_before_start`, generator §10.5; where
+  that is NULL, this twin's own `pre_onset_rms_diff` over its
+  `pre_onset_days`, named as the fallback), this world's own twin difference
+  instead.
+- *Held-out seeds are in the truth, deliberately* (Devon, 2026-11-21). The
+  set's cross-seed mean averages every seed it holds, held-out ones
+  included: it is ground truth, not engine output, and more seeds make it
+  more precise. A run never scores a held-out world without `--held-out`;
+  the scoreboard stamps the seeds the truth averages
+  (`counterfactual_attribution.truth_seeds`,
+  `truth_includes_held_out_seeds`). Known and kept for now.
 - *Scored.* `ratio` (engine over truth; median per world), `log_error`
   (ln of the ratio) and its absolute value, `coverage` (the interval holds
-  the truth; items with an interval only), `wrong_sign`, and `withheld`: an
+  the truth; items with an interval only), `wrong_sign`, `error_share` and
+  its absolute value (`(engine − truth) / |the target's measured
+  counterfactual change|`, §5.4's third bullet: the target's change is the
+  set's cross-seed mean for the target times this world's null value, or
+  this world's own twin difference where the set has none on a matching
+  basis), and `withheld`: an
   estimate the engine withheld (a node status, a non-finite posterior) is
   counted as withheld and never as zero. Formula edges, learned edges and
   roots are reported apart. `items_*` count what each world could score, so
@@ -705,8 +752,7 @@ The runner derives both from the data; it keeps no list of anomalies.
   window (analysis against the adjacent reference window); the truth is a
   counterfactual (world against its null twin). The reference window's own
   drift is in the error, as it is in what a reader of the engine gets.
-- *Not built:* the error as a share of the target's measured change (§5.4's
-  third bullet), and sizes in units: an item whose child's null level is
+- *Not built:* sizes in units: an item whose child's null level is
   zero or negative (`trade_inventory_build`, `discounted_orders` outside a
   promotion) is refused by name, since its relative change is no size.
 - *First runs* (2026-11-21; demo tree, not citable). Smoke set (three
@@ -777,6 +823,25 @@ slump is rooted at `units[tees]`, and the tree holds only total units, whose
 verdict is `exactly_zero` (the slump moves the mix, not the count): its
 root maps to a node the anomaly did not move, which the tree, not the
 runner, would have to fix with a slice node.
+
+**The r2 proof run** (2026-11-21, `proof_v2r2_white_cube`, generator
+`c68b55d`; [`eval/2026-11-21_smoke_v2r2_white_cube_strict.md`](eval/2026-11-21_smoke_v2r2_white_cube_strict.md),
+diff against the schema 2 strict run in
+[`eval/2026-11-21_smoke_v2r2_diff_vs_v2.md`](eval/2026-11-21_smoke_v2r2_diff_vs_v2.md)).
+11.7 minutes of wall time, with another job holding the load at 24 when it
+started. The set's singles are the paid-social Brazil lift and the churn
+spike (the earlier proof set had the onboarding revamp instead), so the diff
+pairs the null worlds and the churn spike only. On those, calibration,
+detection and localization are identical to every digit printed: serving
+week nodes as the providers do changed no value of the demo tree, as
+expected. Only cost moved (machine load). Q5 rows do not pair, because the
+question is now named `Q5 counterfactual attribution`. On attribution: the
+churn spike's root is now refused as `provider_rule_differs` (the weekly
+churn rate's denominator is the week's distinct active subscriptions; the
+set's effect divides by the last day's), and its other three items stay
+`open`; the Brazil lift's two items are established but ±35% at three seeds,
+so direction only. No item was size-eligible, so the error share has no
+number on this run.
 
 **What the other two verticals' trees would need.** Neither is authored here.
 Meridian (`b2b_services`): `win_rate` and average deal size as rates with
