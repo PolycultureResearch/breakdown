@@ -77,6 +77,9 @@ class Measured:
     # The set's cross-seed effect per key (`WorldSet.set_effects`): what an
     # attributed size is scored against.
     set_effects: dict[tuple, dict[str, Any]] = field(default_factory=dict)
+    # Which of the set's verdict columns `verdicts` was read from: the strict
+    # `verdict` (two-sided 1%) by default, `verdict_10pct` when asked for.
+    verdict_column: str = "verdict"
 
     def key(self, node: str, plan: TreePlan) -> tuple | None:
         """`(metric, dimension, value)` a node's own series is measured as, or
@@ -104,10 +107,10 @@ class Measured:
         return self.twin.get(key)
 
     def moved(self, node: str, plan: TreePlan) -> tuple[bool, str]:
-        """`(moved, basis)`: basis `set_verdict` or `twin_moved`."""
+        """`(moved, basis)`: basis `set:<verdict column>` or `twin_moved`."""
         key = self.key(node, plan)
         if key is not None and key in self.verdicts:
-            return self.verdicts[key] in ESTABLISHED, "set_verdict"
+            return self.verdicts[key] in ESTABLISHED, f"set:{self.verdict_column}"
         effect = self.effect(node, plan) or {}
         moved = bool(effect.get("moved"))
         if key is not None and key[1] is None and not moved:
@@ -271,7 +274,7 @@ def pick_target(
     measured: Measured | None = None,
 ) -> tuple[str | None, str]:
     """`(target, basis)`: the deepest moved node downstream of the truth.
-    The basis is `set_verdict` or `twin_moved` (which source said the target
+    The basis is `set:<verdict column>` or `twin_moved` (which source said the target
     moved), or `fallback_deepest_descendant` when none is known to have."""
     measured = as_measured(record, measured)
     downstream = set().union(*(nx.descendants(dag, t) for t in truth)) - set(truth)

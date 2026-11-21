@@ -51,6 +51,7 @@ def metric_info(
     formula=None,
     measure_agg=None,
     has_sides=None,
+    weekly=False,
 ):
     """One `metrics[]` entry. `sides` is `input_time_aggregation`; for a
     ratio_of_sums it defaults to both sides summed."""
@@ -69,8 +70,27 @@ def metric_info(
         "has_sides": (
             (type == "ratio" or time_aggregation == "average") if has_sides is None else has_sides
         ),
+        "has_weekly_series": weekly,
         "dimensions": dims or {},
     }
+
+
+VERDICTS = [
+    {
+        "column": "verdict",
+        "level": 0.01,
+        "t_critical": None,
+        "min_seeds": 2,
+        "seeds_to_establish_column": "seeds_to_establish",
+    },
+    {
+        "column": "verdict_10pct",
+        "level": 0.10,
+        "t_critical": None,
+        "min_seeds": 2,
+        "seeds_to_establish_column": "seeds_to_establish_10pct",
+    },
+]
 
 
 def write_world_set(root: Path, metrics: list[dict], worlds: list[dict], **top) -> Path:
@@ -85,6 +105,10 @@ def write_world_set(root: Path, metrics: list[dict], worlds: list[dict], **top) 
         (root / rel).mkdir(parents=True, exist_ok=True)
         pd.concat(w["frames"], ignore_index=True).to_parquet(root / rel / f"{stem}.series.parquet")
         (root / rel / f"{stem}.ground_truth.json").write_text(json.dumps(w.get("truth", [])))
+        weekly = None
+        if w.get("weekly") is not None:
+            weekly = (rel / f"{stem}.weekly_series.parquet").as_posix()
+            pd.DataFrame(w["weekly"]).to_parquet(root / weekly)
         summary = None
         if w.get("twin_summary") is not None:
             summary = (rel / f"{stem}.effects_summary.parquet").as_posix()
@@ -105,13 +129,14 @@ def write_world_set(root: Path, metrics: list[dict], worlds: list[dict], **top) 
                 "effects": None,
                 "effects_summary": summary,
                 "series": (rel / f"{stem}.series.parquet").as_posix(),
+                "weekly_series": weekly,
             }
         )
     if top.get("effects_summary") is not None and not isinstance(top["effects_summary"], str):
         pd.DataFrame(top["effects_summary"]).to_parquet(root / "effects_summary.parquet")
         top = {**top, "effects_summary": "effects_summary.parquet"}
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generator_version": "fixture",
         "config": "configs/fixture.yaml",
         "config_sha256": "0" * 64,
@@ -121,6 +146,7 @@ def write_world_set(root: Path, metrics: list[dict], worlds: list[dict], **top) 
         "seeds": sorted({w["seed"] for w in worlds}),
         "regimes": ["baseline"],
         "metrics": metrics,
+        "verdicts": VERDICTS,
         "worlds": entries,
         **top,
     }
@@ -148,6 +174,9 @@ metrics:
 
 TICKET_COUNT = 1.0 + np.arange(28) % 7
 TICKET_SUM = TICKET_COUNT * (40.0 + 10.0 * (np.arange(28) % 7 >= 4))
+
+
+MEMBERS_WEEKLY = [60.0, 70.0, 80.0, 90.0, 99.0]
 
 
 def arithmetic_world_set(root: Path) -> Path:
@@ -181,7 +210,24 @@ def arithmetic_world_set(root: Path) -> Path:
         series_rows(dates, "churn", 2 / (100 + i), num=2 * ones, den=100 + i),
         series_rows(dates, "ticket", TICKET_SUM / TICKET_COUNT, num=TICKET_SUM, den=TICKET_COUNT),
         series_rows(dates, "users", 40 * ones),
+        series_rows(dates, "members", 50 + i),
+        series_rows(dates, "lapse", 2 / (50 + i), num=2 * ones, den=50 + i),
+        series_rows(dates, "signups_to_date", 6 * (i + 1)),
     ]
+    # `members` is a distinct count whose weeks the weekly file answers:
+    # distinct over the week is more than any one day's count. A fifth,
+    # partial week (3 days) is there to be dropped.
+    week_starts = pd.date_range("2024-01-01", periods=5, freq="7D")
+    weekly = pd.DataFrame(
+        {
+            "date": week_starts,
+            "metric": "members",
+            "dimension": None,
+            "value": None,
+            "metric_value": MEMBERS_WEEKLY,
+            "days": [7, 7, 7, 7, 3],
+        }
+    )
     metrics = [
         metric_info("orders"),
         metric_info("refunds"),
@@ -213,8 +259,25 @@ def arithmetic_world_set(root: Path) -> Path:
         ),
         metric_info("ticket", time_aggregation="average", measure_agg="average"),
         metric_info("users", time_aggregation="count_distinct", measure_agg="count_distinct"),
+        metric_info(
+            "members", time_aggregation="end_of_period", measure_agg="count_distinct", weekly=True
+        ),
+        metric_info(
+            "lapse",
+            "ratio",
+            "ratio_of_aggregates",
+            {"numerator": "churned", "denominator": "members"},
+            sides={"numerator": "sum", "denominator": "end_of_period"},
+        ),
+        metric_info("signups_to_date", "cumulative", "end_of_period", measure_agg="sum"),
     ]
-    world = {"id": "fixture.baseline.s0.null", "seed": 0, "kind": "null", "frames": frames}
+    world = {
+        "id": "fixture.baseline.s0.null",
+        "seed": 0,
+        "kind": "null",
+        "frames": frames,
+        "weekly": weekly,
+    }
     return write_world_set(root, metrics, [world])
 
 
@@ -338,6 +401,7 @@ def e2e_world_set(root: Path) -> Path:
             "rel_change_mean": truth["measured_effects"][m]["rel_change"],
             "rel_change_sd": None,  # one seed: no spread
             "verdict": verdict.get(m, "established_down"),
+            "verdict_10pct": verdict.get(m, "established_down"),
         }
         for m in truth["measured_effects"]
     ]

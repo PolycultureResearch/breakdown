@@ -199,6 +199,7 @@ def attribution_items(
             "set_rel_mean": _finite(stats.get("rel_mean")),
             "set_rel_sd": _finite(stats.get("rel_sd")),
             "set_n_seeds": stats.get("n_seeds"),
+            "set_null_mean": _finite(stats.get("null_mean")),
             "item": f"{parent}->{child}" if parent else f"root:{child}",
             "kind": kind,
             "parent": parent,
@@ -206,6 +207,7 @@ def attribution_items(
             "window_start": None if window is None else str(window[0].date()),
             "window_end": None if window is None else str(window[1].date()),
             "verdict": _verdict(measured, plan, child),
+            "verdict_column": measured.verdict_column,
             "aligned": _aligned(measured, plan, child),
             "world_value": v_world,
             "null_value": v_null,
@@ -328,6 +330,15 @@ def eligibility(rows: list[dict[str, Any]]) -> dict[str, Any]:
     if out["verdict"] not in ESTABLISHED:
         out["eligible"] = False
         out["why"] = f"verdict {out['verdict']}" if out["verdict"] is not None else "no set verdict"
+        return out
+    null_levels = [r.get("set_null_mean") for r in rows] + [r.get("null_value") for r in rows]
+    if any(v is not None and v <= 0 for v in null_levels):
+        # trade_inventory_build can be negative and discounted_orders is zero
+        # outside a promotion: a relative change of those is not a size. The
+        # generator says to read them in units (`mean_diff_mean`); scoring in
+        # units is not built, so the size is refused by name.
+        out["eligible"] = False
+        out["why"] = "null level is zero or negative: a size in units is not built"
         return out
     n, mean, sd = out["n_seeds"], out["rel_mean"], out["rel_sd"]
     if mean is None or sd is None or not n or n < 2 or mean == 0:

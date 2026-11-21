@@ -13,10 +13,5 @@ organic_sessions: { metric: sessions, dimension: channel, values: [organic] }
 email_sessions: { metric: sessions, dimension: channel, values: [email] }
 direct_sessions: { metric: sessions, dimension: channel, values: [direct] }
 
-# The tree's stock is the running total of new customers, which the generator
-# does not export as a metric. The running total of `new_customers` from the
-# first day of the world is the same series.
-customer_base: { metric: new_customers, cumulative: true }
-
-# Not served: `discounted_orders` (orders with a discount). No metric counts
-# them and `orders` is not exported by a discount dimension.
+# `customer_base` and `discounted_orders` are generator metrics since schema
+# version 2 (fake_companies spec §10.3) and bind by name.

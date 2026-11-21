@@ -94,18 +94,42 @@ def test_the_sets_verdicts_and_a_twins_slice_stats_are_read_from_their_files(tmp
     assert verdicts[("spend", None, None)] == "exactly_zero"
     assert ws.verdicts("baseline", "no_such_anomaly") == {}
     effects = ws.set_effects("baseline", "rate_drop")
-    assert effects[("signups", None, None)] == {"rel_mean": -0.4, "rel_sd": None, "n_seeds": 1}
+    assert effects[("signups", None, None)] == {
+        "rel_mean": -0.4,
+        "rel_sd": None,
+        "n_seeds": 1,
+        "null_mean": None,
+    }
     single = ws.world("fixture.baseline.s0.only.rate_drop")
     assert single.effects_summary.exists()
 
 
+def _set_version(root, version):
+    raw = json.loads((root / "worlds.json").read_text())
+    raw["schema_version"] = version
+    (root / "worlds.json").write_text(json.dumps(raw))
+
+
 def test_unknown_schema_version_is_refused_by_number(tmp_path):
     root = arithmetic_world_set(tmp_path)
-    raw = json.loads((root / "worlds.json").read_text())
-    raw["schema_version"] = 2
-    (root / "worlds.json").write_text(json.dumps(raw))
-    with pytest.raises(WorldSetError, match="schema_version 2"):
+    _set_version(root, 3)
+    with pytest.raises(WorldSetError, match="schema_version 3"):
         load_world_set(root)
+
+
+def test_a_version_1_set_is_refused_up_front_unless_asked_for_by_name(tmp_path):
+    root = arithmetic_world_set(tmp_path)
+    _set_version(root, 1)
+    with pytest.raises(WorldSetError, match="schema_version 1.*needs schema_version 2"):
+        load_world_set(root)
+    assert load_world_set(root, allow_v1=True).schema_version == 1
+
+
+def test_a_verdict_column_the_set_does_not_declare_is_refused(tmp_path):
+    ws = load_world_set(arithmetic_world_set(tmp_path))
+    ws.check_verdict_column("verdict_10pct")
+    with pytest.raises(WorldSetError, match="verdict_5pct"):
+        ws.check_verdict_column("verdict_5pct")
 
 
 def test_a_missing_key_is_refused_by_name(tmp_path):
@@ -270,13 +294,47 @@ def test_a_distinct_count_is_served_at_day_grain_as_written(arithmetic):
     assert series.at_grain(SeriesBinding("users"), "day").tolist() == [40.0] * 28
 
 
+def test_a_distinct_count_with_week_values_is_served_from_the_weekly_file(arithmetic):
+    """MetricFlow's week value of a distinct count (distinct over the week),
+    whole weeks only: the partial fifth week is dropped."""
+    _, series = arithmetic
+    assert series.at_grain(SeriesBinding("members"), "week").tolist() == [60, 70, 80, 90]
+    assert series.at_grain(SeriesBinding("members"), "day").iloc[0] == 50
+
+
+def test_a_ratio_over_a_weekly_distinct_count_divides_by_its_week_value(arithmetic):
+    """As MetricFlow aggregates each input at the grain asked for, which keeps
+    `lapsed = members x lapse` exact against the weekly member count."""
+    _, series = arithmetic
+    weekly = series.at_grain(SeriesBinding("lapse"), "week")
+    assert weekly.tolist() == pytest.approx([14 / 60, 14 / 70, 14 / 80, 14 / 90])
+
+
+def test_a_cumulative_metric_is_served_weekly_as_its_first_day_like_metricflow(arithmetic):
+    _, series = arithmetic
+    weekly = series.at_grain(SeriesBinding("signups_to_date"), "week")
+    assert weekly.tolist() == [6.0, 48.0, 90.0, 132.0]  # days 1, 8, 15, 22
+
+
+def test_the_plan_names_where_a_week_value_departs_from_the_manifests_rule(arithmetic):
+    from evalrunner.loader import caveat_for
+
+    ws, _ = arithmetic
+    first_day = caveat_for(ws.metrics["signups_to_date"], SeriesBinding("signups_to_date"), "week")
+    assert "first day" in first_day and "MetricFlow" in first_day
+    assert caveat_for(ws.metrics["members"], SeriesBinding("members"), "week") is None
+    assert (
+        caveat_for(ws.metrics["signups_to_date"], SeriesBinding("signups_to_date"), "day") is None
+    )
+
+
 def test_a_distinct_count_stock_is_served_weekly_with_a_caveat_on_the_plan(tmp_path):
     """Its last day's count is the stock's level, and not MetricFlow's weekly
     distinct count: served, and the plan says which number it is."""
     ws = load_world_set(arithmetic_world_set(tmp_path))
     tree = TreeSpec("fixture_tree.yml", ARITHMETIC_TREE, bindings=AB)
     plan = plan_tree(tree, WorldSeries(ws.worlds[0], ws.metrics))
-    assert set(plan.caveats) == {"base"}
+    assert set(plan.caveats) == {"base"}  # `base` has no weekly series
     assert "last day's count" in plan.summary()["caveats"]["base"]
 
 
@@ -486,7 +544,9 @@ def test_the_sets_verdict_decides_what_moved_over_this_twins(mapping):
         ("churned", None, None): "established_up",
     }
     measured = Measured(rec, verdicts=verdicts)
-    assert pick_target(dag, plan, rec, ["churn_rate"], measured) == ("churned", "set_verdict")
+    assert pick_target(dag, plan, rec, ["churn_rate"], measured) == ("churned", "set:verdict")
+    loose = Measured(rec, verdicts=verdicts, verdict_column="verdict_10pct")
+    assert pick_target(dag, plan, rec, ["churn_rate"], loose)[1] == "set:verdict_10pct"
     assert pick_target(dag, plan, rec, ["churn_rate"]) == ("revenue", "twin_moved")
     # No set row for `churned` either: this twin's `moved` decides.
     measured = Measured(rec, verdicts={("revenue", None, None): "exactly_zero"})
@@ -604,6 +664,8 @@ def test_a_size_is_scored_only_when_established_and_precise_at_the_sets_seed_cou
     assert eligibility([{**r, "verdict": "open"} for r in rows])["why"] == "verdict open"
     missing = [{**r, "set_rel_sd": None} for r in rows]
     assert "no cross-seed mean and spread" in eligibility(missing)["why"]
+    negative = [{**r, "set_null_mean": -4.0} for r in rows]  # a build that went negative
+    assert "zero or negative" in eligibility(negative)["why"]
     refused = [{**r, "refused": "several_parents_moved: ['x']"} for r in rows]
     assert eligibility(refused)["why"].startswith("several_parents_moved")
 
@@ -782,7 +844,8 @@ def test_a_run_goes_from_manifest_to_scoreboard_and_resumes_without_refitting(tm
     assert board["coverage"]["jobs_done"] == 7
     assert board["coverage"]["single_worlds_ranked"] == 1
     (target,) = board["coverage"]["targets"].values()
-    assert (target["target"], target["basis"]) == ("signups", "set_verdict")
+    assert (target["target"], target["basis"]) == ("signups", "set:verdict")
+    assert board["verdict_column"] == "verdict"
     # One seed: the attribution items are written, and none is size-eligible,
     # which the eligibility table says rather than leaving the question empty.
     table = {t["item"]: t for t in board["attribution"]["eligibility"]}

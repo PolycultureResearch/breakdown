@@ -76,6 +76,8 @@ def cmd_run(opts) -> int:
             max_windows=opts.max_windows,
             singles=opts.singles.split(",") if opts.singles else None,
             drop_unserved=opts.drop_unserved,
+            verdict_column=opts.verdict_column,
+            allow_v1=opts.allow_schema_v1,
             trace_cache_bytes=int(opts.trace_cache_gb * 1024**3),
         )
     except (RunRefused, UnservedNodes, WorldCannotAnswer, WorldSetError) as exc:
@@ -236,6 +238,18 @@ def main(argv=None) -> int:
         "--drop-unserved",
         action="store_true",
         help="run without the nodes the world set cannot serve (recorded as a tree change)",
+    )
+    run.add_argument(
+        "--verdict-column",
+        default="verdict",
+        help="the set's verdict column that picks targets and attribution eligibility: "
+        "`verdict` (two-sided 1%%, the default) or `verdict_10pct` for small sets; "
+        "stamped on the scoreboard",
+    )
+    run.add_argument(
+        "--allow-schema-v1",
+        action="store_true",
+        help="read a schema_version 1 world set (refused by default); stamped on the scoreboard",
     )
     run.add_argument("--shards", type=int, default=MAX_DEFAULT_SHARDS, help="worker processes")
     run.add_argument("--trace-cache-gb", type=float, default=4.0, help="byte cap; 0 disables")

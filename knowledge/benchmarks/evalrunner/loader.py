@@ -179,6 +179,57 @@ class WorldSeries:
         self._dimensions: dict[str, set[str]] = {}
         for metric, dimension, _ in self._slices:
             self._dimensions.setdefault(metric, set()).add(dimension)
+        self._weekly = self._read_weekly(world)
+
+    def _read_weekly(self, world: World) -> dict[tuple, pd.Series] | None:
+        """`(metric, dimension, value) -> week values` from the world's
+        `weekly_series.parquet`, whole weeks only. A week with fewer than 7
+        timeline days counts distinct entities over fewer days (the
+        generator's §10.2), so it is dropped: the engine aligns on whole
+        periods anyway, and a short week would read as a fall."""
+        if world.weekly_series is None:
+            return None
+        frame = pd.read_parquet(world.weekly_series)
+        need = ["date", "metric", "dimension", "value", "metric_value", "days"]
+        missing = [c for c in need if c not in frame.columns]
+        if missing:
+            raise WorldCannotAnswer(
+                f"{world.weekly_series} lacks column(s) {missing}; it has {list(frame.columns)}"
+            )
+        frame["date"] = pd.to_datetime(frame["date"])
+        frame = frame[frame["days"] == 7]
+        out = {}
+        for key, g in frame.groupby(["metric", "dimension", "value"], dropna=False):
+            metric, dim, val = key
+            dim = None if dim is None or dim != dim else dim
+            val = None if val is None or val != val else val
+            out[(metric, dim, val)] = g.set_index("date")["metric_value"].sort_index()
+        return out
+
+    def weekly(self, metric: str, dimension: str | None, value: str | None, label: str):
+        """A distinct count's week values, as MetricFlow answers them."""
+        if self._weekly is None:
+            raise WorldCannotAnswer(
+                f"{label}: '{metric}' is a distinct count whose week values are in the "
+                f"weekly series file, and world '{self.world_id}' has none"
+            )
+        key = (metric, dimension, value)
+        if key not in self._weekly:
+            where = "total" if dimension is None else f"{dimension}='{value}'"
+            raise WorldCannotAnswer(
+                f"{label}: the weekly series file has no rows for '{metric}' ({where})"
+            )
+        return self._weekly[key].astype(float)
+
+    def _weekly_for(self, binding: SeriesBinding, label: str) -> pd.Series:
+        if binding.dimension is None:
+            return self.weekly(binding.metric, None, None, label)
+        if len(binding.values) != 1:
+            raise WorldCannotAnswer(
+                f"{label}: distinct counts of {len(binding.values)} members of "
+                f"'{binding.dimension}' cannot be added (an entity can be in several)"
+            )
+        return self.weekly(binding.metric, binding.dimension, binding.values[0], label)
 
     def spec(self, metric: str) -> MetricSpec:
         if metric not in self._totals:
@@ -294,6 +345,12 @@ class WorldSeries:
                 out = resample_up(out, "day", grain, "stock", label=label)
         elif grain == "day":
             out = days["metric_value"]
+        elif spec.has_weekly_series and grain == "week":
+            # MetricFlow's week value of a distinct count: distinct over the
+            # week, from the weekly file (generator §10.2), not a day's count.
+            out = self._weekly_for(binding, label)
+        elif spec.type == "cumulative":
+            out = self._first_day(days["metric_value"], grain, label)
         elif spec.time_aggregation in ("ratio_of_sums", "ratio_of_aggregates", "average"):
             if not spec.has_sides:
                 raise WorldCannotAnswer(
@@ -301,8 +358,8 @@ class WorldSeries:
                     f"numerator/denominator, so it cannot be rebuilt at grain '{grain}'"
                 )
             num_rule, den_rule = self.side_rules(spec)
-            num = self._combine(days["numerator"], num_rule, grain, f"{label} numerator")
-            den = self._combine(days["denominator"], den_rule, grain, f"{label} denominator")
+            num = self._side(spec, "numerator", binding, days, num_rule, grain, label)
+            den = self._side(spec, "denominator", binding, days, den_rule, grain, label)
             with np.errstate(divide="ignore", invalid="ignore"):
                 out = num / den
         elif spec.time_aggregation == "derived":
@@ -316,6 +373,38 @@ class WorldSeries:
             out = self._combine(days["metric_value"], spec.time_aggregation, grain, label)
         out = out.astype(float)
         return out[np.isfinite(out)]
+
+    def _side(self, spec, side, binding, days, rule, grain, label) -> pd.Series:
+        """One side of a ratio at `grain`. A side that is a distinct count
+        with week values takes them from the weekly file, as MetricFlow
+        aggregates each input of a ratio at the requested grain: the weekly
+        churn rate is the week's churned over the week's distinct active
+        subscriptions, which keeps `churned = active x rate` exact at week
+        grain against the weekly active count."""
+        metric = spec.inputs.get(side)
+        side_spec = self.specs.get(metric)
+        if grain == "week" and side_spec is not None and side_spec.has_weekly_series:
+            return self._weekly_for(
+                SeriesBinding(metric, binding.dimension, binding.values), f"{label} {side}"
+            )
+        return self._combine(days[side], rule, grain, f"{label} {side}")
+
+    def _first_day(self, days: pd.Series, grain: str, label: str) -> pd.Series:
+        """A cumulative metric at a coarser grain, as MetricFlow answers it:
+        the value on the period's first day (generator §10.2: `FIRST_VALUE`
+        over the period). The manifest's own rule says the last day; this
+        matches MetricFlow instead, and the plan says so. Whole periods only."""
+        from breakdown.grains import floor_period
+
+        values = days.dropna()
+        if grain != "week":
+            raise WorldCannotAnswer(
+                f"{label} is a cumulative metric; its first-day value is only rebuilt at "
+                f"week grain, not '{grain}'"
+            )
+        starts = values.index[values.index == floor_period(values.index, grain)]
+        whole = starts[starts + pd.Timedelta(days=6) <= self.end]
+        return values.loc[whole]
 
     def _derived(self, spec: MetricSpec, grain: str) -> pd.Series:
         if spec.formula is None:
@@ -379,13 +468,22 @@ def effective_rule(spec: MetricSpec, binding: SeriesBinding) -> str:
 
 
 def caveat_for(spec: MetricSpec, binding: SeriesBinding, grain: str) -> str | None:
-    """What a served node's value is that its source's own number is not.
-    Recorded on the plan; never a reason to refuse."""
+    """What a served node's value is that its source's own number is not, or
+    where it departs from the manifest's own rule. Recorded on the plan;
+    never a reason to refuse. A distinct count with week values (v2) needs
+    no caveat at week grain: the weekly file is MetricFlow's number."""
+    if grain == "day" or binding.cumulative:
+        return None
+    if spec.type == "cumulative":
+        return (
+            f"'{binding.describe()}' is a cumulative metric; at grain '{grain}' it is served "
+            "as the period's first day, as MetricFlow answers it, not the last day the "
+            f"manifest's '{spec.time_aggregation}' rule names (generator spec §10.2)"
+        )
     if (
-        grain != "day"
-        and not binding.cumulative
-        and spec.time_aggregation == "end_of_period"
+        spec.time_aggregation == "end_of_period"
         and spec.measure_agg == "count_distinct"
+        and not (spec.has_weekly_series and grain == "week")
     ):
         return (
             f"'{binding.describe()}' is a distinct count per day; at grain '{grain}' it is "

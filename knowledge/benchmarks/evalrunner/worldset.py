@@ -17,7 +17,15 @@ from pathlib import Path
 from typing import Any
 
 MANIFEST_NAME = "worlds.json"
-SUPPORTED_SCHEMA_VERSIONS = (1,)
+# What each version guarantees is the generator's spec §10.4. Version 2 is
+# what this runner is written against; a version 1 set (every set built
+# before 2026-11-20, including sets that carry part of version 2 and cannot
+# say which `moved` rule built them) is refused up front unless the caller
+# asks for it by name, and then the contradiction checks in the loader are
+# the only guard.
+SCHEMA_VERSION = 2
+LEGACY_SCHEMA_VERSIONS = (1,)
+STRICT_VERDICT = "verdict"
 WORLD_KINDS = ("null", "single", "story")
 
 
@@ -44,6 +52,7 @@ class MetricSpec:
     formula: dict | None = None  # derived: the expression as a tree
     measure_agg: str | None = None  # the measure's own aggregation
     has_sides: bool = False  # the series carry numerator/denominator
+    has_weekly_series: bool = False  # the world's weekly file holds its week values
     dimensions: tuple[str, ...] = ()
 
 
@@ -62,6 +71,8 @@ class World:
     # Single worlds: the measured stats of every slice in the series file
     # (the ground truth's `measured_effects` holds totals only).
     effects_summary: Path | None = None
+    # Week values of the distinct counts, as MetricFlow answers them (v2).
+    weekly_series: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +91,8 @@ class WorldSet:
     # The set's cross-seed summary, with one `verdict` per (regime, anomaly,
     # metric, slice). None for a set built without measured effects.
     effects_summary: Path | None = None
+    # v2 `verdicts`: column -> {level, t_critical, min_seeds, ...}, strict first.
+    verdict_columns: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def world(self, world_id: str) -> World:
         for w in self.worlds:
@@ -91,18 +104,27 @@ class WorldSet:
         """The world's planted-anomaly records (empty for a null world)."""
         return json.loads(world.ground_truth.read_text())
 
-    def verdicts(self, regime: str, anomaly: str) -> dict[tuple, str]:
+    def check_verdict_column(self, column: str) -> None:
+        """Refuse a verdict column the manifest does not declare."""
+        declared = list(self.verdict_columns) or [STRICT_VERDICT]
+        if column not in declared:
+            raise WorldSetError(
+                f"verdict column {column!r} is not in this set's `verdicts` "
+                f"(it declares {declared})"
+            )
+
+    def verdicts(self, regime: str, anomaly: str, column: str = STRICT_VERDICT) -> dict[tuple, str]:
         """`(metric, dimension, value) -> verdict` for one anomaly, from the
-        set's `effects_summary.parquet` (`dimension`/`value` None for a
-        total). Empty when the set has no summary or the summary no
-        `verdict` column: the caller then says it fell back."""
+        set's `effects_summary.parquet` column `column` (`dimension`/`value`
+        None for a total). Empty when the set has no summary or the summary no
+        such column: the caller then says it fell back."""
         table = self._verdict_table()
-        if table is None:
+        if table is None or column not in table.columns:
             return {}
         rows = table[(table["regime"] == regime) & (table["anomaly"] == anomaly)]
         return {
-            (r.metric, _none(r.dimension), _none(r.value)): r.verdict
-            for r in rows.itertuples(index=False)
+            (r["metric"], _none(r["dimension"]), _none(r["value"])): r[column]
+            for r in rows.to_dict("records")
         }
 
     def set_effects(self, regime: str, anomaly: str) -> dict[tuple, dict[str, Any]]:
@@ -116,7 +138,8 @@ class WorldSet:
         rows = table[(table["regime"] == regime) & (table["anomaly"] == anomaly)]
         return {
             (r["metric"], _none(r["dimension"]), _none(r["value"])): {
-                name: _none(r[col]) for name, col in _SET_STATS.items()
+                name: _none(r.get(col))
+                for name, col in {**_SET_STATS, **_OPTIONAL_SET_STATS}.items()
             }
             for r in rows.to_dict("records")
         }
@@ -132,13 +155,24 @@ class WorldSet:
             need = ["regime", "anomaly", "metric", "dimension", "value", "verdict"]
             if any(c not in frame.columns for c in need):
                 return None
-            keep = need + [c for c in _SET_STATS.values() if c in frame.columns]
+            extra = [
+                *_SET_STATS.values(),
+                "verdict_10pct",
+                "seeds_to_establish",
+                "seeds_to_establish_10pct",
+                *_OPTIONAL_SET_STATS.values(),
+            ]
+            keep = need + [c for c in extra if c in frame.columns]
             cached = _VERDICT_TABLES[self.effects_summary] = frame[keep]
         return cached
 
 
 _VERDICT_TABLES: dict[Path, Any] = {}
 _SET_STATS = {"rel_mean": "rel_change_mean", "rel_sd": "rel_change_sd", "n_seeds": "n_seeds"}
+# Read when present: the null twins' mean level, below which a relative
+# change means nothing (a stock that can go negative, a flow that is zero
+# outside a promotion).
+_OPTIONAL_SET_STATS = {"null_mean": "null_mean"}
 
 
 def _none(v):
@@ -152,8 +186,11 @@ def _need(obj: dict, key: str, where: str):
     return obj[key]
 
 
-def load_world_set(path: str | Path) -> WorldSet:
-    """Read and check a world set's manifest (its directory, or the file)."""
+def load_world_set(path: str | Path, *, allow_v1: bool = False) -> WorldSet:
+    """Read and check a world set's manifest (its directory, or the file).
+
+    Version 2 is required. `allow_v1` reads a version 1 set, for comparing
+    against a scoreboard built on one; the caller stamps that it did."""
     path = Path(path)
     if path.is_dir():
         path = path / MANIFEST_NAME
@@ -162,11 +199,19 @@ def load_world_set(path: str | Path) -> WorldSet:
     raw = json.loads(path.read_text())
     where = str(path)
     version = _need(raw, "schema_version", where)
-    if version not in SUPPORTED_SCHEMA_VERSIONS:
+    if version in LEGACY_SCHEMA_VERSIONS and not allow_v1:
         raise WorldSetError(
-            f"{where} is schema_version {version!r}; this runner reads "
-            f"{list(SUPPORTED_SCHEMA_VERSIONS)}. Update the runner against the "
-            "generator's docs/eval_worlds_spec.md before reading it."
+            f"{where} is schema_version {version!r}; this runner needs schema_version "
+            f"{SCHEMA_VERSION}. A version 1 set cannot say which `moved` rule built it and "
+            "lacks the weekly distinct counts and verdict levels (generator spec §10.4): "
+            "rebuild it, or pass --allow-schema-v1 to read it anyway, stamped on the "
+            "scoreboard."
+        )
+    if version != SCHEMA_VERSION and version not in LEGACY_SCHEMA_VERSIONS:
+        raise WorldSetError(
+            f"{where} is schema_version {version!r}; this runner reads {SCHEMA_VERSION}. "
+            "Update the runner against the generator's docs/eval_worlds_spec.md before "
+            "reading it."
         )
     root = path.parent
 
@@ -184,6 +229,7 @@ def load_world_set(path: str | Path) -> WorldSet:
             measure_agg=m.get("measure_agg"),
             # Sets that predate `has_sides` carried sides for ratios only.
             has_sides=bool(m.get("has_sides", m["type"] == "ratio")),
+            has_weekly_series=bool(m.get("has_weekly_series", False)),
             dimensions=tuple(m.get("dimensions") or ()),
         )
 
@@ -207,6 +253,7 @@ def load_world_set(path: str | Path) -> WorldSet:
                 series=root / w["series"] if w.get("series") else None,
                 effects=root / w["effects"] if w.get("effects") else None,
                 effects_summary=(root / w["effects_summary"] if w.get("effects_summary") else None),
+                weekly_series=root / w["weekly_series"] if w.get("weekly_series") else None,
             )
         )
     ids = [w.id for w in worlds]
@@ -230,4 +277,5 @@ def load_world_set(path: str | Path) -> WorldSet:
         metrics=metrics,
         worlds=tuple(worlds),
         effects_summary=root / raw["effects_summary"] if raw.get("effects_summary") else None,
+        verdict_columns={v["column"]: v for v in raw.get("verdicts") or [] if v.get("column")},
     )

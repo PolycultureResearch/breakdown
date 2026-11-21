@@ -443,7 +443,8 @@ def attribution_rows(rows, seed_of, vertical) -> tuple[list[dict], list[dict]]:
 # ---------------------------------------------------------------------------
 STAMP_KEYS = (
     "tier engine_commit engine_key generator_version manifest vertical company tree seeds "
-    "held_out held_out_seeds regimes horizons created host"
+    "held_out held_out_seeds regimes horizons created host verdict_column verdict_level "
+    "allow_schema_v1"
 ).split()
 
 
@@ -483,7 +484,7 @@ def build_scoreboard(run_dir: str | Path) -> dict[str, Any]:
     scored = {r["world"] for r in localization if r.get("method")}
     return {
         "scoreboard_version": SCOREBOARD_VERSION,
-        **{k: run[k] for k in STAMP_KEYS},
+        **{k: run.get(k) for k in STAMP_KEYS},
         "windows": {
             w: {"spacing_days": g["spacing_days"], "n": len(g["starts"])}
             for w, g in run["windows"].items()
@@ -713,6 +714,25 @@ def render_markdown(board: dict[str, Any], title: str | None = None) -> str:
             + (f" · **HELD-OUT seeds scored:** {run['held_out_seeds']}" if run["held_out"] else "")
             + f" · **Regimes:** {run['regimes']} · **Horizons (days):** {run['horizons']}",
             "",
+            f"- Verdict column `{run.get('verdict_column') or 'verdict'}`"
+            + (
+                f" (two-sided {run['verdict_level']:.0%})"
+                if run.get("verdict_level") is not None
+                else ""
+            )
+            + " decides targets and attribution eligibility"
+            + (
+                "; **a loose verdict: about one in ten pairs with no effect is established "
+                "by chance**"
+                if (run.get("verdict_column") or "verdict") != "verdict"
+                else ""
+            )
+            + f"; world-set schema_version {run['manifest'].get('schema_version')}"
+            + (
+                " (**version 1, read with --allow-schema-v1**)"
+                if run.get("allow_schema_v1")
+                else ""
+            ),
             f"- Engine commit `{run['engine_commit']}`; generator version "
             f"`{run['generator_version']}`; manifest `config_sha256` "
             f"`{run['manifest']['config_sha256']}` ({run['manifest']['config']})",

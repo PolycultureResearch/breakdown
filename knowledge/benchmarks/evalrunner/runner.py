@@ -174,7 +174,9 @@ def _depth(dag) -> dict[str, int]:
     return depth
 
 
-def select_singles(worldset, worlds, dag, plan, limit, names=None) -> tuple[list[str], dict]:
+def select_singles(
+    worldset, worlds, dag, plan, limit, names=None, verdict_column="verdict"
+) -> tuple[list[str], dict]:
     """Which anomalies' single worlds to run, and what each one is to this
     tree. With a `limit` (the smoke tier), the scored ones are spread over the
     depths of the tree the roots sit at."""
@@ -194,7 +196,7 @@ def select_singles(worldset, worlds, dag, plan, limit, names=None) -> tuple[list
         if record.get("kind") != "rate":
             described[name] = {"class": "data_quality"}
             continue
-        mapping = map_root(dag, plan, record, measured_for(worldset, w, record))
+        mapping = map_root(dag, plan, record, measured_for(worldset, w, record, verdict_column))
         described[name] = {
             "class": mapping.status,
             "root_metric": record.get("root_metric"),
@@ -203,7 +205,7 @@ def select_singles(worldset, worlds, dag, plan, limit, names=None) -> tuple[list
             "truth": mapping.truth,
             "depth": min((depth[t] for t in mapping.truth), default=None),
             "note": mapping.note,
-            "set_verdicts": bool(worldset.verdicts(w.regime, name)),
+            "set_verdicts": bool(worldset.verdicts(w.regime, name, verdict_column)),
         }
     if limit is None or names is not None:
         return list(by_anomaly), described
@@ -217,11 +219,14 @@ def select_singles(worldset, worlds, dag, plan, limit, names=None) -> tuple[list
     return scorable, described
 
 
-def measured_for(worldset: WorldSet, world: World, record: dict[str, Any]) -> Measured:
+def measured_for(
+    worldset: WorldSet, world: World, record: dict[str, Any], verdict_column: str = "verdict"
+) -> Measured:
     """Everything the set measured about a single world's anomaly."""
     return Measured(
         record,
-        verdicts=worldset.verdicts(world.regime, record["id"]),
+        verdicts=worldset.verdicts(world.regime, record["id"], verdict_column),
+        verdict_column=verdict_column,
         set_effects=worldset.set_effects(world.regime, record["id"]),
         twin=read_twin_summary(world.effects_summary),
     )
@@ -241,6 +246,8 @@ def plan_run(
     max_windows: int | None = None,
     singles: list[str] | None = None,
     drop_unserved: bool = False,
+    verdict_column: str = "verdict",
+    allow_v1: bool = False,
     trace_cache_bytes: int = DEFAULT_TRACE_CACHE_BYTES,
     engine: dict[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -248,7 +255,8 @@ def plan_run(
     if tier not in TIERS:
         raise RunRefused(f"unknown tier {tier!r}; tiers: {sorted(TIERS)}")
     preset = TIERS[tier]
-    worldset = load_world_set(worlds_dir)
+    worldset = load_world_set(worlds_dir, allow_v1=allow_v1)
+    worldset.check_verdict_column(verdict_column)
     tree = TreeSpec.read(tree_path, bindings_path)
     engine = engine or engine_stamp()
 
@@ -278,7 +286,13 @@ def plan_run(
     tree_sha = hashlib.sha256(effective_tree.encode()).hexdigest()
 
     single_names, described = select_singles(
-        worldset, in_scope, dag, plan, preset["singles"], names=singles
+        worldset,
+        in_scope,
+        dag,
+        plan,
+        preset["singles"],
+        names=singles,
+        verdict_column=verdict_column,
     )
     single_worlds = [w for w in in_scope if w.kind == "single" and w.anomalies[0] in single_names]
 
@@ -288,7 +302,8 @@ def plan_run(
         # they are part of what decides a single world's result.
         # ...and so do the set's cross-seed effects attribution is scored with.
         verdicts = sorted(
-            (json.dumps(k), v) for k, v in worldset.verdicts(w.regime, w.anomalies[0]).items()
+            (json.dumps(k), v)
+            for k, v in worldset.verdicts(w.regime, w.anomalies[0], verdict_column).items()
         ) + sorted(
             (json.dumps(k), json.dumps(v, default=str))
             for k, v in worldset.set_effects(w.regime, w.anomalies[0]).items()
@@ -384,6 +399,11 @@ def plan_run(
         },
         "seeds": chosen_seeds,
         "held_out": bool(held_out),
+        # Which of the set's verdict columns decided targets and attribution
+        # eligibility; the strict one unless the run asked otherwise.
+        "verdict_column": verdict_column,
+        "verdict_level": (worldset.verdict_columns.get(verdict_column) or {}).get("level"),
+        "allow_schema_v1": bool(allow_v1),
         "held_out_seeds": [s for s in chosen_seeds if s not in DEV_SEEDS],
         "regimes": chosen_regimes,
         "horizons": list(horizons),
@@ -779,7 +799,8 @@ def run_shard(run_dir: str | Path, shard: tuple[int, int] = (0, 1), log=print) -
     log(f"shard {k}/{n}: {len(todo)} of {len(mine)} jobs to run", flush=True)
     if not todo:
         return 0
-    worldset = load_world_set(run["manifest"]["path"])
+    worldset = load_world_set(run["manifest"]["path"], allow_v1=run.get("allow_schema_v1", False))
+    verdict_column = run.get("verdict_column", "verdict")
     tree = TreeSpec.read(REPO / run["tree"]["path"], _maybe(run["tree"]["bindings_path"]))
     writer = RowWriter(run_dir, f"{k}of{n}")
     order = {wid: i for i, wid in enumerate(run["worlds"])}
@@ -811,7 +832,9 @@ def run_shard(run_dir: str | Path, shard: tuple[int, int] = (0, 1), log=print) -
                     "vertical": worldset.vertical,
                 },
                 "truth": truth,
-                "measured": measured_for(worldset, world, truth[0]) if truth else None,
+                "measured": (
+                    measured_for(worldset, world, truth[0], verdict_column) if truth else None
+                ),
                 "load_twin": _twin_loader(worldset, world, tree, run["tree"]["drop_unserved"]),
                 "trace_dir": run_dir / "traces",
             }
