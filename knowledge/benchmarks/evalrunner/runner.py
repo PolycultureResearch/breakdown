@@ -41,6 +41,7 @@ from typing import Any
 import pandas as pd
 import yaml
 
+from .attribution import attribution_items, attribution_window
 from .fitcache import DEFAULT_TRACE_CACHE_BYTES, FitStore, fit_key
 from .loader import TreeSpec, WorldSeries, load_world, plan_tree
 from .truth import Measured, analysis_window, map_root, onset_of, pick_target, read_twin_summary
@@ -49,6 +50,9 @@ from .worldset import World, WorldSet, load_world_set
 
 REPO = Path(__file__).resolve().parents[3]
 ROW_FORMAT_VERSION = 1
+# A single world's rows: 2 added `attribution`, 3 split its root item into
+# `root_unexplained` and `root_gap`. Calibration jobs keep their keys.
+SINGLE_ROW_FORMAT_VERSION = 3
 
 DEV_SEEDS = tuple(range(0, 5))
 HELD_OUT_SEEDS = tuple(range(5, 10))
@@ -68,6 +72,12 @@ TIERS: dict[str, dict[str, Any]] = {
         max_windows=None,
         spacing_days=28,
         singles=None,
+    ),
+    # Attribution only (§5.4): single worlds, no calibration windows. Meant
+    # for a ten-seed set with `--singles` naming the anomalies whose sizes the
+    # set can ground; the scoreboard says which items it could.
+    "attribution": dict(
+        seeds=5, regimes=["baseline"], horizons=(7,), max_windows=0, spacing_days=None, singles=None
     ),
     "full": dict(
         seeds=5,
@@ -280,7 +290,7 @@ def plan_run(
         key = _sha(
             [
                 "single",
-                ROW_FORMAT_VERSION,
+                SINGLE_ROW_FORMAT_VERSION,
                 world_key(worldset, w),
                 tree_sha,
                 engine["key"],
@@ -292,7 +302,8 @@ def plan_run(
 
     scored_nodes = [n for n in dag.nodes if not dag.nodes[n]["definition"].formula]
     grid = {}
-    for w in nulls:
+    # `max_windows=0` (the attribution tier) scores no null windows at all.
+    for w in nulls if max_windows != 0 else []:
         span = WorldSeries(w, worldset.metrics) if w is not nulls[0] else first
         starts, spacing = window_starts(
             span.start,
@@ -338,6 +349,7 @@ def plan_run(
 
     return {
         "row_format_version": ROW_FORMAT_VERSION,
+        "single_row_format_version": SINGLE_ROW_FORMAT_VERSION,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "tier": tier,
         "engine_commit": engine["commit"],
@@ -399,7 +411,16 @@ def _load() -> float | None:
 # ---------------------------------------------------------------------------
 # Rows
 # ---------------------------------------------------------------------------
-ROW_TYPES = ("calibration", "detection", "localization", "nodes", "fits", "analysis", "skipped")
+ROW_TYPES = (
+    "calibration",
+    "detection",
+    "localization",
+    "attribution",
+    "nodes",
+    "fits",
+    "analysis",
+    "skipped",
+)
 
 
 def read_rows(run_dir: str | Path, row_type: str) -> list[dict[str, Any]]:
@@ -510,7 +531,6 @@ def run_calibration(lw, job, run, writer, common) -> None:
 def run_single(lw, job, run, writer, common) -> None:
     import networkx as nx
 
-    from breakdown.engine.rca import run_rca
     from breakdown.grains import floor_period
 
     from .scoring import innovation, node_windows, propagate, rank_of
@@ -604,19 +624,7 @@ def run_single(lw, job, run, writer, common) -> None:
         innovation_seconds = time.perf_counter() - t0
 
         t0 = time.perf_counter()
-        rca_error = None
-        try:
-            rca = run_rca(
-                dag,
-                data,
-                fits,
-                target,
-                analysis_start=ana[0],
-                analysis_end=ana[1],
-                reference_sensitivity=False,
-            )
-        except Exception as exc:
-            rca, rca_error = {"ranked_causes": [], "nodes": {}}, f"{type(exc).__name__}: {exc}"
+        rca, rca_error = _rca(dag, data, fits, target, ana)
         rca_seconds = time.perf_counter() - t0
 
         z = {n: _finite(inn[n].get("z")) for n in scope}
@@ -682,6 +690,34 @@ def run_single(lw, job, run, writer, common) -> None:
                     **_score_row(i),
                 },
             )
+        # §5.4: the engine's attributed sizes over the anomaly's own window.
+        t0 = time.perf_counter()
+        attr_window = attribution_window(record, data.grain_of[target])
+        if tuple(attr_window) == tuple(ana):
+            attr_rca, attr_error = rca, rca_error
+        else:
+            attr_rca, attr_error = _rca(dag, data, fits, target, attr_window)
+        if attr_error:
+            writer.emit(
+                "attribution",
+                {**base, "target": target, "status": f"error: {attr_error}"[:200]},
+            )
+        else:
+            twin = common["load_twin"]()
+            for item in attribution_items(lw, twin, attr_rca, mapping.truth, target, measured):
+                writer.emit(
+                    "attribution",
+                    {
+                        **base,
+                        "target": target,
+                        "status": "ok",
+                        "attribution_start": attr_window[0],
+                        "attribution_end": attr_window[1],
+                        **item,
+                    },
+                )
+        attribution_seconds = time.perf_counter() - t0
+
         writer.emit(
             "analysis",
             {
@@ -690,6 +726,7 @@ def run_single(lw, job, run, writer, common) -> None:
                 "n_scope": len(scope),
                 "innovation_seconds": round(innovation_seconds, 1),
                 "rca_seconds": round(rca_seconds, 1),
+                "attribution_seconds": round(attribution_seconds, 1),
                 "fits_made": len(fit_rows),
                 "trace_cache_hits": fits.hits,
             },
@@ -705,6 +742,24 @@ def run_single(lw, job, run, writer, common) -> None:
                 **f,
             },
         )
+
+
+def _rca(dag, data, fits, target, window):
+    from breakdown.engine.rca import run_rca
+
+    try:
+        result = run_rca(
+            dag,
+            data,
+            fits,
+            target,
+            analysis_start=window[0],
+            analysis_end=window[1],
+            reference_sensitivity=False,
+        )
+        return result, None
+    except Exception as exc:
+        return {"ranked_causes": [], "nodes": {}}, f"{type(exc).__name__}: {exc}"
 
 
 def run_shard(run_dir: str | Path, shard: tuple[int, int] = (0, 1), log=print) -> int:
@@ -751,6 +806,7 @@ def run_shard(run_dir: str | Path, shard: tuple[int, int] = (0, 1), log=print) -
                 },
                 "truth": truth,
                 "measured": measured_for(worldset, world, truth[0]) if truth else None,
+                "load_twin": _twin_loader(worldset, world, tree, run["tree"]["drop_unserved"]),
                 "trace_dir": run_dir / "traces",
             }
         t0 = time.perf_counter()
@@ -767,6 +823,21 @@ def run_shard(run_dir: str | Path, shard: tuple[int, int] = (0, 1), log=print) -
             flush=True,
         )
     return len(todo)
+
+
+def _twin_loader(worldset, world, tree, drop_unserved):
+    """Loads a single world's null twin when first asked, once."""
+    cache = {}
+
+    def load():
+        if "twin" not in cache:
+            if world.twin_of is None:
+                raise RunRefused(f"single world '{world.id}' names no null twin")
+            twin = worldset.world(world.twin_of)
+            cache["twin"] = load_world(worldset, twin, tree, drop_unserved=drop_unserved)
+        return cache["twin"]
+
+    return load
 
 
 def _maybe(path):

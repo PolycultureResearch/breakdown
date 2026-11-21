@@ -218,7 +218,9 @@ def main(argv=None) -> int:
     run.add_argument("--tree", required=True, help="the tree file; recorded on the scoreboard")
     run.add_argument("--bindings", help="node -> series-file binding overrides (YAML)")
     run.add_argument("--out", required=True, help="run directory: rows, fit cache, scoreboard")
-    run.add_argument("--tier", choices=("smoke", "standard", "full"), default="smoke")
+    run.add_argument(
+        "--tier", choices=("smoke", "standard", "full", "attribution"), default="smoke"
+    )
     run.add_argument("--seeds", help="override the tier's seeds, e.g. 0-2 or 0,3")
     run.add_argument(
         "--held-out",

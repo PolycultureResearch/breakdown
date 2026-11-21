@@ -26,6 +26,7 @@ from tests.eval_worlds_fixture import (
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "knowledge" / "benchmarks"))
 
+from evalrunner.attribution import eligibility, path_edges, score_items  # noqa: E402
 from evalrunner.loader import (  # noqa: E402
     SeriesBinding,
     TreePlan,
@@ -558,6 +559,87 @@ def test_the_analysis_window_is_whole_periods_from_the_onsets_period():
 
 
 # ---------------------------------------------------------------------------
+# Attribution (§5.4)
+# ---------------------------------------------------------------------------
+def test_attribution_scores_the_edges_on_the_path_from_root_to_target(mapping):
+    dag, _ = mapping
+    assert path_edges(dag, ["churn_rate"], "revenue") == [
+        ("churn_rate", "churned"),
+        ("churned", "revenue"),
+    ]
+    assert path_edges(dag, ["revenue"], "revenue") == []
+
+
+def _item(world, seed, measured, null=100.0, estimate=None, ci=None, **extra):
+    return {
+        "world": world,
+        "seed": seed,
+        "measured_effect": measured,
+        "null_value": null,
+        "estimate": estimate,
+        "ci_95": ci,
+        "verdict": "established_up",
+        "aligned": False,
+        "withheld": None,
+        **extra,
+    }
+
+
+def test_a_size_is_scored_only_when_established_and_precise_at_the_seeds_scored():
+    precise = [_item(f"w{s}", s, m) for s, m in enumerate([10.0, 10.5, 9.5, 10.2, 9.8])]
+    v = eligibility(precise)
+    assert v["eligible"] and v["n_seeds"] == 5 and v["precision"] < 0.05
+    # Three noisy seeds: established at the set level, not precise here.
+    noisy = [_item(f"w{s}", s, m) for s, m in enumerate([2.0, 10.0, 25.0])]
+    v = eligibility(noisy)
+    assert not v["eligible"] and "precision" in v["why"] and "3 seeds" in v["why"]
+    open_ = [{**r, "verdict": "open"} for r in precise]
+    assert eligibility(open_)["why"] == "verdict open"
+    assert "1 seed" in eligibility(precise[:1])["why"]
+    refused = [{**r, "refused": "several_parents_moved: ['x']"} for r in precise]
+    assert eligibility(refused)["why"].startswith("several_parents_moved")
+
+
+def test_size_error_is_a_ratio_on_a_log_scale_with_interval_coverage_and_withholding():
+    rows = [
+        _item("w0", 0, 10.0, estimate=20.0, ci=[15.0, 25.0]),
+        _item("w1", 1, 10.0, estimate=10.0, ci=[5.0, 15.0]),
+        _item("w2", 2, 10.0, estimate=-5.0, ci=None),
+        _item("w3", 3, 10.0, estimate=None, withheld="withheld:nonfinite_posterior (p)"),
+    ]
+    scored = {s["world"]: s for s in score_items(rows, eligibility(rows))}
+    assert scored["w0"]["ratio"] == pytest.approx(2.0)
+    assert scored["w0"]["log_error"] == pytest.approx(np.log(2.0))
+    assert scored["w0"]["covered"] is False and scored["w1"]["covered"] is True
+    assert scored["w2"]["wrong_sign"] and scored["w2"]["log_error"] is None
+    assert scored["w2"]["covered"] is None  # no interval, no coverage
+    assert "ratio" not in scored["w3"] and scored["w3"]["withheld"]  # withheld, not a zero
+
+
+def test_an_aligned_twin_is_its_own_truth_and_otherwise_the_cross_seed_mean_is():
+    rows = [
+        _item(f"w{s}", s, m, null=n) for s, (m, n) in enumerate([(10, 100), (11, 110), (9, 90)])
+    ]
+    rows[0].update(estimate=10.1, aligned=True, measured_effect=10.1)
+    rows[1].update(estimate=11.0)
+    v = eligibility(rows)
+    scored = {s["world"]: s for s in score_items(rows, v)}
+    assert v["eligible"], v["why"]
+    assert scored["w0"]["basis"] == "this_twin" and scored["w0"]["truth"] == 10.1
+    assert scored["w1"]["basis"] == "cross_seed_mean"
+    assert scored["w1"]["truth"] == pytest.approx(v["rel_mean"] * 110)
+
+
+def test_an_imprecise_but_established_item_is_scored_on_direction_only():
+    rows = [
+        _item(f"w{s}", s, m, estimate=e) for s, (m, e) in enumerate([(2, 5), (10, -1), (25, 3)])
+    ]
+    scored = score_items(rows, eligibility(rows))
+    assert [s.get("direction_agrees") for s in scored] == [True, False, True]
+    assert all("ratio" not in s for s in scored)
+
+
+# ---------------------------------------------------------------------------
 # Tiers and seeds
 # ---------------------------------------------------------------------------
 def test_held_out_seeds_need_the_explicit_flag():
@@ -691,6 +773,16 @@ def test_a_run_goes_from_manifest_to_scoreboard_and_resumes_without_refitting(tm
     assert board["coverage"]["single_worlds_ranked"] == 1
     (target,) = board["coverage"]["targets"].values()
     assert (target["target"], target["basis"]) == ("signups", "set_verdict")
+    # One seed: the attribution items are written, and none is size-eligible,
+    # which the eligibility table says rather than leaving the question empty.
+    table = {t["item"]: t for t in board["attribution"]["eligibility"]}
+    assert set(table) == {"root:signup_rate", "signup_rate->signups"}
+    assert not table["signup_rate->signups"]["eligible"]
+    assert "1 seed" in table["signup_rate->signups"]["why"]
+    items = [json.loads(line) for line in (out / "rows" / "attribution.0of1.jsonl").open()]
+    edge = next(i for i in items if i["item"] == "signup_rate->signups")
+    assert edge["kind"] == "formula_edge" and edge["measured_effect"] < 0
+    assert edge["estimate"] is not None and edge["estimate"] < 0
     rows = {
         (r["question"], r["metric"], r["method"], r["role"]): r
         for r in board["rows"]
@@ -715,6 +807,7 @@ def test_a_run_goes_from_manifest_to_scoreboard_and_resumes_without_refitting(tm
     json.dumps(board, allow_nan=False)
     text = render_markdown(board)
     assert "not a canonical evaluation tree" in text and "Q3 Localization" in text
+    assert "Q5 Which attribution sizes the world set can ground" in text
 
     # A different shard layout finds the same jobs done.
     assert run_shard(out, (1, 3), log=lambda *a, **k: None) == 0
