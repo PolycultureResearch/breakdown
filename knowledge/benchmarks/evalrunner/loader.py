@@ -345,6 +345,15 @@ class WorldSeries:
                 out = resample_up(out, "day", grain, "stock", label=label)
         elif grain == "day":
             out = days["metric_value"]
+        elif grain == "week" and spec.metricflow_week is not None:
+            out = self._as_provider_week(spec, binding, days, label)
+        elif spec.matches_metricflow_week is False:
+            raise WorldCannotAnswer(
+                f"{label}: at grain '{grain}' breakdown's providers would return "
+                f"MetricFlow's number, which differs from the manifest's "
+                f"'{spec.time_aggregation}' rule, and the set states MetricFlow's rule "
+                "for week grain only"
+            )
         elif spec.has_weekly_series and grain == "week":
             # MetricFlow's week value of a distinct count: distinct over the
             # week, from the weekly file (generator §10.2), not a day's count.
@@ -373,6 +382,73 @@ class WorldSeries:
             out = self._combine(days["metric_value"], spec.time_aggregation, grain, label)
         out = out.astype(float)
         return out[np.isfinite(out)]
+
+    # -- week grain, as breakdown's providers return it ---------------------
+    #
+    # Every provider asks its source for a node at the node's own grain (the
+    # local provider runs `mf query --group-by metric_time__<grain>`; the dbt
+    # and duckdb providers compile SUM / COUNT / COUNT DISTINCT / AVG bucketed
+    # by `DATE_TRUNC(<grain>)`, and turn a ratio or derived metric into a
+    # formula over inputs fetched the same way). None fetches days and
+    # resamples. So a week node gets MetricFlow's week number, which the
+    # manifest states per metric (`metricflow_week`, generator §10.9), and the
+    # evaluation serves exactly that, even where it is not the business
+    # number (a stock summed over seven days). The plan names every such node.
+    def _as_provider_week(self, spec, binding, days, label) -> pd.Series:
+        rule = spec.metricflow_week
+        if rule == "sum_of_days":
+            return self._combine(days["metric_value"], "sum", "week", label)
+        if rule == "distinct_over_week":
+            return self._weekly_for(binding, label)
+        if rule == "first_day":
+            return self._first_day(days["metric_value"], "week", label)
+        if rule == "average_of_rows":
+            if not spec.has_sides:
+                raise WorldCannotAnswer(f"{label} is an average whose series carry no sides")
+            return self._ratio_by_week_inputs(
+                spec,
+                binding,
+                days,
+                {"numerator": "sum_of_days", "denominator": "sum_of_days"},
+                label,
+            )
+        if rule == "ratio_of_week_inputs":
+            return self._ratio_by_week_inputs(
+                spec, binding, days, spec.input_metricflow_week, label
+            )
+        if rule == "derived_of_week_inputs":
+            if binding.dimension is not None:
+                raise WorldCannotAnswer(
+                    f"{label} is a derived metric; a slice of it cannot be rebuilt at week grain"
+                )
+            return self._derived(spec, "week")
+        raise WorldCannotAnswer(
+            f"{label}: MetricFlow's week rule '{rule}' is not one this loader can rebuild"
+        )
+
+    def _ratio_by_week_inputs(self, spec, binding, days, rules, label) -> pd.Series:
+        if not spec.has_sides:
+            raise WorldCannotAnswer(f"{label} is a ratio whose series carry no sides")
+        sides = []
+        for side in ("numerator", "denominator"):
+            rule = rules.get(side)
+            if rule == "sum_of_days":
+                sides.append(self._combine(days[side], "sum", "week", f"{label} {side}"))
+            elif rule == "distinct_over_week":
+                metric = spec.inputs.get(side)
+                sides.append(
+                    self._weekly_for(
+                        SeriesBinding(metric, binding.dimension, binding.values),
+                        f"{label} {side}",
+                    )
+                )
+            else:
+                raise WorldCannotAnswer(
+                    f"{label}: its {side}'s week rule is {rule!r} "
+                    "(`input_metricflow_week`), which this loader cannot rebuild"
+                )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return sides[0] / sides[1]
 
     def _side(self, spec, side, binding, days, rule, grain, label) -> pd.Series:
         """One side of a ratio at `grain`. A side that is a distinct count
@@ -474,6 +550,23 @@ def caveat_for(spec: MetricSpec, binding: SeriesBinding, grain: str) -> str | No
     no caveat at week grain: the weekly file is MetricFlow's number."""
     if grain == "day" or binding.cumulative:
         return None
+    if grain == "week" and spec.metricflow_week is not None:
+        if spec.matches_metricflow_week is not False:
+            return None
+        what = {
+            "sum_of_days": "the sum of the week's days, which for a level adds up seven days of it",
+            "distinct_over_week": "the distinct count over the week",
+            "first_day": "the week's first day",
+            "ratio_of_week_inputs": "a ratio of its inputs' week values "
+            f"({spec.input_metricflow_week})",
+            "derived_of_week_inputs": "its formula over its inputs' week values "
+            f"({spec.input_metricflow_week})",
+        }.get(spec.metricflow_week, spec.metricflow_week)
+        return (
+            f"'{binding.describe()}' is served at week grain as breakdown's providers return "
+            f"it (MetricFlow's `{spec.metricflow_week}`: {what}), not by the manifest's "
+            f"'{spec.time_aggregation}' rule, which gives a different number"
+        )
     if spec.type == "cumulative":
         return (
             f"'{binding.describe()}' is a cumulative metric; at grain '{grain}' it is served "
@@ -668,6 +761,7 @@ class LoadedWorld:
     plan: TreePlan
     start: pd.Timestamp
     end: pd.Timestamp
+    specs: dict[str, MetricSpec] = field(default_factory=dict)
 
     @property
     def dag(self):
@@ -684,4 +778,4 @@ def load_world(
     fetcher = WorldFetcher(series, plan.served)
     start, end = str(series.start.date()), str(series.end.date())
     data = fetch_all_metrics(parser, fetcher, _NAME_KEYED, start, end)
-    return LoadedWorld(world, parser, data, plan, series.start, series.end)
+    return LoadedWorld(world, parser, data, plan, series.start, series.end, worldset.metrics)

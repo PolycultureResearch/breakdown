@@ -53,6 +53,14 @@ class MetricSpec:
     measure_agg: str | None = None  # the measure's own aggregation
     has_sides: bool = False  # the series carry numerator/denominator
     has_weekly_series: bool = False  # the world's weekly file holds its week values
+    # What MetricFlow answers at week grain, which is what breakdown's own
+    # providers return for a week node (they ask the source at the node's
+    # grain): sum_of_days | average_of_rows | distinct_over_week | first_day |
+    # ratio_of_week_inputs | derived_of_week_inputs. None on sets built before
+    # the generator stated it (§10.9).
+    metricflow_week: str | None = None
+    matches_metricflow_week: bool | None = None
+    input_metricflow_week: dict[str, str] = field(default_factory=dict)
     dimensions: tuple[str, ...] = ()
 
 
@@ -172,7 +180,17 @@ _SET_STATS = {"rel_mean": "rel_change_mean", "rel_sd": "rel_change_sd", "n_seeds
 # Read when present: the null twins' mean level, below which a relative
 # change means nothing (a stock that can go negative, a flow that is zero
 # outside a promotion).
-_OPTIONAL_SET_STATS = {"null_mean": "null_mean"}
+_OPTIONAL_SET_STATS = {
+    "null_mean": "null_mean",
+    # The effect by the metric's own time_aggregation (Σnum/Σden for a rate),
+    # beside `rel_change`, the window mean of daily values (generator §10.6).
+    "rel_agg_mean": "rel_change_aggregated_mean",
+    "rel_agg_sd": "rel_change_aggregated_sd",
+    # Twins identical on every day before the start, in every seed; NULL when
+    # some seed had no day to judge by (generator §10.5).
+    "aligned_before_start": "aligned_before_start",
+    "aligned_before_start_share": "aligned_before_start_share",
+}
 
 
 def _none(v):
@@ -230,6 +248,9 @@ def load_world_set(path: str | Path, *, allow_v1: bool = False) -> WorldSet:
             # Sets that predate `has_sides` carried sides for ratios only.
             has_sides=bool(m.get("has_sides", m["type"] == "ratio")),
             has_weekly_series=bool(m.get("has_weekly_series", False)),
+            metricflow_week=m.get("metricflow_week"),
+            matches_metricflow_week=m.get("matches_metricflow_week"),
+            input_metricflow_week=dict(m.get("input_metricflow_week") or {}),
             dimensions=tuple(m.get("dimensions") or ()),
         )
 
