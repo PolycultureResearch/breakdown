@@ -105,6 +105,22 @@ class WorldSet:
             for r in rows.itertuples(index=False)
         }
 
+    def set_effects(self, regime: str, anomaly: str) -> dict[tuple, dict[str, Any]]:
+        """`(metric, dimension, value) -> {rel_mean, rel_sd, n_seeds}`: the
+        cross-seed mean relative change over the anomaly's declared window
+        and its spread across the set's seeds. Empty when the summary lacks
+        those columns; attribution then refuses sizes by name."""
+        table = self._verdict_table()
+        if table is None or not set(_SET_STATS.values()) <= set(table.columns):
+            return {}
+        rows = table[(table["regime"] == regime) & (table["anomaly"] == anomaly)]
+        return {
+            (r["metric"], _none(r["dimension"]), _none(r["value"])): {
+                name: _none(r[col]) for name, col in _SET_STATS.items()
+            }
+            for r in rows.to_dict("records")
+        }
+
     def _verdict_table(self):
         if self.effects_summary is None or not self.effects_summary.exists():
             return None
@@ -116,11 +132,13 @@ class WorldSet:
             need = ["regime", "anomaly", "metric", "dimension", "value", "verdict"]
             if any(c not in frame.columns for c in need):
                 return None
-            cached = _VERDICT_TABLES[self.effects_summary] = frame[need]
+            keep = need + [c for c in _SET_STATS.values() if c in frame.columns]
+            cached = _VERDICT_TABLES[self.effects_summary] = frame[keep]
         return cached
 
 
 _VERDICT_TABLES: dict[Path, Any] = {}
+_SET_STATS = {"rel_mean": "rel_change_mean", "rel_sd": "rel_change_sd", "n_seeds": "n_seeds"}
 
 
 def _none(v):

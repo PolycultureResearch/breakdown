@@ -93,6 +93,8 @@ def test_the_sets_verdicts_and_a_twins_slice_stats_are_read_from_their_files(tmp
     assert verdicts[("signups", None, None)] == "established_down"
     assert verdicts[("spend", None, None)] == "exactly_zero"
     assert ws.verdicts("baseline", "no_such_anomaly") == {}
+    effects = ws.set_effects("baseline", "rate_drop")
+    assert effects[("signups", None, None)] == {"rel_mean": -0.4, "rel_sd": None, "n_seeds": 1}
     single = ws.world("fixture.baseline.s0.only.rate_drop")
     assert single.effects_summary.exists()
 
@@ -570,33 +572,39 @@ def test_attribution_scores_the_edges_on_the_path_from_root_to_target(mapping):
     assert path_edges(dag, ["revenue"], "revenue") == []
 
 
+SET = {"set_rel_mean": 0.10, "set_rel_sd": 0.01, "set_n_seeds": 10}  # ±7% at ten seeds
+
+
 def _item(world, seed, measured, null=100.0, estimate=None, ci=None, **extra):
+    """One world's row of one item. The set's cross-seed effect rides on it."""
     return {
         "world": world,
         "seed": seed,
         "measured_effect": measured,
+        "world_value": null + measured,
         "null_value": null,
         "estimate": estimate,
         "ci_95": ci,
         "verdict": "established_up",
         "aligned": False,
         "withheld": None,
+        **SET,
         **extra,
     }
 
 
-def test_a_size_is_scored_only_when_established_and_precise_at_the_seeds_scored():
-    precise = [_item(f"w{s}", s, m) for s, m in enumerate([10.0, 10.5, 9.5, 10.2, 9.8])]
-    v = eligibility(precise)
-    assert v["eligible"] and v["n_seeds"] == 5 and v["precision"] < 0.05
-    # Three noisy seeds: established at the set level, not precise here.
-    noisy = [_item(f"w{s}", s, m) for s, m in enumerate([2.0, 10.0, 25.0])]
-    v = eligibility(noisy)
+def test_a_size_is_scored_only_when_established_and_precise_at_the_sets_seed_count():
+    rows = [_item(f"w{s}", s, 10.0) for s in range(3)]
+    v = eligibility(rows)
+    assert v["eligible"] and v["n_seeds"] == 10 and v["precision"] < 0.1
+    # The same spread from three seeds: t on two degrees of freedom is 4.30.
+    few = [{**r, "set_n_seeds": 3} for r in rows]
+    v = eligibility(few)
     assert not v["eligible"] and "precision" in v["why"] and "3 seeds" in v["why"]
-    open_ = [{**r, "verdict": "open"} for r in precise]
-    assert eligibility(open_)["why"] == "verdict open"
-    assert "1 seed" in eligibility(precise[:1])["why"]
-    refused = [{**r, "refused": "several_parents_moved: ['x']"} for r in precise]
+    assert eligibility([{**r, "verdict": "open"} for r in rows])["why"] == "verdict open"
+    missing = [{**r, "set_rel_sd": None} for r in rows]
+    assert "no cross-seed mean and spread" in eligibility(missing)["why"]
+    refused = [{**r, "refused": "several_parents_moved: ['x']"} for r in rows]
     assert eligibility(refused)["why"].startswith("several_parents_moved")
 
 
@@ -608,6 +616,7 @@ def test_size_error_is_a_ratio_on_a_log_scale_with_interval_coverage_and_withhol
         _item("w3", 3, 10.0, estimate=None, withheld="withheld:nonfinite_posterior (p)"),
     ]
     scored = {s["world"]: s for s in score_items(rows, eligibility(rows))}
+    assert scored["w0"]["truth"] == pytest.approx(10.0)  # set mean 10% of a null of 100
     assert scored["w0"]["ratio"] == pytest.approx(2.0)
     assert scored["w0"]["log_error"] == pytest.approx(np.log(2.0))
     assert scored["w0"]["covered"] is False and scored["w1"]["covered"] is True
@@ -616,23 +625,24 @@ def test_size_error_is_a_ratio_on_a_log_scale_with_interval_coverage_and_withhol
     assert "ratio" not in scored["w3"] and scored["w3"]["withheld"]  # withheld, not a zero
 
 
-def test_an_aligned_twin_is_its_own_truth_and_otherwise_the_cross_seed_mean_is():
-    rows = [
-        _item(f"w{s}", s, m, null=n) for s, (m, n) in enumerate([(10, 100), (11, 110), (9, 90)])
-    ]
-    rows[0].update(estimate=10.1, aligned=True, measured_effect=10.1)
-    rows[1].update(estimate=11.0)
+def test_truth_is_the_sets_mean_times_the_items_share_or_an_aligned_twins_own():
+    rows = [_item(f"w{s}", s, 8.0, null=n) for s, n in enumerate([100.0, 110.0, 90.0])]
+    for r in rows:  # a formula parent carrying 80% of its child's twin difference
+        r["world_value"] = r["null_value"] + 10.0
+    rows[0].update(estimate=8.5, aligned=True)
+    rows[1].update(estimate=8.0)
     v = eligibility(rows)
-    scored = {s["world"]: s for s in score_items(rows, v)}
     assert v["eligible"], v["why"]
-    assert scored["w0"]["basis"] == "this_twin" and scored["w0"]["truth"] == 10.1
+    assert v["fraction"] == pytest.approx(0.8)
+    scored = {s["world"]: s for s in score_items(rows, v)}
+    assert scored["w0"]["basis"] == "this_twin" and scored["w0"]["truth"] == 8.0
     assert scored["w1"]["basis"] == "cross_seed_mean"
-    assert scored["w1"]["truth"] == pytest.approx(v["rel_mean"] * 110)
+    assert scored["w1"]["truth"] == pytest.approx(0.8 * 0.10 * 110.0)
 
 
 def test_an_imprecise_but_established_item_is_scored_on_direction_only():
     rows = [
-        _item(f"w{s}", s, m, estimate=e) for s, (m, e) in enumerate([(2, 5), (10, -1), (25, 3)])
+        _item(f"w{s}", s, 10.0, estimate=e, set_rel_sd=0.2) for s, e in enumerate([5.0, -1.0, 3.0])
     ]
     scored = score_items(rows, eligibility(rows))
     assert [s.get("direction_agrees") for s in scored] == [True, False, True]
@@ -778,7 +788,7 @@ def test_a_run_goes_from_manifest_to_scoreboard_and_resumes_without_refitting(tm
     table = {t["item"]: t for t in board["attribution"]["eligibility"]}
     assert set(table) == {"root:signup_rate", "signup_rate->signups"}
     assert not table["signup_rate->signups"]["eligible"]
-    assert "1 seed" in table["signup_rate->signups"]["why"]
+    assert "no cross-seed mean and spread" in table["signup_rate->signups"]["why"]
     items = [json.loads(line) for line in (out / "rows" / "attribution.0of1.jsonl").open()]
     edge = next(i for i in items if i["item"] == "signup_rate->signups")
     assert edge["kind"] == "formula_edge" and edge["measured_effect"] < 0

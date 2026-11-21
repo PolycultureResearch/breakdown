@@ -335,6 +335,8 @@ def e2e_world_set(root: Path) -> Path:
             "dimension": None,
             "value": None,
             "n_seeds": 1,
+            "rel_change_mean": truth["measured_effects"][m]["rel_change"],
+            "rel_change_sd": None,  # one seed: no spread
             "verdict": verdict.get(m, "established_down"),
         }
         for m in truth["measured_effects"]

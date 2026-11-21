@@ -51,8 +51,9 @@ from .worldset import World, WorldSet, load_world_set
 REPO = Path(__file__).resolve().parents[3]
 ROW_FORMAT_VERSION = 1
 # A single world's rows: 2 added `attribution`, 3 split its root item into
-# `root_unexplained` and `root_gap`. Calibration jobs keep their keys.
-SINGLE_ROW_FORMAT_VERSION = 3
+# `root_unexplained` and `root_gap`, 4 scores over the declared window with the
+# set's cross-seed effects. Calibration jobs keep their keys.
+SINGLE_ROW_FORMAT_VERSION = 4
 
 DEV_SEEDS = tuple(range(0, 5))
 HELD_OUT_SEEDS = tuple(range(5, 10))
@@ -221,6 +222,7 @@ def measured_for(worldset: WorldSet, world: World, record: dict[str, Any]) -> Me
     return Measured(
         record,
         verdicts=worldset.verdicts(world.regime, record["id"]),
+        set_effects=worldset.set_effects(world.regime, record["id"]),
         twin=read_twin_summary(world.effects_summary),
     )
 
@@ -284,8 +286,12 @@ def plan_run(
     for w in single_worlds:
         # The set's verdicts depend on which seeds the set was built with, so
         # they are part of what decides a single world's result.
+        # ...and so do the set's cross-seed effects attribution is scored with.
         verdicts = sorted(
             (json.dumps(k), v) for k, v in worldset.verdicts(w.regime, w.anomalies[0]).items()
+        ) + sorted(
+            (json.dumps(k), json.dumps(v, default=str))
+            for k, v in worldset.set_effects(w.regime, w.anomalies[0]).items()
         )
         key = _sha(
             [

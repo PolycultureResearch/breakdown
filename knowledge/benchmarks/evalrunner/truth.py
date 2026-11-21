@@ -74,6 +74,9 @@ class Measured:
     record: dict[str, Any]
     verdicts: dict[tuple, str] = field(default_factory=dict)
     twin: dict[tuple, dict[str, Any]] = field(default_factory=dict)
+    # The set's cross-seed effect per key (`WorldSet.set_effects`): what an
+    # attributed size is scored against.
+    set_effects: dict[tuple, dict[str, Any]] = field(default_factory=dict)
 
     def key(self, node: str, plan: TreePlan) -> tuple | None:
         """`(metric, dimension, value)` a node's own series is measured as, or

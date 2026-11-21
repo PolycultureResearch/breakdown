@@ -2,10 +2,9 @@
 against the measured twin effect.
 
 **What is compared.** For a single world, the engine's root-cause analysis
-(`run_rca`) over the anomaly's own window: the declared start's period, for
-as long as the anomaly lasts, at most `MAX_ANALYSIS_DAYS`, in whole periods of
-the target (`attribution_window`). The same window in every seed, so the
-measured effect can be averaged across seeds. On every edge `p -> c` that
+(`run_rca`) over the anomaly's declared window, as the whole periods of the
+target that cover it (`attribution_window`): the window the set's
+cross-seed effects were measured over, and the same in every seed. On every edge `p -> c` that
 lies on a path from the truth root to the target, the engine reports `p`'s
 contribution to `c`'s change, with a 95% credible interval. Its measured
 counterpart is how much of `c`'s change in that window the anomaly caused
@@ -33,17 +32,24 @@ is part of the error, as it is part of what a reader of the engine's answer
 gets.
 
 **Which truth.** Spec of the generator, §9.7: a size is scored only where the
-set's `verdict` for the child metric is established and the cross-seed mean
-of the measured effect is precise, 95% half-width within `MAX_REL_PRECISION`
-of the effect at the seeds the run scores: `t · sd / √n / |mean|`, with `t`
-the two-sided 95% point of Student's t on n − 1 degrees of freedom. The
-generator's §9.2 rule uses 1.96; at its ten seeds t is 2.26, and at a smoke
-set's three it is 4.30, where 1.96 would trust a spread taken from three
-numbers. That spread is computed here from the runner's own per-world rows,
-so the precision is that of the window and the seeds actually scored. Truth is then the cross-seed mean relative effect times this
-world's null value. Where this world's twins were aligned until the anomaly
-(`pre_onset_rms_diff == 0` in the twin's summary for that metric), one twin's
-difference is that world's own effect and is used instead.
+set's `verdict` for the child metric is established and the set's cross-seed
+mean of the child's relative effect is precise: 95% half-width within
+`MAX_REL_PRECISION` of the effect at the set's own seed count, `t · sd / √n /
+|mean|` from `rel_change_sd` and `n_seeds` in its `effects_summary.parquet`,
+with `t` the two-sided 95% point of Student's t on n − 1 degrees of freedom.
+The generator's §9.2 rule uses 1.96; at its ten seeds t is 2.26, and at a
+smoke set's three it is 4.30, where 1.96 would trust a spread taken from
+three numbers.
+
+Truth is then the set's cross-seed mean relative effect of the child, times
+the item's share of it (1 for a learned edge and a root, the mean Shapley
+fraction over the run's worlds for a formula parent), times this world's null
+value of the child. Where this world's twins were aligned until the anomaly
+(`pre_onset_rms_diff == 0` in the twin's summary for that metric), one
+twin's difference is that world's own effect and is used instead. The set's
+relative change is of the window mean of the daily series; the engine's
+window rule takes a rate as Σnumerator / Σdenominator, so for a rate the two
+can differ slightly, and that difference is in the error.
 
 Everything here is computed at scoring time from rows the job writes, so a
 world's rows never depend on which other seeds the run holds.
@@ -58,7 +64,9 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
-from .truth import ESTABLISHED, MAX_ANALYSIS_DAYS, Measured, analysis_window
+from breakdown.grains import floor_period
+
+from .truth import ESTABLISHED, Measured
 
 MAX_REL_PRECISION = 0.20
 
@@ -71,7 +79,6 @@ def t95(n: int) -> float:
 
 
 __all__ = [
-    "MAX_ANALYSIS_DAYS",
     "MAX_REL_PRECISION",
     "attribution_window",
     "attribution_items",
@@ -81,8 +88,16 @@ __all__ = [
 
 
 def attribution_window(record: dict[str, Any], grain: str) -> tuple[str, str]:
-    """The anomaly's own window at the target's grain, the same in every seed."""
-    return analysis_window(pd.Timestamp(record["start"]), record, grain)
+    """The anomaly's declared window, as the whole periods of the target that
+    cover it: the window the set's cross-seed effect was measured over, and
+    the same in every seed."""
+    start = floor_period(pd.Timestamp(record["start"]), grain)
+    end = pd.Timestamp(record["end"])
+    if grain == "week":
+        end = floor_period(end, grain) + pd.Timedelta(days=6)
+    elif grain != "day":
+        raise ValueError(f"a target at grain '{grain}' has no attribution window rule")
+    return str(start.date()), str(end.date())
 
 
 def path_edges(dag: nx.DiGraph, truth: list[str], target: str) -> list[tuple[str, str]]:
@@ -178,7 +193,12 @@ def attribution_items(
         v_world = v_null = None
         if window is not None:
             v_world, v_null = _value(lw, child, window), _value(null_lw, child, window)
+        key = measured.key(child, plan)
+        stats = (measured.set_effects.get(key) if key else None) or {}
         return {
+            "set_rel_mean": _finite(stats.get("rel_mean")),
+            "set_rel_sd": _finite(stats.get("rel_sd")),
+            "set_n_seeds": stats.get("n_seeds"),
             "item": f"{parent}->{child}" if parent else f"root:{child}",
             "kind": kind,
             "parent": parent,
@@ -275,20 +295,29 @@ def _withheld(node: dict[str, Any], estimate, what: str) -> str | None:
 # Scoring: needs every seed's rows of an item
 # ---------------------------------------------------------------------------
 def eligibility(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Whether one item's size can be scored, from its rows across the run's
-    seeds: the set's verdict must be established, and the cross-seed mean of
-    the relative effect precise to `MAX_REL_PRECISION`."""
-    rel = [
-        r["measured_effect"] / r["null_value"]
-        for r in rows
-        if r.get("measured_effect") is not None and r.get("null_value") not in (None, 0)
-    ]
+    """Whether one item's size can be scored: the set's verdict for its child
+    established, and the set's cross-seed mean relative effect for the child
+    precise to `MAX_REL_PRECISION` at the set's own seed count. Both come
+    from the set's `effects_summary.parquet` (declared window, every seed the
+    set holds); the rows only carry them. The item's share of its child's
+    effect (1 for a learned edge and a root; a formula parent's Shapley
+    fraction) is the mean over the run's worlds."""
+    first = rows[0]
     verdicts = {r.get("verdict") for r in rows}
+    fractions = [
+        r["measured_effect"] / (r["world_value"] - r["null_value"])
+        for r in rows
+        if r.get("measured_effect") is not None
+        and r.get("world_value") is not None
+        and r.get("null_value") is not None
+        and r["world_value"] != r["null_value"]
+    ]
     out: dict[str, Any] = {
-        "n_seeds": len(rel),
         "verdict": verdicts.pop() if len(verdicts) == 1 else sorted(map(str, verdicts)),
-        "rel_mean": float(np.mean(rel)) if rel else None,
-        "rel_sd": float(np.std(rel, ddof=1)) if len(rel) > 1 else None,
+        "n_seeds": first.get("set_n_seeds"),
+        "rel_mean": first.get("set_rel_mean"),
+        "rel_sd": first.get("set_rel_sd"),
+        "fraction": float(np.mean(fractions)) if fractions else None,
         "precision": None,
         "aligned_worlds": sum(1 for r in rows if r.get("aligned")),
     }
@@ -300,17 +329,19 @@ def eligibility(rows: list[dict[str, Any]]) -> dict[str, Any]:
         out["eligible"] = False
         out["why"] = f"verdict {out['verdict']}" if out["verdict"] is not None else "no set verdict"
         return out
-    if len(rel) < 2:
-        out["eligible"], out["why"] = False, f"{len(rel)} seed(s) with a measured effect"
+    n, mean, sd = out["n_seeds"], out["rel_mean"], out["rel_sd"]
+    if mean is None or sd is None or not n or n < 2 or mean == 0:
+        out["eligible"] = False
+        out["why"] = "the set's summary gives no cross-seed mean and spread for this metric"
         return out
-    if out["rel_mean"] == 0:
-        out["eligible"], out["why"] = False, "measured mean is zero"
+    if out["fraction"] is None:
+        out["eligible"], out["why"] = False, "no world measured the item's share"
         return out
-    out["precision"] = t95(len(rel)) * out["rel_sd"] / math.sqrt(len(rel)) / abs(out["rel_mean"])
+    out["precision"] = t95(int(n)) * sd / math.sqrt(n) / abs(mean)
     if out["precision"] > MAX_REL_PRECISION:
         out["eligible"] = False
         out["why"] = (
-            f"precision ±{out['precision']:.0%} at {len(rel)} seeds "
+            f"precision ±{out['precision']:.0%} at the set's {int(n)} seeds "
             f"(needs ±{MAX_REL_PRECISION:.0%})"
         )
         return out
@@ -329,7 +360,8 @@ def score_items(rows: list[dict[str, Any]], verdict: dict[str, Any]) -> list[dic
             if r.get("aligned") and r.get("measured_effect") is not None:
                 truth, basis = r["measured_effect"], "this_twin"
             elif r.get("null_value") is not None:
-                truth, basis = verdict["rel_mean"] * r["null_value"], "cross_seed_mean"
+                truth = verdict["fraction"] * verdict["rel_mean"] * r["null_value"]
+                basis = "cross_seed_mean"
             else:
                 truth, basis = None, None
             s.update(truth=truth, basis=basis)
@@ -344,8 +376,8 @@ def score_items(rows: list[dict[str, Any]], verdict: dict[str, Any]) -> list[dic
             # The item's own measured direction (a formula share can point
             # against its child: the stock's share in a churn spike), else
             # the child's verdict.
-            if verdict.get("rel_mean"):
-                expected = np.sign(verdict["rel_mean"])
+            if verdict.get("rel_mean") and verdict.get("fraction"):
+                expected = np.sign(verdict["rel_mean"] * verdict["fraction"])
             else:
                 expected = 1 if verdict["verdict"] == "established_up" else -1
             s["direction_agrees"] = bool(np.sign(est) == expected)

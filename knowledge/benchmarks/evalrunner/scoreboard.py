@@ -352,7 +352,10 @@ def attribution_rows(rows, seed_of, vertical) -> tuple[list[dict], list[dict]]:
                 "anomaly": anomaly,
                 "item": item,
                 "kind": g[0]["kind"],
-                **{k: verdict[k] for k in ("verdict", "n_seeds", "rel_mean", "precision")},
+                **{
+                    k: verdict[k]
+                    for k in ("verdict", "n_seeds", "rel_mean", "fraction", "precision")
+                },
                 "aligned_worlds": verdict["aligned_worlds"],
                 "eligible": verdict["eligible"],
                 "why": verdict["why"],
@@ -728,10 +731,16 @@ def render_markdown(board: dict[str, Any], title: str | None = None) -> str:
             f"average at plan {run['host']['load_at_plan']} on {run['host']['cpus']} cores"
             + _wall(run),
             "- Null windows per world: "
-            + ", ".join(
-                sorted(
-                    {f"{g['n']} every {g['spacing_days']} days" for g in run["windows"].values()}
+            + (
+                ", ".join(
+                    sorted(
+                        {
+                            f"{g['n']} every {g['spacing_days']} days"
+                            for g in run["windows"].values()
+                        }
+                    )
                 )
+                or "none"
             ),
             _unscored(run),
             f"- Single worlds: {run['coverage']['single_worlds_ranked']} ranked of "
@@ -776,11 +785,14 @@ def _render_vertical(rows: list[dict]) -> list[str]:
     out: list[str] = []
     horizons = sorted({r["horizon_days"] for r in rows if r["horizon_days"] is not None})
 
+    calibrated = any(r["question"] == "Q1 calibration" for r in rows)
     out += [
         "### Q1 Calibration on null worlds",
         "",
         "Calibrated: mean z 0, sd z 1, 4.6% of windows beyond 2, PIT distance 0, "
-        "lag-1 correlation 0.",
+        "lag-1 correlation 0."
+        if calibrated
+        else "No null windows were scored on this run (its tier scores none).",
         "",
     ]
     for h in horizons:
@@ -954,9 +966,11 @@ def _render_vertical(rows: list[dict]) -> list[str]:
                     _cell(g("suspect"), pct=True),
                 ]
             )
-        out += _table(
-            ["Role", "fits", "median fit seconds", "ESS < 400", "any divergence", "suspect"], body
-        )
+        if body:
+            out += _table(
+                ["Role", "fits", "median fit seconds", "ESS < 400", "any divergence", "suspect"],
+                body,
+            )
         g = lambda m: index.get(("all", m))  # noqa: E731
         if g("analysis_innovation_seconds"):
             out += [
@@ -978,12 +992,12 @@ def _render_attribution(rows: list[dict]) -> list[str]:
     out = [
         "### Q5 Attribution: attributed sizes against the measured effect",
         "",
-        "Over the anomaly's own window, each edge on the path from the root to the target "
+        "Over the anomaly's declared window, each edge on the path from the root to the target "
         "(the engine's contribution of the parent to the child's change, with its 95% "
         "interval) and the root (the part of its change the engine leaves unexplained, or "
         "for a root with no parents its change itself; no interval). Only items whose size the world set can ground are scored: set verdict "
-        f"established and the cross-seed mean precise to ±{MAX_REL_PRECISION:.0%} at the "
-        "seeds scored (the eligibility table says why each other item is not). Log error is "
+        f"established and the set's cross-seed mean precise to ±{MAX_REL_PRECISION:.0%} "
+        "at its own seed count (the eligibility table says why each other item is not). Log error is "
         "ln(engine / measured); a withheld estimate counts as withheld, never as zero.",
         "",
     ]
@@ -1028,7 +1042,7 @@ def _render_attribution(rows: list[dict]) -> list[str]:
         out += ["No item's size could be scored on this run: see the eligibility table.", ""]
     if g("all", "direction_agrees"):
         out += [
-            "Direction only (verdict established, size not precise enough): the engine's "
+            "Direction only (verdict established, size not scorable: see the table): the engine's "
             f"sign agrees with the measured one in {_cell(g('all', 'direction_agrees'), pct=True)} "
             f"of {g('all', 'direction_agrees')['n']} items.",
             "",
@@ -1043,9 +1057,11 @@ def _render_eligibility(run: dict[str, Any]) -> list[str]:
     out = [
         f"### Q5 Which attribution sizes the world set can ground ({run['vertical']})",
         "",
-        "Precision is the 95% half-width of the cross-seed mean relative effect, as a share "
-        "of the effect, at the seeds scored here (`t · sd / √n / |mean|`, t on n − 1 "
-        "degrees of freedom). Aligned worlds "
+        "Mean relative effect, seeds and precision are the set's, for the item's child, over "
+        "the anomaly's declared window: precision is the 95% half-width of the cross-seed "
+        "mean as a share of it (`t · sd / √n / |mean|`, t on n − 1 degrees of freedom). "
+        "Share is the item's mean fraction of its child's twin difference over the run's "
+        "worlds (a formula parent's Shapley share; 1 otherwise). Aligned worlds "
         "are those whose twins were identical until the anomaly; there one twin's difference "
         "is the truth.",
         "",
@@ -1058,6 +1074,7 @@ def _render_eligibility(run: dict[str, Any]) -> list[str]:
             str(t["verdict"]),
             str(t["n_seeds"]),
             _fmt(t["rel_mean"], 3),
+            _fmt(t.get("fraction"), 2),
             "—" if t["precision"] is None else f"±{t['precision']:.0%}",
             str(t["aligned_worlds"]),
             "size" if t["eligible"] else ("direction" if "precision" in t["why"] else "no"),
@@ -1073,6 +1090,7 @@ def _render_eligibility(run: dict[str, Any]) -> list[str]:
             "Set verdict",
             "seeds",
             "mean relative effect",
+            "share",
             "precision",
             "aligned worlds",
             "scored on",
