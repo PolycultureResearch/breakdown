@@ -123,6 +123,17 @@ def slice_items(
                 out.append(row)
                 continue
             ranked = [s["value"] for s in result["slices"]]
+            # The engine orders by excess in the direction of the node's
+            # window-over-window gap, so a member that fell while the node
+            # grew ranks last. Its rank by |excess| alone is kept beside it,
+            # as a contrast, not as the engine's answer.
+            by_size = [
+                s["value"]
+                for s in sorted(
+                    result["slices"],
+                    key=lambda s: -abs(s["excess"]) if s.get("excess") is not None else 0.0,
+                )
+            ]
             hit = next((s for s in result["slices"] if s["value"] == value), None)
             first = result["slices"][0] if result["slices"] else None
             row.update(
@@ -133,6 +144,8 @@ def slice_items(
                 reference_end=r_end,
                 n_ranked=len(ranked),
                 rank=ranked.index(value) + 1 if value in ranked else None,
+                rank_by_abs_excess=by_size.index(value) + 1 if value in by_size else None,
+                gap_sign=None if result.get("gap") is None else (1 if result["gap"] > 0 else -1),
                 first=None if first is None else first["value"],
                 first_noise_level=None if first is None else first.get("noise_level"),
                 root_abs_z=None if hit is None else _z(hit),

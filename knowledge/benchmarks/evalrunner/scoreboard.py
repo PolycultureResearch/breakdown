@@ -271,6 +271,7 @@ def localization_rows(rows, seed_of, vertical) -> list[dict]:
 
 Q4 = "Q4 slice localization"
 SLICE_METRICS = (
+    "top1_by_abs_excess",
     "top1",
     "top3",
     "reciprocal_rank",
@@ -308,7 +309,9 @@ def slice_rows(rows, seed_of, vertical) -> tuple[list[dict], list[dict]]:
                 "status",
                 "detail",
                 "rank",
+                "rank_by_abs_excess",
                 "n_ranked",
+                "gap_sign",
                 "first",
                 "root_abs_z",
                 "localization",
@@ -343,6 +346,11 @@ def slice_rows(rows, seed_of, vertical) -> tuple[list[dict], list[dict]]:
     ok["first_place_lacks_evidence"] = (~evidence).astype(float)
     ok["top1_with_evidence"] = ((rank == 1) & evidence).astype(float)
     ok["localized"] = (ok["localization"] == "localized").astype(float)
+    if "rank_by_abs_excess" in ok:
+        by_size = pd.to_numeric(ok["rank_by_abs_excess"], errors="coerce")
+        ok["top1_by_abs_excess"] = (by_size == 1).astype(float)
+    else:
+        ok["top1_by_abs_excess"] = float("nan")
     ok["role"] = ok["node_kind"]
     for role, g in _with_all(ok).groupby("role"):
         for metric in SLICE_METRICS:
@@ -1179,6 +1187,7 @@ def _render_slices(rows: list[dict]) -> list[str]:
                 _cell(g(role, "top1_with_evidence"), pct=True),
                 _cell(g(role, "first_place_lacks_evidence"), pct=True),
                 _cell(g(role, "localized"), pct=True),
+                _cell(g(role, "top1_by_abs_excess"), pct=True),
             ]
         )
     if body:
@@ -1194,6 +1203,7 @@ def _render_slices(rows: list[dict]) -> list[str]:
                 "top-1 with evidence",
                 "first place lacks evidence",
                 "engine says localized",
+                "top-1 by \\|excess\\| (contrast)",
             ],
             body,
         )
@@ -1225,7 +1235,10 @@ def _render_slice_detail(run: dict[str, Any]) -> list[str]:
         ds = sorted(ds, key=lambda d: d["seed"])
         ok = [d for d in ds if d["status"] == "ok"]
         ranks = ", ".join(
-            f"s{d['seed']}: {d['rank']}/{d['n_ranked']}"
+            (
+                f"s{d['seed']}: {d['rank']}/{d['n_ranked']}"
+                + (f" (gap {'+' if d.get('gap_sign') == 1 else '−'})" if d.get("gap_sign") else "")
+            )
             if d["status"] == "ok"
             else f"s{d['seed']}: —"
             for d in ds
@@ -1296,11 +1309,11 @@ def _render_attribution(rows: list[dict]) -> list[str]:
         [counts],
     )
     body = []
-    for role in _roles({k for k in index if k[1] == "abs_log_error"}):
+    for role in _roles({k for k in index if k[1] == "ratio"}):
         body.append(
             [
                 role,
-                str(g(role, "abs_log_error")["n"]),
+                str(g(role, "ratio")["n"]),
                 _cell(g(role, "ratio")),
                 _cell(g(role, "log_error")),
                 _cell(g(role, "abs_log_error")),

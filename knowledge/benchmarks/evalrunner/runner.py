@@ -55,8 +55,8 @@ ROW_FORMAT_VERSION = 1
 # `root_unexplained` and `root_gap`, 4 scores over the declared window with the
 # set's cross-seed effects, 5 adds the truth basis, the set's alignment flag and
 # the target's measured change. Calibration jobs keep their keys.
-# 6 adds `slices` (slice localization, Q4).
-SINGLE_ROW_FORMAT_VERSION = 6
+# 6 adds `slices` (slice localization, Q4), 7 their rank by |excess|.
+SINGLE_ROW_FORMAT_VERSION = 7
 
 DEV_SEEDS = tuple(range(0, 5))
 HELD_OUT_SEEDS = tuple(range(5, 10))
@@ -393,7 +393,10 @@ def plan_run(
         "tree": {
             "path": _relative(tree_path),
             "sha256": tree.sha256,
-            "canonical": False,
+            # The generator's canonical tree for this company
+            # (fake_companies `examples/breakdown_<company>_tree.yml`), run
+            # with no bindings file; anything else is not canonical.
+            "canonical": is_canonical_tree(tree_path, worldset, bindings_path),
             "bindings_path": None if bindings_path is None else _relative(bindings_path),
             "bindings_sha256": tree.bindings_sha256,
             "effective_sha256": tree_sha,
@@ -424,6 +427,15 @@ def plan_run(
         "host": {"machine": platform.machine(), "cpus": os.cpu_count(), "load_at_plan": _load()},
         "jobs": jobs,
     }
+
+
+def is_canonical_tree(tree_path, worldset: WorldSet, bindings_path) -> bool:
+    path = Path(tree_path)
+    return (
+        bindings_path is None
+        and path.parent.name == "examples"
+        and path.stem == f"breakdown_{worldset.company_slug}_tree"
+    )
 
 
 def _relative(path) -> str:
