@@ -107,6 +107,11 @@ def _expand_env(value: Optional[str]) -> Optional[str]:
     return _ENV_REF.sub(repl, value)
 
 
+# Every provider a tree may name. A module constant so the invariant tests can
+# ask each one the same questions (roadmap C66: how does it fold a stock?).
+PROVIDER_TYPES = ("mock", "local", "cloud", "dbt", "warehouse", "duckdb", "none")
+
+
 class DataProviderConfig(BaseModel):
     type: str = "mock"  # mock | local | cloud | dbt | warehouse | duckdb | none (alias "assumed")
     project_path: Optional[str] = None
@@ -151,7 +156,7 @@ class DataProviderConfig(BaseModel):
         # `assumed` is the same thing said from the tree author's seat.
         if v == "assumed":
             return "none"
-        if v not in ["mock", "local", "cloud", "dbt", "warehouse", "duckdb", "none"]:
+        if v not in PROVIDER_TYPES:
             raise ValueError(
                 "type must be one of: mock, local, cloud, dbt, warehouse, duckdb, none"
             )
@@ -687,6 +692,18 @@ class BindingSpec(BaseModel):
     # right for ISO dates (`2025-01-31`), for anything a day above 12 already
     # settles, and for Parquet, which stores a typed date.
     date_format: Optional[str] = None
+    # The finest period `time_column` distinguishes: the source holds one row
+    # per `grain_key` per `time_grain` (roadmap C66). Absent means `day`, which
+    # is what MetricFlow assumes of an undeclared time dimension and what every
+    # daily export is. It matters only for a `kind: stock`: a node coarser than
+    # this has several snapshots folded into each period by `agg`, and a sum of
+    # snapshots is not a level, so that node is refused at load. A source that
+    # really is one row per week or month — a monthly balance export, or a
+    # `bind.sql` that already picks each period's closing snapshot — declares it
+    # here. `sql:` cannot say this: breakdown never reads the relation's
+    # cadence out of a query. The dbt importer fills it from the manifest's
+    # `time_granularity`.
+    time_grain: Optional[str] = None
 
     agg: str
     # The aggregated column/expression, for every agg except `ratio`.
@@ -736,6 +753,13 @@ class BindingSpec(BaseModel):
     def check_agg(cls, v: str) -> str:
         if v not in BINDING_AGGS:
             raise ValueError(f"binding agg must be one of {list(BINDING_AGGS)}, got '{v}'")
+        return v
+
+    @field_validator("time_grain")
+    @classmethod
+    def check_time_grain(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in GRAINS:
+            raise ValueError(f"binding time_grain must be one of {list(GRAINS)}, got '{v}'")
         return v
 
     @field_validator("relation")

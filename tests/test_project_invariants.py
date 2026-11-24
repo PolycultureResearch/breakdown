@@ -677,6 +677,146 @@ def test_every_fetcher_says_so_when_the_source_returns_nothing(caplog):
     )
 
 
+# --- Rule 1, for a stock: no provider adds up a level over a period (C66) -----
+#
+# `kind: stock` governed aggregation only where breakdown resampled; a node's
+# own series came back from the provider folded by the *measure's*
+# aggregation, so a weekly MRR was seven daily MRRs added together, silently.
+# `loading.STOCK_FOLD_SOURCES` says, per provider, how breakdown knows the
+# fold; these tests ask every provider and every aggregation the question, so
+# a new one cannot ship unclassified.
+
+
+def _stock_tree_yaml(provider: str, tmp_path) -> typing.Optional[str]:
+    """A week-grain stock over a daily `sum` source, in `provider`'s own terms,
+    or None where the provider has no source to fold. A provider classified as
+    folding (`binding`/`manifest`/`unverifiable`) with no entry here fails
+    `test_every_provider_is_asked_whether_it_folds_a_stock` — add one."""
+    node = (
+        "metrics:\n  - name: balance\n    source: sl.metrics.balance\n"
+        "    grain: week\n    kind: stock\n"
+    )
+    bind = (
+        "    bind:\n      relation: balances\n      grain_key: day\n"
+        "      time_column: day\n      agg: sum\n      measure: amount\n"
+    )
+    if provider == "duckdb":
+        (tmp_path / "exports").mkdir(exist_ok=True)
+        return f"provider:\n  type: duckdb\n  data_dir: {tmp_path / 'exports'}\n" + node + bind
+    if provider == "dbt":
+        return f"provider:\n  type: dbt\n  project_path: {tmp_path}\n" + node + bind
+    if provider == "local":
+        manifest = {
+            "semantic_models": [
+                {
+                    "name": "balances",
+                    "node_relation": {"alias": "balances"},
+                    "defaults": {"agg_time_dimension": "day"},
+                    "dimensions": [
+                        {"name": "day", "type": "time", "type_params": {"time_granularity": "day"}}
+                    ],
+                    "measures": [{"name": "balance", "agg": "sum", "expr": "amount"}],
+                }
+            ],
+            "metrics": [
+                {
+                    "name": "balance",
+                    "type": "simple",
+                    "type_params": {"measure": {"name": "balance"}},
+                }
+            ],
+        }
+        (tmp_path / "target").mkdir(exist_ok=True)
+        (tmp_path / "target" / "semantic_manifest.json").write_text(json.dumps(manifest))
+        return f"provider:\n  type: local\n  project_path: {tmp_path}\n" + node
+    if provider == "cloud":
+        return "provider:\n  type: cloud\n  environment_id: '1'\n  host: h\n  token: t\n" + node
+    return None
+
+
+def test_every_provider_is_asked_whether_it_folds_a_stock(tmp_path):
+    """Every provider a tree may name is classified, and every provider that
+    folds a source into periods refuses (or, where it cannot see the
+    definitions, names) a week stock over a daily `sum`."""
+    from breakdown.loading import STOCK_FOLD_SOURCES, stock_period_problems
+    from breakdown.parser import PROVIDER_TYPES
+
+    problems = {}
+    for provider in PROVIDER_TYPES:
+        how = STOCK_FOLD_SOURCES.get(provider)
+        if how is None:
+            problems[provider] = (
+                "is not in `loading.STOCK_FOLD_SOURCES`: say how breakdown knows what "
+                "it does to a stock coarser than its source"
+            )
+            continue
+        if how in ("author_sql", "generated", "no_data"):
+            continue
+        (tmp_path / provider).mkdir()
+        text = _stock_tree_yaml(provider, tmp_path / provider)
+        if text is None:
+            problems[provider] = f"folds stocks (`{how}`) but has no tree to drive here"
+            continue
+        found = stock_period_problems(Parser(text).config)
+        if how in ("binding", "manifest") and not any("'balance'" in r for r in found.refusals):
+            problems[provider] = f"`{how}` provider did not refuse a summed week stock: {found}"
+        if how == "unverifiable" and not any("'balance'" in u for u in found.unverified):
+            problems[provider] = f"unverifiable provider said nothing: {found}"
+    _settle(
+        "stock-fold",
+        problems,
+        "A provider can fold a stock's daily snapshots into a coarser period "
+        "without breakdown saying so (roadmap C66):",
+    )
+
+
+def test_every_aggregation_is_classified_for_a_stock():
+    """Every aggregation a binding may declare, the bridge may translate, or
+    MetricFlow may apply has an entry in `grains.STOCK_PERIOD_FOLDS`: either
+    a reason it is not a stock's level, or None with the reason in a comment."""
+    from breakdown.dbt_bridge import AGG_MAP
+    from breakdown.grains import STOCK_PERIOD_FOLDS
+    from breakdown.parser import BINDING_AGGS
+
+    seen = set(BINDING_AGGS) | set(AGG_MAP) | set(AGG_MAP.values())
+    try:
+        from metricflow_semantic_interfaces.type_enums import AggregationType
+
+        seen |= {a.value for a in AggregationType}
+    except ImportError:  # pragma: no cover - the dev group installs it
+        pass
+    _settle(
+        "stock-fold-agg",
+        {a: "unclassified" for a in sorted(seen - set(STOCK_PERIOD_FOLDS))},
+        "An aggregation has no entry in `grains.STOCK_PERIOD_FOLDS`:",
+    )
+
+
+def test_every_load_gate_asks_the_stock_question_before_fetching():
+    """`serve`/`doctor` load through `fetch_all_metrics`, which must refuse
+    before its first fetch; `breakdown check` and `doctor` must ask the same
+    function. Read off the AST, so a comment cannot satisfy it."""
+    from breakdown import check, doctor, loading
+
+    src = inspect.getsource(loading.fetch_all_metrics)
+    tree = ast.parse(__import__("textwrap").dedent(src))
+    calls = [
+        (node.lineno, ast.unparse(node.func))
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+    ]
+    gate = min((ln for ln, f in calls if f == "refuse_stock_period_folds"), default=None)
+    first_fetch = min((ln for ln, f in calls if f.endswith("fetch_metric")), default=None)
+    missing = {}
+    if gate is None or first_fetch is None or gate > first_fetch:
+        missing["fetch_all_metrics"] = "does not refuse a folded stock before its first fetch"
+    if "stock_period_problems" not in _calls_made_by(check._pre_fetch_load_error):
+        missing["check._pre_fetch_load_error"] = "does not ask `stock_period_problems`"
+    if "_check_stock_period_folds" not in _calls_made_by(doctor.run_doctor):
+        missing["doctor.run_doctor"] = "does not report `_check_stock_period_folds`"
+    _settle("stock-fold-gate", missing, "A load path skips the C66 refusal:")
+
+
 # --- Rule 2: every cache on TreeState is bounded ------------------------------
 
 

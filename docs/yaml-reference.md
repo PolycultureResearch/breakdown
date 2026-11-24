@@ -420,10 +420,10 @@ Each metric entry supports the following fields:
 | `name` | string | Unique identifier used throughout the tree |
 | `source` | string | dbt Semantic Layer metric path (e.g., `jaffle_shop.metrics.revenue`) |
 | `grain` | string | The metric's natural grain: `day` (default), `week`, or `month`. It is fetched, fitted, and attributed at this grain, never below it. See [Grains](#grains). |
-| `kind` | string | Temporal aggregation kind: `flow` (default, sums over time), `stock` (a point-in-time level, takes the last value), or `rate` (a ratio, never auto-aggregated). See [Grains](#grains). |
+| `kind` | string | Temporal aggregation kind: `flow` (default, sums over time), `stock` (a point-in-time level, takes the last value), or `rate` (a ratio, never auto-aggregated). A fetched `stock` coarser than its source is refused at load when the provider would sum, count or average its snapshots over each period. See [Grains](#grains). |
 | `sparse` | bool | `kind: flow` only. The source emits a row only when something happened (an event count, a comms log), so a period with no row inside the loaded window **is a zero**, at every edge — including the trailing run, which is otherwise trimmed as "not loaded yet". Refused on a stock, a rate, or a derived node. Every filled period is counted and named at load (`sparse_fills` on `/meta`, `/health` and MCP `get_tree`). See [Sparse sources](#sparse-sources-an-absent-period-is-a-zero). |
 | `sql` | string | For the `warehouse` provider: a SQL query returning columns `date` and `value`, with `:start_date` / `:end_date` named parameters, one row per period at the metric's `grain`. Refused under `duckdb` (use `bind.sql`); ignored by other providers. |
-| `bind` | dict | How this node gets its series, per node: a `relation` (a table, or a file stem under `duckdb`) **or** an inline `sql` relation, an optional `date_format` for a CSV time column (`duckdb` only), the `grain_key` that makes it one row per grain, its `time_column`, an `agg` (`sum` \| `count` \| `count_distinct` \| `ratio` \| `average` \| `last`) with `measure` — or `numerator` and `denominator` for `ratio` — and optional `dimensions` for slicing and `entity_key` / `entity_grain` for distinct counts. Under `dbt` it overrides what the manifest declares; under `duckdb` it is required on every fetched node. Mutually exclusive with `sql`. See [CSV or Parquet on-ramp](#csv-or-parquet-on-ramp-provider-duckdb) and the filter and distinct-count passages under [`provider`](#provider). |
+| `bind` | dict | How this node gets its series, per node: a `relation` (a table, or a file stem under `duckdb`) **or** an inline `sql` relation, an optional `date_format` for a CSV time column (`duckdb` only), the `grain_key` that makes it one row per grain, its `time_column`, an optional `time_grain` (`day` \| `week` \| `month`, default `day`: how often the source holds a row per `grain_key` — see [A stock the provider would add up](#a-stock-the-provider-would-add-up)), an `agg` (`sum` \| `count` \| `count_distinct` \| `ratio` \| `average` \| `last`) with `measure` — or `numerator` and `denominator` for `ratio` — and optional `dimensions` for slicing and `entity_key` / `entity_grain` for distinct counts. Under `dbt` it overrides what the manifest declares; under `duckdb` it is required on every fetched node. Mutually exclusive with `sql`. See [CSV or Parquet on-ramp](#csv-or-parquet-on-ramp-provider-duckdb) and the filter and distinct-count passages under [`provider`](#provider). |
 | `description` | string | Optional human-readable description |
 | `parents` | list | Names of metrics that causally influence this one |
 | `formula` | string | Arithmetic expression over parent names (e.g., `"order_count * average_order_value"`). Enables Shapley attribution. |
@@ -717,6 +717,65 @@ Metrics have different natural time grains: signups are daily events, a cohort c
 - A **finer rate** parent is an error. Declare the rate at the child's grain.
 - The finer grain must nest in the coarser: days tile weeks and months, but weeks straddle month boundaries, so a weekly parent under a monthly child is an error.
 
+**A stock the provider would add up.** <a id="a-stock-the-provider-would-add-up"></a>
+`kind` decides the aggregation only when breakdown resamples. A node's own
+series is asked of the provider at the node's grain, and the provider folds the
+source's rows into each period by the *measure's* aggregation, not by `kind`: a
+weekly `SUM(mrr)` over a daily snapshot table adds seven days of MRR together.
+So a fetched `kind: stock` node coarser than its source is **refused at load**
+(by `serve`, `breakdown check` and `breakdown doctor`, before anything is
+fetched) whenever its aggregation is `sum`, `count`, `average`, or anything else
+that is not a period-end value. Two folds are accepted: a closing snapshot
+(MetricFlow's `non_additive_dimension` with `window_choice: max`), and
+`count_distinct`, which counts each entity once however many snapshots it
+appears in — that is "entities active at any point in the period", at least the
+period-end level by the period's turnover but never a multiple of it. The
+refusal names the node, the measure and the aggregation, and gives two remedies:
+
+1. **Declare the node at its source's grain** (`grain: day` for a daily
+   snapshot) and let breakdown take the last value per period wherever a
+   coarser node reads it.
+2. **Make the source one row per period.** Under `duckdb` or `dbt`, bind a
+   `bind.sql` relation that already picks each period's closing snapshot and
+   declare `time_grain` on the binding:
+
+   ```yaml
+   - name: mrr
+     source: exports.mrr
+     grain: week
+     kind: stock
+     bind:
+       sql: >-
+         SELECT DATE_TRUNC('week', snapshot_date) AS week, mrr FROM mrr_daily
+         QUALIFY ROW_NUMBER() OVER (
+           PARTITION BY DATE_TRUNC('week', snapshot_date) ORDER BY snapshot_date DESC) = 1
+       grain_key: week
+       time_column: week
+       time_grain: week     # one row per week: nothing is folded
+       agg: sum
+       measure: mrr
+   ```
+
+   Under `local`, give the MetricFlow measure a `non_additive_dimension` over
+   its time dimension with `window_choice: max`. (`agg: last`, which would pick
+   the snapshot for you, is not built yet.)
+
+How breakdown knows the source's grain and aggregation depends on the provider:
+
+| Provider | How the fold is known | A summed coarse stock is |
+|---|---|---|
+| `duckdb` | the node's `bind.agg` and `bind.time_grain` (default `day`) | refused |
+| `dbt` | the node's `bind:` if it has one, else the manifest's measure and its time dimension's `time_granularity` | refused |
+| `local` | the project's `target/semantic_manifest.json`: the measure's aggregation, its `non_additive_dimension`, its time dimension's granularity; a derived metric folds as its worst input | refused; **warned** as unverified when the manifest is not on disk, or for a ratio, cumulative or conversion metric |
+| `cloud` | not on disk | **warned** as unverified, every coarse stock |
+| `warehouse` | the tree's own `sql` returns the finished series | not checked: return the period-end level |
+| `mock`, `none` | nothing is fetched or folded | not applicable |
+
+The warning is a warning, not a refusal, because refusing what breakdown cannot
+see would refuse correct trees too (a `count_distinct`, a semi-additive
+measure) with no remedy that keeps their meaning. It names the node at every
+load and on `breakdown check`.
+
 **Period labels are period starts** everywhere: days at midnight, weeks on Monday (ISO), months on the 1st. Partial edge periods are dropped, never zero-filled, so a coarse metric's series may end a few days before the raw data window does.
 
 **Windows snap per node.** RCA windows stay day-resolution dates in the API; each node interprets them as the whole periods fully inside. A node whose window holds no whole period reports `"status": "window_shorter_than_grain"` instead of failing the RCA, and every node reports its `grain` and `effective_windows`. Windows that snap to a single period suppress the bootstrap CI (`ci_status: "degenerate_single_period"`) rather than reporting a falsely-precise interval. `window_shorter_than_grain` is one of several per-node statuses. See [Per-node `status`](api-reference.md#per-node-status--one-bad-node-does-not-end-the-analysis) for the full set and what each means.
@@ -726,7 +785,9 @@ spine of whole periods inside the loaded window, and what happens to a missing
 period depends on **which edge of the series it is on** and on the metric's
 `kind`. Partial edge periods are always dropped. For the `warehouse` provider the
 SQL owns the aggregation, so return one row per period at the declared grain,
-labeled by period start.
+labeled by period start — and for a `kind: stock`, the period's closing level,
+not a sum of its days (breakdown cannot check this one; see
+[A stock the provider would add up](#a-stock-the-provider-would-add-up)).
 
 | Where the gap is | `flow` | `stock` | `rate` |
 |---|---|---|---|

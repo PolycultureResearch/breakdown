@@ -392,7 +392,11 @@ tree parses (schema, DAG rules, `${VAR}` references), `--default-tree` names a
 discovered tree, and the pre-fetch load checks pass (the provider's extra is
 installed, a `warehouse` tree has `sql` on every fetched metric, a `duckdb`
 tree's `data_dir` exists and holds at least one export, a cold-start tree
-declares every belief it needs). One `[PASS]` or `[FAIL]` line per tree,
+declares every belief it needs, and no `kind: stock` coarser than its source
+would be summed, counted or averaged over each period by its provider —
+read off the tree's `bind:` blocks or the dbt project's semantic manifest; see
+[A stock the provider would add up](yaml-reference.md#a-stock-the-provider-would-add-up)).
+One `[PASS]` or `[FAIL]` line per tree,
 non-zero exit if any tree would be refused, and no connection is opened, so it
 runs anywhere the YAML does, credentials or not.
 
@@ -407,7 +411,12 @@ format in a CSV, a short series bounding the analyses that read it, identity che
 nodes, fit readiness. A clean `check` means the tree will parse and start; `doctor` with
 an explicit window is the tool that proves it will serve. An unanswered rate
 denominator is reported as a `[WARN]` here because `serve` starts on it, while
-`doctor` fails it, since that is the trust gate.
+`doctor` fails it, since that is the trust gate. So is a coarse stock whose
+fold breakdown cannot see (`cloud`, or `local` without its
+`target/semantic_manifest.json` — a snapshot-served image, for instance):
+`[WARN] tree '<id>' stock period — Metric '<name>' is a `kind: stock` …`.
+`serve` logs the same sentence and starts; `doctor` reports it as a `stock
+period folds` line, failed when the fold is provably a sum.
 
 ---
 

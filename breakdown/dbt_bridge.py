@@ -49,6 +49,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from breakdown.dbt_manifest import SemanticManifest, parse_manifest
 from breakdown.formula import referenced_names, validate_formula
+from breakdown.grains import GRAINS, STOCK_PERIOD_FOLDS
 from breakdown.parser import _SIMPLE_RATIO, BindingDimension, BindingSpec
 
 logger = logging.getLogger(__name__)
@@ -264,6 +265,93 @@ def _measure_source(
                         measure.agg_time_dimension,
                     )
     return None, None, None, None
+
+
+def _non_additive_dimension(manifest: Any, metric: Any) -> Optional[Dict[str, Any]]:
+    """A simple metric's semi-additive marker, from whichever spec carries it:
+    the new spec's `metric_aggregation_params`, or the classic spec's measure.
+    Reading only the first was how a classic-spec balance measure bound as a
+    plain `sum` (roadmap C66)."""
+    tp = metric.type_params
+    params = getattr(tp, "metric_aggregation_params", None)
+    if params is not None:
+        return getattr(params, "non_additive_dimension", None) or None
+    if tp.measure is not None:
+        for model in manifest.semantic_models:
+            for measure in model.measures:
+                if measure.name == tp.measure.name:
+                    return getattr(measure, "non_additive_dimension", None) or None
+    return None
+
+
+@dataclass(frozen=True)
+class PeriodFold:
+    """How MetricFlow folds a metric's source rows into one period — what the
+    `local` provider's stock check needs (roadmap C66). `agg` is None when
+    breakdown cannot say, and `note` then says why."""
+
+    agg: Optional[str]
+    source_grain: Optional[str]
+    measure: str
+    note: str = ""
+
+
+def period_fold(manifest: Any, name: str, _depth: int = 0) -> PeriodFold:
+    """How `mf query --group-by metric_time__<grain>` aggregates metric `name`.
+
+    A simple metric is its measure's aggregation over its time dimension's
+    granularity, except that a `non_additive_dimension` over that time
+    dimension makes MetricFlow keep one snapshot per period — the last for
+    `window_choice: max`, the first for `min` — before aggregating. A derived
+    metric is as bad as its worst input: its expression is applied to inputs
+    already folded at the query grain. Anything else (ratio, cumulative,
+    conversion, an unknown name) is reported as unknown, with the reason.
+    """
+    metrics = {m.name: m for m in manifest.metrics}
+    metric = metrics.get(name)
+    if metric is None:
+        return PeriodFold(None, None, name, f"'{name}' is not a metric in the manifest")
+    if metric.type == "simple":
+        model, agg, column, agg_time = _measure_source(manifest, metric)
+        if model is None or agg is None:
+            return PeriodFold(None, None, name, "its measure does not resolve")
+        time_dim = _time_dimension(model, agg_time)
+        mf_grain = getattr(getattr(time_dim, "type_params", None), "time_granularity", None)
+        source_grain = GRAIN_MAP.get(mf_grain or "day")
+        if source_grain is None:
+            return PeriodFold(None, None, name, f"its time granularity '{mf_grain}' is unmodelled")
+        # Named as the author named it: the classic spec's measure, else the
+        # metric. Its `expr` may be `1` or a CASE, which reads as nothing.
+        tp = metric.type_params
+        measure = tp.measure.name if tp.measure is not None else name
+        nad = _non_additive_dimension(manifest, metric)
+        if nad:
+            over = nad.get("name")
+            time_names = {getattr(time_dim, "name", None), "metric_time"}
+            if over in time_names:
+                choice = str(nad.get("window_choice") or "min").lower()
+                return PeriodFold("last" if choice == "max" else "first", source_grain, measure)
+        return PeriodFold(agg, source_grain, measure)
+    if metric.type == "derived" and _depth < 8:
+        inputs = [i.name for i in (metric.type_params.metrics or [])]
+        folds = [period_fold(manifest, i, _depth + 1) for i in inputs]
+        unknown = [f for f in folds if f.agg is None]
+        if not folds or unknown:
+            why = f"input {unknown[0].note}" if unknown else "it names no inputs"
+            return PeriodFold(None, None, name, why)
+        # The first input that folds badly is the one worth naming; if none
+        # does, the finest input decides whether anything is folded at all.
+        bad = next((f for f in folds if STOCK_PERIOD_FOLDS.get(f.agg, "?") is not None), None)
+        if bad is not None:
+            return PeriodFold(bad.agg, bad.source_grain, f"{bad.measure} (via '{name}')")
+        finest = min((f.source_grain for f in folds), key=GRAINS.index)
+        return PeriodFold(folds[0].agg, finest, name)
+    return PeriodFold(
+        None,
+        None,
+        name,
+        f"'{name}' is a {metric.type} metric, whose per-period fold breakdown does not model",
+    )
 
 
 def _filter_sql(intersection: Any) -> Optional[str]:
@@ -699,8 +787,7 @@ def _translate_simple(manifest: Any, metric: Any, result: BridgeResult, dialect:
         )
         return
 
-    params = getattr(metric.type_params, "metric_aggregation_params", None)
-    if params is not None and getattr(params, "non_additive_dimension", None):
+    if _non_additive_dimension(manifest, metric):
         result.skip(
             name,
             "declares `non_additive_dimension`, whose MIN/MAX filter is applied "
@@ -772,6 +859,9 @@ def _translate_simple(manifest: Any, metric: Any, result: BridgeResult, dialect:
         time_column=_column(time_dim),
         agg=binding_agg,
         measure=column,
+        # The source's cadence, which a `kind: stock` node coarser than it
+        # would fold several snapshots of (roadmap C66).
+        time_grain=GRAIN_MAP[mf_grain],
         # A distinct count needs to know what it is counting to be decomposed
         # at the grain where it becomes a sum. The counted column is the entity.
         entity_key=column if binding_agg == "count_distinct" else None,
