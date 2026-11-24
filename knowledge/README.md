@@ -77,6 +77,29 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
   hold from day one, and the tree graduates to a warehouse unchanged), what
   was carried over from the original PR, and a customer guide from export to
   RCA. Original implementation by justincfung
+- [`evaluation_spec.md`](evaluation_spec.md) — **proposal; the runner is
+  built** (2026-11-19): score the engine against a family of generated
+  companies instead of one dataset at a time. Null, single-anomaly and twin
+  worlds across seeds, verticals and regimes; the questions, metrics, tiers,
+  held-out split and scoreboard that gate a change of engine defaults. The
+  generator side is `docs/eval_worlds_spec.md` in the fake_companies repo.
+  The runner is [`benchmarks/evaluate.py`](benchmarks/evaluate.py) (the
+  `benchmarks/evalrunner` package; §11 of the spec says how to run it, §12
+  what building it decided): it reads a world set through its manifest, with
+  no dbt and no generator checkout, and scores calibration, detection,
+  localization and cost. Attribution and abstention are not built.
+  Scoreboards are committed under [`eval/`](eval/); the first is a smoke-tier
+  run on a demo tree, not a canonical one, and is there to show the pipeline
+  and its cost, not to draw engine conclusions from.
+- [`innovation_rca_design.md`](innovation_rca_design.md) — **design plus a
+  measured prototype, nothing built** (2026-11-16): separate "did something
+  change" (versus expectation) from "why", and rank root causes by each node's
+  own innovation — actual minus what its model predicted given its parents —
+  rather than by its share of a window-over-window gap. Covers the lagged-ancestor
+  fit leak it found in the current engine, slice innovations, detection and
+  data-health preflight, and the roadmap changes it proposes (not applied).
+  Prototype and results on the four planted White Cube anomalies:
+  [`benchmarks/innovation_score.py`](benchmarks/innovation_score.py).
 - [`step_change_design.md`](step_change_design.md) — **designed, not built**
   (roadmap S24): a declared step/pulse term for known, dated interventions
   (price flips, on-sale days, campaigns). Separates a step in the fit history —

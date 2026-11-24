@@ -1,0 +1,116 @@
+{
+  "aov__day-rate__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "18752d508b08fff4",
+    "fetched_at": "2026-11-19T04:24:13.570390+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 730
+  },
+  "conversion_rate__day-rate__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "1506154f2b23eb85",
+    "fetched_at": "2026-11-19T04:24:13.534907+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 730
+  },
+  "converting_sessions__day-flow__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "1e45346d2d1b6355",
+    "fetched_at": "2026-11-19T04:24:13.546430+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 730
+  },
+  "customer_base__day-stock__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "c2017353b3f97cdc",
+    "fetched_at": "2026-11-19T04:24:13.552275+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 730
+  },
+  "direct_sessions__day-flow__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "4efb2ecd4a2dd6ba",
+    "fetched_at": "2026-11-19T04:24:13.512564+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 730
+  },
+  "discounted_orders__day-flow__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "2eb033f15f6a5590",
+    "fetched_at": "2026-11-19T04:24:13.583234+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 730
+  },
+  "discounts__day-flow__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "3f0c04d331364cb2",
+    "fetched_at": "2026-11-19T04:24:13.589107+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 730
+  },
+  "email_sessions__day-flow__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "ac01ff51834efd87",
+    "fetched_at": "2026-11-19T04:24:13.500539+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 730
+  },
+  "gross_revenue__day-flow__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "73d98bb39ff601f9",
+    "fetched_at": "2026-11-19T04:24:13.576456+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 730
+  },
+  "marketing_spend__day-flow__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "0edc899ee361657d",
+    "fetched_at": "2026-11-19T04:24:13.449250+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 730
+  },
+  "orders__day-flow__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "9be56e565b2f4ce9",
+    "fetched_at": "2026-11-19T04:24:13.563888+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 730
+  },
+  "organic_sessions__day-flow__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "197f7bca0f66bc4e",
+    "fetched_at": "2026-11-19T04:24:13.488249+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 730
+  },
+  "paid_sessions__day-flow__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "8c2380578f3e3ebf",
+    "fetched_at": "2026-11-19T04:24:13.474636+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 730
+  },
+  "refunds__week-flow__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "2161e495014dec8b",
+    "fetched_at": "2026-11-19T04:24:13.611918+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 104
+  },
+  "return_rate__week-rate__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "b780be2b09eac08e",
+    "fetched_at": "2026-11-19T04:24:13.602054+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 104
+  },
+  "returned_units__week-flow__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "2235577a6a1bd9d8",
+    "fetched_at": "2026-11-19T04:24:13.606932+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 104
+  },
+  "returning_customer_orders__day-flow__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "be140b28cbd9f19f",
+    "fetched_at": "2026-11-19T04:24:13.558273+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 730
+  },
+  "sessions__day-flow__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "00b9ea0a3cfa0c2e",
+    "fetched_at": "2026-11-19T04:24:13.520798+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 730
+  },
+  "units__day-flow__2024-06-01__2026-05-31.parquet": {
+    "definition_sha": "fa05563bfeb55bab",
+    "fetched_at": "2026-11-19T04:24:13.595051+00:00",
+    "provider": "DbtDataFetcher",
+    "rows": 730
+  }
+}

@@ -182,6 +182,14 @@ class FitResult:
     # reader of `dates[0]` can tell "the data starts here" from "the author
     # said to start here". None when the node declares none.
     fit_start: Optional[str] = None
+    # Roadmap S8: the trend this fit carried, as `trend_kind` resolved it —
+    # `"level"` (flat forecast) or `"local_linear"` (the posterior then holds
+    # `trend_slope_end`, and `trend_at` extrapolates it).
+    trend_kind: str = "level"
+    # Roadmap S20: the observation model the node was fitted with (one of
+    # `parser.LIKELIHOODS`). Anything that rebuilds a predictive distribution
+    # from the trace reads this and draws through `observation_draws`.
+    likelihood: str = "gaussian"
 
 
 def scale_prior_params(distribution: str, params: Dict[str, Any], scale: float) -> Dict[str, Any]:
@@ -1658,6 +1666,9 @@ def _posterior_predictive_draws(
     random_seed: Optional[int] = None,
     X_iv: Optional[np.ndarray] = None,
     marginalized: bool = False,
+    likelihood: str = "gaussian",
+    y_mean: float = 0.0,
+    y_std: float = 1.0,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[str]]:
     """Replicated series and the matching mean function, for S3.
 
@@ -1669,7 +1680,8 @@ def _posterior_predictive_draws(
     from, so the replicate is drawn directly as `mu + N(0, sigma_obs^2)` from
     the joint draws — `mu` including the recovered `trend` — which is exactly
     what the observed node's distribution is. The four statistics and their
-    bands do not move.
+    bands do not move. A non-Gaussian node (roadmap S20) draws through
+    `observation_draws` on every sampler.
 
     Two things are load-bearing here. The posterior is thinned to
     `_PPC_DRAWS` *before* the replicates are drawn — a 4-chain, 1000-draw
@@ -1704,6 +1716,14 @@ def _posterior_predictive_draws(
             rng = np.random.default_rng(_seed_stream(random_seed, _PPC_STREAM))
             sigma_obs = post["sigma_obs"].values.reshape(-1, 1)
             y_rep = mu + sigma_obs * rng.standard_normal(mu.shape)
+        elif likelihood != "gaussian":
+            # Roadmap S20: drawn from the declared likelihood in numpy rather
+            # than through the graph, on every sampler, so the replicates come
+            # back in the normalized units the statistics below are computed
+            # in (the count's observed node is on the raw scale).
+            rng = np.random.default_rng(_seed_stream(random_seed, _PPC_STREAM))
+            noise = post[LIKELIHOOD_NOISE_PARAM[likelihood]].values.reshape(-1, 1)
+            y_rep = observation_draws(likelihood, mu, noise, y_mean, y_std, rng)
         else:
             pp = pm.sample_posterior_predictive(
                 thinned,
@@ -1762,20 +1782,26 @@ def _seed_stream(random_seed: Optional[int], stream: int) -> np.random.SeedSeque
     return np.random.SeedSequence([int(random_seed), stream])
 
 
-def _level_is_marginalized(inference_method: str) -> bool:
+def _level_is_marginalized(inference_method: str, likelihood: str = "gaussian") -> bool:
     """Whether this fit integrates the local level out of the sampled model.
 
     The dispatch is by **likelihood**, not by node: the Kalman filter is exact
-    only for a Gaussian observation model, which is every node today (white
-    paper §2.1). Roadmap S20's count likelihoods would end that, and a
-    non-Gaussian node would keep the explicit latent — this is the one place
-    that decision lives.
+    only for a Gaussian observation model with a variance that does not depend
+    on the level. Roadmap S20's alternatives (`parser.LIKELIHOODS`) end that —
+    a count has no Gaussian innovation, and a variance that scales with the
+    mean depends on the state being integrated out — so a node that declares
+    one keeps the explicit latent. This is the one place that decision lives.
+
+    That holds for the trend's kind as well (roadmap S8): a local linear
+    trend under a declared likelihood samples its level *and* its slope as
+    explicit latents, the same model the two-state filter integrates for a
+    Gaussian node. It is never downgraded to a level.
 
     NUTS only. The ADVI variants keep the explicit per-period latent because
     their PSIS k-hat (S2) was measured against that parameterization, and the
     benchmark that retired them as a default is a statement about it.
     """
-    return inference_method == "nuts"
+    return inference_method == "nuts" and likelihood == "gaussian"
 
 
 def _kalman_local_level_loglik(r: Any, sigma_trend: Any, sigma_obs: Any) -> Any:
@@ -1863,6 +1889,229 @@ def _ffbs_local_level(
     return level
 
 
+# ---------------------------------------------------------------------------
+# Roadmap S8: a trend with a slope. The local linear trend
+#
+#     level[t] = level[t-1] + slope[t-1] + eta[t],   eta  ~ N(0, sigma_trend^2)
+#     slope[t] = slope[t-1] + zeta[t],               zeta ~ N(0, sigma_slope^2)
+#     level[-1] = 0,  slope[-1] ~ N(0, _SLOPE0_SD^2)
+#
+# is still linear and Gaussian, so the S25 machinery carries over with a
+# two-dimensional state: the same prediction-error decomposition, and an exact
+# draw of the states afterwards (by a simulation smoother rather than backward
+# sampling — see `_sample_local_linear`). `sigma_slope = 0` is the fixed-drift limit — the slope is
+# then one unknown constant, and the trend is a random walk with drift.
+#
+# The level's forecast under this trend is not flat: `k` periods past the last
+# fitted one it is `level[-1] + k * slope[-1]`. Every reader that projects the
+# trend beyond the fit goes through `trend_at`, so that is stated once.
+# ---------------------------------------------------------------------------
+
+TREND_LEVEL = "level"
+TREND_LOCAL_LINEAR = "local_linear"
+
+#: Prior sd of the slope before the first fitted period, in z-scored units per
+#: period. Wide on purpose: a series that climbs across its whole range over
+#: `T` periods has a slope near `3.5 / T`, so 0.1 covers any window of 35+
+#: periods without informing it, and the data identifies a constant drift
+#: sharply. The shrinkage S8 asks for is on the slope's *innovation*
+#: (`trend.slope_sigma`), not on the slope.
+_SLOPE0_SD = 0.1
+
+#: NUTS `target_accept` for the one fit that samples the slope as an explicit
+#: latent: a local linear trend under a declared non-Gaussian likelihood
+#: (roadmap S20), which the Kalman filter cannot integrate out. Every other
+#: fit keeps 0.9. Measured on the planted worlds of
+#: `tests/test_local_linear_trend.py` (120 periods, same seed): 18 and 21
+#: divergences at 0.9 for the count and the mean-scaled Gaussian, 1 and 1 at
+#: 0.97, for about a fifth more wall time. The slope walk is a second
+#: per-period latent whose effect on the level accumulates, which is the
+#: geometry smaller steps help with.
+_EXPLICIT_SLOPE_TARGET_ACCEPT = 0.97
+
+#: `trend.slope_sigma`'s default, for a node whose slope comes from the policy
+#: in `trend_kind` rather than from a `trend:` block. Kept equal to
+#: `TrendConfig.slope_sigma`'s default.
+_DEFAULT_SLOPE_SIGMA = 0.001
+
+
+def trend_kind(dag: nx.DiGraph, target: str) -> str:
+    """Which trend `target`'s fit carries: `"level"` or `"local_linear"`.
+
+    The one place that decision lives (roadmap S8). A kind the author declared
+    in the YAML (`trend.kind`) always wins. Where none is declared the answer
+    is the engine's default, which is the local level for every node today.
+
+    This takes the DAG, not just the definition, because the open question is
+    a default by *role*: the measured forecast bias sits on nodes with no
+    parents that are flows or stocks (a source has nothing to carry growth),
+    and not on rates or on nodes with a learned parent
+    (knowledge/innovation_rca_design.md §6.1). That policy is one line here —
+    `dag.in_degree(target) == 0 and defn.kind in ("flow", "stock")` — and is
+    deliberately not applied: the slope competes with a growing parent for the
+    same movement, and the default is a decision that has not been made.
+    """
+    defn: MetricDefinition = dag.nodes[target]["definition"]
+    if defn.trend is not None and defn.trend.kind is not None:
+        return defn.trend.kind
+    return TREND_LEVEL
+
+
+def _kalman_local_linear_loglik(
+    r: Any, sigma_trend: Any, sigma_slope: Any, sigma_obs: Any, slope0_sd: float = _SLOPE0_SD
+) -> Any:
+    """`log p(r | sigma_trend, sigma_slope, sigma_obs)`, level and slope integrated out.
+
+    The two-state counterpart of `_kalman_local_level_loglik`, with the 2x2
+    algebra written out in scalars so the scan stays a scalar recursion (the
+    reason the numba backend makes it fast). State mean `(a1, a2)` = (level,
+    slope), covariance `(P11, P12, P22)`:
+
+        predict   a1 += a2
+                  P11 += 2 P12 + P22 + sigma_trend^2;  P12 += P22;  P22 += sigma_slope^2
+        observe   v = r[t] - a1,  F = P11 + sigma_obs^2,  K = (P11, P12) / F
+        update    a += K v;  P11 *= o2 / F;  P12 *= o2 / F;  P22 -= P12_pred^2 / F
+
+    Started at `a = 0`, `P = diag(0, slope0_sd^2)`: the level starts at zero as
+    the local level does, and the slope before the first period carries its
+    prior. `sigma_slope` may be an exact zero (the fixed-drift limit).
+    """
+    import pytensor
+    import pytensor.tensor as pt
+
+    s2 = sigma_trend**2
+    q2 = sigma_slope**2
+    o2 = sigma_obs**2
+
+    def step(r_t, a1, a2, P11, P12, P22, s2, q2, o2):
+        a1 = a1 + a2
+        P11 = P11 + 2 * P12 + P22 + s2
+        P12 = P12 + P22
+        P22 = P22 + q2
+        F = P11 + o2
+        v = r_t - a1
+        K1 = P11 / F
+        K2 = P12 / F
+        return (
+            a1 + K1 * v,
+            a2 + K2 * v,
+            P11 * o2 / F,
+            P12 * o2 / F,
+            P22 - K2 * P12,
+            -0.5 * (pt.log(2 * np.pi * F) + v**2 / F),
+        )
+
+    zero = pt.zeros(())
+    kwargs = dict(
+        sequences=[r],
+        outputs_info=[zero, zero, zero, zero, pt.as_tensor(np.float64(slope0_sd) ** 2), None],
+        non_sequences=[s2, q2, o2],
+    )
+    if "return_updates" in inspect.signature(pytensor.scan).parameters:
+        *_, ll = pytensor.scan(step, return_updates=False, **kwargs)
+    else:  # pragma: no cover - older pytensor
+        (*_, ll), _ = pytensor.scan(step, **kwargs)
+    return ll.sum()
+
+
+def _sample_local_linear(
+    r: np.ndarray,
+    s2: np.ndarray,
+    q2: np.ndarray,
+    o2: np.ndarray,
+    rng: np.random.Generator,
+    slope0_sd: float = _SLOPE0_SD,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """One exact draw of `(level, last slope) | r, theta` per posterior draw.
+
+    `r` is `(n_draws, T)`; `s2`/`q2`/`o2` are `(n_draws,)` variances. Returns
+    the level path `(n_draws, T)` and the slope at the last period
+    `(n_draws,)`.
+
+    This is **not** the backward sampler `_ffbs_local_level` uses, on purpose.
+    Carter-Kohn backward sampling inverts the one-step prediction covariance
+    at every period, and with two states that matrix is singular whenever the
+    states are deterministic given each other: exactly under fixed drift
+    (`q2 = 0`), and to machine precision at the first periods of any draw
+    with a small `sigma_trend`, where one observation cannot tell the level
+    from the slope that produced it. Written that way, a draw with
+    `sigma_trend` near 1e-9 returned NaN or a level tens of sds from the
+    data — measured, and the kind of value rule 3 exists to keep out of a
+    payload.
+
+    So the draw is taken by the simulation smoother of Durbin & Koopman
+    (2002) instead: simulate a path `x+` and a series `r+` from the model's
+    own prior, smooth the *difference* `r - r+`, and add the smoothed mean
+    back to `x+`. Because the model is linear and Gaussian that sum is an
+    exact draw from `x | r`. The smoother is the adjoint recursion (Durbin &
+    Koopman 2012, §4.4): `r[t-1] = Z' v[t] / F[t] + L[t]' r[t]`, smoothed
+    state `a[t] + P[t] r[t-1]` from the *predicted* moments, which divides by
+    nothing but the scalar innovation variance `F = P11 + sigma_obs^2 > 0`.
+    The forward pass is the filter of `_kalman_local_linear_loglik`, carried
+    in its predicted form.
+    """
+    r, s2, q2, o2 = (np.asarray(x, dtype=np.float64) for x in (r, s2, q2, o2))
+    n, T = r.shape
+    sd_s, sd_q, sd_o = np.sqrt(s2)[:, None], np.sqrt(q2)[:, None], np.sqrt(o2)[:, None]
+
+    # A path from the prior, and the series it would have produced.
+    slope0 = float(slope0_sd) * rng.standard_normal((n, 1))
+    slope_walk = slope0 + np.cumsum(sd_q * rng.standard_normal((n, T)), axis=1)
+    entering = np.concatenate([slope0, slope_walk[:, :-1]], axis=1)
+    level_plus = np.cumsum(entering + sd_s * rng.standard_normal((n, T)), axis=1)
+    slope_plus_end = slope_walk[:, -1]
+    del slope_walk, entering
+    resid = r - level_plus - sd_o * rng.standard_normal((n, T))
+
+    # Forward: predicted moments of (level, slope) before each observation.
+    # Only what the level's smoothed mean reads is kept per period; the slope
+    # is wanted at the last period alone.
+    A1 = np.empty((n, T))
+    P11s = np.empty((n, T))
+    P12s = np.empty((n, T))
+    V = np.empty((n, T))
+    v0 = float(slope0_sd) ** 2
+    a1 = np.zeros(n)
+    a2 = np.zeros(n)
+    P11 = v0 + s2
+    P12 = np.full(n, v0)
+    P22 = v0 + q2
+    for t in range(T):
+        F = P11 + o2
+        v = resid[:, t] - a1
+        A1[:, t], P11s[:, t], P12s[:, t], V[:, t] = a1, P11, P12, v
+        if t == T - 1:
+            break
+        k2 = P12 / F
+        # Filtered, then one step on: T = [[1, 1], [0, 1]], Q = diag(s2, q2).
+        f1 = a1 + (P11 / F) * v
+        f2 = a2 + k2 * v
+        f11 = P11 * o2 / F
+        f12 = P12 * o2 / F
+        f22 = np.maximum(P22 - k2 * P12, 0.0)
+        a1, a2 = f1 + f2, f2
+        P11 = f11 + 2 * f12 + f22 + s2
+        P12 = f12 + f22
+        P22 = f22 + q2
+
+    # Backward: the adjoint `rho`, with L = T - K Z and K = T P Z' / F.
+    level = np.empty((n, T))
+    rho1 = np.zeros(n)
+    rho2 = np.zeros(n)
+    for t in range(T - 1, -1, -1):
+        p11, p12 = P11s[:, t], P12s[:, t]
+        F = p11 + o2
+        k1 = (p11 + p12) / F
+        k2 = p12 / F
+        rho1, rho2 = V[:, t] / F + (1 - k1) * rho1 - k2 * rho2, rho1 + rho2
+        level[:, t] = A1[:, t] + p11 * rho1 + p12 * rho2
+        if t == T - 1:
+            # `a2`, `P22` still hold the last period's predicted slope moments.
+            slope_end = a2 + p12 * rho1 + P22 * rho2
+    level += level_plus
+    return level, slope_end + slope_plus_end
+
+
 def _attach_recovered_level(
     trace: Any,
     y: np.ndarray,
@@ -1871,6 +2120,7 @@ def _attach_recovered_level(
     t: np.ndarray,
     X_iv: Optional[np.ndarray],
     random_seed: Optional[int],
+    kind: str = TREND_LEVEL,
 ) -> None:
     """Write `trend` into `trace.posterior` for a marginalized fit.
 
@@ -1879,25 +2129,247 @@ def _attach_recovered_level(
     RCA's trend delta (`rca.py`), the posterior predictive check, the UI's
     trend band — reads it unchanged. Seeded from the fit's `random_seed` on
     its own stream, so a seeded fit stays a pure function of its inputs.
+
+    Under a local linear trend (roadmap S8) the slope is recovered in the same
+    pass, and only its last state is kept, as `trend_slope_end` (`chain`,
+    `draw`): that is the one slope a forecast needs (`trend_at`), and a
+    per-period slope would be a second trend-sized array on every such trace
+    in a cache bounded in bytes.
     """
     import xarray as xr
 
     posterior = trace.posterior
     n_chain, n_draw = int(posterior.sizes["chain"]), int(posterior.sizes["draw"])
+    coords = {"chain": posterior["chain"].values, "draw": posterior["draw"].values}
     mu = _mean_function_draws(posterior, X, defn, t, X_iv)
     s2 = posterior["sigma_trend"].values.reshape(-1) ** 2
     o2 = posterior["sigma_obs"].values.reshape(-1) ** 2
     rng = np.random.default_rng(_seed_stream(random_seed, _LEVEL_STREAM))
-    level = _ffbs_local_level(y[None, :] - mu, s2, o2, rng)
+    if kind == TREND_LOCAL_LINEAR:
+        q2 = (
+            posterior["sigma_slope"].values.reshape(-1) ** 2
+            if "sigma_slope" in posterior
+            else np.zeros_like(s2)
+        )
+        level, slope_end = _sample_local_linear(y[None, :] - mu, s2, q2, o2, rng)
+        posterior["trend_slope_end"] = xr.DataArray(
+            slope_end.reshape(n_chain, n_draw), dims=("chain", "draw"), coords=coords
+        )
+    else:
+        level = _ffbs_local_level(y[None, :] - mu, s2, o2, rng)
     posterior["trend"] = xr.DataArray(
         level.reshape(n_chain, n_draw, len(t)),
         dims=("chain", "draw", "trend_dim_0"),
-        coords={
-            "chain": posterior["chain"].values,
-            "draw": posterior["draw"].values,
-            "trend_dim_0": np.arange(len(t)),
-        },
+        coords={**coords, "trend_dim_0": np.arange(len(t))},
     )
+
+
+def trend_at(posterior: Any, t_idx: np.ndarray) -> np.ndarray:
+    """`(n_draws, len(t_idx))` trend at fitted-index positions, forecast included.
+
+    Inside the fitted period this is the fitted state. Past its end it is the
+    trend's *forecast mean path* given each draw's last state: flat for a local
+    level, and `trend[-1] + k * slope[-1]` for a local linear trend `k` periods
+    out (roadmap S8). No innovation noise is added — a caller that wants the
+    forecast's spread simulates the walk forward from here.
+
+    Every reader that looks past the fit calls this, so "what does the trend
+    do after the last fitted period" has one answer.
+    """
+    t_idx = np.asarray(t_idx)
+    n_draws = int(posterior.sizes["chain"] * posterior.sizes["draw"])
+    trend = posterior["trend"].values.reshape(n_draws, -1)
+    last = trend.shape[1] - 1
+    out = trend[:, np.minimum(t_idx, last)]
+    if "trend_slope_end" in posterior:
+        ahead = np.maximum(t_idx - last, 0)
+        out = out + posterior["trend_slope_end"].values.reshape(n_draws, 1) * ahead[None, :]
+    return out
+
+
+def simulate_trend_forward(
+    posterior: Any,
+    horizon: int,
+    rng: np.random.Generator,
+    draw_idx: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """`(n_draws, horizon)` trend over the `horizon` periods after the fit, simulated.
+
+    `trend_at` gives the forecast's mean path; this adds the innovations, so
+    the spread across draws is the trend's predictive uncertainty and widens
+    with the horizon. A local level walks on from its last state with
+    `sigma_trend` steps. A local linear trend (roadmap S8) also carries its
+    last slope forward — each step adds the slope entering it — and the slope
+    itself keeps walking with `sigma_slope` steps (not at all under fixed
+    drift), which is why its interval grows faster than the level's.
+
+    `draw_idx` selects a subset of the flattened `(chain, draw)` draws.
+    """
+    n_all = int(posterior.sizes["chain"] * posterior.sizes["draw"])
+    idx = np.arange(n_all) if draw_idx is None else np.asarray(draw_idx)
+
+    def flat(name: str) -> np.ndarray:
+        return posterior[name].values.reshape(n_all, -1)[idx]
+
+    steps = flat("sigma_trend") * rng.standard_normal((len(idx), horizon))
+    if "trend_slope_end" in posterior:
+        slope_end = flat("trend_slope_end")
+        if "sigma_slope" in posterior:
+            walk = np.cumsum(flat("sigma_slope") * rng.standard_normal((len(idx), horizon)), axis=1)
+            # The slope entering step k is the one that left step k - 1.
+            entering = slope_end + np.concatenate([np.zeros((len(idx), 1)), walk[:, :-1]], axis=1)
+        else:
+            entering = np.broadcast_to(slope_end, steps.shape)
+        steps = steps + entering
+    return flat("trend")[:, -1:] + np.cumsum(steps, axis=1)
+
+
+# ---------------------------------------------------------------------------
+# Roadmap S20: observation models other than the constant-variance Gaussian.
+#
+# The mean is the same additive mean on every path,
+#
+#     E[y[t]] = y_mean + y_std * (alpha + trend[t] + seasonal[t] + (X @ beta)[t] + ...)
+#
+# an **identity link**, not a log link. That is the decision that keeps this
+# change inside the observation model: `alpha`, `trend`, `beta` and `beta_raw`
+# mean exactly what they mean on a Gaussian node (additive, in the units they
+# always had), so RCA's trend and seasonal deltas, `beta_raw x delta-parent`
+# attribution, what-if propagation and the UI trend band read the trace
+# unchanged. A log link would make every one of them multiplicative. What the
+# identity link costs is that the mean has to be kept positive by hand
+# (`_positive_mean`), which matters only for a series that sits at zero for
+# long runs; that case is the zero-inflated half of S20 and is not built here.
+# ---------------------------------------------------------------------------
+
+#: Scale of the soft floor that keeps a non-Gaussian mean positive, as a share
+#: of the fitted series' mean. `s * softplus(mu / s)` is `mu` to within 0.1% of
+#: `s` once `mu > 7 s`, so at 2% of the mean it leaves the mean function alone
+#: everywhere except where the level has been driven to zero.
+_MEAN_FLOOR_SHARE = 0.02
+
+
+def _positive_mean(mu_raw: Any, y_mean: float, xp: Any = np) -> Any:
+    """`mu_raw` (raw units) softly floored above zero. `xp` is numpy or
+    `pytensor.tensor`, so the fitted graph and the numpy replicates share one
+    definition and cannot disagree about the mean."""
+    s = _MEAN_FLOOR_SHARE * y_mean
+    soft = np.logaddexp(0.0, mu_raw / s) if xp is np else xp.softplus(mu_raw / s)
+    return s * soft + 1e-6 * s
+
+
+def _mean_scaled_sigma(sigma_obs: Any, mu_raw: Any, y_mean: float, xp: Any = np) -> Any:
+    """Per-period noise sd of `mean_scaled_gaussian`, in normalized units:
+    `sigma_obs` at the series' mean level, scaled by `sqrt(mean / y_mean)`.
+
+    The floor is added to both sides of the ratio so the sd is bounded away
+    from zero. Without it a level driven to zero under a run of exact zeros
+    has unbounded density there, and the fit collapses onto the run.
+    """
+    s = _MEAN_FLOOR_SHARE * y_mean
+    return sigma_obs * xp.sqrt((_positive_mean(mu_raw, y_mean, xp) + s) / (y_mean + s))
+
+
+def _nb_alpha(overdispersion: Any) -> Any:
+    """PyMC's negative-binomial `alpha` from the sampled `nb_overdispersion`.
+
+    `Var[y] = mu + overdispersion^2 * mu^2`: the parameter is the coefficient
+    of variation the count has *beyond* a Poisson's, so 0 is a Poisson and the
+    HalfNormal(1) prior is weakly informative on a scale a reader can check.
+    The 1e-6 keeps `alpha` finite at the Poisson limit.
+    """
+    return 1.0 / (overdispersion**2 + 1e-6)
+
+
+#: `mean_scaled_gaussian` is refused on a series with this share of exact zeros
+#: or more. Measured, not assumed: over White Cube's 32 clean weeks, in the fit
+#: windows where `contraction_mrr` was zero in half or more of its periods (24
+#: of them) the 7-day surprise score's sd was 3.1 against the default's 1.8,
+#: with one week at 14 sd. A variance that shrinks with the mean makes a zero
+#: most likely under a level of zero, so the level is pulled down onto the zero
+#: periods and the next non-zero one lands far outside the forecast. Below a
+#: half it measured no worse than the default on any node (`expansion_mrr`,
+#: `direct_conversions`, `reactivations`), so the line is not drawn lower;
+#: between a quarter and a half the default's `likelihood_warnings` still fires.
+_MEAN_SCALED_MAX_ZERO_SHARE = 0.5
+
+#: The noise parameter each likelihood samples, by name in the posterior.
+LIKELIHOOD_NOISE_PARAM = {
+    "gaussian": "sigma_obs",
+    "mean_scaled_gaussian": "sigma_obs",
+    "negative_binomial": "nb_overdispersion",
+}
+
+
+def observation_draws(
+    likelihood: str,
+    mu: np.ndarray,
+    noise: np.ndarray,
+    y_mean: float,
+    y_std: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """One observation per element of `mu`, drawn from the node's likelihood.
+
+    `mu` is the `(n_draws, n_periods)` mean in **normalized** units (level
+    included) and `noise` the `(n_draws, 1)` draws of
+    `LIKELIHOOD_NOISE_PARAM[likelihood]`. Returns normalized units too, so
+    the posterior predictive check, its band, and any forecast built outside
+    the engine (`knowledge/benchmarks/innovation_score.py`) share one
+    definition of what the fitted model says an observation looks like.
+    """
+    if likelihood == "gaussian":
+        return mu + noise * rng.standard_normal(mu.shape)
+    mu_raw = y_mean + y_std * mu
+    if likelihood == "mean_scaled_gaussian":
+        return mu + _mean_scaled_sigma(noise, mu_raw, y_mean) * rng.standard_normal(mu.shape)
+    if likelihood == "negative_binomial":
+        # Gamma-Poisson mixture: the same distribution as PyMC's (mu, alpha).
+        alpha = _nb_alpha(noise)
+        lam = rng.gamma(shape=alpha, scale=_positive_mean(mu_raw, y_mean) / alpha)
+        return (rng.poisson(lam) - y_mean) / y_std
+    raise ValueError(f"Unknown likelihood '{likelihood}'")
+
+
+def _check_likelihood_support(likelihood: str, raw: np.ndarray, target: str) -> None:
+    """Refuse a series the declared likelihood has no density for, by name.
+
+    Rule 1 applied to the observation model: rounding a fractional series to
+    fit a count likelihood, or clipping a negative one, would be a silent
+    substitute for the data.
+    """
+    if likelihood == "gaussian":
+        return
+    if (raw < 0).any():
+        raise ValueError(
+            f"'{target}' declares `likelihood: {likelihood}`, which is for a "
+            f"non-negative quantity, but the fitted series goes down to "
+            f"{float(raw.min()):g}. Drop the `likelihood` (the default Gaussian "
+            "takes signed values), or declare it on the non-negative series this "
+            "one is built from."
+        )
+    if likelihood == "mean_scaled_gaussian":
+        zero_share = float((raw == 0.0).mean())
+        if zero_share >= _MEAN_SCALED_MAX_ZERO_SHARE:
+            raise ValueError(
+                f"'{target}' declares `likelihood: mean_scaled_gaussian`, but "
+                f"{zero_share:.0%} of its {raw.size} fitted periods are exactly zero. "
+                "A variance that shrinks with the mean pulls the fitted level onto "
+                "the zero periods, which measured worse than the default on a series "
+                "that is zero half the time. Drop the `likelihood` (the default "
+                "discloses the zeros in `likelihood_warnings`), or declare "
+                "`negative_binomial` if the metric is a whole-number count."
+            )
+    if likelihood == "negative_binomial":
+        fractional = np.abs(raw - np.rint(raw)) > 1e-6 * np.maximum(1.0, np.abs(raw))
+        if fractional.any():
+            raise ValueError(
+                f"'{target}' declares `likelihood: negative_binomial`, a distribution "
+                f"over whole-number counts, but {int(fractional.sum())} of its "
+                f"{raw.size} fitted periods are not whole numbers. For a non-negative "
+                "quantity in other units (currency, hours) whose noise grows with "
+                "its level, declare `likelihood: mean_scaled_gaussian` instead."
+            )
 
 
 def intervention_record(iv: Any, grain: str) -> Dict[str, Any]:
@@ -2590,8 +3062,13 @@ def fit_metric(
     # the *raw* series (normalization moves the zeros), warned at fit time,
     # and carried on the payload as `likelihood_warnings` so the reader of the
     # number sees it, not only the reader of the log.
-    likelihood_warnings = _zero_inflation_warnings(
-        data[target].to_numpy(dtype=float), target, grain
+    # A negative binomial has zeros in its support, so the Gaussian's warning
+    # does not apply to it; the posterior predictive check on `min` is what
+    # speaks if the zeros are more than the count model generates.
+    likelihood_warnings = (
+        []
+        if defn.likelihood == "negative_binomial"
+        else _zero_inflation_warnings(data[target].to_numpy(dtype=float), target, grain)
     )
 
     # Seasonality periods are in grain steps; a period the data can't cover
@@ -2640,30 +3117,97 @@ def fit_metric(
     # Roadmap S25: on the NUTS path the level is integrated out by a Kalman
     # filter and recovered after sampling; the ADVI variants keep the explicit
     # latent. Same model either way — see `_level_is_marginalized`.
-    marginalized = _level_is_marginalized(inference_method)
+    # Roadmap S20: a declared non-Gaussian likelihood keeps the explicit latent
+    # on every sampler, and is refused here if the series is outside its support.
+    likelihood = defn.likelihood
+    marginalized = _level_is_marginalized(inference_method, likelihood)
+    if likelihood != "gaussian":
+        if defn.formula and parents:
+            raise ValueError(
+                f"'{target}' declares `likelihood: {likelihood}` on a formula node, "
+                "whose fit is on a signed residual. Drop the `likelihood`."
+            )
+        # The fetched values themselves, not `y * y_std + y_mean`: the round
+        # trip through normalization turns an exact 0 into -8.9e-16, which is
+        # outside a count's support. The lag trim drops leading rows only.
+        y_raw = data[target].to_numpy(dtype=float)[len(data) - len(y) :]
+        _check_likelihood_support(likelihood, y_raw, target)
+
+    # Roadmap S8: which trend this node carries. One function decides.
+    kind = trend_kind(dag, target)
 
     with pm.Model() as model:
         trend_sigma_prior = defn.trend.sigma if defn.trend else 0.05
         sigma_trend = pm.HalfNormal("sigma_trend", trend_sigma_prior)
+        if kind == TREND_LOCAL_LINEAR:
+            # A slope innovation under a tight prior, so the slope shrinks
+            # toward a constant drift. `slope_sigma: 0` is that limit exactly:
+            # no `sigma_slope` variable, the innovation variance a literal 0.
+            slope_sigma_prior = defn.trend.slope_sigma if defn.trend else _DEFAULT_SLOPE_SIGMA
+            sigma_slope = (
+                pm.HalfNormal("sigma_slope", slope_sigma_prior)
+                if slope_sigma_prior > 0
+                else pt.zeros(())
+            )
         if not marginalized:
             trend_z = pm.Normal("trend_z", 0.0, 1.0, shape=len(y))
-            trend = pm.Deterministic("trend", pt.cumsum(sigma_trend * trend_z))
+            if kind == TREND_LOCAL_LINEAR:
+                # The explicit form of the same model, non-centered like the
+                # level: `slope_prev[t]` is the slope *entering* period `t`
+                # (`slope[t-1]`, starting from its prior draw), which is what
+                # `level[t]` adds — the timing the Kalman filter integrates.
+                slope0 = _SLOPE0_SD * pm.Normal("trend_slope0_z", 0.0, 1.0)
+                if slope_sigma_prior > 0:
+                    slope_z = pm.Normal("trend_slope_z", 0.0, 1.0, shape=len(y))
+                    slope = slope0 + pt.cumsum(sigma_slope * slope_z)
+                    slope_prev = pt.concatenate([slope0[None], slope[:-1]])
+                    pm.Deterministic("trend_slope_end", slope[-1])
+                else:
+                    slope_prev = slope0
+                    pm.Deterministic("trend_slope_end", slope0)
+                trend = pm.Deterministic("trend", pt.cumsum(slope_prev + sigma_trend * trend_z))
+            else:
+                trend = pm.Deterministic("trend", pt.cumsum(sigma_trend * trend_z))
         seasonal = _seasonal_component(defn.seasonality, t)
         regression = _regression_component(defn, fitted_parents, X, scale)
         intervention = _intervention_component(fitted_ivs, X_iv, y_std)
 
         alpha = pm.Normal("alpha", mu=0, sigma=1.0)
-        sigma_obs = pm.HalfNormal("sigma_obs", 1.0)
+        if likelihood != "negative_binomial":
+            sigma_obs = pm.HalfNormal("sigma_obs", 1.0)
         mean_fn = alpha + seasonal + regression + intervention
         if marginalized:
             # No observed node: the likelihood of `y` with the level summed
             # out enters as a potential on the residual the level must explain.
+            residual = pt.as_tensor(y) - mean_fn
             pm.Potential(
                 "level_marginal_loglik",
-                _kalman_local_level_loglik(pt.as_tensor(y) - mean_fn, sigma_trend, sigma_obs),
+                _kalman_local_linear_loglik(residual, sigma_trend, sigma_slope, sigma_obs)
+                if kind == TREND_LOCAL_LINEAR
+                else _kalman_local_level_loglik(residual, sigma_trend, sigma_obs),
+            )
+        elif likelihood == "gaussian":
+            pm.Normal("obs", mu=mean_fn + trend, sigma=sigma_obs, observed=y)
+        elif likelihood == "mean_scaled_gaussian":
+            # Same mean, same units; the sd grows with sqrt(mean).
+            mu_raw = y_mean + y_std * (mean_fn + trend)
+            pm.Normal(
+                "obs",
+                mu=mean_fn + trend,
+                sigma=_mean_scaled_sigma(sigma_obs, mu_raw, y_mean, pt),
+                observed=y,
             )
         else:
-            pm.Normal("obs", mu=mean_fn + trend, sigma=sigma_obs, observed=y)
+            # Counts live on the raw scale; the mean is the same additive mean
+            # mapped back to it (identity link, see the S20 block above).
+            mu_raw = y_mean + y_std * (mean_fn + trend)
+            nb_overdispersion = pm.HalfNormal("nb_overdispersion", 1.0)
+            pm.NegativeBinomial(
+                "obs",
+                mu=_positive_mean(mu_raw, y_mean, pt),
+                alpha=_nb_alpha(nb_overdispersion),
+                observed=np.rint(y_raw).astype("int64"),
+            )
         # What NUTS actually samples — the set R-hat and ESS are computed over
         # (roadmap S25 §2.3 item 4). Read before `trend` is attached, and by
         # name, so a recovered state can never count as a sampled parameter.
@@ -2693,24 +3237,47 @@ def fit_metric(
             trace = pm.sample(
                 draws=draws,
                 tune=tune,
-                target_accept=0.9,
+                target_accept=(
+                    _EXPLICIT_SLOPE_TARGET_ACCEPT
+                    if kind == TREND_LOCAL_LINEAR and not marginalized
+                    else 0.9
+                ),
                 chains=chains,
                 random_seed=random_seed,
                 # Roadmap S25: the Kalman scan needs the numba backend; under
                 # the default C backend it is ~3x slower than the latent it
                 # replaced (see `_kalman_local_level_loglik`).
+                #
+                # A declared non-Gaussian likelihood (roadmap S20) stays on the
+                # default backend for now. numba was measured 1.4-1.5x faster
+                # for its explicit latent too (White Cube `sessions`, 772
+                # days: 63-75s against 45-47s, same seed), but it is not the
+                # same sampler run: on the planted count world of
+                # `tests/test_likelihoods.py` the divergence count went from 8
+                # to 21 and `fit_quality` to "suspect". Adopting it wants that
+                # understood first, and is the cheapest speed-up left here.
                 **({"compile_kwargs": {"mode": "NUMBA"}} if marginalized else {}),
             )
             diagnostics = _nuts_diagnostics(trace, draws, chains, var_names=sampled)
             if marginalized:
-                _attach_recovered_level(trace, y, X, defn, t, X_iv, random_seed)
+                _attach_recovered_level(trace, y, X, defn, t, X_iv, random_seed, kind)
 
         # Roadmap S3, inside the model context because that is the only place
         # `sample_posterior_predictive` can run — and computed here for every
         # method, because misspecification is a property of the model, not of
         # how its posterior was approximated.
         y_rep, mu_draws, ppc_reason = _posterior_predictive_draws(
-            pm, trace, X, defn, t, random_seed=random_seed, X_iv=X_iv, marginalized=marginalized
+            pm,
+            trace,
+            X,
+            defn,
+            t,
+            random_seed=random_seed,
+            X_iv=X_iv,
+            marginalized=marginalized,
+            likelihood=likelihood,
+            y_mean=y_mean,
+            y_std=y_std,
         )
 
     ppc, ppc_warnings = (
@@ -2737,6 +3304,14 @@ def fit_metric(
         diagnostics["seasonality_warnings"] = seasonality_warnings
     if likelihood_warnings:
         diagnostics["likelihood_warnings"] = likelihood_warnings
+    if likelihood != "gaussian":
+        # Roadmap S20. Only on a node that declared one, so a Gaussian fit's
+        # diagnostics are what they were. `level` says which of the two
+        # computations of the same local level this fit used: the declared
+        # likelihood rules out the exact Kalman marginalization, so the level
+        # was sampled as an explicit per-period latent, which is slower.
+        diagnostics["likelihood"] = likelihood
+        diagnostics["level"] = "explicit_latent"
 
     # Roadmap S4. `collinearity_status` rides along whenever there was
     # something to check — including `"ok"`, which is the point: on a node with
@@ -2852,4 +3427,6 @@ def fit_metric(
         interventions=intervention_records,
         dropped_interventions=dropped_interventions,
         fit_start=fit_start,
+        trend_kind=kind,
+        likelihood=likelihood,
     )

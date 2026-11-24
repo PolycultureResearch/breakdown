@@ -1,0 +1,5264 @@
+{
+ "scoreboard_version": 1,
+ "tier": "smoke",
+ "engine_commit": "af29690ba24860d42135ab9945d42e320be1107b+dirty",
+ "engine_key": "2ace584b50c602731fc8e34811ae6eea64c63e05|draws=500|chains=4|seed=0",
+ "generator_version": "0.1.0",
+ "manifest": {
+  "path": "/private/tmp/claude-501/-Users-devon-Documents-code-breakdown/78b550e7-b666-4a0b-9412-817601330457/scratchpad/ws/canon2_bristlecone_cpg",
+  "schema_version": 2,
+  "config": "configs/bristlecone_cpg.yaml",
+  "config_sha256": "b66dcb3a14a11c1f436e041b00a6458bdda0039428792e4b29d5a27e260cb463",
+  "effects_summary": "effects_summary.parquet"
+ },
+ "vertical": "cpg_wholesale",
+ "company": "bristlecone",
+ "tree": {
+  "path": "/Users/devon/Documents/code/fake_companies-canonical-trees/examples/breakdown_bristlecone_tree.yml",
+  "sha256": "796097eeea9c7de3f2aa88e8d50b37231d55c01d875f28f4a47e7a16db57e28a",
+  "canonical": true,
+  "bindings_path": null,
+  "bindings_sha256": null,
+  "effective_sha256": "6ea9bdb16ec55825b835efb1e533ca2cbcf5c563788f13d6104a944a3bd15ad2",
+  "drop_unserved": false,
+  "served": {
+   "marketing_spend": "marketing_spend",
+   "trade_spend": "trade_spend",
+   "pos_units": "pos_units",
+   "pos_dollars": "pos_dollars",
+   "shipped_cases": "shipped_cases",
+   "trade_inventory_build": "trade_inventory_build",
+   "avg_case_price": "avg_case_price",
+   "wholesale_net_revenue": "wholesale_net_revenue",
+   "wholesale_gross_revenue": "wholesale_gross_revenue"
+  },
+  "caveats": {},
+  "slices": {
+   "marketing_spend": {
+    "channel": "channel"
+   },
+   "trade_spend": {
+    "category": "category",
+    "channel_type": "channel_type"
+   },
+   "pos_units": {
+    "retailer_banner": "retailer_banner",
+    "category": "category",
+    "channel_type": "channel_type"
+   },
+   "pos_dollars": {
+    "retailer_banner": "retailer_banner",
+    "category": "category"
+   },
+   "shipped_cases": {
+    "category": "category",
+    "channel_type": "channel_type"
+   },
+   "trade_inventory_build": {
+    "retailer_banner": "retailer_banner",
+    "category": "category"
+   },
+   "avg_case_price": {
+    "category": "category",
+    "channel_type": "channel_type"
+   },
+   "wholesale_net_revenue": {
+    "category": "category",
+    "channel_type": "channel_type"
+   },
+   "wholesale_gross_revenue": {
+    "category": "category",
+    "channel_type": "channel_type"
+   }
+  },
+  "slice_refusals": {},
+  "unserved": {},
+  "dropped": [],
+  "derived_instead_of_fetched": []
+ },
+ "seeds": [
+  0,
+  1,
+  2
+ ],
+ "held_out": false,
+ "held_out_seeds": [],
+ "set_seeds": [
+  0,
+  1,
+  2
+ ],
+ "regimes": [
+  "baseline"
+ ],
+ "horizons": [
+  7
+ ],
+ "created": "2026-11-24T15:55:14+00:00",
+ "host": {
+  "machine": "arm64",
+  "cpus": 12,
+  "load_at_plan": 27.69
+ },
+ "verdict_column": "verdict",
+ "verdict_level": 0.01,
+ "allow_schema_v1": false,
+ "windows": {
+  "bristlecone.baseline.s0.null": {
+   "spacing_days": 70,
+   "n": 8
+  },
+  "bristlecone.baseline.s1.null": {
+   "spacing_days": 70,
+   "n": 8
+  },
+  "bristlecone.baseline.s2.null": {
+   "spacing_days": 70,
+   "n": 8
+  }
+ },
+ "singles": {
+  "brand_budget_cut": {
+   "class": "on_tree",
+   "root_metric": "marketing_spend",
+   "root_metric_rate": null,
+   "root_slice": {
+    "channel": "paid_social"
+   },
+   "truth": [
+    "marketing_spend"
+   ],
+   "depth": 0,
+   "note": "",
+   "set_verdicts": true
+  },
+  "summit_mart_capsules_delisting": {
+   "class": "on_tree",
+   "root_metric": "pos_units",
+   "root_metric_rate": null,
+   "root_slice": {
+    "category": "capsules",
+    "retailer_banner": "summit_mart"
+   },
+   "truth": [
+    "pos_units"
+   ],
+   "depth": 1,
+   "note": "",
+   "set_verdicts": true
+  },
+  "summit_mart_destock": {
+   "class": "on_tree",
+   "root_metric": "shipped_cases",
+   "root_metric_rate": null,
+   "root_slice": {
+    "channel_type": "mass"
+   },
+   "truth": [
+    "shipped_cases"
+   ],
+   "depth": 2,
+   "note": "",
+   "set_verdicts": true
+  }
+ },
+ "singles_not_run": {
+  "teas_demand_scare": {
+   "class": "on_tree",
+   "root_metric": "pos_units",
+   "root_metric_rate": null,
+   "root_slice": {
+    "category": "teas"
+   },
+   "truth": [
+    "pos_units"
+   ],
+   "depth": 1,
+   "note": "",
+   "set_verdicts": true
+  },
+  "whole_earth_delisting": {
+   "class": "on_tree",
+   "root_metric": "pos_units",
+   "root_metric_rate": null,
+   "root_slice": {
+    "retailer_banner": "whole_earth"
+   },
+   "truth": [
+    "pos_units"
+   ],
+   "depth": 1,
+   "note": "",
+   "set_verdicts": true
+  },
+  "tinctures_viral_spike": {
+   "class": "on_tree",
+   "root_metric": "pos_units",
+   "root_metric_rate": null,
+   "root_slice": {
+    "category": "tinctures"
+   },
+   "truth": [
+    "pos_units"
+   ],
+   "depth": 1,
+   "note": "",
+   "set_verdicts": true
+  },
+  "teas_list_price_increase": {
+   "class": "on_tree",
+   "root_metric": "avg_case_price",
+   "root_metric_rate": null,
+   "root_slice": {
+    "category": "teas"
+   },
+   "truth": [
+    "avg_case_price"
+   ],
+   "depth": 0,
+   "note": "",
+   "set_verdicts": true
+  },
+  "tinctures_competitor_launch": {
+   "class": "on_tree",
+   "root_metric": "pos_units",
+   "root_metric_rate": null,
+   "root_slice": {
+    "category": "tinctures"
+   },
+   "truth": [
+    "pos_units"
+   ],
+   "depth": 1,
+   "note": "",
+   "set_verdicts": true
+  },
+  "mild_flu_season": {
+   "class": "on_tree",
+   "root_metric": "pos_units",
+   "root_metric_rate": null,
+   "root_slice": {
+    "category": "teas"
+   },
+   "truth": [
+    "pos_units"
+   ],
+   "depth": 1,
+   "note": "",
+   "set_verdicts": true
+  },
+  "greenfields_shelf_erosion": {
+   "class": "on_tree",
+   "root_metric": "pos_units",
+   "root_metric_rate": null,
+   "root_slice": {
+    "retailer_banner": "greenfields"
+   },
+   "truth": [
+    "pos_units"
+   ],
+   "depth": 1,
+   "note": "",
+   "set_verdicts": true
+  },
+  "pos_feed_outage": {
+   "class": "data_quality"
+  },
+  "shipments_loading_delay": {
+   "class": "data_quality"
+  },
+  "shipments_dupes": {
+   "class": "data_quality"
+  }
+ },
+ "worlds": {
+  "bristlecone.baseline.s0.null": {
+   "seed": 0,
+   "regime": "baseline",
+   "kind": "null",
+   "anomalies": []
+  },
+  "bristlecone.baseline.s1.null": {
+   "seed": 1,
+   "regime": "baseline",
+   "kind": "null",
+   "anomalies": []
+  },
+  "bristlecone.baseline.s2.null": {
+   "seed": 2,
+   "regime": "baseline",
+   "kind": "null",
+   "anomalies": []
+  },
+  "bristlecone.baseline.s0.only.brand_budget_cut": {
+   "seed": 0,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "brand_budget_cut"
+   ]
+  },
+  "bristlecone.baseline.s0.only.summit_mart_destock": {
+   "seed": 0,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "summit_mart_destock"
+   ]
+  },
+  "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": {
+   "seed": 0,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "summit_mart_capsules_delisting"
+   ]
+  },
+  "bristlecone.baseline.s1.only.brand_budget_cut": {
+   "seed": 1,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "brand_budget_cut"
+   ]
+  },
+  "bristlecone.baseline.s1.only.summit_mart_destock": {
+   "seed": 1,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "summit_mart_destock"
+   ]
+  },
+  "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": {
+   "seed": 1,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "summit_mart_capsules_delisting"
+   ]
+  },
+  "bristlecone.baseline.s2.only.brand_budget_cut": {
+   "seed": 2,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "brand_budget_cut"
+   ]
+  },
+  "bristlecone.baseline.s2.only.summit_mart_destock": {
+   "seed": 2,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "summit_mart_destock"
+   ]
+  },
+  "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": {
+   "seed": 2,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "summit_mart_capsules_delisting"
+   ]
+  }
+ },
+ "coverage": {
+  "jobs": 177,
+  "jobs_done": 177,
+  "job_seconds": 811.6,
+  "calibration_status": {
+   "ok": 168
+  },
+  "single_worlds": 9,
+  "single_worlds_ranked": 9,
+  "single_worlds_off_tree": [],
+  "single_worlds_no_target": [],
+  "single_worlds_skipped": {},
+  "targets": {
+   "bristlecone.baseline.s0.only.brand_budget_cut": {
+    "anomaly": "brand_budget_cut",
+    "truth": [
+     "marketing_spend"
+    ],
+    "mapping": "on_tree",
+    "target": "wholesale_gross_revenue",
+    "basis": "fallback_deepest_descendant"
+   },
+   "bristlecone.baseline.s1.only.summit_mart_destock": {
+    "anomaly": "summit_mart_destock",
+    "truth": [
+     "shipped_cases"
+    ],
+    "mapping": "on_tree",
+    "target": "wholesale_gross_revenue",
+    "basis": "set:verdict"
+   },
+   "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": {
+    "anomaly": "summit_mart_capsules_delisting",
+    "truth": [
+     "pos_units"
+    ],
+    "mapping": "on_tree",
+    "target": "wholesale_gross_revenue",
+    "basis": "set:verdict"
+   },
+   "bristlecone.baseline.s0.only.summit_mart_destock": {
+    "anomaly": "summit_mart_destock",
+    "truth": [
+     "shipped_cases"
+    ],
+    "mapping": "on_tree",
+    "target": "wholesale_gross_revenue",
+    "basis": "set:verdict"
+   },
+   "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": {
+    "anomaly": "summit_mart_capsules_delisting",
+    "truth": [
+     "pos_units"
+    ],
+    "mapping": "on_tree",
+    "target": "wholesale_gross_revenue",
+    "basis": "set:verdict"
+   },
+   "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": {
+    "anomaly": "summit_mart_capsules_delisting",
+    "truth": [
+     "pos_units"
+    ],
+    "mapping": "on_tree",
+    "target": "wholesale_gross_revenue",
+    "basis": "set:verdict"
+   },
+   "bristlecone.baseline.s2.only.brand_budget_cut": {
+    "anomaly": "brand_budget_cut",
+    "truth": [
+     "marketing_spend"
+    ],
+    "mapping": "on_tree",
+    "target": "wholesale_gross_revenue",
+    "basis": "fallback_deepest_descendant"
+   },
+   "bristlecone.baseline.s1.only.brand_budget_cut": {
+    "anomaly": "brand_budget_cut",
+    "truth": [
+     "marketing_spend"
+    ],
+    "mapping": "on_tree",
+    "target": "wholesale_gross_revenue",
+    "basis": "fallback_deepest_descendant"
+   },
+   "bristlecone.baseline.s2.only.summit_mart_destock": {
+    "anomaly": "summit_mart_destock",
+    "truth": [
+     "shipped_cases"
+    ],
+    "mapping": "on_tree",
+    "target": "wholesale_gross_revenue",
+    "basis": "set:verdict"
+   }
+  }
+ },
+ "slice_localization": [
+  {
+   "world": "bristlecone.baseline.s0.only.brand_budget_cut",
+   "seed": 0,
+   "anomaly": "brand_budget_cut",
+   "node": "marketing_spend",
+   "node_kind": "flow",
+   "dimension": "channel",
+   "root_value": "paid_social",
+   "status": "ok",
+   "detail": null,
+   "rank": 1,
+   "rank_by_abs_excess": 1,
+   "n_ranked": 3,
+   "gap_sign": -1,
+   "first": "paid_social",
+   "root_abs_z": 26.413996450744236,
+   "localization": "not_localized",
+   "engine_call": null,
+   "truth_call": null,
+   "call_correct": null
+  },
+  {
+   "world": "bristlecone.baseline.s1.only.summit_mart_destock",
+   "seed": 1,
+   "anomaly": "summit_mart_destock",
+   "node": "shipped_cases",
+   "node_kind": "flow",
+   "dimension": "channel_type",
+   "root_value": "mass",
+   "status": "ok",
+   "detail": null,
+   "rank": 5,
+   "rank_by_abs_excess": 1,
+   "n_ranked": 5,
+   "gap_sign": 1,
+   "first": "grocery",
+   "root_abs_z": 6.253155213258451,
+   "localization": "not_localized",
+   "engine_call": null,
+   "truth_call": null,
+   "call_correct": null
+  },
+  {
+   "world": "bristlecone.baseline.s2.only.summit_mart_capsules_delisting",
+   "seed": 2,
+   "anomaly": "summit_mart_capsules_delisting",
+   "node": "pos_units",
+   "node_kind": "flow",
+   "dimension": "category",
+   "root_value": "capsules",
+   "status": "ok",
+   "detail": null,
+   "rank": 3,
+   "rank_by_abs_excess": 1,
+   "n_ranked": 3,
+   "gap_sign": 1,
+   "first": "teas",
+   "root_abs_z": 8.577119373896833,
+   "localization": "localized",
+   "engine_call": null,
+   "truth_call": null,
+   "call_correct": null
+  },
+  {
+   "world": "bristlecone.baseline.s2.only.summit_mart_capsules_delisting",
+   "seed": 2,
+   "anomaly": "summit_mart_capsules_delisting",
+   "node": "pos_units",
+   "node_kind": "flow",
+   "dimension": "retailer_banner",
+   "root_value": "summit_mart",
+   "status": "ok",
+   "detail": null,
+   "rank": 5,
+   "rank_by_abs_excess": 1,
+   "n_ranked": 5,
+   "gap_sign": 1,
+   "first": "whole_earth",
+   "root_abs_z": 8.769268057873676,
+   "localization": "localized",
+   "engine_call": null,
+   "truth_call": null,
+   "call_correct": null
+  },
+  {
+   "world": "bristlecone.baseline.s0.only.summit_mart_destock",
+   "seed": 0,
+   "anomaly": "summit_mart_destock",
+   "node": "shipped_cases",
+   "node_kind": "flow",
+   "dimension": "channel_type",
+   "root_value": "mass",
+   "status": "ok",
+   "detail": null,
+   "rank": 5,
+   "rank_by_abs_excess": 1,
+   "n_ranked": 5,
+   "gap_sign": 1,
+   "first": "grocery",
+   "root_abs_z": 5.291325146083769,
+   "localization": "localized",
+   "engine_call": null,
+   "truth_call": null,
+   "call_correct": null
+  },
+  {
+   "world": "bristlecone.baseline.s1.only.summit_mart_capsules_delisting",
+   "seed": 1,
+   "anomaly": "summit_mart_capsules_delisting",
+   "node": "pos_units",
+   "node_kind": "flow",
+   "dimension": "category",
+   "root_value": "capsules",
+   "status": "ok",
+   "detail": null,
+   "rank": 3,
+   "rank_by_abs_excess": 1,
+   "n_ranked": 3,
+   "gap_sign": 1,
+   "first": "teas",
+   "root_abs_z": 12.64688861082036,
+   "localization": "localized",
+   "engine_call": null,
+   "truth_call": null,
+   "call_correct": null
+  },
+  {
+   "world": "bristlecone.baseline.s1.only.summit_mart_capsules_delisting",
+   "seed": 1,
+   "anomaly": "summit_mart_capsules_delisting",
+   "node": "pos_units",
+   "node_kind": "flow",
+   "dimension": "retailer_banner",
+   "root_value": "summit_mart",
+   "status": "ok",
+   "detail": null,
+   "rank": 5,
+   "rank_by_abs_excess": 1,
+   "n_ranked": 5,
+   "gap_sign": 1,
+   "first": "whole_earth",
+   "root_abs_z": 8.859325811654791,
+   "localization": "localized",
+   "engine_call": null,
+   "truth_call": null,
+   "call_correct": null
+  },
+  {
+   "world": "bristlecone.baseline.s0.only.summit_mart_capsules_delisting",
+   "seed": 0,
+   "anomaly": "summit_mart_capsules_delisting",
+   "node": "pos_units",
+   "node_kind": "flow",
+   "dimension": "category",
+   "root_value": "capsules",
+   "status": "ok",
+   "detail": null,
+   "rank": 3,
+   "rank_by_abs_excess": 1,
+   "n_ranked": 3,
+   "gap_sign": 1,
+   "first": "teas",
+   "root_abs_z": 9.919670125387013,
+   "localization": "localized",
+   "engine_call": null,
+   "truth_call": null,
+   "call_correct": null
+  },
+  {
+   "world": "bristlecone.baseline.s0.only.summit_mart_capsules_delisting",
+   "seed": 0,
+   "anomaly": "summit_mart_capsules_delisting",
+   "node": "pos_units",
+   "node_kind": "flow",
+   "dimension": "retailer_banner",
+   "root_value": "summit_mart",
+   "status": "ok",
+   "detail": null,
+   "rank": 5,
+   "rank_by_abs_excess": 1,
+   "n_ranked": 5,
+   "gap_sign": 1,
+   "first": "whole_earth",
+   "root_abs_z": 8.014918974725726,
+   "localization": "localized",
+   "engine_call": null,
+   "truth_call": null,
+   "call_correct": null
+  },
+  {
+   "world": "bristlecone.baseline.s2.only.brand_budget_cut",
+   "seed": 2,
+   "anomaly": "brand_budget_cut",
+   "node": "marketing_spend",
+   "node_kind": "flow",
+   "dimension": "channel",
+   "root_value": "paid_social",
+   "status": "ok",
+   "detail": null,
+   "rank": 1,
+   "rank_by_abs_excess": 1,
+   "n_ranked": 3,
+   "gap_sign": -1,
+   "first": "paid_social",
+   "root_abs_z": 75.24031806466142,
+   "localization": "not_localized",
+   "engine_call": null,
+   "truth_call": null,
+   "call_correct": null
+  },
+  {
+   "world": "bristlecone.baseline.s1.only.brand_budget_cut",
+   "seed": 1,
+   "anomaly": "brand_budget_cut",
+   "node": "marketing_spend",
+   "node_kind": "flow",
+   "dimension": "channel",
+   "root_value": "paid_social",
+   "status": "ok",
+   "detail": null,
+   "rank": 1,
+   "rank_by_abs_excess": 1,
+   "n_ranked": 3,
+   "gap_sign": -1,
+   "first": "paid_social",
+   "root_abs_z": 43.43076506775954,
+   "localization": "not_localized",
+   "engine_call": null,
+   "truth_call": null,
+   "call_correct": null
+  },
+  {
+   "world": "bristlecone.baseline.s2.only.summit_mart_destock",
+   "seed": 2,
+   "anomaly": "summit_mart_destock",
+   "node": "shipped_cases",
+   "node_kind": "flow",
+   "dimension": "channel_type",
+   "root_value": "mass",
+   "status": "ok",
+   "detail": null,
+   "rank": 5,
+   "rank_by_abs_excess": 1,
+   "n_ranked": 5,
+   "gap_sign": 1,
+   "first": "grocery",
+   "root_abs_z": 8.22118703802323,
+   "localization": "localized",
+   "engine_call": null,
+   "truth_call": null,
+   "call_correct": null
+  }
+ ],
+ "counterfactual_attribution": {
+  "truth": "the twin difference (single world against its null twin); the engine answers window over window, so a formula edge carrying its parents' drift since the reference window is expected to exceed it",
+  "truth_seeds": [
+   0,
+   1,
+   2
+  ],
+  "truth_includes_held_out_seeds": false,
+  "max_rel_precision": 0.2,
+  "eligibility": [
+   {
+    "anomaly": "brand_budget_cut",
+    "item": "marketing_spend->pos_units",
+    "kind": "learned_edge",
+    "verdict": "exactly_zero",
+    "truth_basis": "rel_change_aggregated",
+    "n_seeds": 3,
+    "rel_mean": 0.0,
+    "fraction": null,
+    "precision": null,
+    "aligned_worlds": 3,
+    "eligible": false,
+    "why": "verdict exactly_zero"
+   },
+   {
+    "anomaly": "brand_budget_cut",
+    "item": "pos_units->shipped_cases",
+    "kind": "learned_edge",
+    "verdict": "exactly_zero",
+    "truth_basis": "rel_change_aggregated",
+    "n_seeds": 3,
+    "rel_mean": 0.0,
+    "fraction": null,
+    "precision": null,
+    "aligned_worlds": 3,
+    "eligible": false,
+    "why": "verdict exactly_zero"
+   },
+   {
+    "anomaly": "brand_budget_cut",
+    "item": "root:marketing_spend",
+    "kind": "root_gap",
+    "verdict": "established_down",
+    "truth_basis": "rel_change_aggregated",
+    "n_seeds": 3,
+    "rel_mean": -0.3281082258598332,
+    "fraction": 1.0,
+    "precision": 0.010119158569097977,
+    "aligned_worlds": 3,
+    "eligible": true,
+    "why": "established and precise"
+   },
+   {
+    "anomaly": "brand_budget_cut",
+    "item": "shipped_cases->wholesale_net_revenue",
+    "kind": "formula_edge",
+    "verdict": "exactly_zero",
+    "truth_basis": "rel_change_aggregated",
+    "n_seeds": 3,
+    "rel_mean": 0.0,
+    "fraction": null,
+    "precision": null,
+    "aligned_worlds": 3,
+    "eligible": false,
+    "why": "verdict exactly_zero"
+   },
+   {
+    "anomaly": "brand_budget_cut",
+    "item": "wholesale_net_revenue->wholesale_gross_revenue",
+    "kind": "formula_edge",
+    "verdict": "exactly_zero",
+    "truth_basis": "rel_change_aggregated",
+    "n_seeds": 3,
+    "rel_mean": 0.0,
+    "fraction": null,
+    "precision": null,
+    "aligned_worlds": 3,
+    "eligible": false,
+    "why": "verdict exactly_zero"
+   },
+   {
+    "anomaly": "summit_mart_destock",
+    "item": "root:shipped_cases",
+    "kind": "root_unexplained",
+    "verdict": "established_down",
+    "truth_basis": "rel_change_aggregated",
+    "n_seeds": 3,
+    "rel_mean": -0.08189116287517458,
+    "fraction": 1.0,
+    "precision": 0.02050618413640804,
+    "aligned_worlds": 3,
+    "eligible": true,
+    "why": "established and precise"
+   },
+   {
+    "anomaly": "summit_mart_destock",
+    "item": "shipped_cases->wholesale_net_revenue",
+    "kind": "formula_edge",
+    "verdict": "established_down",
+    "truth_basis": "rel_change_aggregated",
+    "n_seeds": 3,
+    "rel_mean": -0.08441882901239713,
+    "fraction": 0.9683852972605358,
+    "precision": 0.02254521748685328,
+    "aligned_worlds": 3,
+    "eligible": true,
+    "why": "established and precise"
+   },
+   {
+    "anomaly": "summit_mart_destock",
+    "item": "wholesale_net_revenue->wholesale_gross_revenue",
+    "kind": "formula_edge",
+    "verdict": "established_down",
+    "truth_basis": "rel_change_aggregated",
+    "n_seeds": 3,
+    "rel_mean": -0.0830684853449275,
+    "fraction": 1.0000000000000007,
+    "precision": 0.023303316854001527,
+    "aligned_worlds": 3,
+    "eligible": true,
+    "why": "established and precise"
+   }
+  ],
+  "errors": [
+   [
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting",
+    "error: ValueError: analysis_start/analysis_end is not a valid date"
+   ],
+   [
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting",
+    "error: ValueError: analysis_start/analysis_end is not a valid date"
+   ],
+   [
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting",
+    "error: ValueError: analysis_start/analysis_end is not a valid date"
+   ]
+  ]
+ },
+ "not_built": {
+  "Q6 abstention": "off-tree, data-quality and null-world false alarms (spec \u00a75.5)",
+  "Q7 power": "the magnitude ladder (spec \u00a75.2); needs generator phase 2",
+  "Q9 catch rate": "share of badly calibrated nodes a flag catches; needs a per-node verdict"
+ },
+ "rows": [
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": -0.036154524951779496,
+   "spread": 0.07975691004212979,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "bristlecone.baseline.s0.null": -0.07891155046506701,
+    "bristlecone.baseline.s1.null": 0.05586421909278151,
+    "bristlecone.baseline.s2.null": -0.08541624348305299
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.8228773323029756,
+   "spread": 0.1340197263266866,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.8991211966345125,
+    "bristlecone.baseline.s1.null": 0.9013806200020615,
+    "bristlecone.baseline.s2.null": 0.6681301802723528
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.029761904761904757,
+   "spread": 0.020619652471058063,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.05357142857142857,
+    "bristlecone.baseline.s1.null": 0.017857142857142856,
+    "bristlecone.baseline.s2.null": 0.017857142857142856
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.023809523809523808,
+   "spread": 0.027277236279499045,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.05357142857142857,
+    "bristlecone.baseline.s1.null": 0.017857142857142856,
+    "bristlecone.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.10138095238095236,
+   "spread": 0.024725568577822404,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.11671428571428566,
+    "bristlecone.baseline.s1.null": 0.07285714285714284,
+    "bristlecone.baseline.s2.null": 0.1145714285714286
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": -0.1332525534860787,
+   "spread": 0.23875045107915208,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "bristlecone.baseline.s0.null": -0.2682634544155579,
+    "bristlecone.baseline.s1.null": 0.14241346087863777,
+    "bristlecone.baseline.s2.null": -0.273907666921316
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": -0.11164042157639487,
+   "spread": 0.21695307459151159,
+   "n_seeds": 3,
+   "n": 72,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.02100865758591249,
+    "bristlecone.baseline.s1.null": 0.0060779765574149325,
+    "bristlecone.baseline.s2.null": -0.362007898872512
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.9080679844417622,
+   "spread": 0.2020584401302662,
+   "n_seeds": 3,
+   "n": 72,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.9451574757725856,
+    "bristlecone.baseline.s1.null": 1.0890123122929016,
+    "bristlecone.baseline.s2.null": 0.6900341652597993
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.041666666666666664,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 72,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.041666666666666664,
+    "bristlecone.baseline.s1.null": 0.041666666666666664,
+    "bristlecone.baseline.s2.null": 0.041666666666666664
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.027777777777777776,
+   "spread": 0.024056261216234408,
+   "n_seeds": 3,
+   "n": 72,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.041666666666666664,
+    "bristlecone.baseline.s1.null": 0.041666666666666664,
+    "bristlecone.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.16322222222222224,
+   "spread": 0.07024428275140453,
+   "n_seeds": 3,
+   "n": 72,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.12266666666666659,
+    "bristlecone.baseline.s1.null": 0.12266666666666667,
+    "bristlecone.baseline.s2.null": 0.2443333333333334
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": -0.2371619756426134,
+   "spread": 0.2420869720042548,
+   "n_seeds": 3,
+   "n": 72,
+   "units": {
+    "bristlecone.baseline.s0.null": -0.3706666176860073,
+    "bristlecone.baseline.s1.null": 0.04228375131551076,
+    "bristlecone.baseline.s2.null": -0.38310306055734367
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": -0.10766368668079995,
+   "spread": 0.1276463179816666,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "bristlecone.baseline.s0.null": -0.1778296579111989,
+    "bristlecone.baseline.s1.null": -0.18483547760204838,
+    "bristlecone.baseline.s2.null": 0.039674075470847434
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 0.7069410953795995,
+   "spread": 0.16359655734503842,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.8664037342143186,
+    "bristlecone.baseline.s1.null": 0.7149171512909399,
+    "bristlecone.baseline.s2.null": 0.5395024006335403
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 0.020833333333333332,
+   "spread": 0.036084391824351615,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.0625,
+    "bristlecone.baseline.s1.null": 0.0,
+    "bristlecone.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 0.020833333333333332,
+   "spread": 0.036084391824351615,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.0625,
+    "bristlecone.baseline.s1.null": 0.0,
+    "bristlecone.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 0.2608333333333333,
+   "spread": 0.022479620400116477,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.2555,
+    "bristlecone.baseline.s1.null": 0.2855,
+    "bristlecone.baseline.s2.null": 0.2415
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 0.009252083214050189,
+   "spread": 0.12070393610077004,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.04204355373530715,
+    "bristlecone.baseline.s1.null": 0.1101720748872345,
+    "bristlecone.baseline.s2.null": -0.12445937898039108
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "cpg_wholesale",
+   "value": 0.2010471271321486,
+   "spread": 0.37065795684576275,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": -0.1785364599776088,
+    "bristlecone.baseline.s1.null": 0.5620830337850904,
+    "bristlecone.baseline.s2.null": 0.2195948075889642
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "cpg_wholesale",
+   "value": 0.6150170723375724,
+   "spread": 0.04708398772700334,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.6680836212099746,
+    "bristlecone.baseline.s1.null": 0.5987238146668028,
+    "bristlecone.baseline.s2.null": 0.5782437811359399
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.0,
+    "bristlecone.baseline.s1.null": 0.0,
+    "bristlecone.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.0,
+    "bristlecone.baseline.s1.null": 0.0,
+    "bristlecone.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "cpg_wholesale",
+   "value": 0.3223333333333333,
+   "spread": 0.11056370712549995,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.22799999999999998,
+    "bristlecone.baseline.s1.null": 0.44399999999999995,
+    "bristlecone.baseline.s2.null": 0.29500000000000004
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "cpg_wholesale",
+   "value": -0.31984053950125896,
+   "spread": 0.521910105891231,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": -0.5427097947892265,
+    "bristlecone.baseline.s1.null": 0.27650349196671337,
+    "bristlecone.baseline.s2.null": -0.6933153156812638
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "cpg_wholesale",
+   "value": 0.09611983629617941,
+   "spread": 0.1536355500921694,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": -0.08121105021320005,
+    "bristlecone.baseline.s1.null": 0.18040352539623217,
+    "bristlecone.baseline.s2.null": 0.18916703370550614
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "cpg_wholesale",
+   "value": 0.9213369331232971,
+   "spread": 0.08206004323993271,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": 1.0155382491003793,
+    "bristlecone.baseline.s1.null": 0.8653799357284844,
+    "bristlecone.baseline.s2.null": 0.8830926145410279
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "cpg_wholesale",
+   "value": 0.041666666666666664,
+   "spread": 0.07216878364870323,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.125,
+    "bristlecone.baseline.s1.null": 0.0,
+    "bristlecone.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "cpg_wholesale",
+   "value": 0.041666666666666664,
+   "spread": 0.07216878364870323,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.125,
+    "bristlecone.baseline.s1.null": 0.0,
+    "bristlecone.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "cpg_wholesale",
+   "value": 0.22033333333333335,
+   "spread": 0.009814954576223615,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.22599999999999998,
+    "bristlecone.baseline.s1.null": 0.20900000000000002,
+    "bristlecone.baseline.s2.null": 0.22599999999999998
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "cpg_wholesale",
+   "value": 0.02886374858288494,
+   "spread": 0.46702871485612457,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": -0.38490563099837344,
+    "bristlecone.baseline.s1.null": 0.5352680468983464,
+    "bristlecone.baseline.s2.null": -0.06377117015131814
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=moderate",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.10714285714285715,
+   "spread": 0.017857142857142856,
+   "n_seeds": 3,
+   "n": 18,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.125,
+    "bristlecone.baseline.s1.null": 0.10714285714285714,
+    "bristlecone.baseline.s2.null": 0.08928571428571429
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=moderate",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.03210250569385249,
+   "spread": 0.02264980819490265,
+   "n_seeds": 3,
+   "n": 18,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.020015169612629582,
+    "bristlecone.baseline.s1.null": 0.018060456393264646,
+    "bristlecone.baseline.s2.null": 0.05823189107566325
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=moderate",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 1.0309250003428905,
+   "spread": 0.21512577262970767,
+   "n_seeds": 3,
+   "n": 18,
+   "units": {
+    "bristlecone.baseline.s0.null": 1.2468197583401386,
+    "bristlecone.baseline.s1.null": 1.0293786934794238,
+    "bristlecone.baseline.s2.null": 0.8165765492091092
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=moderate",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.047619047619047616,
+   "spread": 0.08247860988423225,
+   "n_seeds": 3,
+   "n": 18,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.14285714285714285,
+    "bristlecone.baseline.s1.null": 0.0,
+    "bristlecone.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=ok",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.6428571428571429,
+   "spread": 0.0643848442047141,
+   "n_seeds": 3,
+   "n": 108,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.5714285714285714,
+    "bristlecone.baseline.s1.null": 0.6607142857142857,
+    "bristlecone.baseline.s2.null": 0.6964285714285714
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=ok",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": -0.014174353397933456,
+   "spread": 0.1361092110783743,
+   "n_seeds": 3,
+   "n": 108,
+   "units": {
+    "bristlecone.baseline.s0.null": -0.07181313156388071,
+    "bristlecone.baseline.s1.null": 0.14127064833520658,
+    "bristlecone.baseline.s2.null": -0.11198057696512624
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=ok",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.8807624333677762,
+   "spread": 0.10764681741024656,
+   "n_seeds": 3,
+   "n": 108,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.9360722000033412,
+    "bristlecone.baseline.s1.null": 0.9495101412215717,
+    "bristlecone.baseline.s2.null": 0.7567049588784153
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=ok",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.03838935088935089,
+   "spread": 0.02089193146559535,
+   "n_seeds": 3,
+   "n": 108,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.0625,
+    "bristlecone.baseline.s1.null": 0.02702702702702703,
+    "bristlecone.baseline.s2.null": 0.02564102564102564
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=severe",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.25,
+   "spread": 0.04724555912615339,
+   "n_seeds": 3,
+   "n": 42,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.30357142857142855,
+    "bristlecone.baseline.s1.null": 0.23214285714285715,
+    "bristlecone.baseline.s2.null": 0.21428571428571427
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=severe",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": -0.12057036284300303,
+   "spread": 0.056453171299496584,
+   "n_seeds": 3,
+   "n": 42,
+   "units": {
+    "bristlecone.baseline.s0.null": -0.13300781195811637,
+    "bristlecone.baseline.s1.null": -0.1697677275051128,
+    "bristlecone.baseline.s2.null": -0.058935549065779934
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=severe",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.424970891757519,
+   "spread": 0.3198577556776368,
+   "n_seeds": 3,
+   "n": 42,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.397394938941558,
+    "bristlecone.baseline.s1.null": 0.7577238489813466,
+    "bristlecone.baseline.s2.null": 0.11979388734965242
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=severe",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 42,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.0,
+    "bristlecone.baseline.s1.null": 0.0,
+    "bristlecone.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=ok",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.7440476190476191,
+   "spread": 0.04123930494211617,
+   "n_seeds": 3,
+   "n": 125,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.6964285714285714,
+    "bristlecone.baseline.s1.null": 0.7678571428571429,
+    "bristlecone.baseline.s2.null": 0.7678571428571429
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=ok",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": -0.015390152196964282,
+   "spread": 0.12440369448885581,
+   "n_seeds": 3,
+   "n": 125,
+   "units": {
+    "bristlecone.baseline.s0.null": -0.055331128788609615,
+    "bristlecone.baseline.s1.null": 0.12407852852935419,
+    "bristlecone.baseline.s2.null": -0.11491785633163742
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=ok",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.8708082329946336,
+   "spread": 0.15670730112329523,
+   "n_seeds": 3,
+   "n": 125,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.9736901292649396,
+    "bristlecone.baseline.s1.null": 0.9482806852110991,
+    "bristlecone.baseline.s2.null": 0.6904538845078624
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=ok",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.04114490161001789,
+   "spread": 0.030984808722162388,
+   "n_seeds": 3,
+   "n": 125,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.07692307692307693,
+    "bristlecone.baseline.s1.null": 0.023255813953488372,
+    "bristlecone.baseline.s2.null": 0.023255813953488372
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=suspect",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.25595238095238093,
+   "spread": 0.041239304942116105,
+   "n_seeds": 3,
+   "n": 43,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.30357142857142855,
+    "bristlecone.baseline.s1.null": 0.23214285714285715,
+    "bristlecone.baseline.s2.null": 0.23214285714285715
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=suspect",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": -0.09686984168750096,
+   "spread": 0.09619998067788282,
+   "n_seeds": 3,
+   "n": 43,
+   "units": {
+    "bristlecone.baseline.s0.null": -0.13300781195811637,
+    "bristlecone.baseline.s1.null": -0.1697677275051128,
+    "bristlecone.baseline.s2.null": 0.012166014400726278
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=suspect",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.424970891757519,
+   "spread": 0.3198577556776368,
+   "n_seeds": 3,
+   "n": 43,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.397394938941558,
+    "bristlecone.baseline.s1.null": 0.7577238489813466,
+    "bristlecone.baseline.s2.null": 0.11979388734965242
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=suspect",
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 43,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.0,
+    "bristlecone.baseline.s1.null": 0.0,
+    "bristlecone.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "abs_z_at_onset",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 3.2767920185610726,
+   "spread": 0.4901836499201507,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s1.only.brand_budget_cut": 7.3037422031041785,
+    "bristlecone.baseline.s0.only.brand_budget_cut": 7.193096045090828,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 6.821092871296899,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 2.395996969850388,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 2.28420739600615,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.3963771886251202,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 1.225414713970098,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.4621077636970036,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.409093015408986
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.23611111111111108,
+   "spread": 0.2369266959615553,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.125,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.5,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.625,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.875
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail_under_5pct",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.5555555555555555,
+   "spread": 0.19245008972987526,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "null_windows_per_node",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 8.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s1.only.brand_budget_cut": 8.0,
+    "bristlecone.baseline.s0.only.brand_budget_cut": 8.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 8.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 8.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 8.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 8.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 8.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 8.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 8.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "abs_z_at_onset",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 1.362199507926291,
+   "spread": 0.8055657885522356,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 2.395996969850388,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 2.28420739600615,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.3963771886251202,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 1.225414713970098,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.4621077636970036,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.409093015408986
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.3541666666666667,
+   "spread": 0.3553900439423329,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.125,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.5,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.625,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.875
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail_under_5pct",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.3333333333333333,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "null_windows_per_node",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 8.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 8.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 8.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 8.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 8.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 8.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 8.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "abs_z_at_onset",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 7.105977039830635,
+   "spread": 0.2528435982611534,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s1.only.brand_budget_cut": 7.3037422031041785,
+    "bristlecone.baseline.s0.only.brand_budget_cut": 7.193096045090828,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 6.821092871296899
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail_under_5pct",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "null_windows_per_node",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 8.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s1.only.brand_budget_cut": 8.0,
+    "bristlecone.baseline.s0.only.brand_budget_cut": 8.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 8.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 6.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 6.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 6.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 6.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 6.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 6.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 6.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.3333333333333333,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.31666666666666665,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.25,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.5,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.2,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.5,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.2,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.2,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.25,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.25,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.5
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 6.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 6.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 6.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 6.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 6.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 6.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 6.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.3499999999999999,
+   "spread": 6.798699777552591e-17,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.5,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.2,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.5,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.2,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.2,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.5
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 6.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 6.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 0.25,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.25,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.25,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.25
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 6.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 6.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 6.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 6.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 6.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 6.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 6.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.5555555555555555,
+   "spread": 0.3849001794597505,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.8888888888888888,
+   "spread": 0.1924500897298753,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.75,
+   "spread": 0.2204792759220492,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.5,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.5,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.25,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.5
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.4444444444444444,
+   "spread": 0.19245008972987526,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.3333333333333333,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 6.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 6.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 6.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 6.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 6.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 6.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 6.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.3333333333333333,
+   "spread": 0.5773502691896258,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.8333333333333334,
+   "spread": 0.28867513459481287,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.625,
+   "spread": 0.33071891388307384,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.5,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.5,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.25,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.5
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.16666666666666666,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 6.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 6.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 6.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 6.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 6.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 6.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 6.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 6.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 6.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.5555555555555555,
+   "spread": 0.19245008972987526,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.7777777777777777,
+   "spread": 0.1924500897298753,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.6981481481481482,
+   "spread": 0.07583553788682698,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.25,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.5,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.2,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.3333333333333333,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.5555555555555555,
+   "spread": 0.19245008972987526,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.1111111111111111,
+   "spread": 0.19245008972987526,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 6.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 6.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 6.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 6.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 6.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 6.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 6.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.3333333333333333,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.6666666666666666,
+   "spread": 0.28867513459481287,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.5472222222222222,
+   "spread": 0.1137533068302404,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.25,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.5,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.2,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.3333333333333333,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.3333333333333333,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.16666666666666666,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 6.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 6.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 5.333333333333333,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 5.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 5.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 5.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 5.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 5.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 5.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.3333333333333333,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.611111111111111,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.5,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.3333333333333333,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.3333333333333333,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.5,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.5,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.3333333333333333
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 5.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 5.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 5.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 5.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 5.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 5.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 5.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.6666666666666666,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.3333333333333333,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.3333333333333333,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.3333333333333333
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 6.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 6.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 6.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.5,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.5,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.5
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "slice_rows_refused",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 0,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "top1_by_abs_excess",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.3333333333333333,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.5,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.5,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.5,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.4888888888888889,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.26666666666666666,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.2,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.26666666666666666,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.2,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.26666666666666666,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.2
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 4.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 3.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 4.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 5.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 3.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 4.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 5.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 3.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 4.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 5.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "root_abs_z",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 21.47159360641221,
+   "spread": 8.6535373587567,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 26.413996450744236,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 8.96729455005637,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 5.291325146083769,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 43.43076506775954,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 10.753107211237577,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 6.253155213258451,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 75.24031806466142,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 8.673193715885255,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 8.22118703802323
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.3333333333333333,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "localized",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.5555555555555555,
+   "spread": 0.19245008972987526,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "top1_by_abs_excess",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow",
+   "vertical": "cpg_wholesale",
+   "value": 0.3333333333333333,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow",
+   "vertical": "cpg_wholesale",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.5,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.5,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.5,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow",
+   "vertical": "cpg_wholesale",
+   "value": 0.4888888888888889,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.26666666666666666,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.2,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.26666666666666666,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.2,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.26666666666666666,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.2
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow",
+   "vertical": "cpg_wholesale",
+   "value": 4.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 3.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 4.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 5.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 3.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 4.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 5.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 3.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 4.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 5.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "root_abs_z",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow",
+   "vertical": "cpg_wholesale",
+   "value": 21.47159360641221,
+   "spread": 8.6535373587567,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 26.413996450744236,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 8.96729455005637,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 5.291325146083769,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 43.43076506775954,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 10.753107211237577,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 6.253155213258451,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 75.24031806466142,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 8.673193715885255,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 8.22118703802323
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow",
+   "vertical": "cpg_wholesale",
+   "value": 0.3333333333333333,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "localized",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow",
+   "vertical": "cpg_wholesale",
+   "value": 0.5555555555555555,
+   "spread": 0.19245008972987526,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "items_size_eligible",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 1.3333333333333333,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 3.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 3.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 1.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 3.0
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "items_direction_only",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 0,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "items_total",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 2.6666666666666665,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 5.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 3.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 5.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 3.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 5.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 3.0
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "abs_log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.38619496205489884,
+   "spread": 0.011225148017627815,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.7206571056030454,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.07239287234694787,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.698340664983048,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.050158722497913845,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.7050670153152743,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.07055339158316383
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.34534443043994495,
+   "spread": 0.036776443971543546,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.7206571056030454,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": -0.07239287234694787,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.698340664983048,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": -0.050158722497913845,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.7050670153152743,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.07055339158316383
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "ratio",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": -0.03275118143515824,
+   "spread": 0.09235662638193133,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 2.055783633854422,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": -2.239611102540399,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 2.0104139878807197,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": -2.170436466829957,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 2.023982318190707,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": -1.8766394591664424
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "coverage",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "withheld",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "wrong_sign",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.3333333333333333,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.6666666666666666,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.6666666666666666,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.6666666666666666
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "error_share",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 2.1583948399044193,
+   "spread": 0.1387717271698189,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 2.278117825869605,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 2.1907688999118724,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 2.0062977939317803
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "abs_error_share",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 2.1588493011888437,
+   "spread": 0.13802479925818428,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 2.278117825869605,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 2.1907688999118724,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 2.007661177785054
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "abs_log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "cpg_wholesale",
+   "value": null,
+   "spread": null,
+   "n_seeds": 0,
+   "n": 0,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": null,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": null,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": null
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "cpg_wholesale",
+   "value": null,
+   "spread": null,
+   "n_seeds": 0,
+   "n": 0,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": null,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": null,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": null
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "ratio",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "cpg_wholesale",
+   "value": -2.293265983627459,
+   "spread": 0.22473168256951545,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": -2.4663201733547497,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": -2.3742008686693983,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": -2.0392769088582283
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "coverage",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "withheld",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "wrong_sign",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "cpg_wholesale",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 1.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "error_share",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "cpg_wholesale",
+   "value": 3.237363148434692,
+   "spread": 0.2070829309458836,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 3.41617601840664,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 3.2854441981098095,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 3.010469228787626
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "abs_error_share",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "cpg_wholesale",
+   "value": 3.237363148434692,
+   "spread": 0.2070829309458836,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 3.41617601840664,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 3.2854441981098095,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 3.010469228787626
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "abs_log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "cpg_wholesale",
+   "value": 0.7080215953004559,
+   "spread": 0.011447839868424707,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.7206571056030454,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": null,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.698340664983048,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": null,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.7050670153152743,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": null
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "cpg_wholesale",
+   "value": 0.7080215953004559,
+   "spread": 0.011447839868424707,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.7206571056030454,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": null,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.698340664983048,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": null,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.7050670153152743,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": null
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "ratio",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "cpg_wholesale",
+   "value": 2.030059979975283,
+   "spread": 0.023287435958485158,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 2.055783633854422,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": null,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 2.0104139878807197,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": null,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 2.023982318190707,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": null
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "coverage",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "cpg_wholesale",
+   "value": null,
+   "spread": null,
+   "n_seeds": 0,
+   "n": 0,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": null,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": null,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": null
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "withheld",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": null,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": null,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": null
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "wrong_sign",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": null,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": null,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 0.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": null
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "error_share",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "cpg_wholesale",
+   "value": null,
+   "spread": null,
+   "n_seeds": 0,
+   "n": 0,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": null,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": null,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": null
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "abs_error_share",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "cpg_wholesale",
+   "value": null,
+   "spread": null,
+   "n_seeds": 0,
+   "n": 0,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": null,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": null,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": null
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "abs_log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_unexplained",
+   "vertical": "cpg_wholesale",
+   "value": 0.06436832880934185,
+   "spread": 0.012340202835221706,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.07239287234694787,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.050158722497913845,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.07055339158316383
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_unexplained",
+   "vertical": "cpg_wholesale",
+   "value": -0.017332734420565963,
+   "spread": 0.07691922849869809,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": -0.07239287234694787,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": -0.050158722497913845,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.07055339158316383
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "ratio",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_unexplained",
+   "vertical": "cpg_wholesale",
+   "value": 0.9847819017461106,
+   "spread": 0.07719877393380009,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.9301653877579655,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.9510784549718154,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 1.0731018625085507
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "coverage",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_unexplained",
+   "vertical": "cpg_wholesale",
+   "value": null,
+   "spread": null,
+   "n_seeds": 0,
+   "n": 0,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": null,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": null,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": null
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "withheld",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_unexplained",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "wrong_sign",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_unexplained",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "error_share",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_unexplained",
+   "vertical": "cpg_wholesale",
+   "value": 0.00045822284387454494,
+   "spread": 0.002187439204087386,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0020014407955350503,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0014183035159988627,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": -0.0020450757799102782
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "abs_error_share",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_unexplained",
+   "vertical": "cpg_wholesale",
+   "value": 0.0018216066971480638,
+   "spread": 0.0003499515608039998,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": null,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 0.0020014407955350503,
+    "bristlecone.baseline.s1.only.brand_budget_cut": null,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 0.0014183035159988627,
+    "bristlecone.baseline.s2.only.brand_budget_cut": null,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": null,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 0.0020450757799102782
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 3.453333333333333,
+   "spread": 0.02020725942163691,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "bristlecone.baseline.s0.null": 3.435,
+    "bristlecone.baseline.s1.null": 3.475,
+    "bristlecone.baseline.s2.null": 3.45
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.1607142857142857,
+   "spread": 0.03571428571428571,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.16071428571428573,
+    "bristlecone.baseline.s1.null": 0.125,
+    "bristlecone.baseline.s2.null": 0.19642857142857142
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.23214285714285712,
+   "spread": 0.05357142857142856,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.2857142857142857,
+    "bristlecone.baseline.s1.null": 0.17857142857142858,
+    "bristlecone.baseline.s2.null": 0.23214285714285715
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 0.25595238095238093,
+   "spread": 0.041239304942116105,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.30357142857142855,
+    "bristlecone.baseline.s1.null": 0.23214285714285715,
+    "bristlecone.baseline.s2.null": 0.23214285714285715
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 3.6733333333333333,
+   "spread": 0.033291640592397274,
+   "n_seeds": 3,
+   "n": 72,
+   "units": {
+    "bristlecone.baseline.s0.null": 3.635,
+    "bristlecone.baseline.s1.null": 3.6900000000000004,
+    "bristlecone.baseline.s2.null": 3.6950000000000003
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.18055555555555558,
+   "spread": 0.04811252243246882,
+   "n_seeds": 3,
+   "n": 72,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.20833333333333334,
+    "bristlecone.baseline.s1.null": 0.125,
+    "bristlecone.baseline.s2.null": 0.20833333333333334
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.23611111111111113,
+   "spread": 0.0240562612162344,
+   "n_seeds": 3,
+   "n": 72,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.25,
+    "bristlecone.baseline.s1.null": 0.20833333333333334,
+    "bristlecone.baseline.s2.null": 0.25
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "cpg_wholesale",
+   "value": 0.18055555555555555,
+   "spread": 0.1272937693043289,
+   "n_seeds": 3,
+   "n": 72,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.2916666666666667,
+    "bristlecone.baseline.s1.null": 0.20833333333333334,
+    "bristlecone.baseline.s2.null": 0.041666666666666664
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 2.9949999999999997,
+   "spread": 0.047696960070847144,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "bristlecone.baseline.s0.null": 2.99,
+    "bristlecone.baseline.s1.null": 3.045,
+    "bristlecone.baseline.s2.null": 2.95
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 0.041666666666666664,
+   "spread": 0.036084391824351615,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.0625,
+    "bristlecone.baseline.s1.null": 0.0625,
+    "bristlecone.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 0.0625,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.0625,
+    "bristlecone.baseline.s1.null": 0.0625,
+    "bristlecone.baseline.s2.null": 0.0625
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "cpg_wholesale",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.5,
+    "bristlecone.baseline.s1.null": 0.5,
+    "bristlecone.baseline.s2.null": 0.5
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "cpg_wholesale",
+   "value": 3.0116666666666667,
+   "spread": 0.059651767227243996,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": 3.0599999999999996,
+    "bristlecone.baseline.s1.null": 3.0300000000000002,
+    "bristlecone.baseline.s2.null": 2.9450000000000003
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.0,
+    "bristlecone.baseline.s1.null": 0.0,
+    "bristlecone.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "cpg_wholesale",
+   "value": 0.375,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.375,
+    "bristlecone.baseline.s1.null": 0.375,
+    "bristlecone.baseline.s2.null": 0.375
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "cpg_wholesale",
+   "value": 0.25,
+   "spread": 0.25,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.25,
+    "bristlecone.baseline.s1.null": 0.0,
+    "bristlecone.baseline.s2.null": 0.5
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "cpg_wholesale",
+   "value": 4.46,
+   "spread": 1.0568467249322389,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": 5.68,
+    "bristlecone.baseline.s1.null": 3.825,
+    "bristlecone.baseline.s2.null": 3.875
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "cpg_wholesale",
+   "value": 0.5,
+   "spread": 0.21650635094610965,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.375,
+    "bristlecone.baseline.s1.null": 0.375,
+    "bristlecone.baseline.s2.null": 0.75
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "cpg_wholesale",
+   "value": 0.4166666666666667,
+   "spread": 0.31457643480294795,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.75,
+    "bristlecone.baseline.s1.null": 0.125,
+    "bristlecone.baseline.s2.null": 0.375
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "cpg_wholesale",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "bristlecone.baseline.s0.null": 0.0,
+    "bristlecone.baseline.s1.null": 0.0,
+    "bristlecone.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "analysis_innovation_seconds",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 14.522222222222224,
+   "spread": 0.21169509870286307,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 15.3,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 11.4,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 16.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 12.9,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 16.7,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 16.1,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 15.5,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 15.1,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 11.7
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "analysis_rca_seconds",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 2.4222222222222225,
+   "spread": 0.11706281947614136,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 3.3,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 3.7,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 3.6,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 0.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 3.7,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 3.6,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 3.9
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "analysis_fits_made",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "cpg_wholesale",
+   "value": 8.333333333333334,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "bristlecone.baseline.s0.only.brand_budget_cut": 9.0,
+    "bristlecone.baseline.s1.only.summit_mart_destock": 8.0,
+    "bristlecone.baseline.s2.only.summit_mart_capsules_delisting": 8.0,
+    "bristlecone.baseline.s0.only.summit_mart_destock": 8.0,
+    "bristlecone.baseline.s1.only.summit_mart_capsules_delisting": 8.0,
+    "bristlecone.baseline.s0.only.summit_mart_capsules_delisting": 8.0,
+    "bristlecone.baseline.s2.only.brand_budget_cut": 9.0,
+    "bristlecone.baseline.s1.only.brand_budget_cut": 9.0,
+    "bristlecone.baseline.s2.only.summit_mart_destock": 8.0
+   }
+  }
+ ],
+ "invocations": [
+  {
+   "started": "20261124T155514",
+   "wall_seconds": 224.1,
+   "shards": 4,
+   "jobs_already_done": 0,
+   "jobs_done_now": 177,
+   "failed_shards": []
+  }
+ ],
+ "note": "Smoke tier on a canonical tree, not a finding: three seeds of a canon set rebuilt at fake_companies 817de23 (stocks answer MetricFlow by their last day, spec \u00a710.10), do not cite. Stocks are their week-end level; the 2026-11-23 run served Meridian's summed. Another job held the load at up to 28 during the run."
+}

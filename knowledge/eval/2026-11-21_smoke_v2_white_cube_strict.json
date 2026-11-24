@@ -1,0 +1,3376 @@
+{
+ "scoreboard_version": 1,
+ "tier": "smoke",
+ "engine_commit": "a97567d9959bd58b75737e0bb92a9a4eacedeb28",
+ "engine_key": "2ace584b50c602731fc8e34811ae6eea64c63e05|draws=500|chains=4|seed=0",
+ "generator_version": "0.1.0",
+ "manifest": {
+  "path": "/private/tmp/claude-501/-Users-devon-Documents-code-breakdown/1baf7fcf-162d-4aa4-a012-4e42cd2ef008/scratchpad/eval-worlds/out/worlds/proof_v2_white_cube",
+  "schema_version": 2,
+  "config": "configs/white_cube_b2c_app.yaml",
+  "config_sha256": "6517547081b833f9c872f2663578a89a84dcfdac3424bedafc13003d21234c1a",
+  "effects_summary": "effects_summary.parquet"
+ },
+ "vertical": "b2c_saas",
+ "company": "white_cube",
+ "tree": {
+  "path": "demo/white_cube_tree.yml",
+  "sha256": "d8e50fe756cba33aa25483f90083a1b7e8c9aec1a9bfb8194f990584501cf9f0",
+  "canonical": false,
+  "bindings_path": null,
+  "bindings_sha256": null,
+  "effective_sha256": "f7cbeb07c28beb6334e331a902434e88e25fe9b3967afe0920ef7a261041d716",
+  "drop_unserved": false,
+  "served": {
+   "marketing_spend": "marketing_spend",
+   "sessions": "sessions",
+   "visit_signup_rate": "visit_signup_rate",
+   "signups": "signups",
+   "trials_started": "trials_started",
+   "trial_activation_rate": "trial_activation_rate",
+   "trial_days_active": "trial_days_active",
+   "trial_conversion_rate": "trial_conversion_rate",
+   "trial_conversions": "trial_conversions",
+   "reactivations": "reactivations",
+   "direct_conversions": "direct_conversions",
+   "new_subscriptions": "new_subscriptions",
+   "new_arpu": "new_arpu",
+   "new_mrr": "new_mrr",
+   "active_subscriptions": "active_subscriptions",
+   "member_activity_rate": "member_activity_rate",
+   "customer_churn_rate": "customer_churn_rate",
+   "churned_subscriptions": "churned_subscriptions",
+   "churn_arpu": "churn_arpu",
+   "churned_mrr": "churned_mrr",
+   "expansion_mrr": "expansion_mrr",
+   "contraction_mrr": "contraction_mrr",
+   "net_new_mrr": "net_new_mrr"
+  },
+  "caveats": {},
+  "unserved": {},
+  "dropped": [],
+  "derived_instead_of_fetched": []
+ },
+ "seeds": [
+  0,
+  1,
+  2
+ ],
+ "held_out": false,
+ "held_out_seeds": [],
+ "regimes": [
+  "baseline"
+ ],
+ "horizons": [
+  7
+ ],
+ "created": "2026-11-21T04:58:10+00:00",
+ "host": {
+  "machine": "arm64",
+  "cpus": 12,
+  "load_at_plan": 5.69
+ },
+ "verdict_column": "verdict",
+ "verdict_level": 0.01,
+ "allow_schema_v1": false,
+ "windows": {
+  "white_cube.baseline.s0.null": {
+   "spacing_days": 77,
+   "n": 8
+  },
+  "white_cube.baseline.s1.null": {
+   "spacing_days": 77,
+   "n": 8
+  },
+  "white_cube.baseline.s2.null": {
+   "spacing_days": 77,
+   "n": 8
+  }
+ },
+ "singles": {
+  "onboarding_revamp": {
+   "class": "on_tree",
+   "root_metric": "trial_days_active",
+   "root_metric_rate": null,
+   "root_slice": {},
+   "truth": [
+    "trial_days_active"
+   ],
+   "depth": 0,
+   "note": "",
+   "set_verdicts": true
+  },
+  "professional_churn_spike": {
+   "class": "on_tree_rate",
+   "root_metric": "churned_subscriptions",
+   "root_metric_rate": "customer_churn_rate",
+   "root_slice": {
+    "plan": "professional"
+   },
+   "truth": [
+    "customer_churn_rate"
+   ],
+   "depth": 1,
+   "note": "root 'churned_subscriptions' is the numerator of 'customer_churn_rate'",
+   "set_verdicts": true
+  }
+ },
+ "singles_not_run": {},
+ "worlds": {
+  "white_cube.baseline.s0.null": {
+   "seed": 0,
+   "regime": "baseline",
+   "kind": "null",
+   "anomalies": []
+  },
+  "white_cube.baseline.s1.null": {
+   "seed": 1,
+   "regime": "baseline",
+   "kind": "null",
+   "anomalies": []
+  },
+  "white_cube.baseline.s2.null": {
+   "seed": 2,
+   "regime": "baseline",
+   "kind": "null",
+   "anomalies": []
+  },
+  "white_cube.baseline.s0.only.onboarding_revamp": {
+   "seed": 0,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "onboarding_revamp"
+   ]
+  },
+  "white_cube.baseline.s0.only.professional_churn_spike": {
+   "seed": 0,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "professional_churn_spike"
+   ]
+  },
+  "white_cube.baseline.s1.only.onboarding_revamp": {
+   "seed": 1,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "onboarding_revamp"
+   ]
+  },
+  "white_cube.baseline.s1.only.professional_churn_spike": {
+   "seed": 1,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "professional_churn_spike"
+   ]
+  },
+  "white_cube.baseline.s2.only.onboarding_revamp": {
+   "seed": 2,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "onboarding_revamp"
+   ]
+  },
+  "white_cube.baseline.s2.only.professional_churn_spike": {
+   "seed": 2,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "professional_churn_spike"
+   ]
+  }
+ },
+ "coverage": {
+  "jobs": 390,
+  "jobs_done": 390,
+  "job_seconds": 2509.1,
+  "calibration_status": {
+   "ok": 360,
+   "unassessed, fit failed: Cannot fit over undefined periods: 'churn_arpu' on 7 period(s) (2024-06-03, 2024-06-10": 8,
+   "unassessed, fit failed: Cannot fit over undefined periods: 'churn_arpu' on 8 period(s) (2024-06-03, 2024-06-10": 8,
+   "unassessed, fit failed: Cannot fit over undefined periods: 'churn_arpu' on 6 period(s) (2024-06-03, 2024-06-10": 8
+  },
+  "single_worlds": 6,
+  "single_worlds_ranked": 6,
+  "single_worlds_off_tree": [],
+  "single_worlds_no_target": [],
+  "single_worlds_skipped": {},
+  "targets": {
+   "white_cube.baseline.s0.only.onboarding_revamp": {
+    "anomaly": "onboarding_revamp",
+    "truth": [
+     "trial_days_active"
+    ],
+    "mapping": "on_tree",
+    "target": "net_new_mrr",
+    "basis": "set:verdict"
+   },
+   "white_cube.baseline.s2.only.onboarding_revamp": {
+    "anomaly": "onboarding_revamp",
+    "truth": [
+     "trial_days_active"
+    ],
+    "mapping": "on_tree",
+    "target": "net_new_mrr",
+    "basis": "set:verdict"
+   },
+   "white_cube.baseline.s0.only.professional_churn_spike": {
+    "anomaly": "professional_churn_spike",
+    "truth": [
+     "customer_churn_rate"
+    ],
+    "mapping": "on_tree_rate",
+    "target": "net_new_mrr",
+    "basis": "fallback_deepest_descendant"
+   },
+   "white_cube.baseline.s2.only.professional_churn_spike": {
+    "anomaly": "professional_churn_spike",
+    "truth": [
+     "customer_churn_rate"
+    ],
+    "mapping": "on_tree_rate",
+    "target": "net_new_mrr",
+    "basis": "fallback_deepest_descendant"
+   },
+   "white_cube.baseline.s1.only.onboarding_revamp": {
+    "anomaly": "onboarding_revamp",
+    "truth": [
+     "trial_days_active"
+    ],
+    "mapping": "on_tree",
+    "target": "net_new_mrr",
+    "basis": "set:verdict"
+   },
+   "white_cube.baseline.s1.only.professional_churn_spike": {
+    "anomaly": "professional_churn_spike",
+    "truth": [
+     "customer_churn_rate"
+    ],
+    "mapping": "on_tree_rate",
+    "target": "net_new_mrr",
+    "basis": "fallback_deepest_descendant"
+   }
+  }
+ },
+ "attribution": {
+  "max_rel_precision": 0.2,
+  "eligibility": [
+   {
+    "anomaly": "onboarding_revamp",
+    "item": "new_mrr->net_new_mrr",
+    "kind": "formula_edge",
+    "verdict": "established_up",
+    "n_seeds": 3,
+    "rel_mean": 0.27041725583397636,
+    "fraction": 0.9224736782286698,
+    "precision": 0.32349077884706245,
+    "aligned_worlds": 0,
+    "eligible": false,
+    "why": "precision \u00b132% at the set's 3 seeds (needs \u00b120%)"
+   },
+   {
+    "anomaly": "onboarding_revamp",
+    "item": "new_subscriptions->new_mrr",
+    "kind": "formula_edge",
+    "verdict": "established_up",
+    "n_seeds": 3,
+    "rel_mean": 0.19922806947347338,
+    "fraction": 1.025804059625252,
+    "precision": 0.11322932580141976,
+    "aligned_worlds": 0,
+    "eligible": true,
+    "why": "established and precise"
+   },
+   {
+    "anomaly": "onboarding_revamp",
+    "item": "root:trial_days_active",
+    "kind": "root_gap",
+    "verdict": "established_up",
+    "n_seeds": 3,
+    "rel_mean": 0.900234882966045,
+    "fraction": 1.0,
+    "precision": 0.00034223404620013136,
+    "aligned_worlds": 0,
+    "eligible": true,
+    "why": "established and precise"
+   },
+   {
+    "anomaly": "onboarding_revamp",
+    "item": "trial_conversion_rate->trial_conversions",
+    "kind": "formula_edge",
+    "verdict": "established_up",
+    "n_seeds": 3,
+    "rel_mean": 0.33628823539553937,
+    "fraction": 0.9999999999999997,
+    "precision": 0.3530900309037293,
+    "aligned_worlds": 0,
+    "eligible": false,
+    "why": "precision \u00b135% at the set's 3 seeds (needs \u00b120%)"
+   },
+   {
+    "anomaly": "onboarding_revamp",
+    "item": "trial_conversions->new_subscriptions",
+    "kind": "formula_edge",
+    "verdict": "open",
+    "n_seeds": 3,
+    "rel_mean": 0.20602146125674725,
+    "fraction": 0.9622922374429225,
+    "precision": null,
+    "aligned_worlds": 0,
+    "eligible": false,
+    "why": "verdict open"
+   },
+   {
+    "anomaly": "onboarding_revamp",
+    "item": "trial_days_active->trial_conversion_rate",
+    "kind": "learned_edge",
+    "verdict": "established_up",
+    "n_seeds": 3,
+    "rel_mean": 0.3322260292960275,
+    "fraction": null,
+    "precision": null,
+    "aligned_worlds": 0,
+    "eligible": false,
+    "why": "several_parents_moved: ['trial_activation_rate']"
+   },
+   {
+    "anomaly": "professional_churn_spike",
+    "item": "churned_mrr->net_new_mrr",
+    "kind": "formula_edge",
+    "verdict": "open",
+    "n_seeds": 3,
+    "rel_mean": -0.24702740396781675,
+    "fraction": 1.0408020546255823,
+    "precision": null,
+    "aligned_worlds": 0,
+    "eligible": false,
+    "why": "verdict open"
+   },
+   {
+    "anomaly": "professional_churn_spike",
+    "item": "churned_subscriptions->churned_mrr",
+    "kind": "formula_edge",
+    "verdict": "open",
+    "n_seeds": 3,
+    "rel_mean": 0.5280834539287182,
+    "fraction": 0.6217612510047291,
+    "precision": null,
+    "aligned_worlds": 0,
+    "eligible": false,
+    "why": "verdict open"
+   },
+   {
+    "anomaly": "professional_churn_spike",
+    "item": "customer_churn_rate->churned_subscriptions",
+    "kind": "formula_edge",
+    "verdict": "open",
+    "n_seeds": 3,
+    "rel_mean": 0.30665223679092884,
+    "fraction": 1.048488379044965,
+    "precision": null,
+    "aligned_worlds": 0,
+    "eligible": false,
+    "why": "verdict open"
+   },
+   {
+    "anomaly": "professional_churn_spike",
+    "item": "root:customer_churn_rate",
+    "kind": "root_unexplained",
+    "verdict": "open",
+    "n_seeds": 3,
+    "rel_mean": 0.326429866786027,
+    "fraction": 1.0,
+    "precision": null,
+    "aligned_worlds": 0,
+    "eligible": false,
+    "why": "verdict open"
+   }
+  ],
+  "errors": []
+ },
+ "not_built": {
+  "Q4 slices": "whether the true slice is the top slice of the true node (spec \u00a75.3)",
+  "Q5 error share": "attribution error as a share of the target's measured change (spec \u00a75.4)",
+  "Q6 abstention": "off-tree, data-quality and null-world false alarms (spec \u00a75.5)",
+  "Q7 power": "the magnitude ladder (spec \u00a75.2); needs generator phase 2",
+  "Q9 catch rate": "share of badly calibrated nodes a flag catches; needs a per-node verdict"
+ },
+ "rows": [
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.3483479999417393,
+   "spread": 0.08878697627805278,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": 0.3179909545579301,
+    "white_cube.baseline.s1.null": 0.4483319735390752,
+    "white_cube.baseline.s2.null": 0.27872107172821264
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 1.0534891974475984,
+   "spread": 0.15191431423257826,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": 1.2055857554434741,
+    "white_cube.baseline.s1.null": 1.053124051663805,
+    "white_cube.baseline.s2.null": 0.9017577852355161
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.08888888888888889,
+   "spread": 0.02097176232019653,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": 0.10833333333333334,
+    "white_cube.baseline.s1.null": 0.09166666666666666,
+    "white_cube.baseline.s2.null": 0.06666666666666667
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.05833333333333333,
+   "spread": 0.030046260628866575,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": 0.06666666666666667,
+    "white_cube.baseline.s1.null": 0.08333333333333333,
+    "white_cube.baseline.s2.null": 0.025
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.1484444444444444,
+   "spread": 0.03483346624110743,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": 0.1283333333333333,
+    "white_cube.baseline.s1.null": 0.18866666666666665,
+    "white_cube.baseline.s2.null": 0.1283333333333333
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": -0.15772154619742507,
+   "spread": 0.07202140635655266,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": -0.22849949705690586,
+    "white_cube.baseline.s1.null": -0.1601471741329902,
+    "white_cube.baseline.s2.null": -0.08451796740237917
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": 0.15578710549340588,
+   "spread": 0.16512892427684725,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": -0.024530772759258565,
+    "white_cube.baseline.s1.null": 0.19226496117620362,
+    "white_cube.baseline.s2.null": 0.29962712806327263
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": 1.091654690417566,
+   "spread": 0.350782558804431,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": 0.9276117614694633,
+    "white_cube.baseline.s1.null": 1.4944032065383093,
+    "white_cube.baseline.s2.null": 0.852949103244925
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": 0.14583333333333334,
+   "spread": 0.09547032697824666,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": 0.125,
+    "white_cube.baseline.s1.null": 0.25,
+    "white_cube.baseline.s2.null": 0.0625
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": 0.10416666666666667,
+   "spread": 0.1301041249666333,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.25,
+    "white_cube.baseline.s2.null": 0.0625
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": 0.23150000000000004,
+   "spread": 0.060973354836354514,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": 0.20650000000000002,
+    "white_cube.baseline.s1.null": 0.18700000000000006,
+    "white_cube.baseline.s2.null": 0.301
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": -0.22776647366278224,
+   "spread": 0.17389799798827532,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": -0.3376542546863645,
+    "white_cube.baseline.s1.null": -0.027275269913627855,
+    "white_cube.baseline.s2.null": -0.31836989638835433
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.5876553036987953,
+   "spread": 0.2101945846635761,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": 0.489249607676434,
+    "white_cube.baseline.s1.null": 0.8290013344270821,
+    "white_cube.baseline.s2.null": 0.4447149689928699
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 1.45231529093447,
+   "spread": 0.2911443987567616,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": 1.7710043567399532,
+    "white_cube.baseline.s1.null": 1.3856693040260297,
+    "white_cube.baseline.s2.null": 1.2002722120374274
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.19999999999999998,
+   "spread": 0.04330127018922194,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": 0.25,
+    "white_cube.baseline.s1.null": 0.175,
+    "white_cube.baseline.s2.null": 0.175
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.13333333333333333,
+   "spread": 0.07637626158259735,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": 0.2,
+    "white_cube.baseline.s1.null": 0.15,
+    "white_cube.baseline.s2.null": 0.05
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.261,
+   "spread": 0.08543418519538883,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": 0.243,
+    "white_cube.baseline.s1.null": 0.354,
+    "white_cube.baseline.s2.null": 0.18600000000000005
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": -0.13529624269620796,
+   "spread": 0.1369098058872374,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": -0.22398771378542814,
+    "white_cube.baseline.s1.null": -0.20428480101318036,
+    "white_cube.baseline.s2.null": 0.022383786709984654
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.07081318468442117,
+   "spread": 0.07635482714727024,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": 0.13007535815881455,
+    "white_cube.baseline.s1.null": 0.09771576689775073,
+    "white_cube.baseline.s2.null": -0.015351571003301772
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.6926896921623381,
+   "spread": 0.0942496523431313,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": 0.7823915048059092,
+    "white_cube.baseline.s1.null": 0.5944703909504646,
+    "white_cube.baseline.s2.null": 0.7012071807306404
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.005952380952380952,
+   "spread": 0.010309826235529031,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": 0.017857142857142856,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.15061904761904762,
+   "spread": 0.02154129083607466,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": 0.13185714285714284,
+    "white_cube.baseline.s1.null": 0.17414285714285715,
+    "white_cube.baseline.s2.null": 0.1458571428571429
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": -0.20416879239822927,
+   "spread": 0.01557549035817103,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": -0.18691149042438468,
+    "white_cube.baseline.s1.null": -0.20841166565080002,
+    "white_cube.baseline.s2.null": -0.21718322111950308
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 1.4796769768543527,
+   "spread": 0.027550594384022034,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": 1.4621503183935964,
+    "white_cube.baseline.s1.null": 1.5114326403140543,
+    "white_cube.baseline.s2.null": 1.4654479718554083
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 0.31921234687926187,
+   "spread": 0.01525588362164967,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": 0.3367352378109006,
+    "white_cube.baseline.s1.null": 0.3088846303239632,
+    "white_cube.baseline.s2.null": 0.3120171725029218
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 0.8523333333333333,
+   "spread": 0.015502687938977994,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": 0.852,
+    "white_cube.baseline.s1.null": 0.868,
+    "white_cube.baseline.s2.null": 0.837
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": -0.1935159905858808,
+   "spread": 0.4720796541123706,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": -0.6753938626380749,
+    "white_cube.baseline.s1.null": 0.2681138767144586,
+    "white_cube.baseline.s2.null": -0.17326798583402608
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=moderate",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.20555555555555557,
+   "spread": 0.00962250448649376,
+   "n_seeds": 3,
+   "n": 74,
+   "units": {
+    "white_cube.baseline.s0.null": 0.21666666666666667,
+    "white_cube.baseline.s1.null": 0.2,
+    "white_cube.baseline.s2.null": 0.2
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=moderate",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.3311445987460257,
+   "spread": 0.13653627076761093,
+   "n_seeds": 3,
+   "n": 74,
+   "units": {
+    "white_cube.baseline.s0.null": 0.26875754759636133,
+    "white_cube.baseline.s1.null": 0.23694655713325452,
+    "white_cube.baseline.s2.null": 0.4877296915084612
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=moderate",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 1.0891375914427388,
+   "spread": 0.29718467833707296,
+   "n_seeds": 3,
+   "n": 74,
+   "units": {
+    "white_cube.baseline.s0.null": 1.2922258010658845,
+    "white_cube.baseline.s1.null": 1.2271453961880685,
+    "white_cube.baseline.s2.null": 0.7480415770742633
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=moderate",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.12072649572649573,
+   "spread": 0.035450128254352696,
+   "n_seeds": 3,
+   "n": 74,
+   "units": {
+    "white_cube.baseline.s0.null": 0.15384615384615385,
+    "white_cube.baseline.s1.null": 0.125,
+    "white_cube.baseline.s2.null": 0.08333333333333333
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=ok",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.4444444444444445,
+   "spread": 0.01924500897298752,
+   "n_seeds": 3,
+   "n": 160,
+   "units": {
+    "white_cube.baseline.s0.null": 0.4666666666666667,
+    "white_cube.baseline.s1.null": 0.43333333333333335,
+    "white_cube.baseline.s2.null": 0.43333333333333335
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=ok",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.29194175244401965,
+   "spread": 0.11211465072312023,
+   "n_seeds": 3,
+   "n": 160,
+   "units": {
+    "white_cube.baseline.s0.null": 0.35129746655957567,
+    "white_cube.baseline.s1.null": 0.36190008011920666,
+    "white_cube.baseline.s2.null": 0.16262771065327664
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=ok",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.6786695781561461,
+   "spread": 0.06172878757724425,
+   "n_seeds": 3,
+   "n": 160,
+   "units": {
+    "white_cube.baseline.s0.null": 0.6890089796127953,
+    "white_cube.baseline.s1.null": 0.6124239754787284,
+    "white_cube.baseline.s2.null": 0.7345757793769144
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=ok",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.018772893772893772,
+   "spread": 0.0007930635565791575,
+   "n_seeds": 3,
+   "n": 160,
+   "units": {
+    "white_cube.baseline.s0.null": 0.017857142857142856,
+    "white_cube.baseline.s1.null": 0.019230769230769232,
+    "white_cube.baseline.s2.null": 0.019230769230769232
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=severe",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.35000000000000003,
+   "spread": 0.028867513459481284,
+   "n_seeds": 3,
+   "n": 126,
+   "units": {
+    "white_cube.baseline.s0.null": 0.31666666666666665,
+    "white_cube.baseline.s1.null": 0.36666666666666664,
+    "white_cube.baseline.s2.null": 0.36666666666666664
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=severe",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.4234303989441786,
+   "spread": 0.20988109057743737,
+   "n_seeds": 3,
+   "n": 126,
+   "units": {
+    "white_cube.baseline.s0.null": 0.30259368900289413,
+    "white_cube.baseline.s1.null": 0.6657798928930037,
+    "white_cube.baseline.s2.null": 0.30191761493663793
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=severe",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 1.3690246708861407,
+   "spread": 0.3417895354635482,
+   "n_seeds": 3,
+   "n": 126,
+   "units": {
+    "white_cube.baseline.s0.null": 1.7504508231111844,
+    "white_cube.baseline.s1.null": 1.266093451392662,
+    "white_cube.baseline.s2.null": 1.090529738154575
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=severe",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.16108452950558214,
+   "spread": 0.04847573206075736,
+   "n_seeds": 3,
+   "n": 126,
+   "units": {
+    "white_cube.baseline.s0.null": 0.21052631578947367,
+    "white_cube.baseline.s1.null": 0.1590909090909091,
+    "white_cube.baseline.s2.null": 0.11363636363636363
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=ok",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.6472222222222223,
+   "spread": 0.03154949081000154,
+   "n_seeds": 3,
+   "n": 233,
+   "units": {
+    "white_cube.baseline.s0.null": 0.6833333333333333,
+    "white_cube.baseline.s1.null": 0.6333333333333333,
+    "white_cube.baseline.s2.null": 0.625
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=ok",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.30322168226649165,
+   "spread": 0.035639710139851705,
+   "n_seeds": 3,
+   "n": 233,
+   "units": {
+    "white_cube.baseline.s0.null": 0.3251262727419712,
+    "white_cube.baseline.s1.null": 0.3224410728604849,
+    "white_cube.baseline.s2.null": 0.2620977011970189
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=ok",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.8415284239774037,
+   "spread": 0.05510519925483774,
+   "n_seeds": 3,
+   "n": 233,
+   "units": {
+    "white_cube.baseline.s0.null": 0.896690372468499,
+    "white_cube.baseline.s1.null": 0.8414147496340063,
+    "white_cube.baseline.s2.null": 0.7864801498297055
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=ok",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.05120239623448866,
+   "spread": 0.01056058585401963,
+   "n_seeds": 3,
+   "n": 233,
+   "units": {
+    "white_cube.baseline.s0.null": 0.06097560975609756,
+    "white_cube.baseline.s1.null": 0.05263157894736842,
+    "white_cube.baseline.s2.null": 0.04
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=suspect",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.3527777777777778,
+   "spread": 0.031549490810001524,
+   "n_seeds": 3,
+   "n": 127,
+   "units": {
+    "white_cube.baseline.s0.null": 0.31666666666666665,
+    "white_cube.baseline.s1.null": 0.36666666666666664,
+    "white_cube.baseline.s2.null": 0.375
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=suspect",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.42493342372536674,
+   "spread": 0.20858796527045745,
+   "n_seeds": 3,
+   "n": 127,
+   "units": {
+    "white_cube.baseline.s0.null": 0.30259368900289413,
+    "white_cube.baseline.s1.null": 0.6657798928930037,
+    "white_cube.baseline.s2.null": 0.30642668928020245
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=suspect",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 1.3690246708861407,
+   "spread": 0.3417895354635482,
+   "n_seeds": 3,
+   "n": 127,
+   "units": {
+    "white_cube.baseline.s0.null": 1.7504508231111844,
+    "white_cube.baseline.s1.null": 1.266093451392662,
+    "white_cube.baseline.s2.null": 1.090529738154575
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=suspect",
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.16024277866383127,
+   "spread": 0.04971761089337408,
+   "n_seeds": 3,
+   "n": 127,
+   "units": {
+    "white_cube.baseline.s0.null": 0.21052631578947367,
+    "white_cube.baseline.s1.null": 0.1590909090909091,
+    "white_cube.baseline.s2.null": 0.1111111111111111
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "abs_z_at_onset",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 3.08281623842314,
+   "spread": 0.6863574015912091,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.onboarding_revamp": 6.731380073878296,
+    "white_cube.baseline.s2.only.onboarding_revamp": 5.680498726314054,
+    "white_cube.baseline.s0.only.onboarding_revamp": 4.229921639422343,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.8041911516495946,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.5602367205059056,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.49066911876864816
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.0625,
+   "spread": 0.0625,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.125,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.25
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail_under_5pct",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.6666666666666666,
+   "spread": 0.28867513459481287,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "null_windows_per_node",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 8.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.onboarding_revamp": 8.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 8.0,
+    "white_cube.baseline.s0.only.onboarding_revamp": 8.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 8.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 8.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 8.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "abs_z_at_onset",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 3.08281623842314,
+   "spread": 0.6863574015912091,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.onboarding_revamp": 6.731380073878296,
+    "white_cube.baseline.s2.only.onboarding_revamp": 5.680498726314054,
+    "white_cube.baseline.s0.only.onboarding_revamp": 4.229921639422343,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.8041911516495946,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.5602367205059056,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.49066911876864816
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.0625,
+   "spread": 0.0625,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.125,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.25
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail_under_5pct",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.6666666666666666,
+   "spread": 0.28867513459481287,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "null_windows_per_node",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 8.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s1.only.onboarding_revamp": 8.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 8.0,
+    "white_cube.baseline.s0.only.onboarding_revamp": 8.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 8.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 8.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 8.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 22.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 22.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 22.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 22.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 22.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.14742063492063492,
+   "spread": 0.023886284992295934,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.1,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.125,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.25,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.14285714285714285,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.06666666666666667,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.2
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 22.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 22.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 22.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 22.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 22.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.14742063492063492,
+   "spread": 0.023886284992295934,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.1,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.125,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.25,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.14285714285714285,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.06666666666666667,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.2
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 20.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 20.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 20.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 20.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 20.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.7222222222222222,
+   "spread": 0.048112522432468836,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.5,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.5,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.3333333333333333,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.3333333333333333,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.3333333333333333,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 20.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 20.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 20.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 20.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 20.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.7222222222222222,
+   "spread": 0.048112522432468836,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.5,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.5,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.3333333333333333,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.3333333333333333,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.3333333333333333,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 20.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 20.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 20.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 20.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 20.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.6666666666666666,
+   "spread": 0.28867513459481287,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.6416666666666667,
+   "spread": 0.10103629710818449,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.5,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.1,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.25
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 20.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 20.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 20.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 20.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 20.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 20.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.6666666666666666,
+   "spread": 0.28867513459481287,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.6416666666666667,
+   "spread": 0.10103629710818449,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.5,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.1,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.25
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 22.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 22.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 22.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 22.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 22.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.16666666666666666,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.4444444444444444,
+   "spread": 0.1577474540500076,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.5,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.5,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.25,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.16666666666666666,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.25
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.16666666666666666,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.6666666666666666,
+   "spread": 0.28867513459481287,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 22.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 22.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 22.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 22.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 22.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 22.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.16666666666666666,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.4444444444444444,
+   "spread": 0.1577474540500076,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.5,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.5,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.25,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.16666666666666666,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.25
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.16666666666666666,
+   "spread": 0.2886751345948129,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.6666666666666666,
+   "spread": 0.28867513459481287,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 1.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 1.0
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "items_size_eligible",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 2.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 2.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 2.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "items_direction_only",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 1.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 3.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 3.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 0.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 3.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 0.0
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "items_total",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 5.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 30,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 6.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 4.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 6.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 4.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 6.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 4.0
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "abs_log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.6476351247729595,
+   "spread": 0.010308992755051155,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.6559284420534235,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.6508838023649663,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.6360931299004886,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.621985489468962,
+   "spread": 0.02611540178083707,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.6149982258101938,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.6508838023649663,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.600074440231726,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "ratio",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 2.2570072442158065,
+   "spread": 0.05117437609614426,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 2.2620249660538754,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": 2.3054879275141547,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": 2.203508839079389,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "coverage",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "withheld",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "wrong_sign",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "abs_log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "b2c_saas",
+   "value": 1.261369042814936,
+   "spread": 0.022036247306951022,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.2709266678636173,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.2770128904489766,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.2361675701322146,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "b2c_saas",
+   "value": 1.261369042814936,
+   "spread": 0.022036247306951022,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.2709266678636173,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.2770128904489766,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.2361675701322146,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "ratio",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "b2c_saas",
+   "value": 3.5308204771579725,
+   "spread": 0.07734727342410862,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 3.564153819340277,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": 3.5859121988189018,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": 3.44239541331474,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "coverage",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "withheld",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "wrong_sign",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "formula_edge",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "abs_log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "b2c_saas",
+   "value": 0.033901206730982784,
+   "spread": 0.008293040240269023,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0409302162432296,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.024754714280955995,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.03601868966876276,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "log_error",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "b2c_saas",
+   "value": -0.01739806387701212,
+   "spread": 0.03658788464982744,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": -0.0409302162432296,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.024754714280955995,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": -0.03601868966876276,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "ratio",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "b2c_saas",
+   "value": 0.9831940112736396,
+   "spread": 0.036337095421183144,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.9598961127674736,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0250636562094078,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.9646222648440378,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "coverage",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "b2c_saas",
+   "value": null,
+   "spread": null,
+   "n_seeds": 0,
+   "n": 0,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": null,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": null,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": null,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "withheld",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "wrong_sign",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "root_gap",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": 0.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q5 attribution",
+   "metric": "direction_agrees",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": null,
+    "white_cube.baseline.s1.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": null,
+    "white_cube.baseline.s2.only.onboarding_revamp": 1.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": null
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 4.011666666666667,
+   "spread": 0.21990528264080753,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": 4.0649999999999995,
+    "white_cube.baseline.s1.null": 3.7699999999999996,
+    "white_cube.baseline.s2.null": 4.2
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.005555555555555556,
+   "spread": 0.004811252243246881,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": 0.008333333333333333,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.008333333333333333
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.18888888888888888,
+   "spread": 0.009622504486493778,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": 0.2,
+    "white_cube.baseline.s1.null": 0.18333333333333332,
+    "white_cube.baseline.s2.null": 0.18333333333333332
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 0.3527777777777778,
+   "spread": 0.031549490810001524,
+   "n_seeds": 3,
+   "n": 360,
+   "units": {
+    "white_cube.baseline.s0.null": 0.31666666666666665,
+    "white_cube.baseline.s1.null": 0.36666666666666664,
+    "white_cube.baseline.s2.null": 0.375
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": 9.096666666666666,
+   "spread": 0.8272897517395792,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": 9.34,
+    "white_cube.baseline.s1.null": 8.174999999999999,
+    "white_cube.baseline.s2.null": 9.775
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": 0.08333333333333333,
+   "spread": 0.03608439182435161,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0625,
+    "white_cube.baseline.s1.null": 0.0625,
+    "white_cube.baseline.s2.null": 0.125
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2c_saas",
+   "value": 0.3333333333333333,
+   "spread": 0.1301041249666333,
+   "n_seeds": 3,
+   "n": 48,
+   "units": {
+    "white_cube.baseline.s0.null": 0.375,
+    "white_cube.baseline.s1.null": 0.4375,
+    "white_cube.baseline.s2.null": 0.1875
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 3.513333333333333,
+   "spread": 0.15332427509475885,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": 3.495,
+    "white_cube.baseline.s1.null": 3.37,
+    "white_cube.baseline.s2.null": 3.675
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.041666666666666664,
+   "spread": 0.014433756729740645,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": 0.05,
+    "white_cube.baseline.s1.null": 0.025,
+    "white_cube.baseline.s2.null": 0.05
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2c_saas",
+   "value": 0.8000000000000002,
+   "spread": 0.024999999999999967,
+   "n_seeds": 3,
+   "n": 120,
+   "units": {
+    "white_cube.baseline.s0.null": 0.8,
+    "white_cube.baseline.s1.null": 0.775,
+    "white_cube.baseline.s2.null": 0.825
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 4.14,
+   "spread": 0.2346806340540266,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": 4.295,
+    "white_cube.baseline.s1.null": 3.87,
+    "white_cube.baseline.s2.null": 4.255
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.011904761904761904,
+   "spread": 0.010309826235529031,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": 0.017857142857142856,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.017857142857142856
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.3511904761904762,
+   "spread": 0.027277236279499035,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": 0.375,
+    "white_cube.baseline.s1.null": 0.35714285714285715,
+    "white_cube.baseline.s2.null": 0.32142857142857145
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "rate",
+   "vertical": "b2c_saas",
+   "value": 0.08928571428571429,
+   "spread": 0.08183170883849715,
+   "n_seeds": 3,
+   "n": 168,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.10714285714285714,
+    "white_cube.baseline.s2.null": 0.16071428571428573
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 3.4716666666666662,
+   "spread": 0.32192131543800157,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": 3.395,
+    "white_cube.baseline.s1.null": 3.1950000000000003,
+    "white_cube.baseline.s2.null": 3.825
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2c_saas",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "white_cube.baseline.s0.null": 0.0,
+    "white_cube.baseline.s1.null": 0.0,
+    "white_cube.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "analysis_innovation_seconds",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 83.78333333333332,
+   "spread": 4.700354596552614,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 79.4,
+    "white_cube.baseline.s2.only.onboarding_revamp": 86.1,
+    "white_cube.baseline.s0.only.professional_churn_spike": 88.3,
+    "white_cube.baseline.s2.only.professional_churn_spike": 90.8,
+    "white_cube.baseline.s1.only.onboarding_revamp": 76.1,
+    "white_cube.baseline.s1.only.professional_churn_spike": 82.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "analysis_rca_seconds",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 26.71666666666667,
+   "spread": 3.1501322723551364,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 19.8,
+    "white_cube.baseline.s2.only.onboarding_revamp": 25.2,
+    "white_cube.baseline.s0.only.professional_churn_spike": 27.3,
+    "white_cube.baseline.s2.only.professional_churn_spike": 34.5,
+    "white_cube.baseline.s1.only.onboarding_revamp": 21.9,
+    "white_cube.baseline.s1.only.professional_churn_spike": 31.6
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "analysis_fits_made",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2c_saas",
+   "value": 26.5,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "white_cube.baseline.s0.only.onboarding_revamp": 27.0,
+    "white_cube.baseline.s2.only.onboarding_revamp": 27.0,
+    "white_cube.baseline.s0.only.professional_churn_spike": 26.0,
+    "white_cube.baseline.s2.only.professional_churn_spike": 26.0,
+    "white_cube.baseline.s1.only.onboarding_revamp": 27.0,
+    "white_cube.baseline.s1.only.professional_churn_spike": 26.0
+   }
+  }
+ ],
+ "invocations": [
+  {
+   "started": "20261121T045810",
+   "wall_seconds": 717.5,
+   "shards": 4,
+   "jobs_already_done": 0,
+   "jobs_done_now": 390,
+   "failed_shards": []
+  }
+ ],
+ "note": "Proof of the schema 2 runner, not a finding: the generator's proof_v2 set (seeds 0-2, null plus two singles each, fake_companies 01bf895) on a demo tree, not a canonical evaluation tree. Do not cite. Strict verdict (two-sided 1%): the churn spike has no established target at three seeds."
+}
