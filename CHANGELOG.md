@@ -23,6 +23,22 @@ its notes never listed it at all.)
 
 ## [Unreleased]
 
+### Added
+
+- **A trend with a slope, per node** (roadmap S8). `trend: {kind:
+  local_linear}` (with an optional `slope_sigma`) gives a metric that grows
+  on its own a forecast that keeps growing, instead of its last level. Opt-in:
+  measured, it removes the bias on a growing stock and is wrong on rates, so
+  the local level stays the default. A fit with a slope takes two to three
+  times as long.
+- **A per-node observation model** (roadmap S20, first half). `likelihood:
+  negative_binomial` for counts, or `mean_scaled_gaussian` for noise that
+  grows with the level; `gaussian` stays the default and an undeclared node
+  fits exactly as before. Refused on formula nodes, on `negative_binomial`
+  for a rate or a series outside its support, and on `mean_scaled_gaussian`
+  for a series that is zero in half or more of its periods. A declared
+  likelihood keeps the explicit latent level, so it fits several times slower.
+
 ## [0.3.1] — 2026-11-19
 
 A **patch** release for one correctness defect (roadmap C65). Nothing in the

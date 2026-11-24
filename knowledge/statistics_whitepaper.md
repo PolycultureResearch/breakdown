@@ -3,7 +3,7 @@
 **A white paper on the models behind Bayesian metric trees, why each was chosen,
 and where each one stops being trustworthy.**
 
-> **Written:** 2026-08-04 · **Last updated:** 2026-11-23 ·
+> **Written:** 2026-08-04 · **Last updated:** 2026-11-24 ·
 > **Engine version:** 0.3.1
 >
 > **This is a living document.** The assessment in §3 and the improvements in §4
@@ -202,8 +202,24 @@ the latter: fit the normal regime, then ask what the departure means.
   `sessions` meant ~263 leapfrog steps per draw and on shorter nodes a
   handful of divergences; marginalized, the same fit takes ~7, bulk ESS rises
   4×, and the divergences are gone. The filter is exact only for a Gaussian
-  observation model, which is every node today; a count likelihood (S20)
-  would keep the explicit latent.
+  observation model, which is the default; a node that declares another
+  likelihood (S20, below) keeps the explicit latent.
+- **Two per-node opt-ins change the model, and neither is a default** (both
+  since 2026-11-24). `trend: {kind: local_linear}` (roadmap S8) adds a slope
+  state, `trend[t] = trend[t−1] + slope[t−1] + η[t]` and
+  `slope[t] = slope[t−1] + ζ[t]` with `σ_slope ~ HalfNormal(0.001)` by
+  default, so a node with momentum forecasts its momentum instead of its last
+  level. The filter integrates out both states; they are drawn back with the
+  Durbin–Koopman simulation smoother (Durbin & Koopman, 2002), because
+  backward sampling inverts a 2×2 prediction covariance that is singular under
+  a fixed drift. `likelihood:` (roadmap S20) replaces the Gaussian observation
+  with `negative_binomial` for counts or `mean_scaled_gaussian` for noise that
+  grows with the level, both on an identity link, so `β`, the trend and the
+  seasonal terms stay additive and attribution and the do-operator read the
+  trace unchanged. Each is refused where it does not apply: on a formula node,
+  `negative_binomial` on a rate or outside its support, `mean_scaled_gaussian`
+  on a series that is zero in half or more of its periods. What each was
+  measured to fix, and where each was measured to hurt, is §3.2 #11 and §4.2.
 - The **ADVI opt-in keeps the explicit latent**, with a **non-centered
   parameterization** (sampling unit normals and scaling by `σ_trend`) rather
   than a centered one: PSIS k̂ (§2.2) was measured against it. A centered
@@ -1094,9 +1110,19 @@ review of the engine, docs and tests conducted 2026-08-05 against 0.1.0.
     is not currently scheduled, and would mean moving window-sampling
     uncertainty inside the model.
 11. **The flat trend forecast understates counterfactual movement** for nodes
-    with genuine momentum (§2.4). — ○ open
+    with genuine momentum (§2.4). — ○ open, partially addressed
     ([3.4](roadmap.md#horizon-3--make-it-findable-and-sticky-it-comes-to-you),
     [S8](roadmap.md#statistical-rigor-s--a-standing-workstream))
+    **S8 shipped 2026-11-24** as a per-node opt-in, `trend: {kind:
+    local_linear}` (§2.1). Measured on the White Cube tree's anomaly-free
+    windows, it fixes the growing stock (mean forecast error 2.25 → 0.02
+    standard deviations at 28 days) and takes a third to a half of the upward
+    bias off parentless flows, but it extrapolates a rate's past drift into
+    windows where it does not continue, so it is wrong on rates. That is why
+    the default is still the flat level and the weakness stays open: a node
+    that has not declared a slope still forecasts flat, and choosing which
+    nodes should is the author's call until 3.4 or a measured role rule
+    settles it.
 12. **Cold-start beliefs are sampled independently,** so correlated beliefs are
     misrepresented in either direction. — ○ open
     ([S7](roadmap.md#statistical-rigor-s--a-standing-workstream),
@@ -1261,7 +1287,8 @@ moves `fit_quality` — so on the NUTS default that bit finally distinguishes a
 model that is wrong from a sampler that struggled. **S10 shipped 2026-08-30**,
 putting that check on screen: the Metric tab now draws the fitted series
 against the quantile bands of the replicates, so the verdict can be *seen*
-rather than only read. One other item has shipped its first half: S20's
+rather than only read. **S8 shipped 2026-11-24**, an opt-in slope in the
+trend, partially addressing §3.2 #11. One other item has shipped in halves: S20's
 *disclosure* (2026-08-17) — a fit whose window is ≥25% exact zeros now carries
 `likelihood_warnings` on every surface that shows its numbers, because the
 misspecification was silent and that failed this track's own
@@ -1290,7 +1317,7 @@ scheduled start.
 | S5 | Simulation-based calibration | ○ open |
 | S6 | Data-driven bootstrap block length | ○ open |
 | S7 | Correlated cold-start beliefs | ○ open |
-| S8 | Local linear trend (opt-in) | ○ open |
+| S8 | Local linear trend (opt-in) | ✅ shipped 2026-11-24 |
 | S9 | Narrow nonlinear edges | ○ open |
 | S10 | Posterior predictive plot in the UI | ✅ shipped 2026-08-30 |
 | S11 | Prior-vs-posterior visualization | ○ open |
@@ -1302,7 +1329,7 @@ scheduled start.
 | S17 | Rebuild the calibration suite's coverage test | ○ open |
 | S18 | Right-censored metrics — series whose past values restate | ○ open |
 | S19 | Partial pooling across a repeated-cycle grouping | ○ open |
-| S20 | Zero-inflated and count likelihoods | ○ open — disclosure half scheduled first |
+| S20 | Zero-inflated and count likelihoods | ○ open — disclosure shipped 2026-08-17, per-node likelihood 2026-11-24; zero-inflated variant open |
 | S21 | Fit through undefined periods by masking the likelihood | ○ optional — build on demand |
 | S22 | k̂'s own Monte-Carlo error, and a seeded manual-fit path | ✅ closed 2026-08-27 |
 | S23 | Reference-window sensitivity — the uncertainty the bootstrap never sees | ✅ closed 2026-09-14 |
@@ -1599,10 +1626,21 @@ correlations between priors (or specify a joint distribution over a small set of
 beliefs), so "if price lands high, conversion lands low" is representable. This
 is the largest modeling gap in cold start.
 
-**Local linear trend as an opt-in** — `S8`, ○ open. A trend with a slope
+**Local linear trend as an opt-in** — `S8`, ✅ shipped 2026-11-24. A trend with a slope
 component, for nodes with genuine momentum, chosen per node in the YAML. Keep
 the local level as the default — the tight prior is doing deliberate work — but
-stop forcing momentum onto the parents where it does not belong.
+stop forcing momentum onto the parents where it does not belong. As shipped
+(§2.1): `trend: {kind: local_linear}`, the slope integrated out with the level
+and drawn back by simulation smoother. Measured on White Cube's null
+calibration (`innovation_rca_design.md` §6.2): it removes the growing stock's
+forecast bias, takes a third to a half of the bias off parentless flows,
+leaves every planted root detectable and no learned coefficient's interval
+crossing zero that did not before, and costs two to three times the fit time.
+On rates it is harmful, which is the measured reason the default did not
+change. Open from it: whether a role rule (a slope on parentless flows and
+stocks) should become the default, which needs more than one tree, and the
+identifiability case this tree could not test, a week-grain child of a
+smoothly growing parent.
 
 **Nonlinear edges, narrowly** — `S9`, ○ open. A declared log or saturating transform on a
 specific edge (`response: log` on ad spend → conversions) would cover the most
@@ -1655,6 +1693,20 @@ same day, ahead of the first client deployment and separately from the model
 work: a fit whose window is ≥25% exact zeros carries `likelihood_warnings` on
 the payload, the UI, the export and MCP, with a `how_to_read` clause beside
 it. Closing S20 proper deletes the disclosure.
+**The likelihood's first half shipped 2026-11-24** (§2.1): a per-node
+`likelihood` of `negative_binomial` or `mean_scaled_gaussian`, on an identity
+link. The diagnosis that shaped it came from White Cube's flows, which were
+over-confident not because of zeros or heavy tails but because their noise
+grew with their level, two to eleven times over the fit history. On the
+anomaly-free windows the two count flows went from a forecast-error sd of
+about 1.55 to 0.94 and 1.12 and from passing their predictive check in 6
+and 0 of 32 windows to 32 and 30. It did not help everywhere: currency that is
+zero half the time (`contraction_mrr`) got worse under a variance that shrinks
+with the mean, so `mean_scaled_gaussian` is refused there, and noise
+proportional to the level (`marketing_spend`) is not what it models. Still
+open, and why the row stays open: the zero-inflated variant, a Tweedie-type
+likelihood for intermittent currency, the RCA payload and UI naming a node's
+likelihood, and, since the default is still Gaussian, the disclosure stays.
 
 **Fit through undefined periods by masking the likelihood** — `S21`, ○
 optional, build on demand. Roadmap 1.11 settled how a rate behaves when its
@@ -1786,7 +1838,8 @@ divergences are gone (calibration worlds: 59 of 72 fits diverged before, 24 afte
 diagnostics paragraph says that R̂ and ESS are computed over
 the sampled parameters rather than the recovered trend states, and S21's
 likelihood masking becomes the filter skipping an update (still open). Gaussian
-likelihoods only: S20's count likelihoods would keep the explicit latent.
+likelihoods only: a node declaring one of S20's likelihoods keeps the explicit
+latent, and S8's slope is marginalized alongside the level.
 
 ### 4.3 Explainability
 
@@ -1855,6 +1908,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-11-24 | **Two per-node opt-ins to the model: a slope in the trend (roadmap S8, shipped) and a non-Gaussian likelihood (S20, first half).** §2.1 gains a note on what each changes and where each is refused; §3.2 #11 moves to partially addressed, with the measured reason the flat level stays the default (a slope is wrong on rates); §4's table, the §4.2 entries for S8 and S20, and the S25 note say what shipped and what is still open. S20 stays open for the zero-inflated variant, intermittent currency and naming the likelihood on the payload. |
 | 2026-11-23 | **A stock fetched at a coarse grain was summed over each period (roadmap C66).** §2.9's "stock takes the last value" carries a dated correction: it held where breakdown resampled, and not where the provider aggregated a node's own series, which a weekly `SUM` over daily snapshots made about 7x the level. Not a §3.2 weakness — a data-boundary defect, now refused at load (by name, with remedies) or warned about where the provider's definitions are not visible. |
 | 2026-11-18 | **A correctness defect outside the statistics, recorded because it falsified a strength this paper claims (roadmap C65).** §3.1's "deterministic and reproducible" carries a dated correction: through 0.3.0, with a compile cache shared between processes, PyTensor 2.38.2 could load one fit's compiled function for another, and the engine returned the first fit's posterior for the second with clean convergence diagnostics. Not a §3.2 weakness and not a modeling limitation: the model was right and a different one was executed. Fixed in 0.3.1 by requiring PyTensor 2.38.3 and never reading a cache an older version wrote. The only diagnostic that noticed was S3's posterior predictive check. |
 | 2026-10-06 | **Fourth hostile review acted on (roadmap C45–C64).** Two §4 entries carry dated corrections: S24's `learn_from: window` extended the fit on every RCA for any dated step, not only when the analysis window contained it (C55), and S23's alternative reference blocks were not whole periods on month grains while `stable` could be read as a surviving top cause when none was ranked (C56). Not a §3.2 weakness but worth stating here because it published a wrong number: a parent held at a value with no exact binary form (4.99) was not recognised as constant, and its coefficient was standardized against float noise into a contribution near 1e13 with `fit_quality: ok` (C45); "constant" is now one scale-relative test. No model changed. The review found the S25 Kalman marginal correct against an independent dense Gaussian. Its named weakest assumption — a coefficient learned before the window read as causal and still valid inside it, with a flat analysis-window level and no interval on `unexplained` — is §4's S14, S16 and S5, all still open. |
@@ -1913,6 +1967,9 @@ Annals of Applied Statistics*, 9(1), 247–274.
 
 Cinelli, C., Forney, A., & Pearl, J. (2022). A crash course in good and bad
 controls. *Sociological Methods & Research.*
+
+Durbin, J., & Koopman, S. J. (2002). A simple and efficient simulation
+smoother for state space time series analysis. *Biometrika*, 89(3), 603–616.
 
 Durbin, J., & Koopman, S. J. (2012). *Time Series Analysis by State Space
 Methods* (2nd ed.). Oxford University Press.

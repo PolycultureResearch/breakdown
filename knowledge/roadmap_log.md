@@ -739,6 +739,26 @@ or two of account, the account goes in this file under the row's ID.
 **Why:** The thin-panel case: one product cycle a year and five editions of history ever is not a pathology, it is festivals, conferences, annual enrollment, agriculture and elections. **Deliberately not a reopening of [S15](#statistical-rigor-s--a-standing-workstream)'s rejected pooling**, and the distinction is the whole argument: S15 declined to pool `beta_raw` *across a node's parents*, because parents are heterogeneous quantities in different units with no substantive reason to share a mean. Pooling one node's *own* coefficient across repeated instances of the same cycle has exactly the justification S15 found missing — the instances are the same quantity measured again. Raised by Northern Nights (2026-08-11)
 
 
+## S8
+
+**Status:** ✅ shipped 2026-11-24
+
+**Local linear trend as an opt-in.** A node declares `trend: {kind: local_linear}`, and the trend gets a slope state beside the level: `trend[t] = trend[t−1] + slope[t−1] + η[t]`, `slope[t] = slope[t−1] + ζ[t]`, with `σ_slope ~ HalfNormal(0.001)` by default (`trend.slope_sigma`; `0` means a fixed drift). Level and slope are both integrated out in the Kalman filter that S25 built for the level, and recovered per draw with a simulation smoother (Durbin & Koopman) rather than forward-filtering backward-sampling, whose 2×2 prediction covariance is singular under fixed drift and at the first periods of a draw with a tiny `σ_trend`. The ADVI opt-in carries the slope as an explicit, non-centered latent, like the level. A node with a non-Gaussian `likelihood` (S20) keeps the explicit latent for both states. The local level stays the default.
+
+*Measured* on White Cube's null calibration ([`innovation_rca_design.md`](innovation_rca_design.md) §6.2: 32 clean weekly windows per node, 7- and 28-day horizons, level against the default slope, a fixed drift and a looser slope):
+
+- **The growing stock is fixed.** `active_subscriptions`' mean `z` went from 1.31 to 0.20 at 7 days and from 2.25 to 0.02 at 28, and its predictive interval got four times narrower, because the level no longer has to absorb growth as noise.
+- **Parentless flows lose a third to a half of their upward bias**, not all of it (every one still positive). A looser slope takes off more on five of six.
+- **Fixed drift is worse than the default** on the stock (1.43 at 28 days), since one constant slope lags the recent one.
+- **The slope is wrong on rates.** `customer_churn_rate` went from 0.10 to −0.31 at 7 days and from 0.36 to −0.69 at 28: past drift is extrapolated into a window where it does not continue.
+- **Learned coefficients barely move** (no interval that excluded zero stopped doing so), and **every planted root still scores**; a slope costs the ramp a little evidence at 28 days and does not hide it.
+- **Cost:** two to three times the fit time (about 3 s → 7.5 s on a week-grain node, 10 s → 29 s on day-grain `sessions`).
+
+*What that decided.* Opt-in, not a default and not a role rule. A rule of "slope on parentless flows and stocks" was measured too (§6.3, together with S20's likelihoods): the slope moves the bias, the likelihood moves the spread, and the two add. One tree is not enough to change every user's default, so that decision stays open. The identifiability worry (a slope crediting itself with growth a parent would otherwise explain) had only a weak test, since this tree has no week-grain child of a smoothly growing parent; `docs/model.md` limitation 3 carries the caution.
+
+**Why:** A node with genuine momentum was modeled as a level that happened to move, which pushed momentum onto the parents and biased the "versus expected" forecast upward on every growing source metric.
+
+
 ## S20
 
 **Status at compression:** ○
