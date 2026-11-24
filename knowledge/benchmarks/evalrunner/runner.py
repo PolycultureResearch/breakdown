@@ -44,6 +44,7 @@ import yaml
 from .attribution import attribution_items, attribution_window
 from .fitcache import DEFAULT_TRACE_CACHE_BYTES, FitStore, fit_key
 from .loader import TreeSpec, WorldSeries, load_world, plan_tree
+from .slicescore import slice_items
 from .truth import Measured, analysis_window, map_root, onset_of, pick_target, read_twin_summary
 from .windows import horizons_for, window_starts
 from .worldset import World, WorldSet, load_world_set
@@ -54,7 +55,8 @@ ROW_FORMAT_VERSION = 1
 # `root_unexplained` and `root_gap`, 4 scores over the declared window with the
 # set's cross-seed effects, 5 adds the truth basis, the set's alignment flag and
 # the target's measured change. Calibration jobs keep their keys.
-SINGLE_ROW_FORMAT_VERSION = 5
+# 6 adds `slices` (slice localization, Q4).
+SINGLE_ROW_FORMAT_VERSION = 6
 
 DEV_SEEDS = tuple(range(0, 5))
 HELD_OUT_SEEDS = tuple(range(5, 10))
@@ -446,6 +448,7 @@ ROW_TYPES = (
     "detection",
     "localization",
     "attribution",
+    "slices",
     "nodes",
     "fits",
     "analysis",
@@ -748,6 +751,13 @@ def run_single(lw, job, run, writer, common) -> None:
                 )
         attribution_seconds = time.perf_counter() - t0
 
+        # §5.3 inside the node: does the engine's slice attribution put the
+        # root's member first?
+        t0 = time.perf_counter()
+        for item in slice_items(lw, record, mapping, measured):
+            writer.emit("slices", {**base, "target": target, **item})
+        slice_seconds = time.perf_counter() - t0
+
         writer.emit(
             "analysis",
             {
@@ -757,6 +767,7 @@ def run_single(lw, job, run, writer, common) -> None:
                 "innovation_seconds": round(innovation_seconds, 1),
                 "rca_seconds": round(rca_seconds, 1),
                 "attribution_seconds": round(attribution_seconds, 1),
+                "slice_seconds": round(slice_seconds, 1),
                 "fits_made": len(fit_rows),
                 "trace_cache_hits": fits.hits,
             },

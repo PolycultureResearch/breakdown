@@ -231,6 +231,24 @@ class WorldSeries:
             )
         return self.weekly(binding.metric, binding.dimension, binding.values[0], label)
 
+    def dimension_named(self, metric: str, source: str) -> str:
+        """The series file's dimension behind a tree's dimension `source`
+        (a MetricFlow group-by id such as `session__channel`), or a refusal
+        naming what the file has."""
+        spec = self.spec(metric)
+        exported = self._dimensions.get(metric, set())
+        for name, group_by in spec.dimension_sources.items():
+            if source in (group_by, name) and name in exported:
+                return name
+        have = {n: g for n, g in spec.dimension_sources.items() if n in exported}
+        raise WorldCannotAnswer(
+            f"metric '{metric}' is not exported by a dimension the tree calls '{source}' "
+            f"(the series file has: {have or 'none'})"
+        )
+
+    def members(self, metric: str, dimension: str) -> list[str]:
+        return sorted(v for m, d, v in self._slices if m == metric and d == dimension)
+
     def spec(self, metric: str) -> MetricSpec:
         if metric not in self._totals:
             raise WorldCannotAnswer(
@@ -607,6 +625,42 @@ class WorldFetcher(BaseDataFetcher):
         self.series = series
         self.bindings = bindings
 
+    def fetch_metric_sliced(
+        self, metric_name, dimension_source, start_date, end_date, grain="day", kind="flow", **kw
+    ):
+        """The node's metric per member of one dimension, long `[date, slice,
+        value]`, each member read from the series file and aggregated to the
+        grain by the same rules as the node's total (week values as the
+        providers return them). Refused by name when the node is itself a
+        slice, the dimension is not one the file exports the metric by, or a
+        member cannot be rebuilt at the grain. A `selection` (top_k folded in
+        the source) is never honoured: the frame is whole, and
+        `slice_rollup_refusal` says so."""
+        if metric_name not in self.bindings:
+            raise WorldCannotAnswer(f"node '{metric_name}' has no binding to the series file")
+        binding = self.bindings[metric_name]
+        if binding.dimension is not None or binding.cumulative:
+            raise WorldCannotAnswer(
+                f"node '{metric_name}' is served as '{binding.describe()}', which the "
+                "series file cannot slice again"
+            )
+        dimension = self.series.dimension_named(binding.metric, dimension_source)
+        frames = []
+        for value in self.series.members(binding.metric, dimension):
+            member = SeriesBinding(binding.metric, dimension, (value,))
+            values = self.series.at_grain(member, grain)
+            values = values[(values.index >= start_date) & (values.index <= end_date)]
+            frames.append(pd.DataFrame({"date": values.index, "slice": value, "value": values}))
+        if not frames:
+            raise WorldCannotAnswer(
+                f"metric '{binding.metric}' has no member of '{dimension}' in world "
+                f"'{self.series.world_id}'"
+            )
+        return pd.concat(frames, ignore_index=True)
+
+    def slice_rollup_refusal(self, metric_name, dimension_source, kind, weight_metric=None):
+        return "the evaluation's world fetcher reads every member from the series file"
+
     def fetch_metric(self, metric_name, start_date, end_date, grain="day", kind="flow", **kw):
         if metric_name not in self.bindings:
             raise WorldCannotAnswer(f"node '{metric_name}' has no binding to the series file")
@@ -681,11 +735,22 @@ class TreePlan:
     derived_instead: list[str] = field(default_factory=list)  # formula nodes no longer fetched
     raw: dict[str, Any] = field(default_factory=dict)  # the tree actually parsed
     caveats: dict[str, str] = field(default_factory=dict)  # served, but not as the source's number
+    # Numbers known to be provisional: a stock node whose provider sums its
+    # levels over the period (breakdown's fix on `fix/stock-period-sum` will
+    # refuse it at load). Served as-is until then, and flagged.
+    provisional: dict[str, str] = field(default_factory=dict)
+    # node -> {tree dimension: series-file dimension} the slice fetcher serves,
+    # and "node.dimension" -> why a declared dimension cannot be sliced.
+    slices: dict[str, dict[str, str]] = field(default_factory=dict)
+    slice_refusals: dict[str, str] = field(default_factory=dict)
 
     def summary(self) -> dict[str, Any]:
         return {
             "served": {n: b.describe() for n, b in self.served.items()},
             "caveats": dict(self.caveats),
+            "provisional": dict(self.provisional),
+            "slices": {n: dict(d) for n, d in self.slices.items()},
+            "slice_refusals": dict(self.slice_refusals),
             "unserved": dict(self.unserved),
             "dropped": list(self.dropped),
             "derived_instead_of_fetched": list(self.derived_instead),
@@ -704,6 +769,9 @@ def plan_tree(tree: TreeSpec, series: WorldSeries, *, drop_unserved: bool = Fals
     """
     raw = tree.raw()
     served, unserved, caveats = {}, {}, {}
+    provisional: dict[str, str] = {}
+    slices: dict[str, dict[str, str]] = {}
+    slice_refusals: dict[str, str] = {}
     for m in raw["metrics"]:
         binding = tree.binding_for(m)
         if binding is None:
@@ -721,9 +789,41 @@ def plan_tree(tree: TreeSpec, series: WorldSeries, *, drop_unserved: bool = Fals
             if caveat:
                 caveats[m["name"]] = caveat
                 logger.warning("node '%s': %s", m["name"], caveat)
+            if (
+                m.get("kind") == "stock"
+                and grain != "day"
+                and not binding.cumulative
+                and (spec.metricflow_week == "sum_of_days" or spec.time_aggregation == "sum")
+            ):
+                provisional[m["name"]] = (
+                    "provider sums a stock; fix pending: its period value is its levels "
+                    "added up over the period (breakdown branch fix/stock-period-sum will "
+                    "refuse this at load)"
+                )
+            for dim, dim_spec in (m.get("dimensions") or {}).items():
+                source = dim_spec if isinstance(dim_spec, str) else (dim_spec or {}).get("source")
+                try:
+                    if binding.dimension is not None or binding.cumulative:
+                        raise WorldCannotAnswer(
+                            f"the node is served as '{binding.describe()}', which cannot be "
+                            "sliced again"
+                        )
+                    slices.setdefault(m["name"], {})[dim] = series.dimension_named(
+                        binding.metric, source
+                    )
+                except WorldCannotAnswer as exc:
+                    slice_refusals[f"{m['name']}.{dim}"] = str(exc)
         except (WorldCannotAnswer, ValueError) as exc:
             unserved[m["name"]] = str(exc)
-    plan = TreePlan(served=served, unserved=unserved, raw=raw, caveats=caveats)
+    plan = TreePlan(
+        served=served,
+        unserved=unserved,
+        raw=raw,
+        caveats=caveats,
+        provisional=provisional,
+        slices=slices,
+        slice_refusals=slice_refusals,
+    )
     if not unserved:
         return plan
     if not drop_unserved:
@@ -762,6 +862,7 @@ class LoadedWorld:
     start: pd.Timestamp
     end: pd.Timestamp
     specs: dict[str, MetricSpec] = field(default_factory=dict)
+    fetcher: "WorldFetcher | None" = None  # serves slices at analysis time
 
     @property
     def dag(self):
@@ -778,4 +879,6 @@ def load_world(
     fetcher = WorldFetcher(series, plan.served)
     start, end = str(series.start.date()), str(series.end.date())
     data = fetch_all_metrics(parser, fetcher, _NAME_KEYED, start, end)
-    return LoadedWorld(world, parser, data, plan, series.start, series.end, worldset.metrics)
+    return LoadedWorld(
+        world, parser, data, plan, series.start, series.end, worldset.metrics, fetcher
+    )

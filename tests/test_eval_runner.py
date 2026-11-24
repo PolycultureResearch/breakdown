@@ -349,6 +349,82 @@ def test_a_ratio_is_served_from_its_inputs_week_rules(tmp_path):
         series.at_grain(SeriesBinding("lapse"), "week")
 
 
+def test_the_slice_fetcher_serves_each_member_from_the_series_file(arithmetic):
+    _, series = arithmetic
+    fetcher = WorldFetcher(series, {"visits": SeriesBinding("visits"), **AB})
+    day = fetcher.fetch_metric_sliced("visits", "session__channel", "2024-01-01", "2024-01-28")
+    assert set(day["slice"]) == {"a", "b", "c"} and len(day) == 3 * 28
+    week = fetcher.fetch_metric_sliced(
+        "visits", "session__channel", "2024-01-01", "2024-01-28", grain="week"
+    )
+    assert week[week["slice"] == "c"]["value"].tolist() == [210.0] * 4  # summed like the total
+    with pytest.raises(WorldCannotAnswer, match="'session__device'.*channel"):
+        fetcher.fetch_metric_sliced("visits", "session__device", "2024-01-01", "2024-01-28")
+    with pytest.raises(WorldCannotAnswer, match="cannot slice again"):
+        fetcher.fetch_metric_sliced("visits_ab", "session__channel", "2024-01-01", "2024-01-28")
+
+
+def test_the_plan_records_what_can_be_sliced_and_which_stocks_are_provisional(tmp_path):
+    raw = yaml.safe_load(ARITHMETIC_TREE)
+    raw["metrics"] += [
+        {
+            "name": "visits",
+            "source": "fx.metrics.visits",
+            "dimensions": {"channel": "session__channel", "device": "session__device"},
+        }
+    ]
+    series = _edit_metric(
+        tmp_path, "base", metricflow_week="sum_of_days", matches_metricflow_week=False
+    )
+    plan = plan_tree(TreeSpec("t.yml", yaml.safe_dump(raw), bindings=AB), series)
+    assert plan.slices["visits"] == {"channel": "channel"}
+    assert "session__device" in plan.slice_refusals["visits.device"]
+    assert "provider sums a stock; fix pending" in plan.provisional["base"]
+
+
+def test_a_mix_shift_root_is_scored_at_the_ratio_whose_mix_it_moves(mapping):
+    dag, plan = mapping
+    rec = record("base", {"category": "tees"}, root_metric_mix="churn_rate")
+    m = map_root(dag, plan, rec)
+    assert (m.status, m.truth) == ("on_tree_mix", ["churn_rate"])
+    assert "shifts the mix of" in m.note
+
+
+def test_slice_localization_is_scored_per_world_with_its_refusals():
+    from evalrunner.scoreboard import slice_rows
+
+    def row(world, seed, rank, noise, **extra):
+        return {
+            "world": world,
+            "seed": seed,
+            "anomaly": "a",
+            "node": "price",
+            "node_kind": "rate",
+            "dimension": "category",
+            "root_value": "tees",
+            "status": "ok",
+            "rank": rank,
+            "n_ranked": 5,
+            "root_abs_z": 3.0,
+            "first_noise_level": noise,
+            "localization": "localized",
+            **extra,
+        }
+
+    rows = [
+        row("w0", 0, 1, False, call_correct=True),
+        row("w1", 1, 4, True, call_correct=False),
+        {**row("w1", 1, None, None), "status": "not_sliceable", "detail": "no such dim"},
+    ]
+    out, detail = slice_rows(rows, {"w0": 0, "w1": 1}, "v")
+    got = {(r["metric"], r["role"]): r for r in out}
+    assert got[("top1", "all")]["value"] == pytest.approx(0.5)
+    assert got[("top1_with_evidence", "rate")]["units"] == {"w0": 1.0, "w1": 0.0}
+    assert got[("within_mix_correct", "rate")]["value"] == pytest.approx(0.5)
+    assert got[("slice_rows_refused", "all")]["units"] == {"w0": 0.0, "w1": 1.0}
+    assert len(detail) == 3
+
+
 def test_the_plan_names_where_a_week_value_departs_from_the_manifests_rule(arithmetic):
     from evalrunner.loader import caveat_for
 

@@ -184,6 +184,25 @@ def _aligned(measured: Measured, plan, node: str, stats: dict) -> tuple[bool | N
         return None, "unknown: set flag NULL"
 
 
+def _lands_after_window(record: dict[str, Any], stats: dict) -> str | None:
+    """Why the set's effect over the declared window is not this item's size
+    when the effect arrives after that window (Meridian's delivery crunch:
+    the window dates the signings, the invoices fall due about two months
+    later). Measuring the shifted window from the twins (generator §10.7) is
+    not built, so the size is refused by name."""
+    lag = _finite(stats.get("onset_lag_days"))
+    if lag is None or not record.get("end"):
+        return None
+    days = (pd.Timestamp(record["end"]) - pd.Timestamp(record["start"])).days + 1
+    if lag <= days:
+        return None
+    return (
+        f"effect_after_window: the measured onset is {lag:.0f} days after the declared start, "
+        f"past the {days}-day window the set's effect covers; measuring the shifted window "
+        "from the twins (generator spec §10.7) is not built"
+    )
+
+
 def _truth_basis(lw, child: str, stats: dict) -> tuple[str, str | None]:
     """`(basis, refusal)`: which of the set's effects matches the engine's
     window value for this child, or why none does.
@@ -229,6 +248,9 @@ def attribution_items(
         key = measured.key(child, plan)
         stats = (measured.set_effects.get(key) if key else None) or {}
         basis, refusal = _truth_basis(lw, child, stats)
+        late = _lands_after_window(measured.record, stats)
+        if late and not refusal:
+            refusal = late
         agg = basis == "rel_change_aggregated"
         aligned, aligned_basis = _aligned(measured, plan, child, stats)
         return {

@@ -62,6 +62,11 @@ class MetricSpec:
     matches_metricflow_week: bool | None = None
     input_metricflow_week: dict[str, str] = field(default_factory=dict)
     dimensions: tuple[str, ...] = ()
+    # Dimension name as the series file spells it -> its MetricFlow group-by
+    # id (`channel` -> `session__channel`), which is what a tree's
+    # `dimensions:` names as `source`. None where no single group-by
+    # addresses it.
+    dimension_sources: dict[str, str | None] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -190,6 +195,8 @@ _OPTIONAL_SET_STATS = {
     # some seed had no day to judge by (generator §10.5).
     "aligned_before_start": "aligned_before_start",
     "aligned_before_start_share": "aligned_before_start_share",
+    # Median days from the declared start to the measured onset, across seeds.
+    "onset_lag_days": "onset_median_lag_days",
 }
 
 
@@ -252,6 +259,9 @@ def load_world_set(path: str | Path, *, allow_v1: bool = False) -> WorldSet:
             matches_metricflow_week=m.get("matches_metricflow_week"),
             input_metricflow_week=dict(m.get("input_metricflow_week") or {}),
             dimensions=tuple(m.get("dimensions") or ()),
+            dimension_sources=(
+                dict(m["dimensions"]) if isinstance(m.get("dimensions"), dict) else {}
+            ),
         )
 
     worlds = []

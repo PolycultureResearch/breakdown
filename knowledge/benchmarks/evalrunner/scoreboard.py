@@ -42,7 +42,6 @@ from .runner import DEV_SEEDS, read_rows
 SCOREBOARD_VERSION = 1
 EVIDENCE_Z = 2.0
 NOT_BUILT = {
-    "Q4 slices": "whether the true slice is the top slice of the true node (spec §5.3)",
     "Q6 abstention": "off-tree, data-quality and null-world false alarms (spec §5.5)",
     "Q7 power": "the magnitude ladder (spec §5.2); needs generator phase 2",
     "Q9 catch rate": "share of badly calibrated nodes a flag catches; needs a per-node verdict",
@@ -270,6 +269,107 @@ def localization_rows(rows, seed_of, vertical) -> list[dict]:
     return out
 
 
+Q4 = "Q4 slice localization"
+SLICE_METRICS = (
+    "top1",
+    "top3",
+    "reciprocal_rank",
+    "candidates",
+    "root_abs_z",
+    "top1_with_evidence",
+    "first_place_lacks_evidence",
+    "localized",
+)
+
+
+def slice_rows(rows, seed_of, vertical) -> tuple[list[dict], list[dict]]:
+    """`(scoreboard rows, per-row detail)` for Q4: the engine's slice
+    attribution on the truth node, scored against the root's slice. A world's
+    unit is the mean over its (node, dimension) rows; `slice_rows_refused`
+    counts the rows that could not be run, each with its reason in the
+    detail."""
+    out: list[dict] = []
+    if not rows:
+        return out, []
+    df = pd.DataFrame(rows)
+    worlds = sorted(df["world"].unique())
+    ok = df[df["status"] == "ok"].copy()
+    detail = [
+        {
+            k: r.get(k)
+            for k in (
+                "world",
+                "seed",
+                "anomaly",
+                "node",
+                "node_kind",
+                "dimension",
+                "root_value",
+                "status",
+                "detail",
+                "rank",
+                "n_ranked",
+                "first",
+                "root_abs_z",
+                "localization",
+                "engine_call",
+                "truth_call",
+                "call_correct",
+            )
+        }
+        for r in rows
+    ]
+    refused = {w: float((df["world"] == w).sum() - (ok["world"] == w).sum()) for w in worlds}
+    out.append(
+        _row(
+            seed_of,
+            refused,
+            len(df) - len(ok),
+            question=Q4,
+            metric="slice_rows_refused",
+            role="all",
+            vertical=vertical,
+        )
+    )
+    if ok.empty:
+        return out, detail
+    rank = pd.to_numeric(ok["rank"], errors="coerce")
+    ok["top1"] = (rank == 1).astype(float)
+    ok["top3"] = (rank <= 3).astype(float)
+    ok["reciprocal_rank"] = (1.0 / rank).fillna(0.0)
+    ok["candidates"] = pd.to_numeric(ok["n_ranked"], errors="coerce")
+    ok["root_abs_z"] = pd.to_numeric(ok["root_abs_z"], errors="coerce")
+    evidence = ok["first_noise_level"].map(lambda v: v is False)
+    ok["first_place_lacks_evidence"] = (~evidence).astype(float)
+    ok["top1_with_evidence"] = ((rank == 1) & evidence).astype(float)
+    ok["localized"] = (ok["localization"] == "localized").astype(float)
+    ok["role"] = ok["node_kind"]
+    for role, g in _with_all(ok).groupby("role"):
+        for metric in SLICE_METRICS:
+            units = g.groupby("world")[metric].mean().to_dict()
+            out.append(
+                _row(
+                    seed_of, units, len(g), question=Q4, metric=metric, role=role, vertical=vertical
+                )
+            )
+    if "call_correct" in ok:
+        calls = ok[ok["call_correct"].map(lambda v: v is True or v is False)]
+        if len(calls):
+            units = calls.groupby("world")["call_correct"].mean().astype(float).to_dict()
+            out.append(
+                _row(
+                    seed_of,
+                    units,
+                    len(calls),
+                    question=Q4,
+                    metric="within_mix_correct",
+                    role="rate",
+                    vertical=vertical,
+                )
+            )
+    return out, detail
+
+
 def cost_rows(fits, analyses, seed_of, vertical) -> list[dict]:
     out: list[dict] = []
     df = pd.DataFrame(fits)
@@ -493,10 +593,12 @@ def build_scoreboard(run_dir: str | Path) -> dict[str, Any]:
     skipped = rows("skipped")
     attribution = rows("attribution")
     q5_rows, eligibility_table = attribution_rows(attribution, seed_of, vertical)
+    q4_rows, slice_detail = slice_rows(rows("slices"), seed_of, vertical)
     board_rows = [
         *calibration_rows(calibration, seed_of, vertical),
         *detection_rows(rows("detection"), calibration, worlds, seed_of, vertical),
         *localization_rows(localization, seed_of, vertical),
+        *q4_rows,
         *q5_rows,
         *cost_rows(rows("fits"), rows("analysis"), seed_of, vertical),
     ]
@@ -540,6 +642,7 @@ def build_scoreboard(run_dir: str | Path) -> dict[str, Any]:
                 if r.get("method") == "innovation_contribution"
             },
         },
+        "slice_localization": slice_detail,
         "counterfactual_attribution": {
             "truth": "the twin difference (single world against its null twin); the engine "
             "answers window over window, so a formula edge carrying its parents' drift since "
@@ -802,6 +905,14 @@ def render_markdown(board: dict[str, Any], title: str | None = None) -> str:
                 f"- Served with a caveat: `{n}`: {why}"
                 for n, why in tree.get("caveats", {}).items()
             ],
+            *[
+                f"- **Provisional** `{n}`: {why}"
+                for n, why in (tree.get("provisional") or {}).items()
+            ],
+            *[
+                f"- Slice not served: `{n}`: {why}"
+                for n, why in (tree.get("slice_refusals") or {}).items()
+            ],
             "",
         ]
     lines += [
@@ -816,6 +927,7 @@ def render_markdown(board: dict[str, Any], title: str | None = None) -> str:
             lines += [f"## Vertical: {vertical}", ""]
         lines += _render_vertical(rows)
     for run in runs:
+        lines += _render_slice_detail(run)
         lines += _render_eligibility(run)
     lines += ["## Not scored yet", ""]
     lines += [f"- **{q}:** {why}" for q, why in board["not_built"].items()]
@@ -990,6 +1102,7 @@ def _render_vertical(rows: list[dict]) -> list[str]:
             body,
         )
 
+    out += _render_slices(rows)
     out += _render_attribution(rows)
 
     cost = [r for r in rows if r["question"] == "Q8 cost"]
@@ -1031,6 +1144,121 @@ def _render_vertical(rows: list[dict]) -> list[str]:
                 "",
             ]
     return out
+
+
+def _render_slices(rows: list[dict]) -> list[str]:
+    q4 = [r for r in rows if r["question"] == Q4]
+    if not q4:
+        return []
+    index = _pick(q4)
+    g = lambda role, m: index.get((role, m))  # noqa: E731
+    out = [
+        "### Q4 Slice localization: the root's slice inside the truth node",
+        "",
+        "The engine's slice attribution on the truth node, over the anomaly's declared "
+        "window against the default reference window, every member served from the "
+        "series file. Rank is the root member's place in the engine's order (by excess "
+        "in the direction of the node's window-over-window gap); |z| is its excess over "
+        "its interval's half-width / 1.96; a first place lacks evidence unless its "
+        "`noise_level` is false. For a sliced rate, the engine's call for the root "
+        "member (`within` when its own rate's term is larger, else `mix`) is checked "
+        "against the set's verdicts for the member's rate and weight.",
+        "",
+    ]
+    body = []
+    for role in _roles({k for k in index if k[1] == "top1"}):
+        body.append(
+            [
+                role,
+                str(g(role, "top1")["n"]),
+                _cell(g(role, "candidates"), digits=1),
+                _cell(g(role, "top1"), pct=True),
+                _cell(g(role, "top3"), pct=True),
+                _cell(g(role, "reciprocal_rank")),
+                _cell(g(role, "root_abs_z"), digits=1),
+                _cell(g(role, "top1_with_evidence"), pct=True),
+                _cell(g(role, "first_place_lacks_evidence"), pct=True),
+                _cell(g(role, "localized"), pct=True),
+            ]
+        )
+    if body:
+        out += _table(
+            [
+                "Node kind",
+                "rows",
+                "slices ranked",
+                "top-1",
+                "top-3",
+                "mean reciprocal rank",
+                "root \\|z\\|",
+                "top-1 with evidence",
+                "first place lacks evidence",
+                "engine says localized",
+            ],
+            body,
+        )
+    if g("rate", "within_mix_correct"):
+        out += [
+            "Within or mix, sliced rates: the engine's call matches the set's in "
+            f"{_cell(g('rate', 'within_mix_correct'), pct=True)} of "
+            f"{g('rate', 'within_mix_correct')['n']} rows whose truth is one or the other.",
+            "",
+        ]
+    if g("all", "slice_rows_refused") and g("all", "slice_rows_refused")["n"]:
+        out += [
+            f"{g('all', 'slice_rows_refused')['n']} slice rows could not be run; the "
+            "detail table names why.",
+            "",
+        ]
+    return out
+
+
+def _render_slice_detail(run: dict[str, Any]) -> list[str]:
+    detail = run.get("slice_localization") or []
+    if not detail:
+        return []
+    by: dict[tuple, list] = {}
+    for d in detail:
+        by.setdefault((d["anomaly"], d["node"], d["dimension"], d["root_value"]), []).append(d)
+    body = []
+    for (anomaly, node, dim, value), ds in sorted(by.items()):
+        ds = sorted(ds, key=lambda d: d["seed"])
+        ok = [d for d in ds if d["status"] == "ok"]
+        ranks = ", ".join(
+            f"s{d['seed']}: {d['rank']}/{d['n_ranked']}"
+            if d["status"] == "ok"
+            else f"s{d['seed']}: —"
+            for d in ds
+        )
+        calls = ", ".join(f"{d['engine_call']}" for d in ok if d.get("engine_call"))
+        why = next((d.get("detail") or d["status"] for d in ds if d["status"] != "ok"), "")
+        body.append(
+            [
+                f"`{anomaly}`",
+                f"`{node}`",
+                f"{dim}={value}",
+                ranks,
+                calls or "—",
+                str(next((d.get("truth_call") for d in ok if d.get("truth_call")), "—")),
+                why[:160],
+            ]
+        )
+    return [
+        f"### Q4 Slice rows ({run['vertical']})",
+        "",
+        *_table(
+            [
+                "Anomaly",
+                "Truth node",
+                "Root slice",
+                "rank per seed",
+                "engine call",
+                "truth call",
+                "not run because",
+            ],
+            body,
+        ),
+    ]
 
 
 def _render_attribution(rows: list[dict]) -> list[str]:
