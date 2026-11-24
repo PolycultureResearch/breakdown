@@ -39,8 +39,35 @@ Null calibration (design doc §6.1) — every node over every anomaly-free
 window, ~500 fits and ~40 minutes, resumable from the CSV it appends to:
     uv run python knowledge/benchmarks/innovation_score.py null out.csv
     uv run python knowledge/benchmarks/innovation_score.py null-summary out.csv
+
+Restricting the null run, and forcing an observation model per node without
+editing the tree (roadmap S20). `--likelihood` may repeat; a node fitted under
+two likelihoods lands in the same CSV as two sets of rows, told apart by the
+`likelihood` column, so one file holds the comparison:
+    uv run python knowledge/benchmarks/innovation_score.py null out.csv \
+        --nodes reactivations,sessions --horizons 7,28
+    uv run python knowledge/benchmarks/innovation_score.py null out.csv \
+        --nodes reactivations,sessions --horizons 7,28 \
+        --likelihood reactivations=negative_binomial \
+        --likelihood sessions=negative_binomial
+
+Trend experiments (roadmap S8), also without editing the tree. `--trend
+level|local_linear` forces that trend kind on every scored node; `--trend role`
+applies the role rule instead (a slope on nodes with no parents that are flows
+or stocks, a level elsewhere). `--slope-sigma X` sets the slope innovation's
+prior scale (`0` = fixed drift). The planted roots are always scored. One CSV
+per arm, then compare them:
+    ... null arm4.csv --nodes a,b --horizons 7,28 --likelihood a=negative_binomial \
+        --trend role
+    ... null-compare gauss_level=arm1.csv declared_slope=arm4.csv
+
+A slope arm takes several times as long as the level arm. `--shard k/n` scores
+every n-th job, starting at the k-th, into its own CSV, so n processes split an
+arm; `null-compare` takes `name=a.csv,b.csv` and concatenates.
 """
 
+import argparse
+import json
 import os
 import sys
 import time
@@ -70,6 +97,7 @@ from breakdown.grains import (  # noqa: E402
     snap_window,
     steps_between,
 )
+from breakdown.parser import TrendConfig  # noqa: E402
 
 # The planted anomalies, from fake_companies' white_cube.ground_truth.json
 # (demo/demos.yaml). `truth` is where each one *enters* this tree: the first
@@ -148,6 +176,35 @@ def load():
 
 def defn_of(dag, node):
     return dag.nodes[node]["definition"]
+
+
+def takes_slope_by_role(dag, node):
+    """The role rule under test for roadmap S8's default: a slope on a node
+    with no parents that is a flow or a stock; a level on rates and on
+    anything with a parent to carry its growth."""
+    return dag.in_degree(node) == 0 and defn_of(dag, node).kind in ("flow", "stock")
+
+
+def force_trend(dag, nodes, kind, slope_sigma):
+    """Force a trend kind on `nodes` (roadmap S8) by replacing each loaded
+    definition's `trend` in memory. The level's own `sigma` is kept, so the
+    arms differ in the slope and nothing else. `kind="role"` gives each node
+    the kind `takes_slope_by_role` picks."""
+    if kind is None:
+        if slope_sigma is not None:
+            raise SystemExit("--slope-sigma needs --trend")
+        return
+    for n in nodes:
+        defn = defn_of(dag, n)
+        k = kind
+        if kind == "role":
+            k = "local_linear" if takes_slope_by_role(dag, n) else "level"
+        fields = {"kind": k}
+        if defn.trend is not None:
+            fields["sigma"] = defn.trend.sigma
+        if slope_sigma is not None and k == "local_linear":
+            fields["slope_sigma"] = slope_sigma
+        defn.trend = TrendConfig(**fields)
 
 
 def node_windows(dag, data, target, ana):
@@ -234,24 +291,39 @@ def innovation(dag, data, fits, node, window):
     def draws(name):
         return post[name].values.reshape(n_all, -1)[idx]
 
-    # Normalized space: alpha + seasonal + a level simulated forward from its
-    # last fitted state (so the interval widens with the horizon — roadmap
-    # S16) + observation noise.
+    # Normalized space: alpha + seasonal + the trend simulated forward from
+    # its last fitted state (so the interval widens with the horizon — roadmap
+    # S16) + observation noise. The engine's `simulate_trend_forward` walks a
+    # local level on from its last state, and under a local linear trend
+    # (roadmap S8) also carries the last fitted slope forward.
     pred = draws("alpha") + M._seasonal_draws(post, defn.seasonality, t)[idx]
-    level_end = draws("trend")[:, -1:]
-    pred += level_end + np.cumsum(draws("sigma_trend") * rng.standard_normal((len(idx), h)), axis=1)
+    pred += M.simulate_trend_forward(post, h, rng, idx)
     noiseless = fit.y_mean + fit.y_std * pred
-    pred = noiseless + fit.y_std * draws("sigma_obs") * rng.standard_normal((len(idx), h))
     beta_mean = {}
+    beta_post = {}
     if fit.parents:
         beta_raw = draws("beta_raw")
         fitted_rows = frame["date"].isin(fit.dates).to_numpy()
         for i, p in enumerate(fit.parents):
             x = shifted[p].to_numpy(float)
             centred = (x[in_win.to_numpy()] - np.nanmean(x[fitted_rows]))[None, :]
-            pred += beta_raw[:, i : i + 1] * centred
             noiseless += beta_raw[:, i : i + 1] * centred
             beta_mean[p] = float(beta_raw[:, i].mean())
+            lo, hi = np.quantile(beta_raw[:, i], [0.03, 0.97])
+            beta_post[p] = dict(
+                mean=beta_mean[p], sd=float(beta_raw[:, i].std()), lo=float(lo), hi=float(hi)
+            )
+    # The observation noise comes from the likelihood the node was fitted
+    # with (roadmap S20), around the full mean: a count's or a mean-scaled
+    # node's spread depends on the level it is drawn at, parents included.
+    pred = fit.y_mean + fit.y_std * M.observation_draws(
+        fit.likelihood,
+        (noiseless - fit.y_mean) / fit.y_std,
+        draws(M.LIKELIHOOD_NOISE_PARAM[fit.likelihood]),
+        fit.y_mean,
+        fit.y_std,
+        rng,
+    )
 
     expected = noiseless.mean(axis=0)
     e = observed - expected
@@ -273,8 +345,21 @@ def innovation(dag, data, fits, node, window):
         "pit": float((pred_mean <= obs_mean).mean()),
         "pred_sd": sd,
         "ppc_status": fit.diagnostics.get("ppc_status"),
+        "likelihood": fit.likelihood,
         "beta_mean": beta_mean,
         "fit_quality": fit.diagnostics.get("fit_quality"),
+        # For the trend experiments: the coefficient posterior a slope might
+        # compete with, and the last fitted slope in business units a period.
+        "beta": json.dumps(beta_post) if beta_post else None,
+        "trend": fit.trend_kind,
+        "slope": (
+            float(draws("trend_slope_end").mean() * fit.y_std)
+            if "trend_slope_end" in post
+            else None
+        ),
+        "min_ess": fit.diagnostics.get("min_ess_bulk"),
+        "divergences": fit.diagnostics.get("divergences"),
+        "max_rhat": fit.diagnostics.get("max_rhat"),
     }
 
 
@@ -421,16 +506,19 @@ PLANTED = [
 ]
 HORIZON_DAYS = (1, 3, 7, 14, 28)  # 1 and 3 apply to day-grain nodes only
 NULL_FIELDS = (
-    "label node grain start horizon_days n z pit tail innovation pred_sd ppc_status status"
+    "label node grain start horizon_days n z pit tail innovation pred_sd ppc_status status "
+    "likelihood trend slope beta fit_seconds fit_quality min_ess divergences max_rhat"
 ).split()
 
 
-def score_windows(dag, data, node, start, limit, label, writer):
+def score_windows(dag, data, node, start, limit, label, writer, horizons=HORIZON_DAYS):
     """Score `node` over every horizon from `start` that ends by `limit`, from
     one fit, and drop the fit afterwards (a daily trace is ~10 MB)."""
     fits = {}
     start = pd.Timestamp(start)
-    for h in HORIZON_DAYS:
+    likelihood = defn_of(dag, node).likelihood
+    fit_seconds = None
+    for h in horizons:
         if h < 7 and data.grain_of[node] != "day":
             continue
         end = start + pd.Timedelta(days=h - 1)
@@ -440,32 +528,77 @@ def score_windows(dag, data, node, start, limit, label, writer):
             r = innovation(dag, data, fits, node, (start, end))
         except Exception as exc:
             r = {"status": f"error: {exc}"[:100], "grain": data.grain_of[node]}
+        # The one fit is paid for by the first horizon scored; every row of
+        # the start carries its wall time so no horizon filter can lose it.
+        fit_seconds = r.get("fit_seconds", fit_seconds)
         row = {k: r.get(k) for k in NULL_FIELDS}
-        row.update(label=label, node=node, start=str(start.date()), horizon_days=h)
+        row.update(
+            label=label,
+            node=node,
+            start=str(start.date()),
+            horizon_days=h,
+            likelihood=likelihood,
+            fit_seconds=None if fit_seconds is None else round(fit_seconds, 2),
+        )
         writer.writerow(row)
 
 
-def null_run(out_path):
+def force_likelihoods(dag, forced):
+    """Re-declare `likelihood` on the named nodes, in memory. The tree file is
+    not touched, and the change goes through the parser's own validation, so a
+    likelihood the YAML would refuse is refused here too."""
+    for node, likelihood in forced.items():
+        defn = defn_of(dag, node)
+        dag.nodes[node]["definition"] = type(defn).model_validate(
+            {**defn.model_dump(exclude={"derived"}), "likelihood": likelihood}
+        )
+
+
+def null_run(
+    out_path,
+    nodes=None,
+    forced=None,
+    horizons=HORIZON_DAYS,
+    trend=None,
+    slope_sigma=None,
+    shard=None,
+):
+    """`shard=(k, n)` scores jobs `k, k + n, k + 2n, ...` only, so `n`
+    processes with their own CSVs split one arm."""
     import csv
 
     dag, data = load()
-    nodes = list(nx.topological_sort(dag))
+    force_likelihoods(dag, forced or {})
+    nodes = nodes or list(nx.topological_sort(dag))
+    unknown = [n for n in nodes if n not in dag]
+    assert not unknown, f"not in the tree: {unknown}"
+    force_trend(dag, list(dict.fromkeys(nodes + [n for n, _ in PLANTED])), trend, slope_sigma)
     done = set()
-    if os.path.exists(out_path):
+    fresh = not (os.path.exists(out_path) and os.path.getsize(out_path))
+    if not fresh:
         with open(out_path) as f:
-            done = {(r["label"], r["node"], r["start"]) for r in csv.DictReader(f)}
+            reader = csv.DictReader(f)
+            assert reader.fieldnames == NULL_FIELDS, (
+                f"{out_path} was written with other columns ({reader.fieldnames}); start a new file"
+            )
+            done = {(r["label"], r["node"], r["start"], r["likelihood"]) for r in reader}
     with open(out_path, "a", newline="") as f:
         writer = csv.DictWriter(f, NULL_FIELDS)
-        if not done:
+        if fresh:
             writer.writeheader()
+            f.flush()
+        # The planted roots are always scored, whatever `--nodes` says: they
+        # are the positive class every arm is read against.
         jobs = [("planted", n, s, "2026-07-26") for n, s in PLANTED]
         for lo, hi in CLEAN_GAPS:
             for s in pd.date_range(lo, hi, freq="W-MON"):
                 jobs += [("null", n, str(s.date()), hi) for n in nodes]
         for i, (label, node, start, limit) in enumerate(jobs):
-            if (label, node, start) in done:
+            if shard and i % shard[1] != shard[0]:
                 continue
-            score_windows(dag, data, node, start, limit, label, writer)
+            if (label, node, start, defn_of(dag, node).likelihood) in done:
+                continue
+            score_windows(dag, data, node, start, limit, label, writer, horizons)
             f.flush()
             print(f"[{i + 1}/{len(jobs)}] {label} {node} {start}", flush=True)
 
@@ -474,6 +607,8 @@ def null_summary(out_path):
     # `keep_default_na=False`: pandas reads the literal label "null" as missing.
     df = pd.read_csv(out_path, keep_default_na=False, na_values=[""])
     df = df[df["z"].notna() & (df["status"] != "exact_identity")]
+    if "likelihood" not in df:  # a CSV from before the column existed
+        df = df.assign(likelihood="gaussian", fit_seconds=np.nan)
     null, planted = df[df.label == "null"], df[df.label == "planted"]
 
     def table(frame, by):
@@ -490,7 +625,43 @@ def null_summary(out_path):
             }
         ).round(3)
 
-    pd.set_option("display.width", 200)
+    def calibration(frame):
+        """Per node, likelihood and horizon. `sd_z` is about the node's own mean
+        `z`, so a forecast that is biased (roadmap S8) and one that is too
+        narrow (S20) read as different numbers; `rms_z` is the two together.
+        `pit_ks` is the largest gap between the PIT's empirical distribution
+        and the uniform's, 0 when flat; `pit_hist` its five equal bins."""
+        rows = []
+        for (node, lik, h), g in frame.groupby(["node", "likelihood", "horizon_days"]):
+            u = np.sort(g["pit"].to_numpy(float))
+            n = len(u)
+            ks = max(np.max(np.arange(1, n + 1) / n - u), np.max(u - np.arange(0, n) / n))
+            hist = np.histogram(u, bins=5, range=(0, 1))[0]
+            fits = g.drop_duplicates("start")["fit_seconds"]
+            rows.append(
+                dict(
+                    node=node,
+                    likelihood=lik,
+                    h=h,
+                    n=n,
+                    mean_z=g["z"].mean(),
+                    sd_z=g["z"].std(),
+                    rms_z=float(np.sqrt((g["z"] ** 2).mean())),
+                    over2=(g["z"].abs() > 2).mean(),
+                    over2_centred=((g["z"] - g["z"].mean()).abs() > 2).mean(),
+                    pit_ks=ks,
+                    pit_hist="/".join(str(c) for c in hist),
+                    ppc="/".join(f"{k}:{v}" for k, v in g["ppc_status"].value_counts().items()),
+                    fit_s_median=fits.median(),
+                )
+            )
+        return pd.DataFrame(rows).round(3)
+
+    pd.set_option("display.width", 250)
+    if null["likelihood"].nunique() > 1 or null["fit_seconds"].notna().any():
+        print("=== null windows, by node, likelihood and horizon")
+        print(calibration(null).to_string(index=False))
+        print()
     print("=== null windows, by horizon (calibrated: sd_z 1, |z|>2 0.046, pit tails 0.2)")
     print(table(null, "horizon_days").to_string())
     print("\n=== null windows, by node (all horizons)")
@@ -500,11 +671,16 @@ def null_summary(out_path):
     print("\n=== planted roots at onset, against the same node's null z at the same horizon")
     rows = []
     for _, r in planted.iterrows():
-        ref = null[(null.node == r.node) & (null.horizon_days == r.horizon_days)]["z"]
+        ref = null[
+            (null.node == r.node)
+            & (null.horizon_days == r.horizon_days)
+            & (null.likelihood == r.likelihood)
+        ]["z"]
         allz = null[null.horizon_days == r.horizon_days]["z"]
         rows.append(
             dict(
                 node=r.node,
+                likelihood=r.likelihood,
                 onset=r.start,
                 h=r.horizon_days,
                 z=round(r.z, 2),
@@ -517,13 +693,141 @@ def null_summary(out_path):
     print(pd.DataFrame(rows).to_string(index=False))
 
 
+def node_role(dag, node):
+    """The four roles the trend's default is argued over."""
+    kind = defn_of(dag, node).kind
+    if kind == "rate":
+        return "rate"
+    return f"{kind}, {'no parents' if dag.in_degree(node) == 0 else 'learned parent'}"
+
+
+def _pit_ks(u):
+    """Largest gap between the PIT's empirical distribution and the uniform's."""
+    u = np.sort(np.asarray(u, dtype=float))
+    n = len(u)
+    return max(np.max(np.arange(1, n + 1) / n - u), np.max(u - np.arange(0, n) / n))
+
+
+def null_compare(specs, horizons=(7, 28)):
+    """Arms side by side: `name=a.csv[,b.csv...]` each (shards concatenate).
+
+    Per node and pooled by role, at each horizon: `mean_z` (bias); `sd_z`
+    about the node's own mean, so a biased forecast and a too-narrow one read
+    as different numbers (pooled over a role, it is the within-node sd);
+    `|z|>2` raw and with each node's mean removed; the PIT's KS distance from
+    uniform; `ppc_status` counts; and per fit, the median wall time, the share
+    with minimum bulk ESS under 400, the share with any divergence and their
+    mean count, and the share marked `suspect`. Then the planted roots.
+    """
+    dag, _ = load()
+    key = ["label", "node", "start", "horizon_days"]
+    arms = {}
+    for spec in specs:
+        name, _, paths = spec.partition("=")
+        df = pd.concat(
+            pd.read_csv(path, keep_default_na=False, na_values=[""]) for path in paths.split(",")
+        ).drop_duplicates(key)
+        df = df[df["z"].notna() & (df["status"] != "exact_identity")]
+        for col in ("divergences", "min_ess", "fit_quality", "fit_seconds", "likelihood"):
+            if col not in df:  # a CSV from before the column existed
+                df[col] = np.nan
+        df["role"] = [node_role(dag, n) for n in df["node"]]
+        arms[name] = df
+    pd.set_option("display.width", 280)
+    pd.set_option("display.max_rows", 1000)
+    pd.set_option("display.max_columns", 40)
+
+    def stats(g):
+        centred = g["z"] - g.groupby("node")["z"].transform("mean")
+        # One row per fit: the diagnostics are a property of the fit, and a
+        # CSV from before `fit_seconds` rode on every row has it on one.
+        fits = g.sort_values("fit_seconds").drop_duplicates(["node", "start"])
+        div = pd.to_numeric(fits["divergences"], errors="coerce")
+        dof = len(g) - g["node"].nunique()
+        return {
+            "n": len(g),
+            "mean_z": g["z"].mean(),
+            "sd_z": float(np.sqrt((centred**2).sum() / dof)) if dof > 0 else np.nan,
+            "|z|>2": (g["z"].abs() > 2).mean(),
+            "|z|>2 centred": (centred.abs() > 2).mean(),
+            "pit_ks": _pit_ks(g["pit"]),
+            "ppc ok/mod/sev": "/".join(
+                str(int((g["ppc_status"] == k).sum())) for k in ("ok", "moderate", "severe")
+            ),
+            "fit_s": fits["fit_seconds"].median(),
+            "ess<400": (fits["min_ess"] < 400).mean() if fits["min_ess"].notna().any() else np.nan,
+            "div>0": (div > 0).mean() if div.notna().any() else np.nan,
+            "div_mean": div.mean(),
+            "suspect": (fits["fit_quality"] == "suspect").mean(),
+        }
+
+    for h in horizons:
+        for by in ("node", "role"):
+            rows = {}
+            for name, df in arms.items():
+                null = df[(df.label == "null") & (df.horizon_days == h)]
+                for group, g in null.groupby(by):
+                    rows[(group, name)] = stats(g)
+            print(f"\n=== null windows, {h}-day horizon, by {by}")
+            print(
+                pd.DataFrame(rows)
+                .T.sort_index(level=0, sort_remaining=False)
+                .to_string(float_format=lambda v: f"{v:.3f}")
+            )
+
+    print("\n=== planted roots at onset: z, and clean windows on the same node as extreme")
+    rows = {}
+    for name, df in arms.items():
+        null = df[df.label == "null"]
+        for _, r in df[(df.label == "planted") & df.horizon_days.isin(horizons)].iterrows():
+            ref = null[(null.node == r.node) & (null.horizon_days == r.horizon_days)]["z"]
+            rows[(r.node, r.start, int(r.horizon_days), name)] = {
+                "z": round(r.z, 2),
+                "pred_sd": r.pred_sd,
+                "z/null_sd": round(r.z / ref.std(), 2) if len(ref) > 2 else None,
+                "null_as_extreme": f"{(ref.abs() >= abs(r.z)).sum()}/{len(ref)}",
+            }
+    if rows:
+        print(pd.DataFrame(rows).T.sort_index(sort_remaining=False).to_string())
+
+
 def main():
-    if sys.argv[1:2] == ["null"]:
-        return null_run(sys.argv[2])
-    if sys.argv[1:2] == ["null-summary"]:
-        return null_summary(sys.argv[2])
-    names = sys.argv[1:] or list(STORIES)
+    cli = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    cli.add_argument("args", nargs="*")
+    cli.add_argument("--nodes", help="null: comma-separated nodes to restrict the null windows to")
+    cli.add_argument("--horizons", help="null: comma-separated horizons in days")
+    cli.add_argument(
+        "--likelihood", action="append", default=[], help="null: node=family, repeatable"
+    )
+    cli.add_argument(
+        "--trend",
+        choices=("level", "local_linear", "role"),
+        help="force this trend kind; `role` = slope on parentless flows and stocks only",
+    )
+    cli.add_argument("--slope-sigma", type=float, help="with a slope; 0 = fixed drift")
+    cli.add_argument("--shard", help="null: k/n — score every n-th job starting at the k-th")
+    opts = cli.parse_args()
+    argv = opts.args
+    if argv[:1] == ["null"]:
+        shard = tuple(int(x) for x in opts.shard.split("/")) if opts.shard else None
+        return null_run(
+            argv[1],
+            nodes=opts.nodes.split(",") if opts.nodes else None,
+            forced=dict(v.split("=", 1) for v in opts.likelihood),
+            horizons=(
+                tuple(int(h) for h in opts.horizons.split(",")) if opts.horizons else HORIZON_DAYS
+            ),
+            trend=opts.trend,
+            slope_sigma=opts.slope_sigma,
+            shard=shard,
+        )
+    if argv[:1] == ["null-summary"]:
+        return null_summary(argv[1])
+    if argv[:1] == ["null-compare"]:
+        return null_compare(argv[1:])
+    names = argv or list(STORIES)
     dag, data = load()
+    force_trend(dag, list(dag.nodes), opts.trend, opts.slope_sigma)
     fits = {}
     results = {n: run_story(n, dag, data, fits) for n in names}
     print("\n=== summary: rank of the planted root cause")

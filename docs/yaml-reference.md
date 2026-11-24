@@ -432,9 +432,10 @@ Each metric entry supports the following fields:
 | `expected_signs` | dict | Per-parent declared coefficient direction (`positive` \| `negative`) on a probabilistic node. **Not a prior.** The fit is unconstrained, but a posterior that contradicts the declaration raises a `sign_warnings` diagnostic (reported in `/analyze`, `/metrics`, RCA responses, and the UI). |
 | `dimensions` | dict | Declared slicing dimensions, `name: provider_dimension` shorthand (`region: customer__region`) or a mapping with `source`, `top_k`, `values`, `weight`. Enables `POST /rca/{name}/slices` and the MCP `slice_metric` tool, which localize a gap within the metric (which geo, plan, app version). Analysis-time only; never affects fetching at startup, fitting, or tree attribution. See [Dimensions (slicing)](#dimensions-slicing). |
 | `seasonality` | list | Periodic components to include in the BSTS model. Periods are in grain steps at the node's grain. |
-| `trend` | string or dict | Local-level (random-walk) trend. `trend: linear` uses the default step-size prior HalfNormal(0.05); `trend: {type: linear, sigma: 0.1}` widens it so the trend may absorb faster drift. Only `type: linear` is supported. |
+| `trend` | string or dict | The metric's trend. `trend: linear` (or omitting the field) is a local level — a random walk whose forecast is flat — with the default step-size prior HalfNormal(0.05); `trend: {sigma: 0.1}` widens that prior so the trend may absorb faster drift. `trend: {kind: local_linear}` adds a **slope** to the level, for a metric with momentum of its own (a growing source metric): the level then moves by the slope each period, and the forecast keeps moving instead of staying flat. `kind` is `level` or `local_linear`; unset means the engine's default, which is `level`. `slope_sigma` (default `0.001`, only with `kind: local_linear`) is the prior scale HalfNormal(slope_sigma) on how much the slope itself may change per period, in z-scored units; it is tight so the slope stays close to a constant drift, and `slope_sigma: 0` fixes it as exactly constant. A `slope_sigma` on a trend with no slope is refused. Only `type: linear` is supported (`type` is a legacy field and says nothing about the slope; `kind` does). See [the model's trend](model.md#what-gets-fitted) before turning the slope on for a metric with parents. |
 | `interventions` | list | Known, dated changes to this metric's own level — a price flip, an on-sale day — each `{name, date, kind: step \| pulse, until?, prior?, learn_from?}`. Each becomes a known 0/1 regressor the fit sizes on its own coefficient; the author dates the step, the engine sizes it. Probabilistic and source nodes only (refused on a formula node and under `provider: none`). See [Interventions](#interventions-known-dated-steps). |
 | `fit_start` | date | The date this metric's current regime began. Its fit uses only whole periods starting on or after it — the per-node form of `--start-date` — so one node's old regime can be cut without shortening every other node's history. A window it leaves shorter than 10 periods is refused, naming it. See [Interventions](#interventions-known-dated-steps). |
+| `likelihood` | string | The observation model: how this metric's periods scatter around the fitted mean. `gaussian` (default: constant noise), `negative_binomial` (whole-number counts) or `mean_scaled_gaussian` (a non-negative quantity whose noise grows with its level). Refused on a formula node, and `negative_binomial` on a `kind: rate`. See [Likelihood](#likelihood). |
 | `baseline` | number or dict | **Cold-start mode only.** Asserted operating point for a tree with no data: `baseline: 1200` (point) or `baseline: {low: 800, high: 1600}` (central 90% interval), in mean-per-period units at the node's grain. `distribution: Normal` (default) or `LogNormal`; the latter reads `[low, high]` on the log scale, needs `low > 0`, and is the natural shape for an order-of-magnitude belief about a positive quantity. Rejected on formula nodes, since theirs derive from parents so the identity holds. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
 | `plausible` | dict | **Cold-start mode only.** Declared honesty band `{min, max}` (either bound may be omitted, at least one required). Belief draws are **truncated** to it at sampling time (rejection resampling, so no mass piles up on the bound, and `min: 0` means customer counts cannot be drawn negative), and it stands in for historical min/max in the what-if extrapolation flags. See [Cold-start mode](#cold-start-mode-what-if-with-no-data). |
 | `share` | bool | `kind: rate` only. **This rate is a proportion: it lies in `[0, 1]` by construction.** A what-if that simulates it outside those bounds is flagged `non_physical` (impossible) rather than `extrapolation` (unusual), on both sides and with or without history. Never inferred — a `denominator` says only how the rate aggregates over time, and `average_order_value` has one. See [Grains](#grains). |
@@ -620,6 +621,70 @@ Rules the parser enforces: `name` is an identifier and is unique among the node'
 **`learn_from: history` (default) vs `window`.** RCA fits every node on data strictly before the analysis window, so an intervention with no instance in that history — a flip that happens only inside the window you are analysing — is a constant column and is **dropped by name**; its effect is then in `unexplained` or in the parents that moved with it, which is the finding RCA exists to report. `learn_from: window` is the opt-in exception for sizing a one-off from the event itself (Box and Tiao's intervention analysis): when the analysis window contains the intervention, that node's RCA fit is extended *through* its periods — the analysis window's end for a `step`, `until` for a `pulse` — with the indicator in the design matrix. Outside that analysis the declaration changes nothing: a `step` dated before the analysis window is already in history and is sized from history, and a `step` or `pulse` dated after it has no instance to learn from and is dropped by name, with the fit ending before the analysis window as usual. Three things follow, each stated on the payload: the estimate is the shift coincident with the date, not separable from anything else dated the same (`interventions[].claim`); the node's other coefficients were fitted on a window containing the anomaly (`fit_window.extended_for`); and the interval does not include forecast uncertainty about the regime it stepped from (roadmap 3.4/S16). It is per intervention and per node, never tree-wide.
 
 **`fit_start`.** The cheaper remedy when you do not want to model the old regime at all: the node's fit uses only whole periods starting on or after the date, and the default RCA reference window will not start before it. A reference you pass explicitly that starts earlier is refused before any fit when the node is the RCA target (a 422 naming `fit_start` and the earliest start that works); on an ancestor, that node alone reports `status: "reference_before_fit_window"` and the rest of the analysis runs. Everything else in the tree keeps its history. The engine refuses a fit this leaves shorter than 10 periods, with the message naming `fit_start` as the cause.
+
+## Likelihood
+
+By default every metric is fitted with **constant Gaussian noise**: one noise
+level for the whole history. That is wrong for a metric whose scatter grows
+with its level, which is most counts and most currency flows on a business
+that has grown. One noise level averaged over the history is too wide for the
+early, small periods and too narrow for the recent, large ones, and the recent
+ones are where an analysis window sits. `likelihood` declares a different
+noise model for one metric:
+
+```yaml
+metrics:
+  - name: reactivations
+    source: dbt.metric.reactivations
+    grain: week
+    likelihood: negative_binomial      # a whole-number count
+
+  - name: expansion_mrr
+    source: dbt.metric.expansion_mrr
+    grain: week
+    likelihood: mean_scaled_gaussian   # currency; noise grows with the level
+```
+
+| `likelihood` | For | Noise |
+|---|---|---|
+| `gaussian` | The default. Rates, and anything whose scatter does not depend on its level. | One standard deviation for every period. |
+| `negative_binomial` | Whole-number counts: signups, orders, conversions. | Variance `mean + (overdispersion x mean)^2`: never less than a Poisson's, growing with the level, and no probability below zero. |
+| `mean_scaled_gaussian` | A non-negative quantity in any unit whose scatter grows with its level: currency built from discrete events, or a count that is *less* dispersed than a Poisson (one that is a share of its parent, such as trials out of signups). | Gaussian, with variance proportional to the mean and the proportion learned. |
+
+What to know before declaring one:
+
+- **The mean does not change, only the noise.** Coefficients, `trend`,
+  `seasonality`, priors, `lags` and `interventions` mean exactly what they
+  mean on a Gaussian node and are stated in the same units. A parent's
+  coefficient is still "units of this metric per unit of the parent", so RCA
+  and what-if read the node the same way.
+- **The fit is slower.** A Gaussian node's trend is integrated out exactly;
+  the alternatives sample it period by period. Expect a weekly node to take a
+  few seconds longer and a daily node with two years of history to take
+  several times as long. The fit reports `likelihood` and
+  `level: "explicit_latent"` in its diagnostics. With
+  `trend: {kind: local_linear}` the slope is sampled period by period too.
+- **The series must fit the declaration.** `negative_binomial` refuses a
+  series with fractional values (naming `mean_scaled_gaussian` as the remedy)
+  and both alternatives refuse one with negative values. Nothing is rounded
+  or clipped to make it fit. `mean_scaled_gaussian` also refuses a series
+  that is exactly zero in half or more of its fitted periods: on such a
+  series it measured worse than the default, because the fitted level is
+  pulled down onto the zero periods.
+- **Not on formula nodes.** A formula node's fit is on the signed residual of
+  its identity. Declare the likelihood on the fetched parents.
+- **How to tell whether a metric needs one.** Fit it and read
+  [`ppc_status`](model.md#can-the-model-generate-its-own-data). A count or
+  currency flow that fails on `min` or `resid_max` under the default is the
+  usual candidate. Declare the alternative, refit, and read the check again.
+- **Not yet covered:** currency that is zero in half its periods or more (a
+  few large events a week) has no option and stays on the default; a
+  `mean_scaled_gaussian` node can still put a little probability below zero
+  where its level is close to zero; noise that grows in proportion to the
+  level itself (a constant percentage, typical of spend) has no option; and
+  there is no zero-inflated variant for a count with more zeros than its
+  level explains. See
+  [model.md limitation 7](model.md#assumptions-and-limitations-to-keep-in-mind).
 
 ## Grains
 
