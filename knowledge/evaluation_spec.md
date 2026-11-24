@@ -428,8 +428,8 @@ is the demo tree with another header and provider):
 |---|---|---|---|
 | White Cube | all 23 | every declared dimension except `country` on the eleven MRR-movement and subscription nodes (the series file exports those by `plan` and `category` only) | none: the tree has no summed stock |
 | Alpenglow | all 18 | every declared dimension, `avg_unit_price` by category included | none |
-| Meridian | all 15 | every declared dimension | `open_deals`, `open_pipeline_value`: provider sums a stock |
-| Bristlecone | all 9 | every declared dimension | `trade_inventory_build` is served as the week's first day (MetricFlow's cumulative rule), with a caveat; it is not summed |
+| Meridian | all 15 on a set built at fake_companies `817de23` or later; on an older set `open_deals` and `open_pipeline_value` are refused (summed stock) | every declared dimension | none: the stocks are their week-end level |
+| Bristlecone | all 9 | every declared dimension | none on a current set (`trade_inventory_build` is its week-end level); a first-day caveat on an older one |
 
 Legacy trees still run: `demo/white_cube_tree.yml`, and
 `demo/alpenglow_tree.yml` with `evalrunner/bindings/alpenglow_tree.yml` for
@@ -528,11 +528,20 @@ MetricFlow's week number, which the generator states per metric since its
 §10.9 (`metricflow_week`, `matches_metricflow_week`,
 `input_metricflow_week`), and the loader serves exactly that, each side of a
 ratio included. Where it differs from the manifest's business rule the plan
-carries a caveat naming both. For 11 metrics it differs; for stocks whose
-measure sums (`mrr`, `open_deals`, `open_pipeline_value`) MetricFlow and the
-dbt provider add up seven days of the level, and that is what is served: it
-is what a user's tree gets, and the engine has to live with it. A month node
-of such a metric is refused (the set states week rules only). On a set
+carries a caveat naming both. Since the generator's §10.10 (2026-11-24) it
+differs for 5 metrics, all distinct counts or built on one
+(`active_subscriptions`, `dau`, `paying_active_users`, `arpu`,
+`customer_churn_rate`). The snapshot stocks (`mrr`, `open_deals`,
+`open_pipeline_value`) are declared semi-additive and the cumulative ones
+(`wau`, `customer_base`, `trade_inventory_build`) carry `period_agg: last`,
+so MetricFlow answers each by its period's last day (`last_day`), which the
+loader serves at week and month grain and as a ratio side (`arpu`'s `mrr`).
+A set built before that says a snapshot stock's week is its seven daily
+levels added up (`sum_of_days`); breakdown refuses such a stock at load
+since C66 (PR #152), and the loader refuses it by name the same way rather
+than serve it at seven times its level. A month node of a metric whose week
+rule differs from the business rule is refused (the set states week rules
+only). On a set
 without `metricflow_week`, the rules below apply. For the demo trees no value
 changed with this: their week nodes were already served as MetricFlow does.
 
@@ -550,25 +559,25 @@ changed with this: their week nodes were already served as MetricFlow does.
   a distinct-count stock is served as the last day's count with a caveat
   naming it.
 - *Cumulative metrics* (`wau`, and schema 2's `customer_base` and
-  `trade_inventory_build`). MetricFlow answers them at week grain with the
-  value on the week's *first* day; the manifest's rule says the last day, and
-  the generator kept its rule and recorded the mismatch (its §10.2). The
-  loader matches MetricFlow, and the plan carries a caveat on every such node
-  that says so. Day grain is unaffected.
+  `trade_inventory_build`). Since the generator's §10.10 they carry
+  `period_agg: last` and MetricFlow answers them by the period's last day,
+  which matches the manifest's rule; served so at week and month grain. On a
+  set built before that, MetricFlow took the week's *first* day (its §10.2),
+  and the loader still matches it there, with a caveat.
 
 **A tree's `kind` must agree with the generator.** The engine resamples a
 parent by its kind, so a node the tree calls a flow and the generator calls a
 stock is refused by name.
 
-**Stocks the provider sums are provisional.** A `kind: stock` node coarser
-than its source is served as the provider returns it, and MetricFlow and
-`dbt_sql` add a stock's levels up over the period (Meridian's `open_deals` and
-`open_pipeline_value` at week grain: seven days of the level). Breakdown is
-fixing that on branch `fix/stock-period-sum`, which will refuse such a node at
-load. Until it lands the runner keeps serving the summed number, because that
-is what a user's tree gets today, and flags every such node on the plan and
-the scoreboard ("provider sums a stock; fix pending"), so those numbers are
-visibly provisional.
+**A stock is its period-end level, and a summed one is refused.** Until
+2026-11-24 MetricFlow and `dbt_sql` added a snapshot stock's daily levels up
+over a coarser period (Meridian's weekly `open_deals` and
+`open_pipeline_value` read 7.2 to 8.1 times their week-end level), and the
+runner served that number, flagged provisional. Breakdown's C66 (PR #152)
+now refuses such a stock at load, and the generator declares its snapshot
+measures semi-additive (§10.10), so the runner serves the period's last day
+and refuses, by name, a stock a set still says is summed. The provisional
+flag is gone; scoreboards published before carry it.
 
 **A mix-shift root is scored at the ratio whose mix it moves.** A
 category-demand driver is rooted at the member it moves (`units[tees]`),
@@ -951,6 +960,31 @@ the load at 12 to 41 (`eval/2026-11-23_*canonical*.md`).
 - The per-analysis cost lines read zero because the published scoreboards
   come from a rerun of the single worlds over cached fits (to add the
   |excess| contrast); the first invocation's cost is the wall time above.
+
+**Meridian and Bristlecone again, with stocks at their period end**
+(2026-11-24; canon sets rebuilt at fake_companies `817de23` with the same
+config and seeds; diffs in
+`eval/2026-11-24_smoke_canonical_{meridian,bristlecone}_diff_vs_2026-11-23.md`).
+4.7 and 3.8 minutes of wall time, another job holding the load at up to 28.
+Only the stock nodes' numbers moved, and every change traces to one node:
+
+- *Meridian*: `open_pipeline_value` is now its week-end level instead of
+  seven days of it summed. Its calibration moved (stock role mean z 0.09 to
+  0.29, sd 0.82 to 0.90, PIT distance 0.20 to 0.29, one window in 24 now
+  beyond 2), which carries into the `all` row and the Q9 splits (one window
+  moved from `suspect` to `ok`). Every other node's z is identical to every
+  digit. `open_deals` is not scored either time: its parent
+  `sales_cycle_days` is undefined in weeks with no closed deal, so its fits
+  are refused. Detection, localization, slices and attribution are
+  unchanged: no smoke anomaly's scope holds a stock.
+- *Bristlecone*: `trade_inventory_build` is now its week's last day instead
+  of its first; its calibration moved (mean z 0.19 to 0.10, lag-1 −0.14 to
+  0.03) and nothing else did.
+
+The first Meridian rerun lost three calibration windows to a race on
+ArviZ's `~/Library/Caches/arviz/daily_warning` file between worker
+processes, a transient of the machine and not of the data; those three jobs
+were rerun.
 
 **What the other two verticals' trees would need.** Neither is authored here.
 Meridian (`b2b_services`): `win_rate` and average deal size as rates with
