@@ -165,6 +165,31 @@ cost:
 Start with (1) on nodes that clear the evidence bar, and measure it against
 the planted segments in the fake_companies ground truth before building (3).
 
+**Evidence from the evaluation runner (2026-11-23), and a decision.** The
+runner's slice-localization question (Q4, `knowledge/evaluation_spec.md` on
+`feat/eval-runner`) scored the current `slice_attribution` on the canonical
+fake_companies trees. Today's slice ranking orders members by their excess
+*in the direction of the node's window-over-window gap*. Wherever an incident
+runs against the trend, it ranks the true member **last**:
+
+- Meridian, referral partner exit: the source ranks last of 4 in every seed;
+- Bristlecone, capsules delisting (by category and by banner) and the
+  Summit Mart destock: last in every seed.
+
+In each case the member is first by |excess|, and the node's gap was positive:
+the node grew while the slice fell. That is the window-over-window question
+answered faithfully ("what drove the growth?"), not the incident question
+("what departed from expectation?"). It is the slice-level twin of §3's
+node-level shortfall.
+
+Devon decided (2026-11-24) to fix this here, through share-based slice
+innovations, rather than patch the current ranking separately. A slice whose
+actual falls far below node forecast × pre-window share has a large negative
+innovation and ranks first whatever the node total did. **Acceptance test:**
+Q4 top-1 on those three scenarios (and no regression on Alpenglow, where the
+current ranking is top-1 in 83% and calls within/mix right in 6 of 6) when the
+runner scores the innovation mode.
+
 ### 4.6 Detection, and data problems
 
 **Detection** is the evidence computation run on a schedule against the latest
@@ -379,7 +404,7 @@ For Devon's decision; not applied.
 | S8 | Promote, and reconsider "opt-in". §6.1 shows the flat forecast biased upward on every parentless flow and the stock of a growing business, and not on nodes with a learned parent, which suggests a default by node role rather than a global switch. |
 | 3.10 | Add a per-node backtest to the warm pass, as the null distribution evidence is scored against (§6.1). |
 | 3.1, 3.10 | Build detection on §4.6, so anomaly flagging, suggested windows and RCA share one expectation. |
-| 3.2 | Add slice innovations (§4.5), starting share-based. |
+| 3.2 | Add slice innovations (§4.5), starting share-based. Decided 2026-11-24: this is also the fix for slice ranking burying a member that moved against its node's trend (§4.5 evidence). No separate patch. |
 | S6 | Deprioritize. The predictive distribution answers the noise question the block bootstrap answers today. |
 | MCP | A preflight data-health tool or skill (source freshness, last dbt run), per §4.6. |
 
