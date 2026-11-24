@@ -314,19 +314,38 @@ def test_a_cumulative_metric_is_served_weekly_as_its_first_day_like_metricflow(a
 
 def test_a_week_node_is_served_as_breakdowns_providers_return_it(tmp_path):
     """Every provider asks its source at the node's grain, so a week node gets
-    MetricFlow's week number where the set states it: a stock whose measure
-    sums is seven days of its level added up, not the business number."""
+    MetricFlow's week number where the set states it. A semi-additive stock
+    (`last_day`, generator §10.10) is its period-end level, at week and month;
+    a stock the set still says is summed is refused, as C66 does at load."""
     from evalrunner.loader import caveat_for
 
     series = _edit_metric(
-        tmp_path, "base", metricflow_week="sum_of_days", matches_metricflow_week=False
+        tmp_path, "base", metricflow_week="last_day", matches_metricflow_week=True
     )
-    assert series.at_grain(SeriesBinding("base"), "week").iloc[0] == sum(range(100, 107))
+    assert series.at_grain(SeriesBinding("base"), "week").tolist() == [106, 113, 120, 127]
     assert series.at_grain(SeriesBinding("base"), "day").iloc[0] == 100  # days unchanged
-    note = caveat_for(series.specs["base"], SeriesBinding("base"), "week")
-    assert "sum_of_days" in note and "seven days" in note
+    assert caveat_for(series.specs["base"], SeriesBinding("base"), "week") is None
+    summed = _edit_metric(
+        tmp_path / "old", "base", metricflow_week="sum_of_days", matches_metricflow_week=False
+    )
+    with pytest.raises(WorldCannotAnswer, match="'base' is a stock.*summing seven.*C66"):
+        summed.at_grain(SeriesBinding("base"), "week")
     with pytest.raises(WorldCannotAnswer, match="week grain only"):
-        series.at_grain(SeriesBinding("base"), "month")
+        summed.at_grain(SeriesBinding("base"), "month")
+
+
+def test_a_cumulative_stock_with_period_agg_last_is_its_last_day_at_any_grain(tmp_path):
+    series = _edit_metric(
+        tmp_path, "signups_to_date", metricflow_week="last_day", matches_metricflow_week=True
+    )
+    assert series.at_grain(SeriesBinding("signups_to_date"), "week").tolist() == [
+        42.0,
+        84.0,
+        126.0,
+        168.0,
+    ]
+    month = series.at_grain(SeriesBinding("signups_to_date"), "month")
+    assert month.empty or month.iloc[-1] == 168.0
 
 
 def test_a_ratio_is_served_from_its_inputs_week_rules(tmp_path):
@@ -339,6 +358,16 @@ def test_a_ratio_is_served_from_its_inputs_week_rules(tmp_path):
     )
     weekly = series.at_grain(SeriesBinding("lapse"), "week")
     assert weekly.tolist() == pytest.approx([14 / 60, 14 / 70, 14 / 80, 14 / 90])
+    # A side whose week rule is the period's last day (arpu's mrr, §10.10).
+    last = _edit_metric(
+        tmp_path / "last",
+        "churn",
+        metricflow_week="ratio_of_week_inputs",
+        input_metricflow_week={"numerator": "sum_of_days", "denominator": "last_day"},
+    )
+    assert last.at_grain(SeriesBinding("churn"), "week").tolist() == pytest.approx(
+        [14 / 106, 14 / 113, 14 / 120, 14 / 127]
+    )
     series = _edit_metric(
         tmp_path / "b",
         "lapse",
@@ -364,7 +393,7 @@ def test_the_slice_fetcher_serves_each_member_from_the_series_file(arithmetic):
         fetcher.fetch_metric_sliced("visits_ab", "session__channel", "2024-01-01", "2024-01-28")
 
 
-def test_the_plan_records_what_can_be_sliced_and_which_stocks_are_provisional(tmp_path):
+def test_the_plan_records_what_can_be_sliced_and_refuses_a_summed_stock(tmp_path):
     raw = yaml.safe_load(ARITHMETIC_TREE)
     raw["metrics"] += [
         {
@@ -376,10 +405,12 @@ def test_the_plan_records_what_can_be_sliced_and_which_stocks_are_provisional(tm
     series = _edit_metric(
         tmp_path, "base", metricflow_week="sum_of_days", matches_metricflow_week=False
     )
-    plan = plan_tree(TreeSpec("t.yml", yaml.safe_dump(raw), bindings=AB), series)
+    tree = TreeSpec("t.yml", yaml.safe_dump(raw), bindings=AB)
+    with pytest.raises(UnservedNodes, match="'base' is a stock.*C66"):
+        plan_tree(tree, series)
+    plan = plan_tree(tree, series, drop_unserved=True)
     assert plan.slices["visits"] == {"channel": "channel"}
     assert "session__device" in plan.slice_refusals["visits.device"]
-    assert "provider sums a stock; fix pending" in plan.provisional["base"]
 
 
 def test_a_mix_shift_root_is_scored_at_the_ratio_whose_mix_it_moves(mapping):

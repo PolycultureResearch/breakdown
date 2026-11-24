@@ -376,8 +376,13 @@ class WorldSeries:
             # MetricFlow's week value of a distinct count: distinct over the
             # week, from the weekly file (generator §10.2), not a day's count.
             out = self._weekly_for(binding, label)
-        elif spec.type == "cumulative":
+        elif spec.type == "cumulative" and spec.metricflow_week in (None, "first_day"):
+            # What MetricFlow answered for a cumulative metric before
+            # `period_agg: last` (sets built before generator §10.10).
             out = self._first_day(days["metric_value"], grain, label)
+        elif spec.type == "cumulative":
+            # `period_agg: last`: the period's last day, at week and month.
+            out = self._combine(days["metric_value"], "end_of_period", grain, label)
         elif spec.time_aggregation in ("ratio_of_sums", "ratio_of_aggregates", "average"):
             if not spec.has_sides:
                 raise WorldCannotAnswer(
@@ -414,8 +419,13 @@ class WorldSeries:
     # number (a stock summed over seven days). The plan names every such node.
     def _as_provider_week(self, spec, binding, days, label) -> pd.Series:
         rule = spec.metricflow_week
+        self._refuse_summed_stock(spec, rule, label)
         if rule == "sum_of_days":
             return self._combine(days["metric_value"], "sum", "week", label)
+        if rule == "last_day":
+            # A snapshot measure declared semi-additive, or a cumulative metric
+            # with `period_agg: last` (generator §10.10): the period's last day.
+            return self._combine(days["metric_value"], "end_of_period", "week", label)
         if rule == "distinct_over_week":
             return self._weekly_for(binding, label)
         if rule == "first_day":
@@ -450,8 +460,13 @@ class WorldSeries:
         sides = []
         for side in ("numerator", "denominator"):
             rule = rules.get(side)
+            side_spec = self.specs.get(spec.inputs.get(side))
+            if side_spec is not None:
+                self._refuse_summed_stock(side_spec, rule, f"{label} {side}")
             if rule == "sum_of_days":
                 sides.append(self._combine(days[side], "sum", "week", f"{label} {side}"))
+            elif rule == "last_day":
+                sides.append(self._combine(days[side], "end_of_period", "week", f"{label} {side}"))
             elif rule == "distinct_over_week":
                 metric = spec.inputs.get(side)
                 sides.append(
@@ -482,6 +497,21 @@ class WorldSeries:
                 SeriesBinding(metric, binding.dimension, binding.values), f"{label} {side}"
             )
         return self._combine(days[side], rule, grain, f"{label} {side}")
+
+    @staticmethod
+    def _refuse_summed_stock(spec: MetricSpec, rule: str | None, label: str) -> None:
+        """A stock whose week value would be its daily levels added up: what
+        MetricFlow answered for a snapshot measure before the generator
+        declared it semi-additive (§10.10), and what breakdown refuses at load
+        since C66 (PR #152). Refused by name, as the engine would, rather than
+        served seven times its level."""
+        if rule == "sum_of_days" and spec.time_aggregation == "end_of_period":
+            raise WorldCannotAnswer(
+                f"{label}: '{spec.name}' is a stock, and this set says MetricFlow answers its "
+                "week by summing seven daily levels. Breakdown refuses such a stock at load "
+                "(C66); rebuild the set with a generator that declares the measure "
+                "semi-additive (fake_companies 94a1286, spec §10.10)"
+            )
 
     def _first_day(self, days: pd.Series, grain: str, label: str) -> pd.Series:
         """A cumulative metric at a coarser grain, as MetricFlow answers it:
@@ -585,7 +615,7 @@ def caveat_for(spec: MetricSpec, binding: SeriesBinding, grain: str) -> str | No
             f"it (MetricFlow's `{spec.metricflow_week}`: {what}), not by the manifest's "
             f"'{spec.time_aggregation}' rule, which gives a different number"
         )
-    if spec.type == "cumulative":
+    if spec.type == "cumulative" and spec.metricflow_week in (None, "first_day"):
         return (
             f"'{binding.describe()}' is a cumulative metric; at grain '{grain}' it is served "
             "as the period's first day, as MetricFlow answers it, not the last day the "
@@ -735,10 +765,6 @@ class TreePlan:
     derived_instead: list[str] = field(default_factory=list)  # formula nodes no longer fetched
     raw: dict[str, Any] = field(default_factory=dict)  # the tree actually parsed
     caveats: dict[str, str] = field(default_factory=dict)  # served, but not as the source's number
-    # Numbers known to be provisional: a stock node whose provider sums its
-    # levels over the period (breakdown's fix on `fix/stock-period-sum` will
-    # refuse it at load). Served as-is until then, and flagged.
-    provisional: dict[str, str] = field(default_factory=dict)
     # node -> {tree dimension: series-file dimension} the slice fetcher serves,
     # and "node.dimension" -> why a declared dimension cannot be sliced.
     slices: dict[str, dict[str, str]] = field(default_factory=dict)
@@ -748,7 +774,6 @@ class TreePlan:
         return {
             "served": {n: b.describe() for n, b in self.served.items()},
             "caveats": dict(self.caveats),
-            "provisional": dict(self.provisional),
             "slices": {n: dict(d) for n, d in self.slices.items()},
             "slice_refusals": dict(self.slice_refusals),
             "unserved": dict(self.unserved),
@@ -769,7 +794,6 @@ def plan_tree(tree: TreeSpec, series: WorldSeries, *, drop_unserved: bool = Fals
     """
     raw = tree.raw()
     served, unserved, caveats = {}, {}, {}
-    provisional: dict[str, str] = {}
     slices: dict[str, dict[str, str]] = {}
     slice_refusals: dict[str, str] = {}
     for m in raw["metrics"]:
@@ -789,17 +813,6 @@ def plan_tree(tree: TreeSpec, series: WorldSeries, *, drop_unserved: bool = Fals
             if caveat:
                 caveats[m["name"]] = caveat
                 logger.warning("node '%s': %s", m["name"], caveat)
-            if (
-                m.get("kind") == "stock"
-                and grain != "day"
-                and not binding.cumulative
-                and (spec.metricflow_week == "sum_of_days" or spec.time_aggregation == "sum")
-            ):
-                provisional[m["name"]] = (
-                    "provider sums a stock; fix pending: its period value is its levels "
-                    "added up over the period (breakdown branch fix/stock-period-sum will "
-                    "refuse this at load)"
-                )
             for dim, dim_spec in (m.get("dimensions") or {}).items():
                 source = dim_spec if isinstance(dim_spec, str) else (dim_spec or {}).get("source")
                 try:
@@ -820,7 +833,6 @@ def plan_tree(tree: TreeSpec, series: WorldSeries, *, drop_unserved: bool = Fals
         unserved=unserved,
         raw=raw,
         caveats=caveats,
-        provisional=provisional,
         slices=slices,
         slice_refusals=slice_refusals,
     )

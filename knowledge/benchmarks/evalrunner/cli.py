@@ -91,8 +91,6 @@ def cmd_run(opts) -> int:
         print(f"  not served: {node}: {why}")
     for node, why in tree.get("caveats", {}).items():
         print(f"  served with a caveat: {node}: {why}")
-    for node, why in (tree.get("provisional") or {}).items():
-        print(f"  PROVISIONAL: {node}: {why}")
     for node, dims in (tree.get("slices") or {}).items():
         print(f"  sliceable: {node} by {sorted(dims)}")
     for key, why in (tree.get("slice_refusals") or {}).items():
