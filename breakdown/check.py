@@ -20,7 +20,9 @@ here is the message the server log would carry:
 4. **pre-fetch load** — the checks `load_tree` makes before its first fetch:
    the provider's extra is installed, a `warehouse` tree has `sql` on every
    fetched metric, a `duckdb` tree's `data_dir` exists and holds exports, a
-   cold-start tree declares every belief `validate_cold_start` needs.
+   cold-start tree declares every belief `validate_cold_start` needs, and
+   no `kind: stock` is folded over a period by a sum, count or average
+   (roadmap C66 — read off the bindings or the semantic manifest).
 
 **What it cannot see**, and says so rather than implying otherwise: anything
 that needs data. Window coverage, a short series bounding the analyses that
@@ -42,6 +44,7 @@ from typing import Dict, List, Optional
 
 from breakdown.api.trees import TreeState, discover_trees, parse_tree, resolve_default
 from breakdown.doctor import CheckResult, _check_rate_denominators
+from breakdown.loading import stock_period_problems
 
 
 def _pre_fetch_load_error(tree: TreeState) -> Optional[str]:
@@ -71,6 +74,12 @@ def _pre_fetch_load_error(tree: TreeState) -> Optional[str]:
         absent = [m.name for m in tree.parser.config.metrics if not m.sql and not m.derived]
         if absent:
             return f"warehouse provider requires `sql` on every metric; missing for: {absent}"
+    # Before the first fetch, in `fetch_all_metrics`: a stock its provider
+    # would add up over each period (roadmap C66). Reading a binding or a
+    # semantic manifest is reading config, not data.
+    folds = stock_period_problems(tree.parser.config)
+    if folds.refusals:
+        return " ".join(folds.refusals)
     if provider_cfg.type == "duckdb":
         # Serve meets this at its first fetch, when the connection lists the
         # folder: a `data_dir` that is not there, holds no .csv/.parquet, or
@@ -134,6 +143,9 @@ def run_check(path: str, default_tree: Optional[str] = None) -> List[CheckResult
             )
             continue
         results.append(CheckResult.ok(f"tree '{tree_id}'", _summary(tree)))
+        # Serve logs the same sentence and starts (`refuse_stock_period_folds`).
+        for line in stock_period_problems(tree.parser.config).unverified:
+            results.append(CheckResult.warn(f"tree '{tree_id}' stock period", line))
         # Serve starts with a warning here; doctor fails. This command sits
         # with serve on the exit code and with doctor on saying it out loud.
         rates = _check_rate_denominators(tree.parser)

@@ -1515,6 +1515,9 @@ def run_doctor(
         return results
 
     provider = tree.config.provider.type
+    # A tree check, never downgraded by snapshot coverage: serve refuses it
+    # before the first fetch whether or not the series are cached (C66).
+    results.append(_check_stock_period_folds(tree.config))
     # Everything appended from here to the snapshots check is the provider
     # chain — the set a full snapshot covering can downgrade (2.20). Tree
     # checks above it are never downgraded: a broken tree is broken however
@@ -1618,6 +1621,25 @@ def run_doctor(
     else:
         results.append(check_inference_toolchain())
     return results
+
+
+def _check_stock_period_folds(config: MetricTreeConfig) -> CheckResult:
+    """Roadmap C66: no `kind: stock` is added up over each period by its
+    provider. The same function `serve` and `breakdown check` call."""
+    from breakdown.loading import stock_period_problems
+
+    found = stock_period_problems(config)
+    if found.refusals:
+        return CheckResult.fail(
+            "stock period folds",
+            " ".join(found.refusals),
+            "serve refuses this tree at load until it is fixed",
+        )
+    if found.unverified:
+        return CheckResult.warn("stock period folds", " ".join(found.unverified))
+    return CheckResult.ok(
+        "stock period folds", "no stock is summed, counted or averaged over a period"
+    )
 
 
 def _probe_window(start_date: Optional[str], end_date: Optional[str]) -> Tuple[str, str]:

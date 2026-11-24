@@ -15,7 +15,8 @@ argument as `engine/stats.py`).
 
 import logging
 import os
-from typing import Any, Dict, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -30,7 +31,7 @@ from breakdown.data_fetch import (
     sparse_kw,
 )
 from breakdown.formula import eval_formula
-from breakdown.grains import GrainedData, build_grained, resample_up
+from breakdown.grains import GrainedData, build_grained, resample_up, stock_period_refusal
 from breakdown.snapshots import SnapshotFetcher, SnapshotStore, resolve_snapshot_dir
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,192 @@ def refuse_empty_window(source_rows: Dict[str, Optional[int]], start_date, end_d
         "(or BREAKDOWN_START_DATE/BREAKDOWN_END_DATE) matching the dates the "
         "source holds."
     )
+
+
+class StockFoldedOverPeriod(RuntimeError):
+    """A `kind: stock` node whose provider would add up (or average, or count)
+    its snapshots over each period instead of reporting the period's level."""
+
+
+# How each provider folds a `kind: stock` node's source rows into one period
+# when the node is coarser than its source, and so how breakdown can know what
+# it will get (roadmap C66). Every provider a tree may name has an entry — the
+# invariant test enumerates `parser.PROVIDER_TYPES` against it — so a new
+# provider has to say which of these it is before it can ship.
+#
+# * `binding`: breakdown compiles the query itself from a `BindingSpec`, whose
+#   `agg` and `time_grain` say exactly what is folded. Checked exactly.
+# * `manifest`: MetricFlow folds by the measure's aggregation, which the dbt
+#   project's `semantic_manifest.json` states. Checked exactly when the file
+#   is readable; otherwise the node is named as unverified.
+# * `unverifiable`: the definitions are not on disk (dbt Cloud's Semantic
+#   Layer). Every coarse stock is named as unverified, with the remedy.
+# * the rest fold nothing: the tree's own `sql` returns the finished
+#   per-period series (`warehouse` — the docs say a stock's SQL returns the
+#   period-end level), the mock generates on the node's own spine, and a
+#   cold-start tree fetches nothing.
+#
+# Unverified is a warning and not a refusal, deliberately. Refusing what
+# breakdown cannot see would refuse every coarse stock on dbt Cloud and on a
+# snapshot-served deployment (the hosted demo ships no dbt project), including
+# the ones that are right — a period `count_distinct` or a MetricFlow
+# `non_additive_dimension` — and the only remedy on offer, moving the node to
+# day grain, changes what those metrics mean. A warning that names the node and
+# says what breakdown could not check is what rule 1 asks for.
+STOCK_FOLD_SOURCES: Dict[str, str] = {
+    "duckdb": "binding",
+    "dbt": "binding",
+    "local": "manifest",
+    "cloud": "unverifiable",
+    "warehouse": "author_sql",
+    "mock": "generated",
+    "none": "no_data",
+}
+
+
+@dataclass
+class StockFoldCheck:
+    """What `stock_period_problems` found: refusals (a fold that is provably
+    not the period's level) and nodes it could not check, each a sentence."""
+
+    refusals: List[str] = field(default_factory=list)
+    unverified: List[str] = field(default_factory=list)
+
+
+def _coarse_stocks(config) -> List[Any]:
+    """Fetched stock nodes coarser than a day: the only ones a provider can
+    fold several snapshots into one period for."""
+    return [m for m in config.metrics if m.kind == "stock" and not m.derived and m.grain != "day"]
+
+
+def _binding_folds(config, stocks) -> Dict[str, Any]:
+    """`{node: BindingSpec}` for the binding-compiled providers, read the way
+    `build_fetcher` reads them: the node's own `bind:` first, then (for `dbt`)
+    the manifest's binding for its source. A node with neither is left out —
+    its fetch refuses by name."""
+    bindings: Dict[str, Any] = {m.name: m.bind for m in stocks if m.bind is not None}
+    unbound = [m for m in stocks if m.bind is None]
+    if unbound and config.provider.type == "dbt":
+        from breakdown.dbt_bridge import bridge_project
+
+        bridged = bridge_project(config.provider.project_path).bindings
+        for m in unbound:
+            bind = bridged.get(provider_query_name("dbt", m))
+            if bind is not None:
+                bindings[m.name] = bind
+    return bindings
+
+
+def stock_period_problems(config) -> StockFoldCheck:
+    """Every `kind: stock` node whose provider would fold its finer snapshots
+    into one period by something other than a period-end snapshot (roadmap
+    C66), without fetching anything.
+
+    A provider asked for a weekly series aggregates the source's daily rows by
+    the measure's own aggregation, not by the node's `kind`: a weekly `SUM` of
+    a daily MRR snapshot is seven days of MRR. Nothing downstream can tell —
+    the number is on the right scale for a flow and the fit is happy — so it
+    is refused here, by name, before the first fetch. Called from
+    `fetch_all_metrics` (serve, doctor) and `breakdown check`, so the three
+    say the same sentence.
+    """
+    out = StockFoldCheck()
+    stocks = _coarse_stocks(config)
+    provider = config.provider.type
+    how = STOCK_FOLD_SOURCES.get(provider)
+    if not stocks or how in ("author_sql", "generated", "no_data"):
+        return out
+    if how == "binding":
+        try:
+            bindings = _binding_folds(config, stocks)
+        except Exception as e:  # the fetcher will say this again, louder
+            out.unverified += [
+                f"Metric '{m.name}' is a `kind: stock` at grain '{m.grain}', and "
+                f"breakdown could not read its binding to check how the {provider} "
+                f"provider folds it into a period ({type(e).__name__}: {e})."
+                for m in stocks
+            ]
+            return out
+        for m in stocks:
+            bind = bindings.get(m.name)
+            if bind is None:
+                continue
+            refusal = stock_period_refusal(
+                m.name,
+                m.grain,
+                bind.agg,
+                bind.time_grain or "day",
+                measure=bind.measure or bind.numerator or m.name,
+                provider=provider,
+                alternative=(
+                    f"bind a `bind.sql` relation that already reduces to one row per "
+                    f"{m.grain} (its period-end snapshot) and declare `time_grain: "
+                    f"{m.grain}` on the binding. (`agg: last`, which would pick that "
+                    "snapshot for you, is not built yet.)"
+                ),
+            )
+            if refusal:
+                out.refusals.append(refusal)
+        return out
+    if how == "manifest":
+        from breakdown.dbt_bridge import load_manifest, manifest_path, period_fold
+
+        try:
+            manifest = load_manifest(config.provider.project_path)
+        except FileNotFoundError:
+            manifest = None
+            why = f"no semantic manifest at {manifest_path(config.provider.project_path)}"
+        except Exception as e:
+            manifest, why = None, f"{type(e).__name__}: {e}"
+        for m in stocks:
+            fold = period_fold(manifest, provider_query_name(provider, m)) if manifest else None
+            if fold is None or fold.agg is None:
+                reason = fold.note if fold is not None else why
+                out.unverified.append(_unverified(m, provider, reason))
+                continue
+            refusal = stock_period_refusal(
+                m.name,
+                m.grain,
+                fold.agg,
+                fold.source_grain,
+                measure=fold.measure,
+                provider=provider,
+                alternative=(
+                    "give the measure a `non_additive_dimension` over its time "
+                    "dimension with `window_choice: max`, so MetricFlow itself "
+                    f"reports each {m.grain}'s closing snapshot."
+                ),
+            )
+            if refusal:
+                out.refusals.append(refusal)
+        return out
+    out.unverified += [
+        _unverified(m, provider, "its metric definitions are not on disk") for m in stocks
+    ]
+    return out
+
+
+def _unverified(m, provider: str, reason: str) -> str:
+    return (
+        f"Metric '{m.name}' is a `kind: stock` at grain '{m.grain}', and breakdown "
+        f"cannot check how the {provider} provider folds its source into a "
+        f"{m.grain} ({reason}). If the source holds one snapshot per day and the "
+        f"measure sums, every {m.grain} is several days of the level added "
+        f"together. Declare it at its source's grain to have breakdown take the "
+        f"last value per {m.grain}, or make sure the metric reports a period-end "
+        "snapshot (MetricFlow: `non_additive_dimension` with `window_choice: max`)."
+    )
+
+
+def refuse_stock_period_folds(config) -> StockFoldCheck:
+    """`stock_period_problems`, acted on: raise on a refusal, warn once per
+    unverified node. Returns the check so a caller can report it too."""
+    found = stock_period_problems(config)
+    if found.refusals:
+        raise StockFoldedOverPeriod(" ".join(found.refusals))
+    for line in found.unverified:
+        logger.warning("%s", line)
+    return found
 
 
 def resolve_data_dir(data_dir: str, tree_path: Optional[str]) -> str:
@@ -233,6 +420,9 @@ def fetch_all_metrics(parser, fetcher, provider_type, start_date, end_date) -> G
     no_denominator_of: Dict[str, str] = {
         m.name: m.no_denominator for m in parser.config.metrics if m.no_denominator
     }
+    # Before the first fetch: a stock the provider would sum over each period
+    # is a wrong number at every step after this one (roadmap C66).
+    refuse_stock_period_folds(parser.config)
     series: Dict[str, pd.DataFrame] = {}
     # Per sparse metric, what the alignment contract filled by declaration
     # (GitHub #112): kept only where something was actually filled, so the
