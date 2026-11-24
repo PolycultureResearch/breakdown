@@ -15,6 +15,11 @@ score:
   because that is what its semantic layer can slice, and names the rate in
   `root_metric_rate`. A tree that holds the rate as a non-formula node is
   scored at the rate (`on_tree_rate`).
+- **A root on a mix shift.** A category-demand driver is rooted at the
+  member it moves (`units[tees]`), which moves no total; the record names the
+  ratio whose total it moves in `root_metric_mix` (`avg_unit_price`). A tree
+  that holds that ratio as a non-formula node is scored at it
+  (`on_tree_mix`), and its slice question asks for `mix` at the member.
 - **A root that still lands on a formula node** (a set without
   `root_metric_rate`, or a tree without the rate). An identity cannot be a
   root (innovation design §4.1). The truth is then the one parent of the
@@ -154,7 +159,8 @@ def as_measured(record: dict[str, Any], measured: Measured | None) -> Measured:
 
 @dataclass
 class RootMapping:
-    status: str  # on_tree | on_tree_slice | on_tree_rate | via_formula_parents | off_tree
+    # on_tree | on_tree_slice | on_tree_rate | on_tree_mix | via_formula_parents | off_tree
+    status: str
     root_node: str | None  # the node the generator's label lands on
     truth: list[str] = field(default_factory=list)  # the node scored as the root
     note: str = ""
@@ -200,13 +206,16 @@ def map_root(
     # The generator roots a rate's anomaly at the rate's numerator count when
     # its semantic layer cannot slice the rate, and names the rate. A tree
     # that holds the rate is scored at it: the rate is what was changed.
-    rate = record.get("root_metric_rate")
-    if rate:
-        node, _ = _bound(dag, plan, rate, root_slice)
+    for key, status, how in (
+        ("root_metric_rate", "on_tree_rate", "is the numerator of"),
+        ("root_metric_mix", "on_tree_mix", "shifts the mix of"),
+    ):
+        ratio = record.get(key)
+        if not ratio:
+            continue
+        node, _ = _bound(dag, plan, ratio, root_slice)
         if node is not None and not _is_formula(dag, node):
-            return RootMapping(
-                "on_tree_rate", node, [node], note=f"root '{metric}' is the numerator of '{rate}'"
-            )
+            return RootMapping(status, node, [node], note=f"root '{metric}' {how} '{ratio}'")
 
     node, status = _bound(dag, plan, metric, root_slice)
     if node is None:
