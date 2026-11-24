@@ -402,6 +402,87 @@ def resample_up(
     return agg
 
 
+# What a provider's aggregation does to a **stock** when it folds several of the
+# source's snapshots into one coarser period (roadmap C66). `resample_up` is
+# kind-aware — a stock takes the last value — but it only runs when breakdown
+# itself resamples. A node's *own* series is asked of the provider at the
+# node's grain, and the provider applies the measure's aggregation instead:
+# `SUM(mrr)` grouped by week is seven daily levels added together, about 7x the
+# level, with nothing anywhere saying so. This table is the one place that says
+# which aggregations a stock may be folded by, and every provider path that
+# folds one is checked against it (`loading.stock_period_problems`).
+#
+# `None` means the fold is a defensible period value for a stock:
+# * `last` is the period-end snapshot — exactly what `resample_up` does;
+# * `count_distinct` counts each entity once however many of the period's
+#   snapshots it appears in, so it does not grow with the number of
+#   snapshots: it is "entities active at any point in the period", at least
+#   the period-end level by the period's turnover and never a multiple of it.
+#   The White Cube demo's weekly `active_subscriptions` is this, and says so.
+#
+# A string is the reason the fold is a different number from the stock's level.
+# Every aggregation a binding may declare (`parser.BINDING_AGGS`) and every
+# MetricFlow aggregation the local provider may meet must have an entry, which
+# `tests/test_project_invariants.py` enumerates.
+STOCK_PERIOD_FOLDS: Dict[str, Optional[str]] = {
+    "last": None,
+    "count_distinct": None,
+    "sum": "adds every snapshot in the period together, so the value scales "
+    "with how many snapshots the period holds (a week of daily levels is ~7x "
+    "the level)",
+    "sum_boolean": "adds every snapshot in the period together, so the value "
+    "scales with how many snapshots the period holds",
+    "count": "counts every snapshot row in the period, so the value scales "
+    "with how many snapshots the period holds",
+    "average": "averages the period's snapshots, which is the period's mean "
+    "level and not its closing one",
+    "min": "takes the period's lowest snapshot, not its closing one",
+    "max": "takes the period's highest snapshot, not its closing one",
+    "first": "takes the period's opening snapshot, not its closing one",
+    "median": "takes the period's median snapshot, not its closing one",
+    "percentile": "takes a percentile of the period's snapshots, not its closing one",
+    "ratio": "divides two period totals, which is a rate and not a stock's level",
+}
+
+
+def stock_period_refusal(
+    name: str,
+    grain: str,
+    agg: str,
+    source_grain: str,
+    *,
+    measure: str,
+    provider: str,
+    alternative: str,
+) -> Optional[str]:
+    """The sentence refusing a `kind: stock` node whose provider would fold its
+    finer snapshots into one period by `agg`, or None if it would not.
+
+    `source_grain` is the finest period the source distinguishes — one row per
+    entity per `source_grain` — as the provider knows it. At or above it there
+    is one snapshot per period and nothing is folded, whatever `agg` is.
+    `alternative` is the provider's own second remedy (a `bind.sql` relation,
+    a MetricFlow `non_additive_dimension`), finishing the sentence "or …".
+    """
+    _check_grain(grain)
+    _check_grain(source_grain)
+    if not is_finer(source_grain, grain):
+        return None
+    if agg not in STOCK_PERIOD_FOLDS:
+        why = "is an aggregation breakdown has not classified for a stock"
+    else:
+        why = STOCK_PERIOD_FOLDS[agg]
+        if why is None:
+            return None
+    return (
+        f"Metric '{name}' is a `kind: stock` at grain '{grain}', but the {provider} "
+        f"provider would compute each {grain} from {source_grain}-level snapshots of "
+        f"'{measure}' with `{agg}`, which {why}. That is not the {grain}'s level. "
+        f"Declare '{name}' at grain '{source_grain}' and let breakdown take the last "
+        f"value per {grain} wherever a coarser node reads it, or {alternative}"
+    )
+
+
 def rate_window_value(values: np.ndarray, weights: Optional[np.ndarray]) -> float:
     """The single number a window of a `kind: rate` series reports.
 

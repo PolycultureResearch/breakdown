@@ -30,7 +30,9 @@ either way, and the oracle asserts the two agree.
 Some fields here are modelled **only so the bridge can refuse them**:
 `filter`, `fill_nulls_with`, `join_to_timespine`, `offset_window`,
 `non_additive_dimension`. None of them has a `BindingSpec` counterpart, so none
-is ever read for its value — but every one of them changes which rows or which
+is read for its value by the bridge (the local provider's stock check reads
+`non_additive_dimension.window_choice`, because there MetricFlow applies it
+itself — roadmap C66) — but every one of them changes which rows or which
 periods the metric aggregates, and `extra: "ignore"` drops what is not declared.
 A dropped `filter` does not fail; it produces a binding over the *whole*
 relation under the filtered metric's name (roadmap C15). Model first, refuse
@@ -82,6 +84,12 @@ class Measure(_Node):
     agg: str
     expr: Optional[str] = None
     agg_time_dimension: Optional[str] = None
+    # The classic spec's semi-additive marker, on the measure: `{name,
+    # window_choice}`. Modelled for the same reason as the new spec's copy on
+    # `MetricAggregationParams` — until roadmap C66 it was dropped here by
+    # `extra: "ignore"`, so a classic-spec balance measure bound as a plain
+    # `sum` and every coarse period added its daily snapshots together.
+    non_additive_dimension: Optional[Dict[str, Any]] = None
 
 
 class SemanticModelDefaults(_Node):
@@ -191,8 +199,10 @@ class MetricAggregationParams(_Node):
     semantic_model: str
     agg: str
     agg_time_dimension: Optional[str] = None
-    # Truthiness only: its MIN/MAX filter is applied per grain window, so it is
-    # query-grain-dependent and cannot be a fixed binding.
+    # Its MIN/MAX filter is applied per grain window, so it is query-grain-
+    # dependent and cannot be a fixed binding (the bridge reads truthiness).
+    # The local provider reads `window_choice` too: MetricFlow itself applies
+    # the filter, so `max` over the time dimension is a period-end snapshot.
     non_additive_dimension: Optional[Dict[str, Any]] = None
 
 
