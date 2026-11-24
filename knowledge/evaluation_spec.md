@@ -114,9 +114,12 @@ trees must include at least one rate, one stock, one node with a learned
 parent, one formula node and one sliceable dimension, so every claim in §3 can
 be tested on every vertical.
 
-Canonical trees do not exist yet (generator phase 2). Until they do the
-runner takes the tree as a parameter and stamps its path and hash on the
-scoreboard, marked as not canonical. A tree binds to a world set by metric
+The canonical trees exist (fake_companies
+`examples/breakdown_<company>_tree.yml`, design note `docs/canonical_trees.md`,
+branch `feat/canonical-trees`). The runner takes the tree as a parameter and
+stamps its path and hash on the scoreboard; it marks a run canonical when the
+tree is that company's `examples/breakdown_<company>_tree.yml` run with no
+bindings file, and not canonical otherwise. A tree binds to a world set by metric
 name: a node is the metric its `source` names, or what a small bindings file
 says (a slice of a metric, a running total). A node the world set cannot
 serve is reported by name and the run refuses, unless it is told to run
@@ -202,8 +205,11 @@ On single worlds, with the target set to the top metric the anomaly reaches:
   innovation evidence, the engine's `ranked_causes`, and a naive
   relative-change ranking
 - top-1 and top-3 rates, and mean reciprocal rank, across seeds
-- for slice anomalies: whether the true dimension and value are the top slice
-  of the true node
+- for slice anomalies (Q4): whether the true dimension and value are the top
+  slice of the true node, by the engine's own slice attribution, with the
+  root member's |z|, whether the first place carries evidence, and, for a
+  sliced rate, whether the engine called the change `within` or `mix` as the
+  generator's per-slice verdicts say
 
 A first place carries a flag for whether it had evidence behind it. On
 Alpenglow two of four first places had `|z|` under 1, which is a right answer
@@ -375,8 +381,9 @@ uv run fake-companies worlds --config configs/white_cube_b2c_app.yaml \
 
 ```bash
 uv run python knowledge/benchmarks/evaluate.py run \
-    --worlds /path/to/worlds/white_cube --tree demo/white_cube_tree.yml \
-    --tier smoke --out /path/to/runs/white_cube_smoke
+    --worlds /path/to/worlds/meridian \
+    --tree /path/to/fake_companies/examples/breakdown_meridian_tree.yml \
+    --tier smoke --out /path/to/runs/meridian_smoke
 ```
 
 It prints the plan (which nodes are served, how each single world's root maps
@@ -408,12 +415,26 @@ What each tier selects:
 | full | 0 to 4, plus 5 to 9 with `--held-out` | all in the set | 1, 7, 28 | every 28 days | all |
 | attribution | 0 to 4 | baseline | 7 | none | all, or those `--singles` names: for a ten-seed set, the anomalies whose sizes it can ground |
 
-**Trees.** `demo/white_cube_tree.yml` (b2c_saas) binds by metric name and
-needs no bindings file. `demo/alpenglow_tree.yml` (retail_dtc) uses
-`evalrunner/bindings/alpenglow_tree.yml` for its four channel-filtered
-session nodes; on a schema 2 set all 19 of its fetched nodes are served
-(`discounted_orders` and `customer_base` are generator metrics now) and it no
-longer needs `--drop-unserved`.
+**Trees.** The default is the company's canonical tree, from the generator
+repo: `--tree <fake_companies>/examples/breakdown_<company>_tree.yml`, with no
+bindings file (every node binds by metric name). Those trees name the `local`
+provider with a relative dbt path; the loader replaces the provider block
+with the series file before the tree is parsed, so that provider is never
+constructed and the path is never read. Coverage, checked on the
+`canon_*` sets (and White Cube on `proof_v2r2_white_cube`; its canonical tree
+is the demo tree with another header and provider):
+
+| Tree | Nodes served | Slices | Flagged |
+|---|---|---|---|
+| White Cube | all 23 | every declared dimension except `country` on the eleven MRR-movement and subscription nodes (the series file exports those by `plan` and `category` only) | none: the tree has no summed stock |
+| Alpenglow | all 18 | every declared dimension, `avg_unit_price` by category included | none |
+| Meridian | all 15 | every declared dimension | `open_deals`, `open_pipeline_value`: provider sums a stock |
+| Bristlecone | all 9 | every declared dimension | `trade_inventory_build` is served as the week's first day (MetricFlow's cumulative rule), with a caveat; it is not summed |
+
+Legacy trees still run: `demo/white_cube_tree.yml`, and
+`demo/alpenglow_tree.yml` with `evalrunner/bindings/alpenglow_tree.yml` for
+its four channel-filtered session nodes. They are breakdown's own benchmark
+and demo trees, not canonical, and the scoreboard says so.
 
 **World sets must be schema_version 2** (the generator's spec §10.4). A
 version 1 set is refused before anything else is read, naming the version
@@ -538,6 +559,60 @@ changed with this: their week nodes were already served as MetricFlow does.
 **A tree's `kind` must agree with the generator.** The engine resamples a
 parent by its kind, so a node the tree calls a flow and the generator calls a
 stock is refused by name.
+
+**Stocks the provider sums are provisional.** A `kind: stock` node coarser
+than its source is served as the provider returns it, and MetricFlow and
+`dbt_sql` add a stock's levels up over the period (Meridian's `open_deals` and
+`open_pipeline_value` at week grain: seven days of the level). Breakdown is
+fixing that on branch `fix/stock-period-sum`, which will refuse such a node at
+load. Until it lands the runner keeps serving the summed number, because that
+is what a user's tree gets today, and flags every such node on the plan and
+the scoreboard ("provider sums a stock; fix pending"), so those numbers are
+visibly provisional.
+
+**A mix-shift root is scored at the ratio whose mix it moves.** A
+category-demand driver is rooted at the member it moves (`units[tees]`),
+which moves the total by exactly zero. The generator names the ratio whose
+total it moves in `root_metric_mix` (`avg_unit_price`), and the runner maps
+it like `root_metric_rate` (`on_tree_mix`). The tees slump maps to
+`avg_unit_price` on the canonical Alpenglow tree.
+
+**Slices are served from the series file.** The runner replaces the tree's
+provider, so slices used to be the mock provider's. The world fetcher now
+answers `fetch_metric_sliced`: every member of the dimension the tree
+names, found through the manifest's map from the series file's dimension to
+the MetricFlow group-by id the tree's `source` uses, each aggregated to the
+node's grain by the same rules as the node's total. A dimension the file
+does not export the metric by, or a node that is itself a slice, is refused
+by name, and the plan lists what can be sliced. The frame is always whole
+(no top-k fold in the source), which the fetcher says.
+
+**Slice localization (Q4).** On a single world, for each dimension of the
+root slice that the truth node declares, the engine's `slice_attribution`
+runs over the anomaly's declared window against the default reference
+window. Scored: the root member's rank in the engine's order and how many
+slices were ranked; its |z| (excess over the half-width of its 95% interval
+over 1.96); whether the first place carries evidence (`noise_level` false);
+whether the engine says `localized`; and for a sliced rate whether the
+engine's call for the member (`within` if its own rate's term is the larger,
+else `mix`) matches the set's verdicts for the member's rate and its weight:
+`within` when the rate's own slice is established, `mix` when only the
+weight's is, `both` (not scored) when both are. A dimension the node does
+not declare, or that cannot be served, is a refused row with its reason.
+The engine orders slices by excess in the direction of the node's
+window-over-window gap, so a member that fell while its node rose ranks last:
+that is the engine's answer, not a fault of the score. The member's rank by
+|excess| alone is kept beside it as a contrast (`top1_by_abs_excess`), and
+each detail row shows the gap's sign, so a reader can tell the two failures
+apart.
+
+**An effect that lands after its declared window** (Meridian's delivery
+crunch: the window dates the signings; the invoices fall due about two months
+later, median onset 63 days after a 56-day window) is not sized against the
+set's effect over the declared window. Its attribution items are refused by
+name (`effect_after_window`, from the set's `onset_median_lag_days`);
+measuring the shifted window from the twins (generator §10.7) is not built.
+Localization uses the twin's own onset as always.
 
 **Bindings beyond a metric name are explicit.** A node whose `source` is not
 a generator metric needs an entry in a bindings file: members of one
@@ -842,6 +917,40 @@ set's effect divides by the last day's), and its other three items stay
 `open`; the Brazil lift's two items are established but ±35% at three seeds,
 so direction only. No item was size-eligible, so the error share has no
 number on this run.
+
+**The first canonical runs** (2026-11-23; fake_companies
+`feat/canonical-trees` at `cc8caac`; three seeds of the `canon_*` sets; not
+citable). 14 minutes of wall time for all three, with another job holding
+the load at 12 to 41 (`eval/2026-11-23_*canonical*.md`).
+
+- *Meridian, smoke* (its first run): calibration mean z −0.01, sd 1.09,
+  9% of windows beyond 2; 96 of 288 windows not scored because
+  `sales_cycle_days` and `avg_deal_size` are undefined in weeks with no
+  closed deal, which the engine refuses to fit over. `open_deals` and
+  `open_pipeline_value` are flagged provisional. Localization over 4.7
+  candidates: innovation contribution top-1 44%, the engine's
+  `ranked_causes` 56%, neither with evidence. The delivery crunch's
+  attribution items are refused as `effect_after_window`. Slices: the
+  referral exit ranks its source last of four in every seed (|z| 29), first
+  by |excess|: leads grew over the window.
+- *Bristlecone, smoke* (its first run): calibration mean z −0.02, sd 0.82,
+  2% beyond 2; detection |z| 3.3 at onset with 56% of roots beyond every
+  null window. Localization: innovation evidence top-1 56% (with evidence),
+  `ranked_causes` 0%. Attribution: roots fitted with parents within 2%;
+  formula edges wrong-signed in every world (the window-over-window gap
+  rose while the counterfactual fell). Slices: the budget cut's channel
+  first; the capsules delisting (category and banner) and the destock
+  (channel type) ranked last in every seed, first by |excess|, all on nodes
+  whose gap rose.
+- *Alpenglow, single worlds* (the tees slump, the pants price rise, the
+  email checkout bug, the paid-search suspension): slice top-1 83% (|z| 27);
+  the tees member ranks 5th, 7th and 1st of 7; the engine's within-or-mix
+  call is right in all six rows where the truth is one or the other
+  (`within` for the email conversion bug, `mix` for the tees slump); the
+  pants rise is `both` in the set and the engine calls it `mix`.
+- The per-analysis cost lines read zero because the published scoreboards
+  come from a rerun of the single worlds over cached fits (to add the
+  |excess| contrast); the first invocation's cost is the wall time above.
 
 **What the other two verticals' trees would need.** Neither is authored here.
 Meridian (`b2b_services`): `win_rate` and average deal size as rates with
