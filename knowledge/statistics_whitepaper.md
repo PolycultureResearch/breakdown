@@ -3,7 +3,7 @@
 **A white paper on the models behind Bayesian metric trees, why each was chosen,
 and where each one stops being trustworthy.**
 
-> **Written:** 2026-08-04 · **Last updated:** 2026-11-18 ·
+> **Written:** 2026-08-04 · **Last updated:** 2026-11-23 ·
 > **Engine version:** 0.3.1
 >
 > **This is a living document.** The assessment in §3 and the improvements in §4
@@ -625,6 +625,17 @@ Consequences: `t`, lags, and seasonality periods are all grain steps; finer
 flow/stock parents resample up (rates never auto-resample); windows snap per
 node to whole periods; and raw gaps across different grains are not comparable
 (compare `share_of_gap` instead).
+
+**Correction (2026-11-23, roadmap C66):** "stock takes last" held only where
+breakdown resampled. A stock *fetched* at a grain coarser than its source was
+folded by the provider's own aggregation — a weekly `SUM` of a daily MRR
+snapshot is about seven times the level — and nothing said so; the Meridian
+scenario tree's weekly open-pipeline stocks read 7.2–8.1x their week-end
+level. Such a node is now refused at load whenever the provider would sum,
+count or average its snapshots, and named as unverified where breakdown
+cannot see the provider's definitions (dbt Cloud). No bundled or hosted tree
+was affected: the White Cube demo's weekly stock is a distinct count, which
+does not scale with the number of snapshots.
 
 **A window's rate is `Σnum / Σden`, not the mean of per-period ratios**
 *(roadmap 1.11, shipped 2026-08-13 — this changed published numbers).* "Kind:
@@ -1844,6 +1855,7 @@ Newest first. Material changes only — typo and wording fixes are not logged.
 
 | Date | Change |
 |---|---|
+| 2026-11-23 | **A stock fetched at a coarse grain was summed over each period (roadmap C66).** §2.9's "stock takes the last value" carries a dated correction: it held where breakdown resampled, and not where the provider aggregated a node's own series, which a weekly `SUM` over daily snapshots made about 7x the level. Not a §3.2 weakness — a data-boundary defect, now refused at load (by name, with remedies) or warned about where the provider's definitions are not visible. |
 | 2026-11-18 | **A correctness defect outside the statistics, recorded because it falsified a strength this paper claims (roadmap C65).** §3.1's "deterministic and reproducible" carries a dated correction: through 0.3.0, with a compile cache shared between processes, PyTensor 2.38.2 could load one fit's compiled function for another, and the engine returned the first fit's posterior for the second with clean convergence diagnostics. Not a §3.2 weakness and not a modeling limitation: the model was right and a different one was executed. Fixed in 0.3.1 by requiring PyTensor 2.38.3 and never reading a cache an older version wrote. The only diagnostic that noticed was S3's posterior predictive check. |
 | 2026-10-06 | **Fourth hostile review acted on (roadmap C45–C64).** Two §4 entries carry dated corrections: S24's `learn_from: window` extended the fit on every RCA for any dated step, not only when the analysis window contained it (C55), and S23's alternative reference blocks were not whole periods on month grains while `stable` could be read as a surviving top cause when none was ranked (C56). Not a §3.2 weakness but worth stating here because it published a wrong number: a parent held at a value with no exact binary form (4.99) was not recognised as constant, and its coefficient was standardized against float noise into a contribution near 1e13 with `fit_quality: ok` (C45); "constant" is now one scale-relative test. No model changed. The review found the S25 Kalman marginal correct against an independent dense Gaussian. Its named weakest assumption — a coefficient learned before the window read as causal and still valid inside it, with a flat analysis-window level and no interval on `unexplained` — is §4's S14, S16 and S5, all still open. |
 | 2026-09-30 | **S25 shipped — the local level is integrated out of every NUTS fit.** A scalar Kalman filter computes the likelihood with the level marginalized (a `pm.Potential`, compiled on PyMC's numba backend); `trend` is recovered afterwards by forward-filtering backward-sampling with the same name and shape, so RCA and the posterior predictive check read it unchanged; the S3 replicates are drawn as `μ + trend + N(0, σ_obs²)` from the joint draws because there is no observed node any more. §2.1 now describes the computation and §2.2 says R̂/ESS are over the sampled parameters, not the recovered trend states. The acceptance test was that the posterior did not move: on six calibration worlds (twelve seeds per path) and the demo's four story-B nodes every parameter's mean and 94% HDI and the level at its first, middle and last period agree with the explicit latent within Monte-Carlo error, and a seeded test pins it. What moved is cost and geometry: story B's four fits 47.0s → 19.1s, the cold RCA 47.7s → 20.0s, `sessions` bulk ESS 460 → 2,072, and the divergences the explicit latent threw on `trials_started` (10), `trial_conversion_rate` (6) and most calibration worlds are gone. No §3.2 weakness changed status; the ADVI opt-in keeps the explicit latent its k̂ was measured against. |

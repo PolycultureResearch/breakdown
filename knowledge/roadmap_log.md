@@ -1146,3 +1146,23 @@ still valid inside it) is S14, S16 and S5, all still open.
 *Not fixed.* A seeded fit can still differ slightly between a cold and a warm cache (one seasonal node: `alpha` 0.0518 cold, 0.0532 warm and stable thereafter, on the 2.38.3 lock). That is a different, upstream effect, floating-point reassociation in cached code, and is inside Monte-Carlo error.
 
 *Checked afterwards.* The S20 null run's Gaussian arm, which had used the shared cache, was rerun on a private one: 145 of 352 rows compared before the run was stopped for machine load, largest difference in `z` 0.004, no PPC status changed.
+
+## C66
+
+**Status at compression:** ✅ shipped 2026-11-23
+
+**A stock fetched at a coarse grain was added up over each period.** Reported 2026-11-23 by two agents reading the code, then reproduced before anything was changed.
+
+*Mechanism.* `kind` decides aggregation in exactly one place, `grains.resample_up`, which runs when breakdown resamples a finer parent up to a child. A node's *own* series is asked of the provider at the node's grain, and the provider folds the source's rows by the measure's aggregation. `dbt`/`duckdb` compile `SUM(measure)` grouped by `DATE_TRUNC(week)`; `local` runs `mf query --group-by metric_time__week`, which applies the measure's `agg`. `dbt_sql` already refused `agg: last` ("summing or averaging snapshots across a period is a different number entirely"), and nothing compared a `kind: stock` node against an `agg: sum` binding.
+
+*Reproduced.* Through the `duckdb` provider, a daily MRR snapshot of 1000..1027 bound as a week stock with `agg: sum` loaded as 7021, 7070, 7119, 7168 — the weekly sums, with no log line. Through MetricFlow on the White Cube dataset, `mrr` (a `sum` measure, "as-of each day") returned 186,383 for the week of 2025-06-02 against 26,946 on its last day. The mock is not affected (it generates on the node's own spine), nor is `warehouse` (the author's SQL returns the finished series; the docs now say a stock's SQL returns the period-end level).
+
+*Audit.* No bundled or hosted tree was affected. `knowledge/b2b_mrr_tree.yml` is mock; `cold_start_tree.yml` fetches nothing; the hosted White Cube demo's one coarse stock, `active_subscriptions`, is a `count_distinct` (1,590 for that week against 1,581 on its last day — distinct during the week, which the node's description already says). In the fake_companies scenario trees, Meridian's weekly `open_deals` and `open_pipeline_value` are `sum` measures over a daily deal-day table and read 7.2–8.1x their week-end level; Bristlecone's `trade_inventory_build` is a cumulative metric, which breakdown cannot verify and now names.
+
+*Fix.* One table, `grains.STOCK_PERIOD_FOLDS`, says which aggregations a stock may be folded by (`last`, and `count_distinct`, which counts each entity once however many snapshots it appears in) and why each other one is not the level; `grains.stock_period_refusal` applies it when the source grain is finer than the node's. `loading.STOCK_FOLD_SOURCES` says per provider how the fold is known: from the binding (`duckdb`, `dbt`; the new `BindingSpec.time_grain`, default `day`, filled by the bridge from the manifest's `time_granularity`), from the semantic manifest (`local`; `non_additive_dimension` with `window_choice: max` is a closing snapshot, a derived metric folds as its worst input), or not at all (`cloud`, and `local` without its manifest on disk). `fetch_all_metrics` refuses before its first fetch, and `breakdown check` and `doctor` call the same function.
+
+*Why unverifiable warns rather than refuses.* Refusing every coarse stock breakdown cannot see would refuse dbt Cloud trees and snapshot-served deployments wholesale — the hosted demo ships no dbt project — including the correct ones (a distinct count, a semi-additive measure), and the only remedy on offer, moving the node to day grain, changes what those metrics mean. Rule 1 allows a warning that names what could not be checked; it fires on every load and on `check`.
+
+*Found with it.* `dbt_manifest.Measure` did not model the classic spec's `non_additive_dimension` (only the new spec's copy on `metric_aggregation_params`), so the bridge bound a classic-spec balance measure as a plain `sum`. It is now modelled, and skipped by the bridge for the reason the new-spec copy already was.
+
+*Not built.* `agg: last` — a per-period last-snapshot window in the generated SQL — which would make the refusal's job a third remedy. Verifying a declared `time_grain` against the data (one distinct date per period per `grain_key`) belongs in `doctor`, and dbt Cloud's metadata API exposes each metric's measure aggregation, which would make `cloud` exact.

@@ -161,6 +161,17 @@ Consequences to keep in mind when reading results:
   last) before fitting or attribution; a weekly identity over a daily flow
   uses the weekly *sum*. Rates never auto-resample; declare them at the
   grain they're consumed at.
+- A stock's **own** series is aggregated by the provider, not by `kind`, so a
+  `kind: stock` declared coarser than its source is **refused at load** when
+  the provider would sum, count or average its snapshots over each period (a
+  weekly sum of daily MRR is about 7x the level). Declare it at its source's
+  grain and breakdown takes the last value per period for any coarser node.
+  Where breakdown cannot see the provider's definition (dbt Cloud, or a
+  MetricFlow project whose manifest is not on disk) the node is loaded with a
+  warning naming it. A `count_distinct` stock is accepted: it reports
+  entities active at any point in the period, slightly above the closing
+  level, never a multiple of it. See
+  [A stock the provider would add up](yaml-reference.md#a-stock-the-provider-would-add-up).
 - **Windows snap per node** to the whole periods fully inside the requested
   dates; each node reports its `effective_windows`, and a node whose window
   holds no whole period is reported with `status: "window_shorter_than_grain"`
