@@ -77,6 +77,15 @@ The _what_ and _why_ behind shipped features (the _how_ lives in the code and in
   hold from day one, and the tree graduates to a warehouse unchanged), what
   was carried over from the original PR, and a customer guide from export to
   RCA. Original implementation by justincfung
+- [`innovation_rca_design.md`](innovation_rca_design.md) — **design plus a
+  measured prototype, nothing built** (2026-11-16): separate "did something
+  change" (versus expectation) from "why", and rank root causes by each node's
+  own innovation — actual minus what its model predicted given its parents —
+  rather than by its share of a window-over-window gap. Covers the lagged-ancestor
+  fit leak it found in the current engine, slice innovations, detection and
+  data-health preflight, and the roadmap changes it proposes (not applied).
+  Prototype and results on the four planted White Cube anomalies:
+  [`benchmarks/innovation_score.py`](benchmarks/innovation_score.py).
 - [`step_change_design.md`](step_change_design.md) — **designed, not built**
   (roadmap S24): a declared step/pulse term for known, dated interventions
   (price flips, on-sale days, campaigns). Separates a step in the fit history —
