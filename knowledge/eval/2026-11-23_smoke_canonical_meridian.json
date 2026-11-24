@@ -1,0 +1,4357 @@
+{
+ "scoreboard_version": 1,
+ "tier": "smoke",
+ "engine_commit": "821907f5628dc26cd73d1489e8185004378f054f+dirty",
+ "engine_key": "2ace584b50c602731fc8e34811ae6eea64c63e05|draws=500|chains=4|seed=0",
+ "generator_version": "0.1.0",
+ "manifest": {
+  "path": "/Users/devon/Documents/code/fake_companies-canonical-trees/out/worlds/canon_meridian_b2b_services",
+  "schema_version": 2,
+  "config": "configs/meridian_b2b_services.yaml",
+  "config_sha256": "0c2fed812821dbda3643ec93159283a7e4e76423eaf98d40e028b1f56b710db0",
+  "effects_summary": "effects_summary.parquet"
+ },
+ "vertical": "b2b_services",
+ "company": "meridian",
+ "tree": {
+  "path": "/Users/devon/Documents/code/fake_companies-canonical-trees/examples/breakdown_meridian_tree.yml",
+  "sha256": "14379d3f5da1172f532891785ccdf56b06a3445847547e28e58a37dd5538de89",
+  "canonical": true,
+  "bindings_path": null,
+  "bindings_sha256": null,
+  "effective_sha256": "6ae84e8c6a636ea6497d575fee423964a6999e7b5547a4ad8fcdac9690077b83",
+  "drop_unserved": false,
+  "served": {
+   "leads": "leads",
+   "qualified_deals": "qualified_deals",
+   "proposals_sent": "proposals_sent",
+   "negotiations": "negotiations",
+   "sales_cycle_days": "sales_cycle_days",
+   "deals_won": "deals_won",
+   "deals_lost": "deals_lost",
+   "closed_deals": "closed_deals",
+   "win_rate": "win_rate",
+   "avg_deal_size": "avg_deal_size",
+   "bookings": "bookings",
+   "open_deals": "open_deals",
+   "open_pipeline_value": "open_pipeline_value",
+   "invoiced_revenue": "invoiced_revenue",
+   "collected_cash": "collected_cash"
+  },
+  "caveats": {
+   "open_deals": "'open_deals' is served at week grain as breakdown's providers return it (MetricFlow's `sum_of_days`: the sum of the week's days, which for a level adds up seven days of it), not by the manifest's 'end_of_period' rule, which gives a different number",
+   "open_pipeline_value": "'open_pipeline_value' is served at week grain as breakdown's providers return it (MetricFlow's `sum_of_days`: the sum of the week's days, which for a level adds up seven days of it), not by the manifest's 'end_of_period' rule, which gives a different number"
+  },
+  "provisional": {
+   "open_deals": "provider sums a stock; fix pending: its period value is its levels added up over the period (breakdown branch fix/stock-period-sum will refuse this at load)",
+   "open_pipeline_value": "provider sums a stock; fix pending: its period value is its levels added up over the period (breakdown branch fix/stock-period-sum will refuse this at load)"
+  },
+  "slices": {
+   "leads": {
+    "source": "source",
+    "industry": "industry",
+    "size_tier": "size_tier",
+    "region": "region"
+   },
+   "qualified_deals": {
+    "source": "source",
+    "industry": "industry",
+    "size_tier": "size_tier"
+   },
+   "proposals_sent": {
+    "source": "source",
+    "industry": "industry",
+    "size_tier": "size_tier"
+   },
+   "negotiations": {
+    "source": "source",
+    "industry": "industry",
+    "size_tier": "size_tier"
+   },
+   "sales_cycle_days": {
+    "industry": "industry",
+    "size_tier": "size_tier",
+    "source": "source"
+   },
+   "deals_won": {
+    "industry": "industry",
+    "size_tier": "size_tier",
+    "source": "source"
+   },
+   "deals_lost": {
+    "stage": "stage",
+    "industry": "industry",
+    "source": "source"
+   },
+   "avg_deal_size": {
+    "industry": "industry",
+    "size_tier": "size_tier",
+    "source": "source"
+   },
+   "bookings": {
+    "industry": "industry",
+    "size_tier": "size_tier",
+    "source": "source"
+   },
+   "open_deals": {
+    "industry": "industry",
+    "size_tier": "size_tier",
+    "source": "source"
+   },
+   "open_pipeline_value": {
+    "industry": "industry",
+    "size_tier": "size_tier",
+    "source": "source"
+   },
+   "invoiced_revenue": {
+    "kind": "kind",
+    "status": "status"
+   },
+   "collected_cash": {
+    "method": "method"
+   }
+  },
+  "slice_refusals": {},
+  "unserved": {},
+  "dropped": [],
+  "derived_instead_of_fetched": []
+ },
+ "seeds": [
+  0,
+  1,
+  2
+ ],
+ "held_out": false,
+ "held_out_seeds": [],
+ "set_seeds": [
+  0,
+  1,
+  2
+ ],
+ "regimes": [
+  "baseline"
+ ],
+ "horizons": [
+  7
+ ],
+ "created": "2026-11-24T07:22:10+00:00",
+ "host": {
+  "machine": "arm64",
+  "cpus": 12,
+  "load_at_plan": 25.22
+ },
+ "verdict_column": "verdict",
+ "verdict_level": 0.01,
+ "allow_schema_v1": false,
+ "windows": {
+  "meridian.baseline.s0.null": {
+   "spacing_days": 70,
+   "n": 8
+  },
+  "meridian.baseline.s1.null": {
+   "spacing_days": 70,
+   "n": 8
+  },
+  "meridian.baseline.s2.null": {
+   "spacing_days": 70,
+   "n": 8
+  }
+ },
+ "singles": {
+  "discounting_creep": {
+   "class": "on_tree",
+   "root_metric": "avg_deal_size",
+   "root_metric_rate": null,
+   "root_slice": {},
+   "truth": [
+    "avg_deal_size"
+   ],
+   "depth": 0,
+   "note": "",
+   "set_verdicts": true
+  },
+  "referral_partner_exit": {
+   "class": "on_tree",
+   "root_metric": "leads",
+   "root_metric_rate": null,
+   "root_slice": {
+    "source": "referral"
+   },
+   "truth": [
+    "leads"
+   ],
+   "depth": 0,
+   "note": "",
+   "set_verdicts": true
+  },
+  "delivery_capacity_crunch": {
+   "class": "on_tree",
+   "root_metric": "invoiced_revenue",
+   "root_metric_rate": null,
+   "root_slice": {},
+   "truth": [
+    "invoiced_revenue"
+   ],
+   "depth": 6,
+   "note": "",
+   "set_verdicts": true
+  }
+ },
+ "singles_not_run": {
+  "outbound_team_turnover": {
+   "class": "on_tree",
+   "root_metric": "leads",
+   "root_metric_rate": null,
+   "root_slice": {
+    "source": "outbound"
+   },
+   "truth": [
+    "leads"
+   ],
+   "depth": 0,
+   "note": "",
+   "set_verdicts": true
+  },
+  "healthcare_proposal_stall": {
+   "class": "on_tree",
+   "root_metric": "negotiations",
+   "root_metric_rate": null,
+   "root_slice": {
+    "industry": "healthcare"
+   },
+   "truth": [
+    "negotiations"
+   ],
+   "depth": 3,
+   "note": "",
+   "set_verdicts": true
+  },
+  "legal_backlog": {
+   "class": "on_tree",
+   "root_metric": "sales_cycle_days",
+   "root_metric_rate": null,
+   "root_slice": {},
+   "truth": [
+    "sales_cycle_days"
+   ],
+   "depth": 0,
+   "note": "",
+   "set_verdicts": true
+  },
+  "spring_inbound_miss": {
+   "class": "on_tree",
+   "root_metric": "leads",
+   "root_metric_rate": null,
+   "root_slice": {
+    "source": "website"
+   },
+   "truth": [
+    "leads"
+   ],
+   "depth": 0,
+   "note": "",
+   "set_verdicts": true
+  },
+  "proposal_conversion_erosion": {
+   "class": "on_tree",
+   "root_metric": "proposals_sent",
+   "root_metric_rate": null,
+   "root_slice": {},
+   "truth": [
+    "proposals_sent"
+   ],
+   "depth": 2,
+   "note": "",
+   "set_verdicts": true
+  },
+  "rate_card_increase": {
+   "class": "on_tree",
+   "root_metric": "avg_deal_size",
+   "root_metric_rate": null,
+   "root_slice": {},
+   "truth": [
+    "avg_deal_size"
+   ],
+   "depth": 0,
+   "note": "",
+   "set_verdicts": true
+  },
+  "rate_card_pushback": {
+   "class": "on_tree",
+   "root_metric": "deals_won",
+   "root_metric_rate": null,
+   "root_slice": {},
+   "truth": [
+    "deals_won"
+   ],
+   "depth": 4,
+   "note": "",
+   "set_verdicts": true
+  },
+  "stage_events_dupes": {
+   "class": "data_quality"
+  },
+  "invoices_loading_delay": {
+   "class": "data_quality"
+  },
+  "deals_closed_at_nulls": {
+   "class": "data_quality"
+  },
+  "stage_events_sync_gap": {
+   "class": "data_quality"
+  }
+ },
+ "worlds": {
+  "meridian.baseline.s0.null": {
+   "seed": 0,
+   "regime": "baseline",
+   "kind": "null",
+   "anomalies": []
+  },
+  "meridian.baseline.s1.null": {
+   "seed": 1,
+   "regime": "baseline",
+   "kind": "null",
+   "anomalies": []
+  },
+  "meridian.baseline.s2.null": {
+   "seed": 2,
+   "regime": "baseline",
+   "kind": "null",
+   "anomalies": []
+  },
+  "meridian.baseline.s0.only.discounting_creep": {
+   "seed": 0,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "discounting_creep"
+   ]
+  },
+  "meridian.baseline.s0.only.delivery_capacity_crunch": {
+   "seed": 0,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "delivery_capacity_crunch"
+   ]
+  },
+  "meridian.baseline.s0.only.referral_partner_exit": {
+   "seed": 0,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "referral_partner_exit"
+   ]
+  },
+  "meridian.baseline.s1.only.discounting_creep": {
+   "seed": 1,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "discounting_creep"
+   ]
+  },
+  "meridian.baseline.s1.only.delivery_capacity_crunch": {
+   "seed": 1,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "delivery_capacity_crunch"
+   ]
+  },
+  "meridian.baseline.s1.only.referral_partner_exit": {
+   "seed": 1,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "referral_partner_exit"
+   ]
+  },
+  "meridian.baseline.s2.only.discounting_creep": {
+   "seed": 2,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "discounting_creep"
+   ]
+  },
+  "meridian.baseline.s2.only.delivery_capacity_crunch": {
+   "seed": 2,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "delivery_capacity_crunch"
+   ]
+  },
+  "meridian.baseline.s2.only.referral_partner_exit": {
+   "seed": 2,
+   "regime": "baseline",
+   "kind": "single",
+   "anomalies": [
+    "referral_partner_exit"
+   ]
+  }
+ },
+ "coverage": {
+  "jobs": 297,
+  "jobs_done": 297,
+  "job_seconds": 720.5,
+  "calibration_status": {
+   "ok": 192,
+   "unassessed, fit failed: Cannot fit over undefined periods: 'sales_cycle_days' on 2 period(s) (2024-03-04, 2024": 72,
+   "unassessed, fit failed: Cannot fit over undefined periods: 'avg_deal_size' on 2 period(s) (2024-03-04, 2024-03": 24
+  },
+  "single_worlds": 9,
+  "single_worlds_ranked": 9,
+  "single_worlds_off_tree": [],
+  "single_worlds_no_target": [],
+  "single_worlds_skipped": {},
+  "targets": {
+   "meridian.baseline.s0.only.discounting_creep": {
+    "anomaly": "discounting_creep",
+    "truth": [
+     "avg_deal_size"
+    ],
+    "mapping": "on_tree",
+    "target": "bookings",
+    "basis": "set:verdict"
+   },
+   "meridian.baseline.s1.only.delivery_capacity_crunch": {
+    "anomaly": "delivery_capacity_crunch",
+    "truth": [
+     "invoiced_revenue"
+    ],
+    "mapping": "on_tree",
+    "target": "collected_cash",
+    "basis": "fallback_deepest_descendant"
+   },
+   "meridian.baseline.s2.only.referral_partner_exit": {
+    "anomaly": "referral_partner_exit",
+    "truth": [
+     "leads"
+    ],
+    "mapping": "on_tree",
+    "target": "closed_deals",
+    "basis": "set:verdict"
+   },
+   "meridian.baseline.s0.only.delivery_capacity_crunch": {
+    "anomaly": "delivery_capacity_crunch",
+    "truth": [
+     "invoiced_revenue"
+    ],
+    "mapping": "on_tree",
+    "target": "collected_cash",
+    "basis": "fallback_deepest_descendant"
+   },
+   "meridian.baseline.s1.only.referral_partner_exit": {
+    "anomaly": "referral_partner_exit",
+    "truth": [
+     "leads"
+    ],
+    "mapping": "on_tree",
+    "target": "closed_deals",
+    "basis": "set:verdict"
+   },
+   "meridian.baseline.s0.only.referral_partner_exit": {
+    "anomaly": "referral_partner_exit",
+    "truth": [
+     "leads"
+    ],
+    "mapping": "on_tree",
+    "target": "closed_deals",
+    "basis": "set:verdict"
+   },
+   "meridian.baseline.s2.only.discounting_creep": {
+    "anomaly": "discounting_creep",
+    "truth": [
+     "avg_deal_size"
+    ],
+    "mapping": "on_tree",
+    "target": "bookings",
+    "basis": "set:verdict"
+   },
+   "meridian.baseline.s1.only.discounting_creep": {
+    "anomaly": "discounting_creep",
+    "truth": [
+     "avg_deal_size"
+    ],
+    "mapping": "on_tree",
+    "target": "bookings",
+    "basis": "set:verdict"
+   },
+   "meridian.baseline.s2.only.delivery_capacity_crunch": {
+    "anomaly": "delivery_capacity_crunch",
+    "truth": [
+     "invoiced_revenue"
+    ],
+    "mapping": "on_tree",
+    "target": "collected_cash",
+    "basis": "fallback_deepest_descendant"
+   }
+  }
+ },
+ "slice_localization": [
+  {
+   "world": "meridian.baseline.s2.only.referral_partner_exit",
+   "seed": 2,
+   "anomaly": "referral_partner_exit",
+   "node": "leads",
+   "node_kind": "flow",
+   "dimension": "source",
+   "root_value": "referral",
+   "status": "ok",
+   "detail": null,
+   "rank": 4,
+   "rank_by_abs_excess": 1,
+   "n_ranked": 4,
+   "gap_sign": 1,
+   "first": "website",
+   "root_abs_z": 28.809076876658924,
+   "localization": "localized",
+   "engine_call": null,
+   "truth_call": null,
+   "call_correct": null
+  },
+  {
+   "world": "meridian.baseline.s1.only.referral_partner_exit",
+   "seed": 1,
+   "anomaly": "referral_partner_exit",
+   "node": "leads",
+   "node_kind": "flow",
+   "dimension": "source",
+   "root_value": "referral",
+   "status": "ok",
+   "detail": null,
+   "rank": 4,
+   "rank_by_abs_excess": 1,
+   "n_ranked": 4,
+   "gap_sign": 1,
+   "first": "website",
+   "root_abs_z": 35.71350658330718,
+   "localization": "localized",
+   "engine_call": null,
+   "truth_call": null,
+   "call_correct": null
+  },
+  {
+   "world": "meridian.baseline.s0.only.referral_partner_exit",
+   "seed": 0,
+   "anomaly": "referral_partner_exit",
+   "node": "leads",
+   "node_kind": "flow",
+   "dimension": "source",
+   "root_value": "referral",
+   "status": "ok",
+   "detail": null,
+   "rank": 4,
+   "rank_by_abs_excess": 1,
+   "n_ranked": 4,
+   "gap_sign": 1,
+   "first": "website",
+   "root_abs_z": 21.867145028416715,
+   "localization": "localized",
+   "engine_call": null,
+   "truth_call": null,
+   "call_correct": null
+  }
+ ],
+ "counterfactual_attribution": {
+  "truth": "the twin difference (single world against its null twin); the engine answers window over window, so a formula edge carrying its parents' drift since the reference window is expected to exceed it",
+  "truth_seeds": [
+   0,
+   1,
+   2
+  ],
+  "truth_includes_held_out_seeds": false,
+  "max_rel_precision": 0.2,
+  "eligibility": [
+   {
+    "anomaly": "delivery_capacity_crunch",
+    "item": "invoiced_revenue->collected_cash",
+    "kind": "learned_edge",
+    "verdict": "open",
+    "truth_basis": "rel_change_aggregated",
+    "n_seeds": 3,
+    "rel_mean": 0.004977880844850661,
+    "fraction": 1.0,
+    "precision": null,
+    "aligned_worlds": 0,
+    "eligible": false,
+    "why": "effect_after_window: the measured onset is 136 days after the declared start, past the 56-day window the set's effect covers; measuring the shifted window from the twins (generator spec \u00a710.7) is not built"
+   },
+   {
+    "anomaly": "delivery_capacity_crunch",
+    "item": "root:invoiced_revenue",
+    "kind": "root_unexplained",
+    "verdict": "established_down",
+    "truth_basis": "rel_change_aggregated",
+    "n_seeds": 3,
+    "rel_mean": -0.07006152200334692,
+    "fraction": 1.0,
+    "precision": null,
+    "aligned_worlds": 3,
+    "eligible": false,
+    "why": "effect_after_window: the measured onset is 63 days after the declared start, past the 56-day window the set's effect covers; measuring the shifted window from the twins (generator spec \u00a710.7) is not built"
+   },
+   {
+    "anomaly": "discounting_creep",
+    "item": "avg_deal_size->bookings",
+    "kind": "formula_edge",
+    "verdict": "established_down",
+    "truth_basis": "rel_change_aggregated",
+    "n_seeds": 3,
+    "rel_mean": -0.07743999164757964,
+    "fraction": 1.0,
+    "precision": 0.3488772877658215,
+    "aligned_worlds": 3,
+    "eligible": false,
+    "why": "precision \u00b135% at the set's 3 seeds (needs \u00b120%)"
+   },
+   {
+    "anomaly": "discounting_creep",
+    "item": "root:avg_deal_size",
+    "kind": "root_gap",
+    "verdict": "established_down",
+    "truth_basis": "rel_change_aggregated",
+    "n_seeds": 3,
+    "rel_mean": -0.0774399916475796,
+    "fraction": 1.0,
+    "precision": 0.3488772877658236,
+    "aligned_worlds": 3,
+    "eligible": false,
+    "why": "precision \u00b135% at the set's 3 seeds (needs \u00b120%)"
+   }
+  ],
+  "errors": [
+   [
+    "meridian.baseline.s0.only.referral_partner_exit",
+    "error: ValueError: analysis_start/analysis_end is not a valid date"
+   ],
+   [
+    "meridian.baseline.s1.only.referral_partner_exit",
+    "error: ValueError: analysis_start/analysis_end is not a valid date"
+   ],
+   [
+    "meridian.baseline.s2.only.referral_partner_exit",
+    "error: ValueError: analysis_start/analysis_end is not a valid date"
+   ]
+  ]
+ },
+ "not_built": {
+  "Q6 abstention": "off-tree, data-quality and null-world false alarms (spec \u00a75.5)",
+  "Q7 power": "the magnitude ladder (spec \u00a75.2); needs generator phase 2",
+  "Q9 catch rate": "share of badly calibrated nodes a flag catches; needs a per-node verdict"
+ },
+ "rows": [
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": -0.012345677136272236,
+   "spread": 0.06025062839125642,
+   "n_seeds": 3,
+   "n": 192,
+   "units": {
+    "meridian.baseline.s0.null": -0.00013407569200416664,
+    "meridian.baseline.s1.null": 0.040863746276431454,
+    "meridian.baseline.s2.null": -0.077766701993244
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 1.0910799410112968,
+   "spread": 0.142014014492397,
+   "n_seeds": 3,
+   "n": 192,
+   "units": {
+    "meridian.baseline.s0.null": 0.9517611365241068,
+    "meridian.baseline.s1.null": 1.2356438381096189,
+    "meridian.baseline.s2.null": 1.0858348484001645
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.08854166666666667,
+   "spread": 0.03608439182435161,
+   "n_seeds": 3,
+   "n": 192,
+   "units": {
+    "meridian.baseline.s0.null": 0.046875,
+    "meridian.baseline.s1.null": 0.109375,
+    "meridian.baseline.s2.null": 0.109375
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.06770833333333333,
+   "spread": 0.039322054350368486,
+   "n_seeds": 3,
+   "n": 192,
+   "units": {
+    "meridian.baseline.s0.null": 0.03125,
+    "meridian.baseline.s1.null": 0.109375,
+    "meridian.baseline.s2.null": 0.0625
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.08833333333333333,
+   "spread": 0.014217799876680379,
+   "n_seeds": 3,
+   "n": 192,
+   "units": {
+    "meridian.baseline.s0.null": 0.08474999999999999,
+    "meridian.baseline.s1.null": 0.07625000000000004,
+    "meridian.baseline.s2.null": 0.10399999999999998
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": -0.05789205039462647,
+   "spread": 0.05067888907875306,
+   "n_seeds": 3,
+   "n": 192,
+   "units": {
+    "meridian.baseline.s0.null": -0.09426492296073898,
+    "meridian.baseline.s1.null": -0.07940587109088411,
+    "meridian.baseline.s2.null": -5.357132256330021e-06
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": -0.10306450627416834,
+   "spread": 0.10179076594107649,
+   "n_seeds": 3,
+   "n": 144,
+   "units": {
+    "meridian.baseline.s0.null": -0.1381994642735153,
+    "meridian.baseline.s1.null": 0.011639531629241842,
+    "meridian.baseline.s2.null": -0.18263358617823156
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 1.103347925397877,
+   "spread": 0.16924913110242082,
+   "n_seeds": 3,
+   "n": 144,
+   "units": {
+    "meridian.baseline.s0.null": 0.9257340867586495,
+    "meridian.baseline.s1.null": 1.2627612298522877,
+    "meridian.baseline.s2.null": 1.1215484595826941
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 0.09027777777777778,
+   "spread": 0.043368041655544434,
+   "n_seeds": 3,
+   "n": 144,
+   "units": {
+    "meridian.baseline.s0.null": 0.041666666666666664,
+    "meridian.baseline.s1.null": 0.125,
+    "meridian.baseline.s2.null": 0.10416666666666667
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 0.0763888888888889,
+   "spread": 0.031823442326082224,
+   "n_seeds": 3,
+   "n": 144,
+   "units": {
+    "meridian.baseline.s0.null": 0.041666666666666664,
+    "meridian.baseline.s1.null": 0.10416666666666667,
+    "meridian.baseline.s2.null": 0.08333333333333333
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 0.13866666666666663,
+   "spread": 0.04232906802659371,
+   "n_seeds": 3,
+   "n": 144,
+   "units": {
+    "meridian.baseline.s0.null": 0.15766666666666662,
+    "meridian.baseline.s1.null": 0.09016666666666667,
+    "meridian.baseline.s2.null": 0.16816666666666663
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": -0.11076790943976476,
+   "spread": 0.0724145558691804,
+   "n_seeds": 3,
+   "n": 144,
+   "units": {
+    "meridian.baseline.s0.null": -0.18775477202509283,
+    "meridian.baseline.s1.null": -0.10053461161602668,
+    "meridian.baseline.s2.null": -0.04401434467817476
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.42619507528015493,
+   "spread": 0.17197203521813725,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 0.409023538465868,
+    "meridian.baseline.s1.null": 0.26345298652552535,
+    "meridian.baseline.s2.null": 0.6061087008490715
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 1.2161210716545183,
+   "spread": 0.2542593690928458,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 1.1391114994280445,
+    "meridian.baseline.s1.null": 1.49998268182328,
+    "meridian.baseline.s2.null": 1.009269033712231
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.16666666666666666,
+   "spread": 0.07216878364870322,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 0.125,
+    "meridian.baseline.s1.null": 0.125,
+    "meridian.baseline.s2.null": 0.25
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.08333333333333333,
+   "spread": 0.14433756729740646,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 0.0,
+    "meridian.baseline.s1.null": 0.25,
+    "meridian.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.326,
+   "spread": 0.038742741255621,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 0.31100000000000005,
+    "meridian.baseline.s1.null": 0.29700000000000004,
+    "meridian.baseline.s2.null": 0.37
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.3709354952894999,
+   "spread": 0.27450468799352135,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 0.4013506445427842,
+    "meridian.baseline.s1.null": 0.08248990582534314,
+    "meridian.baseline.s2.null": 0.6289659355003723
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2b_services",
+   "value": 0.09342654527467725,
+   "spread": 0.2889991887516361,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 0.4191006416391906,
+    "meridian.baseline.s1.null": -0.006380206089524838,
+    "meridian.baseline.s2.null": -0.132440799725634
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2b_services",
+   "value": 0.8198548602781787,
+   "spread": 0.16501872013649962,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 0.8985084771613683,
+    "meridian.baseline.s1.null": 0.6302237458141591,
+    "meridian.baseline.s2.null": 0.9308323578590085
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 0.0,
+    "meridian.baseline.s1.null": 0.0,
+    "meridian.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "abs_z_over_2_centred",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 0.0,
+    "meridian.baseline.s1.null": 0.0,
+    "meridian.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "pit_ks",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2b_services",
+   "value": 0.19600000000000004,
+   "spread": 0.04517742799230605,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 0.247,
+    "meridian.baseline.s1.null": 0.18000000000000005,
+    "meridian.baseline.s2.null": 0.16100000000000003
+   }
+  },
+  {
+   "question": "Q1 calibration",
+   "metric": "lag1_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2b_services",
+   "value": -0.2121474694840694,
+   "spread": 0.168196833250004,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": -0.02080823987446409,
+    "meridian.baseline.s1.null": -0.3366640793599658,
+    "meridian.baseline.s2.null": -0.2789700892177784
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=moderate",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.21875,
+   "spread": 0.06810779599282303,
+   "n_seeds": 3,
+   "n": 42,
+   "units": {
+    "meridian.baseline.s0.null": 0.140625,
+    "meridian.baseline.s1.null": 0.25,
+    "meridian.baseline.s2.null": 0.265625
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=moderate",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.04409791211066296,
+   "spread": 0.20815721658672606,
+   "n_seeds": 3,
+   "n": 42,
+   "units": {
+    "meridian.baseline.s0.null": 0.20723347707548453,
+    "meridian.baseline.s1.null": 0.11540104707117048,
+    "meridian.baseline.s2.null": -0.19034078781466612
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=moderate",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.9655261393257524,
+   "spread": 0.23048338511671496,
+   "n_seeds": 3,
+   "n": 42,
+   "units": {
+    "meridian.baseline.s0.null": 0.6995398954430142,
+    "meridian.baseline.s1.null": 1.090703932500887,
+    "meridian.baseline.s2.null": 1.106334590033356
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=moderate",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.06004901960784314,
+   "spread": 0.05886181352217072,
+   "n_seeds": 3,
+   "n": 42,
+   "units": {
+    "meridian.baseline.s0.null": 0.0,
+    "meridian.baseline.s1.null": 0.0625,
+    "meridian.baseline.s2.null": 0.11764705882352941
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=ok",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.6145833333333334,
+   "spread": 0.15651020001371582,
+   "n_seeds": 3,
+   "n": 118,
+   "units": {
+    "meridian.baseline.s0.null": 0.765625,
+    "meridian.baseline.s1.null": 0.625,
+    "meridian.baseline.s2.null": 0.453125
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=ok",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.019843100994773474,
+   "spread": 0.09945455850587892,
+   "n_seeds": 3,
+   "n": 118,
+   "units": {
+    "meridian.baseline.s0.null": -0.08239370260254208,
+    "meridian.baseline.s1.null": 0.025663200394199604,
+    "meridian.baseline.s2.null": 0.11625980519266291
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=ok",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 1.0481043886500583,
+   "spread": 0.1663155627317408,
+   "n_seeds": 3,
+   "n": 118,
+   "units": {
+    "meridian.baseline.s0.null": 0.9384764528840037,
+    "meridian.baseline.s1.null": 1.2394729360298238,
+    "meridian.baseline.s2.null": 0.9663637770363476
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=ok",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.0882242552193291,
+   "spread": 0.023445962366570428,
+   "n_seeds": 3,
+   "n": 118,
+   "units": {
+    "meridian.baseline.s0.null": 0.061224489795918366,
+    "meridian.baseline.s1.null": 0.1,
+    "meridian.baseline.s2.null": 0.10344827586206896
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=severe",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.16666666666666666,
+   "spread": 0.10045469542700994,
+   "n_seeds": 3,
+   "n": 32,
+   "units": {
+    "meridian.baseline.s0.null": 0.09375,
+    "meridian.baseline.s1.null": 0.125,
+    "meridian.baseline.s2.null": 0.28125
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=severe",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.014782809576505851,
+   "spread": 0.32488213555803985,
+   "n_seeds": 3,
+   "n": 32,
+   "units": {
+    "meridian.baseline.s0.null": 0.36060154825948915,
+    "meridian.baseline.s1.null": -0.0322081259018874,
+    "meridian.baseline.s2.null": -0.28404499362808416
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=severe",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 1.2747371225197364,
+   "spread": 0.47499310711492615,
+   "n_seeds": 3,
+   "n": 32,
+   "units": {
+    "meridian.baseline.s0.null": 0.8931615555368009,
+    "meridian.baseline.s1.null": 1.806726483993971,
+    "meridian.baseline.s2.null": 1.1243233280284368
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "ppc_status=severe",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.12037037037037036,
+   "spread": 0.12525693757841372,
+   "n_seeds": 3,
+   "n": 32,
+   "units": {
+    "meridian.baseline.s0.null": 0.0,
+    "meridian.baseline.s1.null": 0.25,
+    "meridian.baseline.s2.null": 0.1111111111111111
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=ok",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.8229166666666666,
+   "spread": 0.09021097956087903,
+   "n_seeds": 3,
+   "n": 158,
+   "units": {
+    "meridian.baseline.s0.null": 0.875,
+    "meridian.baseline.s1.null": 0.875,
+    "meridian.baseline.s2.null": 0.71875
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=ok",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": -0.004349576237771523,
+   "spread": 0.0596384660085509,
+   "n_seeds": 3,
+   "n": 158,
+   "units": {
+    "meridian.baseline.s0.null": -0.06730220425796947,
+    "meridian.baseline.s1.null": 0.0513025851590484,
+    "meridian.baseline.s2.null": 0.002950890385606504
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=ok",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 1.07852764455973,
+   "spread": 0.09243732001010026,
+   "n_seeds": 3,
+   "n": 158,
+   "units": {
+    "meridian.baseline.s0.null": 0.9767142690521331,
+    "meridian.baseline.s1.null": 1.1571865494584967,
+    "meridian.baseline.s2.null": 1.1016821151685605
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=ok",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.08385093167701863,
+   "spread": 0.027961091778523458,
+   "n_seeds": 3,
+   "n": 158,
+   "units": {
+    "meridian.baseline.s0.null": 0.05357142857142857,
+    "meridian.baseline.s1.null": 0.08928571428571429,
+    "meridian.baseline.s2.null": 0.10869565217391304
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "share_of_windows",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=suspect",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.17708333333333334,
+   "spread": 0.09021097956087902,
+   "n_seeds": 3,
+   "n": 34,
+   "units": {
+    "meridian.baseline.s0.null": 0.125,
+    "meridian.baseline.s1.null": 0.125,
+    "meridian.baseline.s2.null": 0.28125
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "mean_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=suspect",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.05126323491326044,
+   "spread": 0.3839110708650244,
+   "n_seeds": 3,
+   "n": 34,
+   "units": {
+    "meridian.baseline.s0.null": 0.47004282426975286,
+    "meridian.baseline.s1.null": -0.0322081259018874,
+    "meridian.baseline.s2.null": -0.28404499362808416
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "sd_z",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=suspect",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 1.2747371225197364,
+   "spread": 0.47499310711492615,
+   "n_seeds": 3,
+   "n": 34,
+   "units": {
+    "meridian.baseline.s0.null": 0.8931615555368009,
+    "meridian.baseline.s1.null": 1.806726483993971,
+    "meridian.baseline.s2.null": 1.1243233280284368
+   }
+  },
+  {
+   "question": "Q9 diagnostics",
+   "metric": "abs_z_over_2",
+   "horizon_days": 7,
+   "method": null,
+   "split": "fit_quality=suspect",
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.12037037037037036,
+   "spread": 0.12525693757841372,
+   "n_seeds": 3,
+   "n": 34,
+   "units": {
+    "meridian.baseline.s0.null": 0.0,
+    "meridian.baseline.s1.null": 0.25,
+    "meridian.baseline.s2.null": 0.1111111111111111
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "abs_z_at_onset",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.8587541038698753,
+   "spread": 0.77341982571552,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 2.033932765889755,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.446130377079794,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.8444600867742679,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.5490203637587932,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.24229606615757424,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.03668496355906739
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.5416666666666666,
+   "spread": 0.3442231592053814,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 0.25,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.125,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.25,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.875,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.875,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.875
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail_under_5pct",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "null_windows_per_node",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 8.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 6,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 8.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 8.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 8.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 8.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 8.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 8.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "abs_z_at_onset",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 0.7757584758043764,
+   "spread": 0.7072298261075014,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.446130377079794,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.8444600867742679,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.03668496355906739
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 0.4166666666666667,
+   "spread": 0.40181878170803975,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.125,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.25,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.875
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail_under_5pct",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "null_windows_per_node",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 8.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 8.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 8.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 8.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "abs_z_at_onset",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.9417497319353739,
+   "spread": 0.9582107197417943,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 2.033932765889755,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.5490203637587932,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.24229606615757424
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.6666666666666666,
+   "spread": 0.3608439182435161,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 0.25,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.875,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.875
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "empirical_tail_under_5pct",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q2 detection",
+   "metric": "null_windows_per_node",
+   "horizon_days": 7,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 8.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 8.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 8.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 8.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 5.666666666666667,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 5.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 7.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 5.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 7.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 5.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 5.0,
+    "meridian.baseline.s2.only.discounting_creep": 5.0,
+    "meridian.baseline.s1.only.discounting_creep": 5.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 7.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.5555555555555555,
+   "spread": 0.19245008972987526,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 1.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 1.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s2.only.discounting_creep": 1.0,
+    "meridian.baseline.s1.only.discounting_creep": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.7407407407407408,
+   "spread": 0.11564811108145187,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 1.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.3333333333333333,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.5,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.3333333333333333,
+    "meridian.baseline.s2.only.discounting_creep": 0.5,
+    "meridian.baseline.s1.only.discounting_creep": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 1.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s2.only.discounting_creep": 1.0,
+    "meridian.baseline.s1.only.discounting_creep": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 7.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 7.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 7.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 7.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 5.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 5.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 5.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 5.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.38888888888888884,
+   "spread": 0.09622504486493764,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 0.3333333333333333,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.5,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.3333333333333333
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 5.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 5.0,
+    "meridian.baseline.s2.only.discounting_creep": 5.0,
+    "meridian.baseline.s1.only.discounting_creep": 5.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 0.6666666666666666,
+   "spread": 0.5773502691896258,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 1.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 1.0,
+    "meridian.baseline.s2.only.discounting_creep": 1.0,
+    "meridian.baseline.s1.only.discounting_creep": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 0.8333333333333334,
+   "spread": 0.28867513459481287,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 1.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.5,
+    "meridian.baseline.s1.only.discounting_creep": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "engine_ranked_causes",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 1.0,
+    "meridian.baseline.s2.only.discounting_creep": 1.0,
+    "meridian.baseline.s1.only.discounting_creep": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 4.666666666666667,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 4.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 5.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 5.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 5.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 5.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 5.0,
+    "meridian.baseline.s2.only.discounting_creep": 4.0,
+    "meridian.baseline.s1.only.discounting_creep": 4.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 5.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.4444444444444444,
+   "spread": 0.19245008972987526,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.6666666666666666,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.5555555555555555,
+   "spread": 0.0962250448649376,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.5,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.5,
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 1.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s2.only.discounting_creep": 1.0,
+    "meridian.baseline.s1.only.discounting_creep": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 5.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 5.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 5.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 5.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 5.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 5.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 5.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 5.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.3333333333333333,
+   "spread": 0.5773502691896258,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.6666666666666666,
+   "spread": 0.28867513459481287,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 0.5,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.5,
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 4.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 4.0,
+    "meridian.baseline.s2.only.discounting_creep": 4.0,
+    "meridian.baseline.s1.only.discounting_creep": 4.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_contribution",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 1.0,
+    "meridian.baseline.s2.only.discounting_creep": 1.0,
+    "meridian.baseline.s1.only.discounting_creep": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 4.666666666666667,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 4.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 5.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 5.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 5.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 5.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 5.0,
+    "meridian.baseline.s2.only.discounting_creep": 4.0,
+    "meridian.baseline.s1.only.discounting_creep": 4.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 5.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.2222222222222222,
+   "spread": 0.3849001794597505,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.19259259259259257,
+   "spread": 0.07563176983948938,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.25,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.2,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.3333333333333333,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.25,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.5,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.2
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.6666666666666666,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 1.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 5.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 5.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 5.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 5.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 0.3333333333333333,
+   "spread": 0.5773502691896258,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 0.26111111111111107,
+   "spread": 0.06735753140545633,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.25,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.3333333333333333,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.2
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 5.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 5.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 5.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 5.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.3333333333333333,
+   "spread": 0.5773502691896258,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.31666666666666665,
+   "spread": 0.16072751268321592,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 0.2,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.25,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.5
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.3333333333333333,
+   "spread": 0.5773502691896258,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 4.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 4.0,
+    "meridian.baseline.s2.only.discounting_creep": 4.0,
+    "meridian.baseline.s1.only.discounting_creep": 4.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "innovation_evidence",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 0.6666666666666666,
+   "spread": 0.5773502691896258,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 1.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 7.666666666666667,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 7.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 9.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 7.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 9.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 7.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 7.0,
+    "meridian.baseline.s2.only.discounting_creep": 7.0,
+    "meridian.baseline.s1.only.discounting_creep": 7.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 9.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.2222222222222222,
+   "spread": 0.19245008972987526,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.4444444444444444,
+   "spread": 0.19245008972987526,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.4113756613756614,
+   "spread": 0.07102324740031113,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.14285714285714285,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.5,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.16666666666666666,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.14285714285714285,
+    "meridian.baseline.s2.only.discounting_creep": 0.16666666666666666,
+    "meridian.baseline.s1.only.discounting_creep": 0.25,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.3333333333333333
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 1.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s2.only.discounting_creep": 1.0,
+    "meridian.baseline.s1.only.discounting_creep": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 9.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 9.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 9.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 9.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 0.6666666666666666,
+   "spread": 0.5773502691896258,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 0.7777777777777778,
+   "spread": 0.3849001794597505,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.3333333333333333
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 7.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 7.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 7.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 7.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.3333333333333333,
+   "spread": 0.5773502691896258,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.2698412698412698,
+   "spread": 0.19967850199062104,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 0.5,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.16666666666666666,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.14285714285714285
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s2.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 7.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 7.0,
+    "meridian.baseline.s2.only.discounting_creep": 7.0,
+    "meridian.baseline.s1.only.discounting_creep": 7.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 0.1865079365079365,
+   "spread": 0.056259709836340585,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.14285714285714285,
+    "meridian.baseline.s2.only.discounting_creep": 0.16666666666666666,
+    "meridian.baseline.s1.only.discounting_creep": 0.25
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0
+   }
+  },
+  {
+   "question": "Q3 localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": "naive_relative_change",
+   "split": null,
+   "role": "rate",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 1.0,
+    "meridian.baseline.s2.only.discounting_creep": 1.0,
+    "meridian.baseline.s1.only.discounting_creep": 1.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "slice_rows_refused",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 0,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "top1_by_abs_excess",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 1.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.25,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 0.25,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.25,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.25
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 4.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 4.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 4.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 4.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "root_abs_z",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 28.79657616279427,
+   "spread": 6.923189241821468,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 21.867145028416715,
+    "meridian.baseline.s1.only.referral_partner_exit": 35.71350658330718,
+    "meridian.baseline.s2.only.referral_partner_exit": 28.809076876658924
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "localized",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 1.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "top1_by_abs_excess",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 1.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "top1",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "top3",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "reciprocal_rank",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow",
+   "vertical": "b2b_services",
+   "value": 0.25,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 0.25,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.25,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.25
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "candidates",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow",
+   "vertical": "b2b_services",
+   "value": 4.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 4.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 4.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 4.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "root_abs_z",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow",
+   "vertical": "b2b_services",
+   "value": 28.79657616279427,
+   "spread": 6.923189241821468,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 21.867145028416715,
+    "meridian.baseline.s1.only.referral_partner_exit": 35.71350658330718,
+    "meridian.baseline.s2.only.referral_partner_exit": 28.809076876658924
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "top1_with_evidence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "first_place_lacks_evidence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q4 slice localization",
+   "metric": "localized",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 3,
+   "units": {
+    "meridian.baseline.s0.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 1.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 1.0
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "items_size_eligible",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 0,
+   "units": {
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "items_direction_only",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s0.only.discounting_creep": 2.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s1.only.discounting_creep": 2.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.discounting_creep": 2.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "items_total",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 1.3333333333333333,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 12,
+   "units": {
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 2.0,
+    "meridian.baseline.s0.only.discounting_creep": 2.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 2.0,
+    "meridian.baseline.s1.only.discounting_creep": 2.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 2.0,
+    "meridian.baseline.s2.only.discounting_creep": 2.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0
+   }
+  },
+  {
+   "question": "Q5 counterfactual attribution",
+   "metric": "direction_agrees",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 1.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s0.only.discounting_creep": 1.0,
+    "meridian.baseline.s0.only.referral_partner_exit": null,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s1.only.discounting_creep": 1.0,
+    "meridian.baseline.s1.only.referral_partner_exit": null,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 1.0,
+    "meridian.baseline.s2.only.discounting_creep": 1.0,
+    "meridian.baseline.s2.only.referral_partner_exit": null
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 3.4633333333333334,
+   "spread": 0.11015141094572188,
+   "n_seeds": 3,
+   "n": 192,
+   "units": {
+    "meridian.baseline.s0.null": 3.39,
+    "meridian.baseline.s1.null": 3.41,
+    "meridian.baseline.s2.null": 3.59
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.015625,
+   "spread": 0.027063293868263706,
+   "n_seeds": 3,
+   "n": 192,
+   "units": {
+    "meridian.baseline.s0.null": 0.046875,
+    "meridian.baseline.s1.null": 0.0,
+    "meridian.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.15104166666666666,
+   "spread": 0.023867581744561668,
+   "n_seeds": 3,
+   "n": 192,
+   "units": {
+    "meridian.baseline.s0.null": 0.125,
+    "meridian.baseline.s1.null": 0.171875,
+    "meridian.baseline.s2.null": 0.15625
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.17708333333333334,
+   "spread": 0.09021097956087902,
+   "n_seeds": 3,
+   "n": 192,
+   "units": {
+    "meridian.baseline.s0.null": 0.125,
+    "meridian.baseline.s1.null": 0.125,
+    "meridian.baseline.s2.null": 0.28125
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 3.4716666666666662,
+   "spread": 0.11339459128782695,
+   "n_seeds": 3,
+   "n": 144,
+   "units": {
+    "meridian.baseline.s0.null": 3.385,
+    "meridian.baseline.s1.null": 3.4299999999999997,
+    "meridian.baseline.s2.null": 3.5999999999999996
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 0.006944444444444444,
+   "spread": 0.012028130608117204,
+   "n_seeds": 3,
+   "n": 144,
+   "units": {
+    "meridian.baseline.s0.null": 0.020833333333333332,
+    "meridian.baseline.s1.null": 0.0,
+    "meridian.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 0.17361111111111113,
+   "spread": 0.0481125224324688,
+   "n_seeds": 3,
+   "n": 144,
+   "units": {
+    "meridian.baseline.s0.null": 0.14583333333333334,
+    "meridian.baseline.s1.null": 0.22916666666666666,
+    "meridian.baseline.s2.null": 0.14583333333333334
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, learned parent",
+   "vertical": "b2b_services",
+   "value": 0.22916666666666666,
+   "spread": 0.1267242193812129,
+   "n_seeds": 3,
+   "n": 144,
+   "units": {
+    "meridian.baseline.s0.null": 0.14583333333333334,
+    "meridian.baseline.s1.null": 0.16666666666666666,
+    "meridian.baseline.s2.null": 0.375
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 2.9166666666666665,
+   "spread": 0.14002975874196613,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 2.92,
+    "meridian.baseline.s1.null": 2.7750000000000004,
+    "meridian.baseline.s2.null": 3.0549999999999997
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 0.0,
+    "meridian.baseline.s1.null": 0.0,
+    "meridian.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.08333333333333333,
+   "spread": 0.14433756729740646,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 0.0,
+    "meridian.baseline.s1.null": 0.0,
+    "meridian.baseline.s2.null": 0.25
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "flow, no parents",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 0.0,
+    "meridian.baseline.s1.null": 0.0,
+    "meridian.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "fit_seconds_median",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2b_services",
+   "value": 3.861666666666667,
+   "spread": 0.13250786140200624,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 3.7300000000000004,
+    "meridian.baseline.s1.null": 3.86,
+    "meridian.baseline.s2.null": 3.995
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "ess_under_400",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2b_services",
+   "value": 0.08333333333333333,
+   "spread": 0.14433756729740646,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 0.25,
+    "meridian.baseline.s1.null": 0.0,
+    "meridian.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "any_divergence",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2b_services",
+   "value": 0.08333333333333333,
+   "spread": 0.07216878364870323,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 0.125,
+    "meridian.baseline.s1.null": 0.0,
+    "meridian.baseline.s2.null": 0.125
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "suspect",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "stock",
+   "vertical": "b2b_services",
+   "value": 0.041666666666666664,
+   "spread": 0.07216878364870323,
+   "n_seeds": 3,
+   "n": 24,
+   "units": {
+    "meridian.baseline.s0.null": 0.125,
+    "meridian.baseline.s1.null": 0.0,
+    "meridian.baseline.s2.null": 0.0
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "analysis_innovation_seconds",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.3666666666666667,
+   "spread": 0.23094010767585033,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 1.3,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.1,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.1,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.1,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.1,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.1,
+    "meridian.baseline.s2.only.discounting_creep": 0.1,
+    "meridian.baseline.s1.only.discounting_creep": 1.3,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.1
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "analysis_rca_seconds",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.19999999999999998,
+   "spread": 0.13333333333333333,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.4,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.1,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.3,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.1,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.3,
+    "meridian.baseline.s2.only.discounting_creep": 0.1,
+    "meridian.baseline.s1.only.discounting_creep": 0.4,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.1
+   }
+  },
+  {
+   "question": "Q8 cost",
+   "metric": "analysis_fits_made",
+   "horizon_days": null,
+   "method": null,
+   "split": null,
+   "role": "all",
+   "vertical": "b2b_services",
+   "value": 0.0,
+   "spread": 0.0,
+   "n_seeds": 3,
+   "n": 9,
+   "units": {
+    "meridian.baseline.s0.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s2.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.delivery_capacity_crunch": 0.0,
+    "meridian.baseline.s1.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s0.only.referral_partner_exit": 0.0,
+    "meridian.baseline.s2.only.discounting_creep": 0.0,
+    "meridian.baseline.s1.only.discounting_creep": 0.0,
+    "meridian.baseline.s2.only.delivery_capacity_crunch": 0.0
+   }
+  }
+ ],
+ "invocations": [
+  {
+   "started": "20261124T070710",
+   "wall_seconds": 293.6,
+   "shards": 4,
+   "jobs_already_done": 0,
+   "jobs_done_now": 297,
+   "failed_shards": []
+  },
+  {
+   "started": "20261124T072210",
+   "wall_seconds": 6.0,
+   "shards": 4,
+   "jobs_already_done": 288,
+   "jobs_done_now": 9,
+   "failed_shards": []
+  }
+ ],
+ "note": "Smoke tier on a canonical tree (fake_companies feat/canonical-trees, cc8caac), not a finding: three seeds of the generator's canon set, do not cite. The first run with slices served from the series file (Q4). Ran with another job holding the load at 12 to 41."
+}
