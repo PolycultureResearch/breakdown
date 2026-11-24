@@ -4,7 +4,7 @@
 and where each one stops being trustworthy.**
 
 > **Written:** 2026-08-04 · **Last updated:** 2026-11-18 ·
-> **Engine version:** 0.3.0
+> **Engine version:** 0.3.1
 >
 > **This is a living document.** The assessment in §3 and the improvements in §4
 > describe the engine *as it stands on the last-updated date above*. Both
